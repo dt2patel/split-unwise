@@ -90,4 +90,27 @@ describe('split allocations', () => {
       ['casey', 25],
     ])
   })
+
+  it('uses overflow-safe ratio arithmetic for large totals and shares', () => {
+    const largeTotal: Money = { currency: 'USD', minorAmount: Number.MAX_SAFE_INTEGER }
+    const allocations = computeAllocations(largeTotal, {
+      type: 'shares',
+      participantIds: ['alex', 'blair'],
+      shares: { alex: Number.MAX_VALUE, blair: 1 },
+    })
+
+    expect(amounts(allocations)).toEqual([
+      ['alex', Number.MAX_SAFE_INTEGER],
+      ['blair', 0],
+    ])
+    expect(allocations.reduce((sum, allocation) => sum + allocation.money.minorAmount, 0)).toBe(Number.MAX_SAFE_INTEGER)
+  })
+
+  it('rejects a non-canonical currency at the split boundary', () => {
+    const malformedTotal = { currency: 'usd', minorAmount: 100 } as unknown as Money
+    expect(() => computeAllocations(malformedTotal, {
+      type: 'equal',
+      participantIds: ['alex', 'blair'],
+    })).toThrow('Unsupported ISO 4217 currency')
+  })
 })

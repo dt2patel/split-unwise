@@ -8,6 +8,13 @@ describe('money conversion', () => {
     expect(currencyExponent('USD')).toBe(2)
   })
 
+  it('uses the authoritative four-decimal units and rejects non-canonical currency codes', () => {
+    expect(currencyExponent('CLF')).toBe(4)
+    expect(currencyExponent('UYW')).toBe(4)
+    expect(() => currencyExponent('usd')).toThrow('Unsupported ISO 4217 currency')
+    expect(() => currencyExponent('ZZZ')).toThrow('Unsupported ISO 4217 currency')
+  })
+
   it('rounds decimal input half away from zero in the currency minor unit', () => {
     expect(toMinorUnits('1.5', 'JPY')).toBe(2)
     expect(toMinorUnits('1.2345', 'BHD')).toBe(1235)

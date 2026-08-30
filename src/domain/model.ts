@@ -1,6 +1,8 @@
+import type { CurrencyCode } from './money'
+
 /** ISO 4217 currency values are stored as integer minor units. */
 export interface Money {
-  readonly currency: string
+  readonly currency: CurrencyCode
   readonly minorAmount: number
 }
 
@@ -84,8 +86,14 @@ export interface Debt {
   readonly money: Money
 }
 
+/** Original calendar position retained by a recurring template across clamped occurrences. */
+export interface RecurrenceAnchor {
+  readonly month: number
+  readonly day: number
+}
+
 export type Recurrence =
-  | { readonly frequency: 'weekly' }
-  | { readonly frequency: 'fortnightly' }
-  | { readonly frequency: 'monthly' }
-  | { readonly frequency: 'yearly' }
+  | { readonly frequency: 'weekly'; readonly anchor: RecurrenceAnchor }
+  | { readonly frequency: 'fortnightly'; readonly anchor: RecurrenceAnchor }
+  | { readonly frequency: 'monthly'; readonly anchor: RecurrenceAnchor }
+  | { readonly frequency: 'yearly'; readonly anchor: RecurrenceAnchor }

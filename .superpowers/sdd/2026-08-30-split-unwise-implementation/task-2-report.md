@@ -68,3 +68,58 @@ The pre-existing untracked `public/assets/images/*` files were not changed and a
 - Simplification is intentionally deterministic by currency and participant ID, avoiding cross-currency netting and locale-sensitive ordering.
 - The currently scoped money conversion accepts decimal number input by its JavaScript string form. Application/UI layers should prefer decimal strings when accepting user input so no binary floating-point value is introduced before this boundary.
 - No framework, Ionic, Firebase, router, dependency, or public-asset changes were made.
+
+---
+
+## Fix Round 1: Review Corrections
+
+### Changes
+
+- Replaced fallback currency handling with `CURRENCY_EXPONENTS`, a current ISO 4217 List One table (166 currency/funds codes and 0/2/3/4 exponents). `CurrencyCode` is now inferred from that table; all money, split, and balance public boundaries reject non-canonical/unsupported codes instead of treating them as a two-decimal currency.
+- Reworked ratio allocation to normalize decimal JavaScript ratios into integer `bigint` weights. Allocation multiplication, division, remainder distribution, and final total verification now use `bigint`, then reject an unrepresentable minor-unit result before creating `Money`.
+- Moved pairwise balance aggregation and participant-net accumulation to `bigint`. The functions reject aggregate values outside the safe-integer Money boundary before emitting balances or debts.
+- Added `RecurrenceAnchor` (`month`, `day`) to every recurrence contract. Monthly occurrences use the anchor day after a short month, and yearly occurrences use the anchor month/day so a leap-day series returns to February 29 in later leap years.
+
+### Regression RED / GREEN Evidence
+
+1. ISO currency table and canonical-code validation
+   - RED: `pnpm vitest run src/domain/__tests__/money.spec.ts` — 4 tests with 1 failure: `currencyExponent('CLF')` returned `2`, expected `4`.
+   - GREEN: after the centralized currency table and `CurrencyCode` validation, the same command passed: 1 file, 4 tests.
+2. Ratio overflow and split-boundary currency validation
+   - RED: `pnpm vitest run src/domain/__tests__/splits.spec.ts` — 8 tests with 2 failures: a `Number.MAX_VALUE` share produced `Infinity` instead of `Number.MAX_SAFE_INTEGER`, and lowercase `usd` was accepted.
+   - GREEN: after decimal normalization and `bigint` allocation, the same command passed: 1 file, 8 tests.
+3. Pairwise and participant-net overflow
+   - RED: `pnpm vitest run src/domain/__tests__/balances.spec.ts` — 5 tests with 2 failures: a duplicated maximum obligation and multi-pair maximum net did not throw.
+   - GREEN: after `bigint` aggregation and safe-boundary checks, the same command passed: 1 file, 5 tests.
+4. Stable recurrence anchors
+   - RED: `pnpm vitest run src/domain/__tests__/recurrence.spec.ts` — 5 tests with 2 failures: `2025-02-28` advanced to `2025-03-28` rather than `2025-03-31`, and a leap-day series reached `2028-02-28` rather than `2028-02-29`.
+   - GREEN: after adding `RecurrenceAnchor`, the same command passed: 1 file, 5 tests.
+
+### Fix-Round Validation
+
+- `pnpm vitest run src/domain/__tests__` — 5 files passed, 24 tests passed.
+- `pnpm test` — 7 files passed, 33 tests passed. Installed Ionic packages emitted their existing missing-source-map notices; no tests failed.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed. Vite emitted its existing chunk-size warning for the 1.14 MB JavaScript chunk.
+- `git diff --check` — passed.
+
+### Fix-Round Files Changed
+
+- Modified `src/domain/model.ts`
+- Modified `src/domain/money.ts`
+- Modified `src/domain/splits.ts`
+- Modified `src/domain/balances.ts`
+- Modified `src/domain/recurrence.ts`
+- Modified `src/domain/__tests__/money.spec.ts`
+- Modified `src/domain/__tests__/splits.spec.ts`
+- Modified `src/domain/__tests__/balances.spec.ts`
+- Modified `src/domain/__tests__/recurrence.spec.ts`
+- Appended this report
+
+### Fix-Round Self-Review
+
+- Every emitted allocation, pairwise balance, debt, and aggregate participant net is bounded to a safe integer. Large finite shares no longer use floating-point multiplication.
+- Exact, itemized, and adjustment aggregation also now reject unsafe addition rather than silently creating an invalid Money value.
+- Current-currency validation intentionally rejects non-List-One codes and non-uppercase input; input normalization, if desired for a user-facing form, belongs before this strict domain boundary.
+- The recurrence anchor is explicit template metadata, not inferred from a clamped occurrence, so repeated materialization does not drift.
+- The ISO table is based on SIX List One, the official ISO 4217 maintenance agency publication consulted on 2026-08-30. It should be refreshed when SIX publishes a code-list amendment.

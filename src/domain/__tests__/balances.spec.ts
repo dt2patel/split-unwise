@@ -44,4 +44,38 @@ describe('balances', () => {
       { fromParticipantId: 'casey', toParticipantId: 'alex', money: { currency: 'USD', minorAmount: 400 } },
     ])
   })
+
+  it('rejects a pairwise total that cannot remain a safe minor-unit integer', () => {
+    const maximumExpense = (id: string): Expense => ({
+      id,
+      description: 'Maximum',
+      date: '2026-08-03',
+      total: { currency: 'USD', minorAmount: Number.MAX_SAFE_INTEGER },
+      payerId: 'alex',
+      allocations: [
+        { participantId: 'blair', money: { currency: 'USD', minorAmount: Number.MAX_SAFE_INTEGER } },
+      ],
+    })
+
+    expect(() => computeBalances([maximumExpense('one'), maximumExpense('two')]))
+      .toThrow('Money addition exceeds safe integer range')
+  })
+
+  it('rejects multi-pair participant nets that cannot be represented safely', () => {
+    expect(() => simplifyDebts([
+      { fromParticipantId: 'alex', toParticipantId: 'blair', money: { currency: 'USD', minorAmount: Number.MAX_SAFE_INTEGER } },
+      { fromParticipantId: 'alex', toParticipantId: 'casey', money: { currency: 'USD', minorAmount: Number.MAX_SAFE_INTEGER } },
+    ])).toThrow('Money addition exceeds safe integer range')
+  })
+
+  it('preserves a participant net across several distinct pairwise balances', () => {
+    expect(simplifyDebts([
+      { fromParticipantId: 'alex', toParticipantId: 'blair', money: { currency: 'USD', minorAmount: 70 } },
+      { fromParticipantId: 'alex', toParticipantId: 'casey', money: { currency: 'USD', minorAmount: -20 } },
+      { fromParticipantId: 'blair', toParticipantId: 'casey', money: { currency: 'USD', minorAmount: 30 } },
+    ])).toEqual([
+      { fromParticipantId: 'alex', toParticipantId: 'blair', money: { currency: 'USD', minorAmount: 40 } },
+      { fromParticipantId: 'alex', toParticipantId: 'casey', money: { currency: 'USD', minorAmount: 10 } },
+    ])
+  })
 })
