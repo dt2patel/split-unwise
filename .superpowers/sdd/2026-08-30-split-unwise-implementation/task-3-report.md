@@ -49,3 +49,46 @@ The pre-existing untracked `public/assets/images/*` files were neither changed n
 - The command queue never retries automatically: users or a feature store must explicitly invoke `retry()`, and a fresh/conflicted record cannot be retried. This prevents same-ID duplicate writes while keeping all state changes observable.
 - Firebase behavior is contract-complete and lazy, but this task does not include a configured Firebase project, authenticated user, or emulator. Live Firestore security/transaction/idempotency behavior remains for the Firebase rules/functions and emulator work in later tasks.
 - Firebase uses the user projection collection for cross-group lookup, matching the documented collection-model direction. A deployed backend must maintain that projection.
+
+---
+
+## Fix Round 1 / 5: Durable Commands, Strict Firebase Boundaries, And Currency Partitions
+
+### Review-Finding Mapping
+
+1. **Listener isolation (Critical):** command state is persisted before delivery, and each subscriber is invoked in an isolated `try/catch`. A rendering listener can no longer turn a successful command into a failed/retryable operation or prevent another listener from observing it.
+2. **Durable operation IDs (Critical):** all mutable repository operations now carry `operationId` in a discriminated command envelope. `CommandQueue` persists serializable envelope/state records through injectable storage, rehydrates them, and resumes registered handlers. Firebase add-expense uses a user-scoped operation ledger and deterministic expense document ID in a Firestore transaction; repeated IDs return the ledgered result rather than creating another expense. Demo has an equivalent in-memory operation ledger.
+3. **Pure contracts:** `repositories.ts` now imports only domain types and exposes no adapter/composition values. `repositoryFactory.ts` owns environment/adaptor selection; `src/data/index.ts` is the feature-facing data import path.
+4. **Typed queue states:** optional fields and caller-selected queue generics were replaced with a discriminated `CommandOperation` union, concrete command envelopes, command result unions, and untyped-by-caller `CommandHandle`s.
+5. **Firebase decoding:** `firebaseDecoders.ts` strictly validates group projections, groups, members, expenses, allocations, ISO currencies, safe integer amounts, recurrence shape/calendar anchors, comments, and activity event enums. Malformed data throws `DocumentDecodeError`; unknown activity types are never recast as expense activity.
+6. **Auth readiness:** Firebase waits for `auth.authStateReady()` before an unauthenticated decision.
+7. **Currency partitions:** totals now return a currency-keyed collection and every category/daily chart datum carries its currency. Demo and Firebase aggregation never add amounts across currencies.
+8. **Feature extension boundary:** repositories now expose command-oriented interfaces for expense add/edit/delete, comment add, confirmed manual settlement record, group default split, and profile update. Demo executes them deterministically; Firebase records typed `not-supported` results in the operation ledger for mutations not yet implemented, without fabricating provider confirmation.
+
+Firebase configuration now trims values, rejects whitespace-only variables, and selects demo unless all six public values are valid. Firebase construction remains lazy: no SDK dynamic import, initialization, auth lookup, or network read occurs until a repository method is called.
+
+### Regression RED / GREEN Evidence
+
+- **RED:** `pnpm exec vitest run src/data/__tests__/commandQueue.spec.ts src/data/__tests__/demoRepository.spec.ts src/data/__tests__/firebaseDecoders.spec.ts` failed before this round's implementation: `firebaseDecoders` could not resolve, `createMemoryCommandStorage` was absent, previous queue APIs could not provide durable handlers, and the existing demo totals/chart assertions showed cross-currency aggregation. Result: 3 failed files, 8 failed tests plus the missing decoder suite.
+- **GREEN:** after the durable command queue, decoders, repository factory, strict Firebase adapter, and partitioned aggregators were implemented, the same focused command passed: 3 files, 12 tests.
+
+### Fix-Round Validation
+
+- `pnpm exec vitest run src/data/__tests__/commandQueue.spec.ts src/data/__tests__/demoRepository.spec.ts src/data/__tests__/firebaseDecoders.spec.ts` — passed: 3 files, 12 tests.
+- `pnpm test` — passed: 10 files, 45 tests. Installed Ionic packages emitted existing missing-source-map notices; no test failed.
+- `pnpm run typecheck` — passed.
+- `pnpm run build` — passed. Vite emitted the existing 1.14 MB chunk-size warning.
+- `git diff --check` — passed.
+
+### Fix-Round Files Changed
+
+- Modified `src/data/repositories.ts`, `commandQueue.ts`, `demoRepository.ts`, `firebase.ts`, and `firebaseRepository.ts`
+- Added `src/data/repositoryFactory.ts`, `index.ts`, and `firebaseDecoders.ts`
+- Modified the existing demo/queue tests and added `src/data/__tests__/firebaseDecoders.spec.ts`
+- Appended this report
+
+### Fix-Round Concerns
+
+- The Firestore operation ledger and transaction shape are source-validated, but no Firebase project, authenticated session, or emulator is available in this task; live rules/transaction behavior remains unverified.
+- Local browser storage intentionally contains only serializable command metadata and drafts; it contains no credentials. Storage privacy/quota failures leave the in-memory command state usable but cannot provide reload recovery.
+- The public cover assets remain pre-existing untracked files and were not changed or staged.

@@ -1,121 +1,130 @@
-import type { SyncState } from './repositories'
+import type { CommandEnvelope, CommandKind, CommandResult, SyncState } from './repositories'
 
-export interface ClientCommand<T> {
-  /** Stable client-generated operation ID. Reusing it never repeats side effects. */
-  readonly id: string
-  readonly execute: () => Promise<T>
-}
-
-export interface CommandOperation<T = unknown> {
-  readonly id: string
-  readonly status: SyncState
-  readonly result?: T
-  readonly error?: Error
-  readonly conflict?: unknown
-}
-
+export interface CommandFailure { readonly message: string; readonly conflict?: unknown }
 export class CommandConflictError extends Error {
   readonly conflict: unknown
-
-  constructor(message: string, conflict?: unknown) {
-    super(message)
-    this.name = 'CommandConflictError'
-    this.conflict = conflict
-  }
+  constructor(message: string, conflict?: unknown) { super(message); this.name = 'CommandConflictError'; this.conflict = conflict }
 }
 
-type StoredOperation = CommandOperation & { readonly execute: () => Promise<unknown>; readonly promise?: Promise<unknown> }
+export type CommandOperation =
+  | { readonly status: 'pending'; readonly envelope: CommandEnvelope }
+  | { readonly status: 'fresh' | 'stale'; readonly envelope: CommandEnvelope; readonly result: CommandResult }
+  | { readonly status: 'failed'; readonly envelope: CommandEnvelope; readonly error: CommandFailure }
+  | { readonly status: 'conflicted'; readonly envelope: CommandEnvelope; readonly error: CommandFailure; readonly conflict: unknown }
 
-/** Deterministic client-side command coordinator; callers decide when to retry. */
+export interface CommandStorage { load(): readonly CommandOperation[]; save(operations: readonly CommandOperation[]): void }
+export interface CommandHandle { readonly operationId: string; result(): Promise<CommandResult> }
+export type CommandHandler = (command: CommandEnvelope) => Promise<CommandResult>
+export type CommandHandlers = Partial<Record<CommandKind, CommandHandler>>
+export interface CommandQueueOptions { readonly handlers: CommandHandlers; readonly storage?: CommandStorage }
+
+/** Serializable, timer-free queue. Commands are persisted before registered handlers run. */
 export class CommandQueue {
-  private readonly operations = new Map<string, StoredOperation>()
+  private readonly operations = new Map<string, CommandOperation>()
   private readonly listeners = new Set<(operation: CommandOperation) => void>()
+  private readonly running = new Map<string, Promise<void>>()
+  private readonly storage: CommandStorage
 
-  submit<T>(command: ClientCommand<T>): Promise<T> {
-    const existing = this.operations.get(command.id)
-    if (existing) return this.resultFor(existing) as Promise<T>
-
-    const operation: StoredOperation = { id: command.id, status: 'pending', execute: command.execute }
-    this.operations.set(command.id, operation)
-    return this.execute<T>(operation)
+  constructor(private readonly options: CommandQueueOptions) {
+    this.storage = options.storage ?? createBrowserCommandStorage()
+    for (const operation of this.storage.load()) this.operations.set(operation.envelope.operationId, operation)
   }
 
-  retry<T>(operationId: string): Promise<T> {
-    const operation = this.requireOperation(operationId)
-    if (operation.status !== 'failed') return Promise.reject(new Error('Only failed operations can be retried'))
-    const pending = { ...operation, status: 'pending' as const, error: undefined, conflict: undefined, result: undefined }
-    this.operations.set(operationId, pending)
-    return this.execute<T>(pending)
+  submit(command: CommandEnvelope): CommandHandle {
+    assertOperationId(command.operationId)
+    const existing = this.operations.get(command.operationId)
+    if (existing) {
+      if (existing.envelope.kind !== command.kind) throw new Error(`Operation ID ${command.operationId} already belongs to ${existing.envelope.kind}`)
+      return this.handle(command.operationId)
+    }
+    this.replace({ status: 'pending', envelope: clone(command) })
+    this.start(command.operationId)
+    return this.handle(command.operationId)
   }
 
-  get<T = unknown>(operationId: string): CommandOperation<T> | undefined {
-    return this.operations.get(operationId) as CommandOperation<T> | undefined
+  retry(operationId: string): CommandHandle {
+    const operation = this.operations.get(operationId)
+    if (!operation || operation.status !== 'failed') return rejectedHandle(operationId, new Error('Only failed operations can be retried'))
+    this.replace({ status: 'pending', envelope: operation.envelope })
+    this.start(operationId)
+    return this.handle(operationId)
   }
 
-  subscribe(listener: (operation: CommandOperation) => void): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
+  get(operationId: string): CommandOperation | undefined { return this.operations.get(operationId) }
+  subscribe(listener: (operation: CommandOperation) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
+  markStale(operationId: string): CommandOperation { return this.setReadState(operationId, 'stale') }
+  markFresh(operationId: string): CommandOperation { return this.setReadState(operationId, 'fresh') }
+
+  async resume(): Promise<void> {
+    const pending = [...this.operations.values()].filter((operation): operation is Extract<CommandOperation, { status: 'pending' }> => operation.status === 'pending')
+    await Promise.all(pending.map((operation) => this.start(operation.envelope.operationId)))
   }
 
-  markStale(operationId: string): CommandOperation {
-    return this.setStatus(operationId, 'stale')
+  private handle(operationId: string): CommandHandle { return { operationId, result: async () => this.readResult(operationId) } }
+  private async readResult(operationId: string): Promise<CommandResult> {
+    const operation = this.operations.get(operationId)
+    if (!operation) throw new Error(`Unknown operation: ${operationId}`)
+    if (operation.status === 'pending') {
+      const running = this.running.get(operationId)
+      if (!running) throw new Error(`Operation ${operationId} is pending and has no registered handler`)
+      await running
+      return this.readResult(operationId)
+    }
+    if (operation.status === 'fresh' || operation.status === 'stale') return operation.result
+    if (operation.status === 'conflicted') throw new CommandConflictError(operation.error.message, operation.conflict)
+    if (operation.status === 'failed') throw new Error(operation.error.message)
+    throw new Error(`Operation ${operationId} is unavailable`)
   }
 
-  markFresh(operationId: string): CommandOperation {
-    return this.setStatus(operationId, 'fresh')
-  }
-
-  private execute<T>(operation: StoredOperation): Promise<T> {
-    const promise = Promise.resolve()
-      .then(operation.execute)
+  private start(operationId: string): Promise<void> {
+    const active = this.running.get(operationId)
+    if (active) return active
+    const operation = this.operations.get(operationId)
+    if (!operation || operation.status !== 'pending') return Promise.resolve()
+    const handler = this.options.handlers[operation.envelope.kind]
+    if (!handler) return Promise.resolve()
+    const running = Promise.resolve()
+      .then(() => handler(operation.envelope))
       .then((result) => {
-        const fresh = { ...operation, status: 'fresh' as const, result, error: undefined, conflict: undefined, promise: undefined }
-        this.operations.set(operation.id, fresh)
-        this.publish(fresh)
-        return result as T
+        if (result.operationId !== operationId || result.kind !== operation.envelope.kind) throw new Error('Command handler returned a mismatched result')
+        this.replace({ status: 'fresh', envelope: operation.envelope, result: clone(result) })
       })
       .catch((error: unknown) => {
-        const failure = error instanceof CommandConflictError
-          ? { ...operation, status: 'conflicted' as const, error, conflict: error.conflict, promise: undefined }
-          : { ...operation, status: 'failed' as const, error: toError(error), conflict: undefined, promise: undefined }
-        this.operations.set(operation.id, failure)
-        this.publish(failure)
-        throw error
+        const failure = toFailure(error)
+        if (error instanceof CommandConflictError) this.replace({ status: 'conflicted', envelope: operation.envelope, error: failure, conflict: error.conflict })
+        else this.replace({ status: 'failed', envelope: operation.envelope, error: failure })
       })
-    const pending = { ...operation, promise }
-    this.operations.set(operation.id, pending)
-    this.publish(pending)
-    return promise
+      .finally(() => { this.running.delete(operationId) })
+    this.running.set(operationId, running)
+    return running
   }
 
-  private resultFor(operation: StoredOperation): Promise<unknown> {
-    if (operation.status === 'pending') return operation.promise as Promise<unknown>
-    if (operation.status === 'fresh' || operation.status === 'stale') return Promise.resolve(operation.result)
-    return Promise.reject(operation.error ?? new Error('Command did not complete'))
-  }
-
-  private setStatus(operationId: string, status: 'fresh' | 'stale'): CommandOperation {
-    const operation = this.requireOperation(operationId)
-    if (operation.status !== 'fresh' && operation.status !== 'stale') {
-      throw new Error('Only fresh or stale operations can be marked stale or fresh')
-    }
+  private setReadState(operationId: string, status: Extract<SyncState, 'fresh' | 'stale'>): CommandOperation {
+    const operation = this.operations.get(operationId)
+    if (!operation || (operation.status !== 'fresh' && operation.status !== 'stale')) throw new Error('Only fresh or stale operations can be marked stale or fresh')
     const updated = { ...operation, status }
-    this.operations.set(operationId, updated)
-    this.publish(updated)
+    this.replace(updated)
     return updated
   }
 
-  private requireOperation(operationId: string): StoredOperation {
-    const operation = this.operations.get(operationId)
-    if (!operation) throw new Error(`Unknown operation: ${operationId}`)
-    return operation
-  }
-
-  private publish(operation: CommandOperation): void {
-    this.listeners.forEach((listener) => listener(operation))
+  private replace(operation: CommandOperation): void {
+    this.operations.set(operation.envelope.operationId, operation)
+    this.storage.save([...this.operations.values()])
+    this.listeners.forEach((listener) => { try { listener(operation) } catch { /* subscribers cannot affect durable command state */ } })
   }
 }
 
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error))
+export function createMemoryCommandStorage(initial: readonly CommandOperation[] = []): CommandStorage {
+  let contents = clone(initial)
+  return { load: () => clone(contents), save: (operations) => { contents = clone(operations) } }
 }
+export function createBrowserCommandStorage(key = 'split-unwise:command-queue:v1'): CommandStorage {
+  return {
+    load: () => { try { const value = globalThis.localStorage?.getItem(key); return value ? JSON.parse(value) as readonly CommandOperation[] : [] } catch { return [] } },
+    save: (operations) => { try { globalThis.localStorage?.setItem(key, JSON.stringify(operations)) } catch { /* unavailable storage leaves the in-memory queue usable */ } },
+  }
+}
+function rejectedHandle(operationId: string, error: Error): CommandHandle { return { operationId, result: () => Promise.reject(error) } }
+function assertOperationId(operationId: string): void { if (!operationId.trim()) throw new Error('operationId is required') }
+function toFailure(error: unknown): CommandFailure { return { message: error instanceof Error ? error.message : String(error) } }
+function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }

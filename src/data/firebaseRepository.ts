@@ -1,223 +1,165 @@
 import { computeBalances, simplifyDebts } from '../domain/balances'
 import type { FirebaseConfiguration } from './firebase'
-import type {
-  ActivityItem,
-  AppRepository,
-  ExpenseComment,
-  ExpenseDraft,
-  ExpenseRow,
-  Group,
-  GroupCharts,
-  GroupTotals,
-  Member,
-  RecurringExpense,
-} from './repositories'
+import { decodeActivity, decodeComment, decodeExpense, decodeGroup, decodeGroupProjection, decodeMember, decodeRecurringExpense } from './firebaseDecoders'
+import type { AppRepository, CommandEnvelope, CommandResult, CurrencyTotals, ExpenseAddResult, ExpenseRow, GroupCharts, Member } from './repositories'
 
 type FirestoreModule = typeof import('firebase/firestore')
 type AuthModule = typeof import('firebase/auth')
-type FirebaseClient = {
-  readonly auth: ReturnType<AuthModule['getAuth']>
-  readonly db: ReturnType<FirestoreModule['getFirestore']>
-  readonly firestore: FirestoreModule
-}
+type FirebaseClient = { readonly auth: ReturnType<AuthModule['getAuth']>; readonly db: ReturnType<FirestoreModule['getFirestore']>; readonly firestore: FirestoreModule }
 
-/**
- * Firebase facade that loads SDK modules only on first repository call. Creating
- * this adapter never initializes Firebase or opens a connection.
- */
+/** Firebase facade: SDK modules are loaded only on the first actual repository call. */
 export function createFirebaseRepository(configuration: FirebaseConfiguration): AppRepository {
   let clientPromise: Promise<FirebaseClient> | undefined
   const client = () => clientPromise ??= connect(configuration)
 
-  async function currentUser(): Promise<Member> {
-    const { auth, db, firestore } = await client()
-    const user = auth.currentUser
-    if (!user) throw new Error('A signed-in Firebase user is required')
-    const snapshot = await firestore.getDoc(firestore.doc(db, 'users', user.uid))
-    const profile = snapshot.data() ?? {}
-    return {
-      id: user.uid,
-      displayName: stringValue(profile.displayName, user.displayName ?? 'Unnamed member'),
-      initials: stringValue(profile.initials, initials(user.displayName ?? 'Unnamed member')),
-      ...(typeof profile.avatarUrl === 'string' ? { avatarUrl: profile.avatarUrl } : {}),
-      isCurrentUser: true,
-    }
+  async function authenticatedUserId(): Promise<string> {
+    const { auth } = await client()
+    await auth.authStateReady()
+    if (!auth.currentUser) throw new Error('A signed-in Firebase user is required')
+    return auth.currentUser.uid
   }
-
+  async function currentUser(): Promise<Member> {
+    const { db, firestore } = await client()
+    const userId = await authenticatedUserId()
+    const snapshot = await firestore.getDoc(firestore.doc(db, 'users', userId))
+    if (!snapshot.exists()) throw new Error('Current Firebase user profile is missing')
+    return decodeMember(userId, snapshot.data(), true)
+  }
   async function listExpenses(groupId: string): Promise<readonly ExpenseRow[]> {
     const { db, firestore } = await client()
-    const snapshot = await firestore.getDocs(firestore.query(
-      firestore.collection(db, 'groups', groupId, 'expenses'),
-      firestore.orderBy('date', 'asc'),
-    ))
-    return snapshot.docs.map((document) => expenseFromData(groupId, document.id, document.data()))
+    const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses'), firestore.orderBy('date', 'asc')))
+    return snapshot.docs.map((document) => decodeExpense(groupId, document.id, document.data()))
   }
 
-  async function totals(groupId: string): Promise<GroupTotals> {
-    const [rows, user] = await Promise.all([listExpenses(groupId), currentUser()])
-    const currentUserPaid = rows.filter((row) => row.payerId === user.id).reduce((total, row) => total + row.total.minorAmount, 0)
-    const currentUserShare = rows.reduce((total, row) => total + (row.allocations.find(({ participantId }) => participantId === user.id)?.money.minorAmount ?? 0), 0)
-    return {
-      currency: rows[0]?.total.currency ?? 'USD',
-      totalPaid: rows.reduce((total, row) => total + row.total.minorAmount, 0),
-      currentUserPaid,
-      currentUserShare,
-      currentUserNet: currentUserPaid - currentUserShare,
-    }
+  async function execute(command: CommandEnvelope): Promise<CommandResult> {
+    if (command.kind === 'expense.add') return executeExpenseAdd(command)
+    return executeNotSupported(command)
+  }
+  async function executeExpenseAdd(command: Extract<CommandEnvelope, { kind: 'expense.add' }>): Promise<ExpenseAddResult> {
+    const { db, firestore } = await client()
+    const userId = await authenticatedUserId()
+    const ledger = firestore.doc(db, 'users', userId, 'operations', ledgerId(command.operationId))
+    return firestore.runTransaction(db, async (transaction) => {
+      const previous = await transaction.get(ledger)
+      if (previous.exists()) {
+        const result = resultFromLedger(command, previous.data())
+        if (result.kind !== 'expense.add') throw new Error('Operation ledger returned an incompatible result')
+        return result
+      }
+      const expenseId = `operation-${ledgerId(command.operationId)}`
+      const createdAt = `${command.date}T12:00:00.000Z`
+      const raw = { groupId: command.groupId, description: command.description, date: command.date, total: command.total, payerId: command.payerId, allocations: command.allocations, category: command.category, createdAt, ...(command.recurringTemplateId ? { recurringTemplateId: command.recurringTemplateId } : {}) }
+      const expense = decodeExpense(command.groupId, expenseId, raw)
+      const result: ExpenseAddResult = { kind: 'expense.add', operationId: command.operationId, status: 'saved', expense }
+      transaction.set(firestore.doc(db, 'groups', command.groupId, 'expenses', expenseId), raw)
+      transaction.set(ledger, { operationId: command.operationId, kind: command.kind, result: { kind: result.kind, operationId: result.operationId, status: result.status, expenseId, expense: raw } })
+      return result
+    })
+  }
+  async function executeNotSupported(command: Exclude<CommandEnvelope, { kind: 'expense.add' }>): Promise<CommandResult> {
+    const { db, firestore } = await client()
+    const userId = await authenticatedUserId()
+    const ledger = firestore.doc(db, 'users', userId, 'operations', ledgerId(command.operationId))
+    return firestore.runTransaction(db, async (transaction) => {
+      const previous = await transaction.get(ledger)
+      if (previous.exists()) return resultFromLedger(command, previous.data())
+      const result: CommandResult = { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'This Firebase mutation is not implemented yet.' }
+      transaction.set(ledger, { operationId: command.operationId, kind: command.kind, result })
+      return result
+    })
   }
 
   return {
     mode: 'firebase',
-    app: { getCurrentUser: currentUser },
+    app: { getCurrentUser: currentUser, updateProfile: execute },
     groups: {
-      async list(): Promise<readonly Group[]> {
+      async list() {
         const { db, firestore } = await client()
-        const user = await currentUser()
-        const projection = await firestore.getDocs(firestore.collection(db, 'users', user.id, 'groups'))
+        const userId = await authenticatedUserId()
+        const projection = await firestore.getDocs(firestore.collection(db, 'users', userId, 'groups'))
         const groups = await Promise.all(projection.docs.map(async (membership) => {
-          const groupId = stringValue(membership.data().groupId, membership.id)
+          const groupId = decodeGroupProjection(membership.id, membership.data())
           const group = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
-          return group.exists() ? groupFromData(group.id, group.data()) : undefined
+          return group.exists() ? decodeGroup(group.id, group.data()) : undefined
         }))
-        return groups.filter((group): group is Group => group !== undefined).sort((left, right) => left.name.localeCompare(right.name))
+        return groups.filter((group): group is NonNullable<typeof group> => group !== undefined).sort((left, right) => left.name.localeCompare(right.name))
       },
-      async getById(groupId): Promise<Group | undefined> {
+      async getById(groupId) {
         const { db, firestore } = await client()
         const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
-        return snapshot.exists() ? groupFromData(snapshot.id, snapshot.data()) : undefined
+        return snapshot.exists() ? decodeGroup(snapshot.id, snapshot.data()) : undefined
       },
-      async listMembers(groupId): Promise<readonly Member[]> {
+      async listMembers(groupId) {
         const { db, firestore } = await client()
-        const user = await currentUser()
+        const userId = await authenticatedUserId()
         const snapshot = await firestore.getDocs(firestore.collection(db, 'groups', groupId, 'members'))
-        return snapshot.docs.map((document) => memberFromData(document.id, document.data(), document.id === user.id))
-          .sort((left, right) => left.displayName.localeCompare(right.displayName))
+        return snapshot.docs.map((document) => decodeMember(document.id, document.data(), document.id === userId)).sort((left, right) => left.displayName.localeCompare(right.displayName))
       },
       async getBalances(groupId) { return simplifyDebts(computeBalances(await listExpenses(groupId))) },
-      async getTotals(groupId) { return totals(groupId) },
-      async getCharts(groupId): Promise<GroupCharts> {
-        const rows = await listExpenses(groupId)
-        return {
-          categorySpending: sumRows(rows, (row) => row.category).map(([category, minorAmount]) => ({ category, minorAmount })),
-          dailySpending: sumRows(rows, (row) => row.date).map(([date, minorAmount]) => ({ date, minorAmount })),
-        }
-      },
-      async listRecurring(groupId): Promise<readonly RecurringExpense[]> {
+      async getTotals(groupId) { return totalsFor(await listExpenses(groupId), (await currentUser()).id) },
+      async getCharts(groupId): Promise<GroupCharts> { return chartsFor(await listExpenses(groupId)) },
+      async listRecurring(groupId) {
         const { db, firestore } = await client()
         const snapshot = await firestore.getDocs(firestore.collection(db, 'groups', groupId, 'recurring'))
-        return snapshot.docs.map((document) => recurringFromData(groupId, document.id, document.data()))
+        return snapshot.docs.map((document) => decodeRecurringExpense(groupId, document.id, document.data()))
       },
+      setDefaultSplit: execute,
     },
     expenses: {
       listForGroup: listExpenses,
-      async add(draft: ExpenseDraft): Promise<ExpenseRow> {
+      async add(command) { const result = await execute(command); if (result.kind !== 'expense.add') throw new Error('Unexpected expense result'); return result },
+      edit: execute,
+      delete: execute,
+      async listComments(groupId, expenseId) {
         const { db, firestore } = await client()
-        const document = await firestore.addDoc(firestore.collection(db, 'groups', draft.groupId, 'expenses'), {
-          ...draft,
-          total: { ...draft.total },
-          allocations: draft.allocations.map((allocation) => ({ participantId: allocation.participantId, money: { ...allocation.money } })),
-          createdAt: `${draft.date}T12:00:00.000Z`,
-        })
-        return expenseFromData(draft.groupId, document.id, { ...draft, createdAt: `${draft.date}T12:00:00.000Z` })
-      },
-      async listComments(groupId, expenseId): Promise<readonly ExpenseComment[]> {
-        const { db, firestore } = await client()
-        const snapshot = await firestore.getDocs(firestore.query(
-          firestore.collection(db, 'groups', groupId, 'comments'),
-          firestore.where('expenseId', '==', expenseId),
-          firestore.orderBy('createdAt', 'asc'),
-        ))
-        return snapshot.docs.map((document) => commentFromData(expenseId, document.id, document.data()))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'comments'), firestore.where('expenseId', '==', expenseId), firestore.orderBy('createdAt', 'asc')))
+        return snapshot.docs.map((document) => decodeComment(expenseId, document.id, document.data()))
       },
     },
+    comments: { add: execute },
+    settlements: { record: execute },
     activity: {
-      async listForGroup(groupId): Promise<readonly ActivityItem[]> {
+      async listForGroup(groupId) {
         const { db, firestore } = await client()
-        const snapshot = await firestore.getDocs(firestore.query(
-          firestore.collection(db, 'groups', groupId, 'activity'),
-          firestore.orderBy('createdAt', 'asc'),
-        ))
-        return snapshot.docs.map((document) => activityFromData(groupId, document.id, document.data()))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'asc')))
+        return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
       },
     },
+    commands: { execute },
   }
 }
 
 async function connect(configuration: FirebaseConfiguration): Promise<FirebaseClient> {
-  const [appModule, authModule, firestore] = await Promise.all([
-    import('firebase/app'),
-    import('firebase/auth'),
-    import('firebase/firestore'),
-  ])
-  const app = appModule.getApps().find((candidate) => candidate.options.projectId === configuration.projectId)
-    ?? appModule.initializeApp(configuration, `split-unwise-${configuration.projectId}`)
+  const [appModule, authModule, firestore] = await Promise.all([import('firebase/app'), import('firebase/auth'), import('firebase/firestore')])
+  const app = appModule.getApps().find((candidate) => candidate.options.projectId === configuration.projectId) ?? appModule.initializeApp(configuration, `split-unwise-${configuration.projectId}`)
   return { auth: authModule.getAuth(app), db: firestore.getFirestore(app), firestore }
 }
 
-function groupFromData(id: string, data: Record<string, unknown>): Group {
-  return {
-    id,
-    name: stringValue(data.name, id),
-    currency: stringValue(data.currency, 'USD') as Group['currency'],
-    ...(typeof data.coverImageUrl === 'string' ? { coverImageUrl: data.coverImageUrl } : {}),
-    memberIds: stringArray(data.memberIds),
-    syncState: 'fresh',
-  }
+function resultFromLedger(command: CommandEnvelope, value: unknown): CommandResult {
+  const data = record(value, 'operation ledger')
+  const result = record(data.result, 'operation ledger result')
+  if (result.operationId !== command.operationId || result.kind !== command.kind) throw new Error('Operation ledger result does not match request')
+  if (result.status === 'not-supported') return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: requiredString(result.reason, 'operation ledger reason') }
+  if (result.status !== 'saved') throw new Error('Operation ledger result has invalid status')
+  if (command.kind === 'expense.add') return { kind: command.kind, operationId: command.operationId, status: 'saved', expense: decodeExpense(command.groupId, requiredString(result.expenseId, 'operation ledger expenseId'), result.expense) }
+  return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: requiredString(result.resourceId, 'operation ledger resourceId') } as CommandResult
 }
-
-function memberFromData(id: string, data: Record<string, unknown>, isCurrentUser: boolean): Member {
-  const displayName = stringValue(data.displayName, id)
-  return { id, displayName, initials: stringValue(data.initials, initials(displayName)), ...(typeof data.avatarUrl === 'string' ? { avatarUrl: data.avatarUrl } : {}), isCurrentUser }
-}
-
-function expenseFromData(groupId: string, id: string, data: Record<string, unknown>): ExpenseRow {
-  const total = moneyFromData(data.total)
-  return {
-    id, groupId, description: stringValue(data.description, 'Untitled expense'), date: stringValue(data.date, '1970-01-01'), total,
-    payerId: stringValue(data.payerId, ''), allocations: allocationArray(data.allocations), category: stringValue(data.category, 'Other'),
-    createdAt: stringValue(data.createdAt, `${stringValue(data.date, '1970-01-01')}T00:00:00.000Z`), syncState: 'fresh',
-    ...(typeof data.recurringTemplateId === 'string' ? { recurringTemplateId: data.recurringTemplateId } : {}),
-  }
-}
-
-function commentFromData(expenseId: string, id: string, data: Record<string, unknown>): ExpenseComment {
-  return { id, expenseId, authorId: stringValue(data.authorId, ''), body: stringValue(data.body, ''), createdAt: stringValue(data.createdAt, ''), syncState: 'fresh' }
-}
-
-function activityFromData(groupId: string, id: string, data: Record<string, unknown>): ActivityItem {
-  const type = data.type === 'comment-added' || data.type === 'expense-updated' ? data.type : 'expense-created'
-  return { id, groupId, ...(typeof data.expenseId === 'string' ? { expenseId: data.expenseId } : {}), actorId: stringValue(data.actorId, ''), type, createdAt: stringValue(data.createdAt, ''), summary: stringValue(data.summary, ''), syncState: 'fresh' }
-}
-
-function recurringFromData(groupId: string, id: string, data: Record<string, unknown>): RecurringExpense {
-  const recurrence = data.recurrence as { frequency?: RecurringExpense['recurrence']['frequency']; anchor?: { month?: number; day?: number } }
-  return {
-    id, groupId, description: stringValue(data.description, 'Untitled recurring expense'), total: moneyFromData(data.total), payerId: stringValue(data.payerId, ''),
-    recurrence: { frequency: recurrence.frequency ?? 'monthly', anchor: { month: recurrence.anchor?.month ?? 1, day: recurrence.anchor?.day ?? 1 } },
-    nextDate: stringValue(data.nextDate, '1970-01-01'), syncState: 'fresh',
-  }
-}
-
-function moneyFromData(value: unknown): ExpenseRow['total'] {
-  const data = value as { currency?: unknown; minorAmount?: unknown }
-  return { currency: stringValue(data?.currency, 'USD') as ExpenseRow['total']['currency'], minorAmount: numberValue(data?.minorAmount, 0) }
-}
-
-function allocationArray(value: unknown): ExpenseRow['allocations'] {
-  if (!Array.isArray(value)) return []
-  return value.map((item) => {
-    const data = item as { participantId?: unknown; money?: unknown }
-    return { participantId: stringValue(data.participantId, ''), money: moneyFromData(data.money) }
+function totalsFor(rows: readonly ExpenseRow[], currentUserId: string): readonly CurrencyTotals[] {
+  return [...new Set(rows.map((row) => row.total.currency))].sort().map((currency) => {
+    const matching = rows.filter((row) => row.total.currency === currency)
+    const currentUserPaid = matching.filter((row) => row.payerId === currentUserId).reduce((total, row) => total + row.total.minorAmount, 0)
+    const currentUserShare = matching.reduce((total, row) => total + (row.allocations.find(({ participantId }) => participantId === currentUserId)?.money.minorAmount ?? 0), 0)
+    return { currency, totalPaid: matching.reduce((total, row) => total + row.total.minorAmount, 0), currentUserPaid, currentUserShare, currentUserNet: currentUserPaid - currentUserShare }
   })
 }
-
-function sumRows(rows: readonly ExpenseRow[], key: (row: ExpenseRow) => string): readonly (readonly [string, number])[] {
-  const totals = new Map<string, number>()
-  rows.forEach((row) => totals.set(key(row), (totals.get(key(row)) ?? 0) + row.total.minorAmount))
-  return [...totals].sort(([left], [right]) => left.localeCompare(right))
+function chartsFor(rows: readonly ExpenseRow[]): GroupCharts {
+  const sum = (key: (row: ExpenseRow) => string, sortByAmount: boolean) => {
+    const totals = new Map<string, number>()
+    rows.forEach((row) => { const id = `${row.total.currency}\u0000${key(row)}`; totals.set(id, (totals.get(id) ?? 0) + row.total.minorAmount) })
+    return [...totals].map(([id, amount]) => { const [currency, name] = id.split('\u0000'); return [currency as ExpenseRow['total']['currency'], name, amount] as const }).sort(([a, b, c], [d, e, f]) => a.localeCompare(d) || (sortByAmount ? f - c : 0) || b.localeCompare(e))
+  }
+  return { categorySpending: sum((row) => row.category, true).map(([currency, category, minorAmount]) => ({ currency, category, minorAmount })), dailySpending: sum((row) => row.date, false).map(([currency, date, minorAmount]) => ({ currency, date, minorAmount })) }
 }
-
-function stringValue(value: unknown, fallback: string): string { return typeof value === 'string' ? value : fallback }
-function numberValue(value: unknown, fallback: number): number { return typeof value === 'number' && Number.isSafeInteger(value) ? value : fallback }
-function stringArray(value: unknown): readonly string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [] }
-function initials(displayName: string): string { return displayName.split(/\s+/).filter(Boolean).map((part) => part[0]).join('').slice(0, 2).toUpperCase() }
+function ledgerId(operationId: string): string { return encodeURIComponent(operationId) }
+function record(value: unknown, path: string): Record<string, unknown> { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${path} must be an object`); return value as Record<string, unknown> }
+function requiredString(value: unknown, path: string): string { if (typeof value !== 'string' || !value) throw new Error(`${path} must be a string`); return value }
