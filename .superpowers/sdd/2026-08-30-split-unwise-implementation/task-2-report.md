@@ -123,3 +123,30 @@ The pre-existing untracked `public/assets/images/*` files were not changed and a
 - Current-currency validation intentionally rejects non-List-One codes and non-uppercase input; input normalization, if desired for a user-facing form, belongs before this strict domain boundary.
 - The recurrence anchor is explicit template metadata, not inferred from a clamped occurrence, so repeated materialization does not drift.
 - The ISO table is based on SIX List One, the official ISO 4217 maintenance agency publication consulted on 2026-08-30. It should be refreshed when SIX publishes a code-list amendment.
+
+---
+
+## Fix Round 2: Prototype-Safe Currency Validation
+
+### Change
+
+- Replaced the prototype-inclusive `currency in CURRENCY_EXPONENTS` check with `Object.hasOwn(CURRENCY_EXPONENTS, currency)`. The shared `assertCurrencyCode` validator now rejects inherited names such as `toString`, preserving the split and balance boundary invariant that imports this validator.
+
+### Regression RED / GREEN Evidence
+
+- RED: `pnpm vitest run src/domain/__tests__/money.spec.ts` — 4 tests with 1 failure: `currencyExponent('toString')` did not throw `Unsupported ISO 4217 currency`.
+- GREEN: after the own-property validation change, the same command passed: 1 file, 4 tests.
+
+### Fix-Round Validation
+
+- `pnpm vitest run src/domain/__tests__` — 5 files passed, 24 tests passed.
+- `pnpm test` — 7 files passed, 33 tests passed. Installed Ionic packages emitted their existing missing-source-map notices; no tests failed.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed. Vite emitted its existing chunk-size warning for the 1.14 MB JavaScript chunk.
+- `git diff --check` — passed.
+
+### Fix-Round Files Changed
+
+- Modified `src/domain/money.ts`
+- Modified `src/domain/__tests__/money.spec.ts`
+- Appended this report

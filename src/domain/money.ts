@@ -31,7 +31,7 @@ export const CURRENCY_EXPONENTS = {
 export type CurrencyCode = keyof typeof CURRENCY_EXPONENTS
 
 export function assertCurrencyCode(currency: string): asserts currency is CurrencyCode {
-  if (!(currency in CURRENCY_EXPONENTS)) throw new Error(`Unsupported ISO 4217 currency: ${currency}`)
+  if (!Object.hasOwn(CURRENCY_EXPONENTS, currency)) throw new Error(`Unsupported ISO 4217 currency: ${currency}`)
 }
 
 export function currencyExponent(currency: string): 0 | 2 | 3 | 4 {

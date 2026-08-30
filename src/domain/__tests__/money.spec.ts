@@ -13,6 +13,7 @@ describe('money conversion', () => {
     expect(currencyExponent('UYW')).toBe(4)
     expect(() => currencyExponent('usd')).toThrow('Unsupported ISO 4217 currency')
     expect(() => currencyExponent('ZZZ')).toThrow('Unsupported ISO 4217 currency')
+    expect(() => currencyExponent('toString')).toThrow('Unsupported ISO 4217 currency')
   })
 
   it('rounds decimal input half away from zero in the currency minor unit', () => {
