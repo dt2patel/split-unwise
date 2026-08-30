@@ -52,4 +52,19 @@ describe('TabsShell', () => {
     expect(wrapper.getComponent(IonFabButton).props('routerLink')).toBe('/tabs/activity/expenses/new')
     expect(wrapper.find('ion-tabs > ion-tab-bar').exists()).toBe(true)
   })
+
+  it('hides global navigation in group detail and restores it at the Groups root', async () => {
+    const router = createAppRouter()
+    await router.push('/tabs/groups/lake-house-weekend')
+    await router.isReady()
+    const wrapper = mount(TabsShell, { global: { plugins: [router], stubs: ionicStubs } })
+
+    expect(wrapper.find('[aria-label="Primary navigation"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="add-expense"]').exists()).toBe(false)
+
+    await router.push('/tabs/groups')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[aria-label="Primary navigation"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="add-expense"]').attributes('href')).toBe('/tabs/groups/expenses/new')
+  })
 })

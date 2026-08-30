@@ -6,6 +6,17 @@ import { homeOutline, peopleOutline, personCircleOutline, timeOutline } from 'io
 import AppFab from '../../components/AppFab.vue'
 
 const route = useRoute()
+const groupScopedRouteNames = new Set([
+  'group-detail',
+  'group-expense-create',
+  'group-settle-up',
+  'group-balances',
+  'group-totals',
+  'group-charts',
+  'group-export',
+  'group-settings',
+])
+const hideGlobalChrome = computed(() => groupScopedRouteNames.has(String(route?.name ?? '')))
 const expenseRoute = computed(() => {
   const activeTab = /^\/tabs\/(home|groups|activity|account)(?:\/|$)/.exec(route?.path ?? '')?.[1] ?? 'home'
   return `/tabs/${activeTab}/expenses/new`
@@ -15,9 +26,9 @@ const expenseRoute = computed(() => {
 <template>
   <ion-tabs>
     <ion-router-outlet />
-    <app-fab :to="expenseRoute" />
+    <app-fab v-if="!hideGlobalChrome" :to="expenseRoute" />
 
-    <ion-tab-bar slot="bottom" aria-label="Primary navigation">
+    <ion-tab-bar v-if="!hideGlobalChrome" slot="bottom" aria-label="Primary navigation">
       <ion-tab-button tab="home" href="/tabs/home">
         <ion-icon :icon="homeOutline" aria-hidden="true" />
         <ion-label>Home</ion-label>

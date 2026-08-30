@@ -15,6 +15,7 @@
     "@ionic/vue-router": "9.0.1",
     "firebase": "^12.18.0",
     "ionicons": "8.1.0",
+    "pinia": "^3.0.4",
     "vue": "3.5.42",
     "vue-router": "4.6.4"
   },
