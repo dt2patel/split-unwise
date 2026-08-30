@@ -67,4 +67,14 @@ describe('TabsShell', () => {
     expect(wrapper.find('[aria-label="Primary navigation"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="add-expense"]').attributes('href')).toBe('/tabs/groups/expenses/new')
   })
+
+  it('uses route metadata to hide every piece of global composer chrome', async () => {
+    const router = createAppRouter()
+    await router.push('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    await router.isReady()
+    const wrapper = mount(TabsShell, { global: { plugins: [router], stubs: ionicStubs } })
+
+    expect(wrapper.find('[aria-label="Primary navigation"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="add-expense"]').exists()).toBe(false)
+  })
 })

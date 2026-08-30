@@ -16,7 +16,7 @@ vi.mock('../../../data', async (importOriginal) => {
       return (repositoryHarness.current as AppRepository)[property as keyof AppRepository]
     },
   }) as AppRepository
-  return { ...actual, createRepository: () => repository }
+  return { ...actual, getAppSession: () => ({ repository, queue: { snapshot: () => [], subscribe: () => () => undefined } }) }
 })
 
 interface GroupSnapshot {
@@ -181,14 +181,21 @@ function expense(
     description: id,
     date: '2026-08-30',
     total: { currency, minorAmount: total },
-    payerId,
+    payments: [{ participantId: payerId, money: { currency, minorAmount: total } }],
     allocations: [
       { participantId: maya.id, money: { currency, minorAmount: mayaShare } },
       { participantId: jordan.id, money: { currency, minorAmount: jordanShare } },
     ],
     category: 'Test',
     createdAt: '2026-08-30T12:00:00.000Z',
+    updatedAt: '2026-08-30T12:00:00.000Z',
+    revision: 1,
     syncState: 'fresh',
+    splitMethod: { type: 'exact', allocations: [
+      { participantId: maya.id, money: { currency, minorAmount: mayaShare } },
+      { participantId: jordan.id, money: { currency, minorAmount: jordanShare } },
+    ] },
+    attachmentRefs: [],
   }
 }
 

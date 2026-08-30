@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { CommandConflictError } from '../commandQueue'
 import { createDemoRepository } from '../demoRepository'
+import type { ExpenseDraft } from '../repositories'
 
 describe('demo repository', () => {
   it('returns the deterministic Lake House group journal and derived views', async () => {
@@ -58,30 +60,12 @@ describe('demo repository', () => {
 
     const result = await repository.expenses.add({
       kind: 'expense.add', operationId: 'add-firewood',
-      groupId: 'lake-house-weekend',
-      description: 'Firewood',
-      date: '2026-08-30',
-      total: { currency: 'USD', minorAmount: 2400 },
-      payerId: 'maya-p',
-      allocations: [
-        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 600 } },
-        { participantId: 'jordan-k', money: { currency: 'USD', minorAmount: 600 } },
-        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 600 } },
-        { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 600 } },
-      ],
-      category: 'Supplies',
+      ...firewoodDraft(),
     })
 
     expect(result).toMatchObject({ status: 'saved', expense: { id: 'demo-expense-006', syncState: 'fresh' } })
     await expect(repository.expenses.add({
-      kind: 'expense.add', operationId: 'add-firewood', groupId: 'lake-house-weekend', description: 'Changed duplicate', date: '2026-08-30',
-      total: { currency: 'USD', minorAmount: 2400 }, payerId: 'maya-p', category: 'Supplies',
-      allocations: [
-        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 600 } },
-        { participantId: 'jordan-k', money: { currency: 'USD', minorAmount: 600 } },
-        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 600 } },
-        { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 600 } },
-      ],
+      kind: 'expense.add', operationId: 'add-firewood', ...firewoodDraft(), description: 'Changed duplicate',
     })).rejects.toThrow('different request context')
     await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.toHaveLength(6)
     await expect(repository.activity.listForGroup('lake-house-weekend')).resolves.toContainEqual(
@@ -89,17 +73,66 @@ describe('demo repository', () => {
     )
   })
 
+  it('hydrates an edit, enforces the expected revision, and returns the updated expense', async () => {
+    const repository = createDemoRepository()
+    const original = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    expect(original).toMatchObject({ revision: 1, updatedAt: '2026-08-30T10:00:00.000Z', splitMethod: { type: 'equal' } })
+
+    const result = await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-groceries', groupId: 'lake-house-weekend', expenseId: 'groceries', expectedRevision: 1,
+      draft: { ...firewoodDraft(), description: 'Groceries and ice' },
+    })
+
+    expect(result).toMatchObject({ status: 'saved', expense: { id: 'groceries', revision: 2, description: 'Groceries and ice' } })
+    await expect(repository.expenses.getById('lake-house-weekend', 'groceries')).resolves.toMatchObject({ revision: 2, description: 'Groceries and ice' })
+    await expect(repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'stale-edit', groupId: 'lake-house-weekend', expenseId: 'groceries', expectedRevision: 1,
+      draft: firewoodDraft(),
+    })).rejects.toBeInstanceOf(CommandConflictError)
+  })
+
+  it('clears optional note, recurrence, and occurrence-scope fields when an edit removes them', async () => {
+    const repository = createDemoRepository()
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'add-recurring-firewood', ...firewoodDraft(),
+      notes: 'Bring a tarp',
+      recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' },
+      occurrenceEditScope: 'future',
+    })
+    if (added.status !== 'saved') throw new Error('Expected demo add to save')
+
+    const edited = await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'clear-recurring-firewood', groupId: 'lake-house-weekend',
+      expenseId: added.expense.id, expectedRevision: 1, draft: firewoodDraft(),
+    })
+
+    expect(edited).toMatchObject({ status: 'saved', expense: { revision: 2 } })
+    if (edited.status !== 'saved') throw new Error('Expected demo edit to save')
+    expect(edited.expense.notes).toBeUndefined()
+    expect(edited.expense.recurrence).toBeUndefined()
+    expect(edited.expense.occurrenceEditScope).toBeUndefined()
+  })
+
+  it('returns a durable tombstone when deleting an expense', async () => {
+    const repository = createDemoRepository()
+    await expect(repository.expenses.delete({ kind: 'expense.delete', operationId: 'delete-gas', groupId: 'lake-house-weekend', expenseId: 'gas-for-the-boat' })).resolves.toMatchObject({
+      status: 'saved', tombstone: { id: 'gas-for-the-boat', groupId: 'lake-house-weekend', revision: 2 },
+    })
+    await expect(repository.expenses.getById('lake-house-weekend', 'gas-for-the-boat')).resolves.toBeUndefined()
+  })
+
   it('keeps totals and chart values partitioned when an expense uses another currency', async () => {
     const repository = createDemoRepository()
     await repository.expenses.add({
       kind: 'expense.add', operationId: 'add-eur-expense', groupId: 'lake-house-weekend', description: 'Euro ferry', date: '2026-08-30',
-      total: { currency: 'EUR', minorAmount: 800 }, payerId: 'maya-p', category: 'Transport',
+      total: { currency: 'EUR', minorAmount: 800 }, payments: [{ participantId: 'maya-p', money: { currency: 'EUR', minorAmount: 800 } }], category: 'Transport',
       allocations: [
         { participantId: 'maya-p', money: { currency: 'EUR', minorAmount: 200 } },
         { participantId: 'jordan-k', money: { currency: 'EUR', minorAmount: 200 } },
         { participantId: 'alex-r', money: { currency: 'EUR', minorAmount: 200 } },
         { participantId: 'taylor-s', money: { currency: 'EUR', minorAmount: 200 } },
       ],
+      splitMethod: { type: 'equal', participantIds: ['maya-p', 'jordan-k', 'alex-r', 'taylor-s'] }, attachmentRefs: [],
     })
 
     await expect(repository.groups.getTotals('lake-house-weekend')).resolves.toEqual([
@@ -111,3 +144,13 @@ describe('demo repository', () => {
     })
   })
 })
+
+function firewoodDraft(): ExpenseDraft {
+  const participantIds = ['maya-p', 'jordan-k', 'alex-r', 'taylor-s'] as const
+  return {
+    groupId: 'lake-house-weekend', description: 'Firewood', date: '2026-08-30', total: { currency: 'USD', minorAmount: 2400 },
+    payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2400 } }],
+    allocations: participantIds.map((participantId) => ({ participantId, money: { currency: 'USD' as const, minorAmount: 600 } })),
+    category: 'Supplies', splitMethod: { type: 'equal', participantIds }, attachmentRefs: [],
+  }
+}

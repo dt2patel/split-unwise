@@ -12,7 +12,8 @@ export function computeAllocations(total: Money, method: SplitMethod): readonly 
       return computeExactAllocations(total, method.allocations)
     case 'percentage': {
       assertParticipantIds(method.participantIds)
-      const ratios = method.participantIds.map((participantId) => method.percentages[participantId] ?? 0)
+      assertExactParticipantKeys(method.participantIds, method.percentages, 'Percentage')
+      const ratios = method.participantIds.map((participantId) => method.percentages[participantId])
       const normalized = normalizeRatios(ratios)
       if (normalized.total !== 100n * normalized.scale) {
         throw new Error('Percentages must total 100')
@@ -20,9 +21,12 @@ export function computeAllocations(total: Money, method: SplitMethod): readonly 
       return allocateNormalizedRatios(total, method.participantIds, normalized)
     }
     case 'shares':
-      return allocateRatios(total, method.participantIds, method.participantIds.map((participantId) => method.shares[participantId] ?? 0))
+      assertExactParticipantKeys(method.participantIds, method.shares, 'Share')
+      return allocateRatios(total, method.participantIds, method.participantIds.map((participantId) => method.shares[participantId]))
     case 'adjustment': {
-      const adjustments = method.participantIds.map((participantId) => method.adjustments[participantId] ?? 0)
+      assertParticipantIds(method.participantIds)
+      assertExactParticipantKeys(method.participantIds, method.adjustments, 'Adjustment')
+      const adjustments = method.participantIds.map((participantId) => method.adjustments[participantId])
       adjustments.forEach(assertMinorAmount)
       const adjustmentTotal = adjustments.reduce(checkedAdd, 0)
       if (adjustmentTotal > total.minorAmount) throw new Error('Adjustments exceed the expense total')
@@ -146,6 +150,18 @@ function parseDecimalRatio(ratio: number): { readonly coefficient: bigint; reado
 function assertParticipantIds(participantIds: readonly ParticipantId[]): void {
   if (participantIds.length === 0) throw new Error('A split requires at least one participant')
   if (new Set(participantIds).size !== participantIds.length) throw new Error('A split cannot repeat a participant')
+}
+
+function assertExactParticipantKeys(
+  participantIds: readonly ParticipantId[],
+  values: Readonly<Record<ParticipantId, number>>,
+  label: 'Adjustment' | 'Percentage' | 'Share',
+): void {
+  const selected = [...participantIds].sort()
+  const keyed = Object.keys(values).sort()
+  if (selected.length !== keyed.length || selected.some((participantId, index) => participantId !== keyed[index])) {
+    throw new Error(`${label} keys must exactly match selected participants`)
+  }
 }
 
 function assertMoney(money: Money): void {

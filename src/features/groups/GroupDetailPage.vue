@@ -53,6 +53,8 @@ function onSegmentChange(event: CustomEvent<{ value?: string | number }>): void 
 function onScroll(event: CustomEvent<{ scrollTop?: number }>): void {
   isCollapsed.value = (event.detail.scrollTop ?? 0) > 72
 }
+function retryExpense(operationId: string | undefined): void { if (operationId) void store.retryOperation(operationId).result().catch(() => undefined) }
+function discardExpense(operationId: string | undefined): void { if (operationId) store.discardFailedOperation(operationId) }
 </script>
 
 <template>
@@ -97,7 +99,10 @@ function onScroll(event: CustomEvent<{ scrollTop?: number }>): void {
                 :balance-label="store.positionFor(expense).label"
                 :payer-name="store.payerName(expense)"
                 :participant-count="expense.allocations.length"
+                :retryable="Boolean(expense.clientOperationId)"
                 journal
+                @retry="retryExpense(expense.clientOperationId)"
+                @discard="discardExpense(expense.clientOperationId)"
               />
             </div>
             <ol v-else key="activity" class="activity-list" data-testid="group-activity">
@@ -115,7 +120,7 @@ function onScroll(event: CustomEvent<{ scrollTop?: number }>): void {
         v-if="activeGroup"
         slot="fixed"
         class="group-detail__fab"
-        :to="`/tabs/groups/${groupId}/expenses/new`"
+        :to="`/tabs/groups/expenses/new?groupId=${encodeURIComponent(groupId)}`"
         label="Add expense"
       />
     </ion-content>

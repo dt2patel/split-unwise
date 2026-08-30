@@ -1,17 +1,19 @@
 import { computeBalances, simplifyDebts } from '../domain/balances'
+import { CommandConflictError } from './commandQueue'
 import { LAKE_HOUSE_GROUP_ID, lakeHouseActivity, lakeHouseComments, lakeHouseCurrentUser, lakeHouseExpenses, lakeHouseGroup, lakeHouseMembers, lakeHouseRecurring } from '../demo/lakeHouse'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { assertReplayIdentity, createOperationIdentity, type OperationIdentity } from './operationIdentity'
-import type { ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseAddCommand, ExpenseAddResult, ExpenseComment, ExpenseRow, Member } from './repositories'
+import type { ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseAddCommand, ExpenseAddResult, ExpenseComment, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseDraft, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Member } from './repositories'
 
 /** A fresh deterministic in-memory repository; its operation ledger prevents duplicate same-ID effects. */
-export function createDemoRepository(): AppRepository {
+export function createDemoRepository(options: { readonly now?: () => string } = {}): AppRepository {
   const expenses = lakeHouseExpenses.map(cloneExpense)
   const activity = lakeHouseActivity.map((item) => ({ ...item }))
   const comments = lakeHouseComments.map((comment) => ({ ...comment }))
   const operationLedger = new Map<string, { readonly identity: OperationIdentity; readonly result: CommandResult }>()
   let currentUser = { ...lakeHouseCurrentUser }
   let nextExpenseNumber = 6
+  const now = options.now ?? (() => '2026-08-30T12:00:00.000Z')
 
   const groupExpenses = (groupId: string): ExpenseRow[] => { assertLakeHouseGroup(groupId); return expenses.filter((expense) => expense.groupId === groupId).sort(byDateThenId) }
   const execute = async (command: CommandEnvelope): Promise<CommandResult> => {
@@ -30,10 +32,14 @@ export function createDemoRepository(): AppRepository {
     switch (command.kind) {
       case 'expense.add': {
         assertLakeHouseGroup(command.groupId)
+        validateDraft(command)
+        const createdAt = now()
         const expense: ExpenseRow = {
           id: `demo-expense-${String(nextExpenseNumber).padStart(3, '0')}`, groupId: command.groupId, description: command.description, date: command.date,
-          total: { ...command.total }, payerId: command.payerId, allocations: command.allocations.map(cloneAllocation), category: command.category,
-          createdAt: `${command.date}T12:00:00.000Z`, syncState: 'fresh', ...(command.recurringTemplateId ? { recurringTemplateId: command.recurringTemplateId } : {}),
+          total: { ...command.total }, payments: command.payments.map(cloneAllocation), allocations: command.allocations.map(cloneAllocation), category: command.category,
+          createdAt, updatedAt: createdAt, revision: 1, syncState: 'fresh', splitMethod: clone(command.splitMethod), attachmentRefs: [...command.attachmentRefs],
+          ...(command.notes ? { notes: command.notes } : {}), ...(command.recurrence ? { recurrence: clone(command.recurrence) } : {}),
+          ...(command.occurrenceEditScope ? { occurrenceEditScope: command.occurrenceEditScope } : {}),
         }
         nextExpenseNumber += 1
         expenses.push(expense)
@@ -42,20 +48,27 @@ export function createDemoRepository(): AppRepository {
       }
       case 'expense.edit': {
         assertLakeHouseGroup(command.groupId)
+        validateDraft(command.draft)
         const index = expenses.findIndex((expense) => expense.id === command.expenseId && expense.groupId === command.groupId)
         if (index < 0) throw new Error(`Unknown demo expense: ${command.expenseId}`)
         const previous = expenses[index]
-        const updated: ExpenseRow = { ...previous, ...command.draft, id: previous.id, groupId: previous.groupId, createdAt: previous.createdAt, syncState: 'fresh', total: { ...command.draft.total }, allocations: command.draft.allocations.map(cloneAllocation) }
+        if (command.expectedRevision !== previous.revision) throw new CommandConflictError('The expense changed remotely.', { local: clone(command.draft), remote: cloneExpense(previous) })
+        const { notes: _previousNotes, recurrence: _previousRecurrence, occurrenceEditScope: _previousOccurrenceEditScope, ...retained } = previous
+        const updated: ExpenseRow = {
+          ...retained, ...command.draft, id: previous.id, groupId: previous.groupId, createdAt: previous.createdAt, updatedAt: now(), revision: previous.revision + 1, syncState: 'fresh',
+          total: { ...command.draft.total }, payments: command.draft.payments.map(cloneAllocation), allocations: command.draft.allocations.map(cloneAllocation),
+          splitMethod: clone(command.draft.splitMethod), attachmentRefs: [...command.draft.attachmentRefs],
+        }
         expenses[index] = updated
         activity.push(activityFor(command.operationId, updated, 'expense-updated', `${currentUser.displayName} updated ${updated.description}`))
-        return saved(command, updated.id)
+        return { kind: command.kind, operationId: command.operationId, status: 'saved', expense: cloneExpense(updated) }
       }
       case 'expense.delete': {
         assertLakeHouseGroup(command.groupId)
         const index = expenses.findIndex((expense) => expense.id === command.expenseId && expense.groupId === command.groupId)
         if (index < 0) throw new Error(`Unknown demo expense: ${command.expenseId}`)
-        expenses.splice(index, 1)
-        return saved(command, command.expenseId)
+        const [previous] = expenses.splice(index, 1)
+        return { kind: command.kind, operationId: command.operationId, status: 'saved', tombstone: { id: previous.id, groupId: previous.groupId, revision: previous.revision + 1, deletedAt: now() } }
       }
       case 'comment.add': {
         assertLakeHouseGroup(command.groupId)
@@ -92,9 +105,10 @@ export function createDemoRepository(): AppRepository {
     },
     expenses: {
       async listForGroup(groupId) { return groupExpenses(groupId).map(cloneExpense) },
+      async getById(groupId, expenseId) { assertLakeHouseGroup(groupId); const expense = expenses.find((item) => item.groupId === groupId && item.id === expenseId); return expense ? cloneExpense(expense) : undefined },
       async add(command): Promise<ExpenseAddResult> { const result = await execute(command); if (result.kind !== 'expense.add') throw new Error('Unexpected expense result'); return result },
-      edit: execute,
-      delete: execute,
+      async edit(command): Promise<ExpenseEditResult> { const result = await execute(command); if (result.kind !== 'expense.edit') throw new Error('Unexpected expense edit result'); return result },
+      async delete(command): Promise<ExpenseDeleteResult> { const result = await execute(command); if (result.kind !== 'expense.delete') throw new Error('Unexpected expense delete result'); return result },
       async listComments(groupId, expenseId) { assertLakeHouseGroup(groupId); return comments.filter((comment) => comment.expenseId === expenseId).map((comment) => ({ ...comment })) },
     },
     comments: { add: execute },
@@ -104,11 +118,9 @@ export function createDemoRepository(): AppRepository {
   }
 }
 
-function saved(command: Exclude<CommandEnvelope, ExpenseAddCommand>, resourceId: string): CommandResult {
+function saved(command: Exclude<CommandEnvelope, ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand>, resourceId: string): CommandResult {
   switch (command.kind) {
     case 'comment.add': return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId }
-    case 'expense.delete': return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId }
-    case 'expense.edit': return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId }
     case 'group.default-split': return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId }
     case 'profile.update': return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId }
     case 'settlement.record': return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId }
@@ -117,7 +129,15 @@ function saved(command: Exclude<CommandEnvelope, ExpenseAddCommand>, resourceId:
 function activityFor(operationId: string, expense: ExpenseRow, type: 'expense-created' | 'expense-updated', summary: string): ActivityItem { return { id: `activity-${operationId}`, groupId: expense.groupId, expenseId: expense.id, actorId: 'maya-p', type, summary, createdAt: expense.createdAt, syncState: 'fresh' } }
 function assertLakeHouseGroup(groupId: string): void { if (groupId !== LAKE_HOUSE_GROUP_ID) throw new Error(`Unknown demo group: ${groupId}`) }
 function cloneAllocation(allocation: ExpenseRow['allocations'][number]): ExpenseRow['allocations'][number] { return { participantId: allocation.participantId, money: { ...allocation.money } } }
-function cloneExpense(expense: ExpenseRow): ExpenseRow { return { ...expense, total: { ...expense.total }, allocations: expense.allocations.map(cloneAllocation) } }
+function cloneExpense(expense: ExpenseRow): ExpenseRow { return clone(expense) }
 function byDateThenId(left: ExpenseRow, right: ExpenseRow): number { return left.date.localeCompare(right.date) || left.id.localeCompare(right.id) }
 function initials(displayName: string): string { return displayName.split(/\s+/).filter(Boolean).map((part) => part[0]).join('').slice(0, 2).toUpperCase() }
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
+
+function validateDraft(draft: ExpenseDraft): void {
+  const active = new Set(lakeHouseMembers.map(({ id }) => id))
+  const assertActive = (participantId: string, label: string) => { if (!active.has(participantId)) throw new Error(`${label} must be an active group member`) }
+  draft.payments.forEach(({ participantId }) => assertActive(participantId, 'Payer'))
+  draft.allocations.forEach(({ participantId }) => assertActive(participantId, 'Participant'))
+  computeBalances([{ id: 'draft', description: draft.description, date: draft.date, total: draft.total, payments: draft.payments, allocations: draft.allocations }])
+}

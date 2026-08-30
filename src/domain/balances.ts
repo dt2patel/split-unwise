@@ -10,19 +10,36 @@ export function computeBalances(expenses: readonly Expense[]): readonly Pairwise
 
   for (const expense of expenses) {
     validateExpense(expense)
-    for (const allocation of expense.allocations) {
-      if (allocation.participantId === expense.payerId || allocation.money.minorAmount === 0) continue
-      const [fromParticipantId, toParticipantId] = orderedPair(allocation.participantId, expense.payerId)
-      const direction = fromParticipantId === allocation.participantId ? 1 : -1
+    const nets = expenseNets(expense)
+    const debtors = [...nets]
+      .filter(([, net]) => net < 0n)
+      .map(([participantId, net]) => ({ participantId, remaining: -net }))
+      .sort((left, right) => compareStrings(left.participantId, right.participantId))
+    const creditors = [...nets]
+      .filter(([, net]) => net > 0n)
+      .map(([participantId, net]) => ({ participantId, remaining: net }))
+      .sort((left, right) => compareStrings(left.participantId, right.participantId))
+    let debtorIndex = 0
+    let creditorIndex = 0
+    while (debtorIndex < debtors.length && creditorIndex < creditors.length) {
+      const debtor = debtors[debtorIndex]
+      const creditor = creditors[creditorIndex]
+      const obligation = debtor.remaining < creditor.remaining ? debtor.remaining : creditor.remaining
+      const [fromParticipantId, toParticipantId] = orderedPair(debtor.participantId, creditor.participantId)
+      const direction = fromParticipantId === debtor.participantId ? 1n : -1n
       const key = `${expense.total.currency}\u0000${fromParticipantId}\u0000${toParticipantId}`
       const existing = balances.get(key)
-      const minorAmount = (existing?.minorAmount ?? 0n) + BigInt(direction) * BigInt(allocation.money.minorAmount)
+      const minorAmount = (existing?.minorAmount ?? 0n) + direction * obligation
       balances.set(key, {
         fromParticipantId,
         toParticipantId,
         currency: expense.total.currency,
         minorAmount,
       })
+      debtor.remaining -= obligation
+      creditor.remaining -= obligation
+      if (debtor.remaining === 0n) debtorIndex += 1
+      if (creditor.remaining === 0n) creditorIndex += 1
     }
   }
 
@@ -88,16 +105,38 @@ function validateExpense(expense: Expense): void {
   if (expense.total.minorAmount < 0 || !Number.isSafeInteger(expense.total.minorAmount)) {
     throw new Error('Expense total must be a non-negative safe integer')
   }
-  let allocationTotal = 0n
-  for (const allocation of expense.allocations) {
-    assertCurrencyCode(allocation.money.currency)
-    if (allocation.money.currency !== expense.total.currency) throw new Error('Allocation currency must match expense currency')
-    if (allocation.money.minorAmount < 0 || !Number.isSafeInteger(allocation.money.minorAmount)) {
-      throw new Error('Allocation must be a non-negative safe integer')
-    }
-    allocationTotal += BigInt(allocation.money.minorAmount)
+  validateEntries(expense.payments, expense, 'Payment')
+  validateEntries(expense.allocations, expense, 'Allocation')
+  if (expense.payments.length === 0) throw new Error('Expense requires at least one payer')
+  if (new Set(expense.payments.map(({ participantId }) => participantId)).size !== expense.payments.length) {
+    throw new Error('Expense cannot repeat a payer')
   }
+  const paymentTotal = expense.payments.reduce((sum, payment) => sum + BigInt(payment.money.minorAmount), 0n)
+  if (paymentTotal !== BigInt(expense.total.minorAmount)) throw new Error('Expense payments must equal its total')
+  const allocationTotal = expense.allocations.reduce((sum, allocation) => sum + BigInt(allocation.money.minorAmount), 0n)
   if (allocationTotal !== BigInt(expense.total.minorAmount)) throw new Error('Expense allocations must equal its total')
+}
+
+function validateEntries(entries: Expense['allocations'], expense: Expense, label: 'Allocation' | 'Payment'): void {
+  for (const allocation of entries) {
+    if (!allocation.participantId.trim()) throw new Error(`${label} participant is required`)
+    assertCurrencyCode(allocation.money.currency)
+    if (allocation.money.currency !== expense.total.currency) throw new Error(`${label} currency must match expense currency`)
+    if (allocation.money.minorAmount < 0 || !Number.isSafeInteger(allocation.money.minorAmount)) {
+      throw new Error(`${label} must be a non-negative safe integer`)
+    }
+  }
+}
+
+function expenseNets(expense: Expense): Map<ParticipantId, bigint> {
+  const nets = new Map<ParticipantId, bigint>()
+  for (const payment of expense.payments) {
+    nets.set(payment.participantId, (nets.get(payment.participantId) ?? 0n) + BigInt(payment.money.minorAmount))
+  }
+  for (const allocation of expense.allocations) {
+    nets.set(allocation.participantId, (nets.get(allocation.participantId) ?? 0n) - BigInt(allocation.money.minorAmount))
+  }
+  return nets
 }
 
 function orderedPair(left: ParticipantId, right: ParticipantId): readonly [ParticipantId, ParticipantId] {

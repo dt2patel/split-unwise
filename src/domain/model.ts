@@ -18,7 +18,7 @@ export interface Expense {
   readonly description: string
   readonly date: string
   readonly total: Money
-  readonly payerId: ParticipantId
+  readonly payments: readonly Allocation[]
   readonly allocations: readonly Allocation[]
 }
 
@@ -93,7 +93,7 @@ export interface RecurrenceAnchor {
 }
 
 export type Recurrence =
-  | { readonly frequency: 'weekly'; readonly anchor: RecurrenceAnchor }
-  | { readonly frequency: 'fortnightly'; readonly anchor: RecurrenceAnchor }
-  | { readonly frequency: 'monthly'; readonly anchor: RecurrenceAnchor }
-  | { readonly frequency: 'yearly'; readonly anchor: RecurrenceAnchor }
+  | { readonly frequency: 'weekly'; readonly anchor: RecurrenceAnchor; readonly timeZone: string }
+  | { readonly frequency: 'fortnightly'; readonly anchor: RecurrenceAnchor; readonly timeZone: string }
+  | { readonly frequency: 'monthly'; readonly anchor: RecurrenceAnchor; readonly timeZone: string }
+  | { readonly frequency: 'yearly'; readonly anchor: RecurrenceAnchor; readonly timeZone: string }

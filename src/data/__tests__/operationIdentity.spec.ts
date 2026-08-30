@@ -4,8 +4,9 @@ import type { ExpenseAddCommand } from '../repositories'
 
 const command = (overrides: Partial<ExpenseAddCommand> = {}): ExpenseAddCommand => ({
   kind: 'expense.add', operationId: 'expense-add-01', groupId: 'lake-house-weekend', description: 'Firewood', date: '2026-08-30',
-  total: { currency: 'USD', minorAmount: 2400 }, payerId: 'maya-p', category: 'Supplies',
+  total: { currency: 'USD', minorAmount: 2400 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2400 } }], category: 'Supplies',
   allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2400 } }],
+  splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2400 } }] }, attachmentRefs: [],
   ...overrides,
 })
 

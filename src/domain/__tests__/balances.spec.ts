@@ -8,7 +8,7 @@ const expenses: readonly Expense[] = [
     description: 'Dinner',
     date: '2026-08-01',
     total: { currency: 'USD', minorAmount: 900 },
-    payerId: 'alex',
+    payments: [{ participantId: 'alex', money: { currency: 'USD', minorAmount: 900 } }],
     allocations: [
       { participantId: 'alex', money: { currency: 'USD', minorAmount: 300 } },
       { participantId: 'blair', money: { currency: 'USD', minorAmount: 300 } },
@@ -20,7 +20,7 @@ const expenses: readonly Expense[] = [
     description: 'Tickets',
     date: '2026-08-02',
     total: { currency: 'USD', minorAmount: 300 },
-    payerId: 'blair',
+    payments: [{ participantId: 'blair', money: { currency: 'USD', minorAmount: 300 } }],
     allocations: [
       { participantId: 'alex', money: { currency: 'USD', minorAmount: 100 } },
       { participantId: 'blair', money: { currency: 'USD', minorAmount: 100 } },
@@ -30,6 +30,46 @@ const expenses: readonly Expense[] = [
 ]
 
 describe('balances', () => {
+  it('preserves exact participant nets when an expense has multiple payers', () => {
+    const multiPayer = {
+      id: 'shared-cabin',
+      description: 'Shared cabin',
+      date: '2026-08-04',
+      total: { currency: 'USD', minorAmount: 1000 },
+      payments: [
+        { participantId: 'alex', money: { currency: 'USD', minorAmount: 700 } },
+        { participantId: 'blair', money: { currency: 'USD', minorAmount: 300 } },
+      ],
+      allocations: [
+        { participantId: 'alex', money: { currency: 'USD', minorAmount: 250 } },
+        { participantId: 'blair', money: { currency: 'USD', minorAmount: 250 } },
+        { participantId: 'casey', money: { currency: 'USD', minorAmount: 500 } },
+      ],
+    } as Expense
+
+    expect(simplifyDebts(computeBalances([multiPayer]))).toEqual([
+      { fromParticipantId: 'casey', toParticipantId: 'alex', money: { currency: 'USD', minorAmount: 450 } },
+      { fromParticipantId: 'casey', toParticipantId: 'blair', money: { currency: 'USD', minorAmount: 50 } },
+    ])
+  })
+
+  it('rejects duplicate payers and payment totals that do not equal the expense', () => {
+    const base = {
+      id: 'invalid-payments',
+      description: 'Invalid payments',
+      date: '2026-08-04',
+      total: { currency: 'USD', minorAmount: 1000 },
+      allocations: [{ participantId: 'casey', money: { currency: 'USD', minorAmount: 1000 } }],
+    }
+    expect(() => computeBalances([{ ...base, payments: [
+      { participantId: 'alex', money: { currency: 'USD', minorAmount: 500 } },
+      { participantId: 'alex', money: { currency: 'USD', minorAmount: 500 } },
+    ] } as Expense])).toThrow('Expense cannot repeat a payer')
+    expect(() => computeBalances([{ ...base, payments: [
+      { participantId: 'alex', money: { currency: 'USD', minorAmount: 999 } },
+    ] } as Expense])).toThrow('Expense payments must equal its total')
+  })
+
   it('aggregates payer obligations into canonical signed participant pairs', () => {
     expect(computeBalances(expenses)).toEqual([
       { fromParticipantId: 'alex', toParticipantId: 'blair', money: { currency: 'USD', minorAmount: -200 } },
@@ -51,7 +91,7 @@ describe('balances', () => {
       description: 'Maximum',
       date: '2026-08-03',
       total: { currency: 'USD', minorAmount: Number.MAX_SAFE_INTEGER },
-      payerId: 'alex',
+      payments: [{ participantId: 'alex', money: { currency: 'USD', minorAmount: Number.MAX_SAFE_INTEGER } }],
       allocations: [
         { participantId: 'blair', money: { currency: 'USD', minorAmount: Number.MAX_SAFE_INTEGER } },
       ],

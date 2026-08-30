@@ -1,10 +1,14 @@
 import type { CommandEnvelope, CommandKind, CommandResult, SyncState } from './repositories'
 import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
 
-export interface CommandFailure { readonly message: string; readonly conflict?: unknown }
+export type CommandFailureCode = 'conflict' | 'handler-missing' | 'network' | 'not-supported' | 'permission-denied' | 'unknown' | 'validation'
+export interface CommandFailure { readonly code: CommandFailureCode; readonly message: string; readonly conflict?: unknown }
 export class CommandConflictError extends Error {
   readonly conflict: unknown
   constructor(message: string, conflict?: unknown) { super(message); this.name = 'CommandConflictError'; this.conflict = conflict }
+}
+export class CommandFailedError extends Error {
+  constructor(readonly code: CommandFailureCode, message: string) { super(message); this.name = 'CommandFailedError' }
 }
 
 export type CommandOperation =
@@ -55,6 +59,15 @@ export class CommandQueue {
   }
 
   get(operationId: string): CommandOperation | undefined { return this.operations.get(operationId) }
+  snapshot(): readonly CommandOperation[] { return clone([...this.operations.values()]) }
+  discard(operationId: string): boolean {
+    const operation = this.operations.get(operationId)
+    if (!operation) return false
+    if (operation.status !== 'failed') throw new Error('Only failed operations can be discarded')
+    this.operations.delete(operationId)
+    this.persist()
+    return true
+  }
   subscribe(listener: (operation: CommandOperation) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   markStale(operationId: string): CommandOperation { return this.setReadState(operationId, 'stale') }
   markFresh(operationId: string): CommandOperation { return this.setReadState(operationId, 'fresh') }
@@ -76,7 +89,7 @@ export class CommandQueue {
     }
     if (operation.status === 'fresh' || operation.status === 'stale') return operation.result
     if (operation.status === 'conflicted') throw new CommandConflictError(operation.error.message, operation.conflict)
-    if (operation.status === 'failed') throw new Error(operation.error.message)
+    if (operation.status === 'failed') throw new CommandFailedError(operation.error.code, operation.error.message)
     throw new Error(`Operation ${operationId} is unavailable`)
   }
 
@@ -86,11 +99,15 @@ export class CommandQueue {
     const operation = this.operations.get(operationId)
     if (!operation || operation.status !== 'pending') return Promise.resolve()
     const handler = this.options.handlers[operation.envelope.kind]
-    if (!handler) return Promise.resolve()
+    if (!handler) {
+      this.replace({ status: 'failed', envelope: operation.envelope, error: { code: 'handler-missing', message: `No handler is registered for ${operation.envelope.kind}` } })
+      return Promise.resolve()
+    }
     const running = Promise.resolve()
       .then(() => handler(operation.envelope))
       .then((result) => {
         if (result.operationId !== operationId || result.kind !== operation.envelope.kind) throw new Error('Command handler returned a mismatched result')
+        if (result.status === 'not-supported') throw new CommandFailedError('not-supported', result.reason)
         const current = this.operations.get(operationId)
         if (current?.status === 'pending' && canonicalEnvelopeFingerprint(current.envelope) === canonicalEnvelopeFingerprint(operation.envelope)) {
           this.replace({ status: 'fresh', envelope: operation.envelope, result: clone(result) })
@@ -119,9 +136,11 @@ export class CommandQueue {
 
   private replace(operation: CommandOperation): void {
     this.operations.set(operation.envelope.operationId, operation)
-    this.storage.save([...this.operations.values()])
+    this.persist()
     this.listeners.forEach((listener) => { try { listener(operation) } catch { /* subscribers cannot affect durable command state */ } })
   }
+
+  private persist(): void { this.storage.save([...this.operations.values()]) }
 }
 
 export function createMemoryCommandStorage(initial: readonly CommandOperation[] = []): CommandStorage {
@@ -135,5 +154,9 @@ export function createBrowserCommandStorage(key = 'split-unwise:command-queue:v1
   }
 }
 function rejectedHandle(operationId: string, error: Error): CommandHandle { return { operationId, result: () => Promise.reject(error) } }
-function toFailure(error: unknown): CommandFailure { return { message: error instanceof Error ? error.message : String(error) } }
+function toFailure(error: unknown): CommandFailure {
+  if (error instanceof CommandFailedError) return { code: error.code, message: error.message }
+  if (error instanceof CommandConflictError || error instanceof OperationReplayConflictError) return { code: 'conflict', message: error.message }
+  return { code: 'unknown', message: error instanceof Error ? error.message : String(error) }
+}
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }

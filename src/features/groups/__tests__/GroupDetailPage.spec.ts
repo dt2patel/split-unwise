@@ -100,7 +100,7 @@ describe('Lake House group journal', () => {
     expect(wrapper.get('[data-action="totals"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/totals')
     expect(wrapper.get('[data-action="charts"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/charts')
     expect(wrapper.get('[data-action="export"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/export')
-    expect(wrapper.get('[aria-label="Add expense"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/expenses/new')
+    expect(wrapper.get('[aria-label="Add expense"]').attributes('href')).toBe('/tabs/groups/expenses/new?groupId=lake-house-weekend')
   })
 
   it('switches between the expense journal and repository activity', async () => {
@@ -130,7 +130,7 @@ describe('route-specific browse pages', () => {
     ['/tabs/groups', 'Groups'],
     ['/tabs/activity', 'Activity'],
     ['/tabs/account', 'Account'],
-    ['/tabs/groups/lake-house-weekend/expenses/new', 'Add expense'],
+    ['/tabs/groups/expenses/new?groupId=lake-house-weekend', 'Add expense'],
   ])('renders %s with its own accessible heading', async (path, heading) => {
     const wrapper = await mountRoute(path)
 

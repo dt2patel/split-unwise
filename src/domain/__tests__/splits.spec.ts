@@ -45,6 +45,39 @@ describe('split allocations', () => {
     ])
   })
 
+  it.each([
+    { alex: 50, blair: 50 },
+    { alex: 50, blair: 30, casey: 20, outsider: 0 },
+  ])('rejects percentage maps that do not exactly match selected participants', (percentages) => {
+    expect(() => computeAllocations(total, {
+      type: 'percentage',
+      participantIds: ['alex', 'blair', 'casey'],
+      percentages: percentages as Readonly<Record<string, number>>,
+    })).toThrow('Percentage keys must exactly match selected participants')
+  })
+
+  it.each([
+    { alex: 3, blair: 2 },
+    { alex: 3, blair: 2, casey: 1, outsider: 0 },
+  ])('rejects share maps that do not exactly match selected participants', (shares) => {
+    expect(() => computeAllocations(total, {
+      type: 'shares',
+      participantIds: ['alex', 'blair', 'casey'],
+      shares: shares as Readonly<Record<string, number>>,
+    })).toThrow('Share keys must exactly match selected participants')
+  })
+
+  it.each([
+    { alex: 10, blair: 0 },
+    { alex: 10, blair: 0, casey: 0, outsider: 0 },
+  ])('rejects adjustment maps that do not exactly match selected participants', (adjustments) => {
+    expect(() => computeAllocations(total, {
+      type: 'adjustment',
+      participantIds: ['alex', 'blair', 'casey'],
+      adjustments: adjustments as Readonly<Record<string, number>>,
+    })).toThrow('Adjustment keys must exactly match selected participants')
+  })
+
   it('distributes weighted-share remainders in participant order', () => {
     expect(amounts(computeAllocations(total, {
       type: 'shares',
@@ -61,7 +94,7 @@ describe('split allocations', () => {
     expect(amounts(computeAllocations(total, {
       type: 'adjustment',
       participantIds: ['alex', 'blair', 'casey'],
-      adjustments: { alex: 10 },
+      adjustments: { alex: 10, blair: 0, casey: 0 },
     }))).toEqual([
       ['alex', 41],
       ['blair', 30],

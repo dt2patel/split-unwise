@@ -22,11 +22,15 @@ const expense: ExpenseRowRecord = {
   description: 'Firewood for the dock',
   date: '2026-08-30',
   total: { currency: 'USD', minorAmount: 2400 },
-  payerId: 'maya',
+  payments: [{ participantId: 'maya', money: { currency: 'USD', minorAmount: 2400 } }],
   allocations: [],
   category: 'Supplies',
   createdAt: '2026-08-30T12:00:00.000Z',
+  updatedAt: '2026-08-30T12:00:00.000Z',
+  revision: 1,
   syncState: 'fresh',
+  splitMethod: { type: 'exact', allocations: [] },
+  attachmentRefs: [],
 }
 
 const expenseRowSource = readFileSync(resolve(process.cwd(), 'src/components/ExpenseRow.vue'), 'utf8')
@@ -90,6 +94,24 @@ describe('ExpenseRow', () => {
     expect(wrapper.text()).toContain('You owe')
     expect(wrapper.find('ion-button').exists()).toBe(false)
     expect(wrapper.get('.expense-row__category').text()).toContain('Category: Supplies')
+  })
+
+  it('shows pending state in a journal row and exposes Retry/Discard only for failed drafts', async () => {
+    const pending = mount(ExpenseRow, { props: { expense: { ...expense, syncState: 'pending' }, balance: { currency: 'USD', minorAmount: 0 }, balanceDirection: 'settled', journal: true } })
+    expect(pending.text()).toContain('Saving')
+    expect(pending.find('[data-action="retry-expense"]').exists()).toBe(false)
+
+    const failed = mount(ExpenseRow, { props: { expense: { ...expense, syncState: 'failed' }, balance: { currency: 'USD', minorAmount: 0 }, balanceDirection: 'settled', journal: true, retryable: true } })
+    await failed.get('[data-action="retry-expense"]').trigger('click')
+    await failed.get('[data-action="discard-expense"]').trigger('click')
+    expect(failed.emitted('retry')).toHaveLength(1)
+    expect(failed.emitted('discard')).toHaveLength(1)
+  })
+
+  it('uses a restrained pending-row entrance and removes transforms for reduced motion', () => {
+    expect(expenseRowSource).toContain('pending-row-enter 200ms')
+    expect(expenseRowSource).toContain('translateY(10px)')
+    expect(expenseRowSource).toContain('animation: none')
   })
 
   it('uses shared 62px financial tracks and a reflow class instead of auto-sized columns', () => {

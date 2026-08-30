@@ -1,5 +1,6 @@
 import { assertCurrencyCode } from '../domain/money'
-import type { Recurrence } from '../domain/model'
+import { computeAllocations } from '../domain/splits'
+import type { Allocation, Recurrence, SplitMethod } from '../domain/model'
 import type { ActivityItem, ExpenseComment, ExpenseRow, Group, Member, RecurringExpense } from './repositories'
 
 export class DocumentDecodeError extends Error {
@@ -35,17 +36,27 @@ export function decodeMember(id: string, value: unknown, isCurrentUser: boolean)
 export function decodeExpense(groupId: string, id: string, value: unknown): ExpenseRow {
   const data = record(value, `expense ${id}`)
   const total = moneyValue(data.total, `expense ${id}.total`)
-  const allocations = requiredArray(data.allocations, `expense ${id}.allocations`).map((item, index) => {
-    const allocation = record(item, `expense ${id}.allocations[${index}]`)
-    return { participantId: requiredString(allocation.participantId, `expense ${id}.allocations[${index}].participantId`), money: moneyValue(allocation.money, `expense ${id}.allocations[${index}].money`) }
-  })
-  if (allocations.some((allocation) => allocation.money.currency !== total.currency)) throw new DocumentDecodeError(`expense ${id}`, 'allocation currency must match total currency')
-  if (allocations.reduce((sum, allocation) => sum + BigInt(allocation.money.minorAmount), 0n) !== BigInt(total.minorAmount)) throw new DocumentDecodeError(`expense ${id}`, 'allocation total must equal total')
+  const payments = allocationArray(data.payments, `expense ${id}.payments`, total.currency)
+  const allocations = allocationArray(data.allocations, `expense ${id}.allocations`, total.currency)
+  assertUniqueParticipants(payments, `expense ${id}`, 'payer')
+  assertUniqueParticipants(allocations, `expense ${id}`, 'participant')
+  if (payments.length === 0) throw new DocumentDecodeError(`expense ${id}`, 'at least one payment is required')
+  if (sumAllocations(payments) !== BigInt(total.minorAmount)) throw new DocumentDecodeError(`expense ${id}`, 'payment total must equal total')
+  if (sumAllocations(allocations) !== BigInt(total.minorAmount)) throw new DocumentDecodeError(`expense ${id}`, 'allocation total must equal total')
+  const splitMethod = splitMethodValue(data.splitMethod, `expense ${id}.splitMethod`, total)
+  const computed = computeAllocations(total, splitMethod)
+  if (!sameAllocations(computed, allocations)) throw new DocumentDecodeError(`expense ${id}`, 'allocations do not match split method')
+  const createdAt = isoTimestamp(data.createdAt, `expense ${id}.createdAt`)
+  const updatedAt = isoTimestamp(data.updatedAt, `expense ${id}.updatedAt`)
   return {
     id, groupId, description: requiredString(data.description, `expense ${id}.description`), date: isoDate(data.date, `expense ${id}.date`), total,
-    payerId: requiredString(data.payerId, `expense ${id}.payerId`), allocations, category: requiredString(data.category, `expense ${id}.category`),
-    createdAt: requiredString(data.createdAt, `expense ${id}.createdAt`), syncState: 'fresh',
+    payments, allocations, category: requiredString(data.category, `expense ${id}.category`), createdAt, updatedAt,
+    revision: positiveInteger(data.revision, `expense ${id}.revision`), splitMethod, attachmentRefs: requiredStringArray(data.attachmentRefs, `expense ${id}.attachmentRefs`), syncState: 'fresh',
+    ...(data.notes === undefined ? {} : { notes: requiredString(data.notes, `expense ${id}.notes`) }),
+    ...(data.recurrence === undefined ? {} : { recurrence: recurrenceValue(data.recurrence, `expense ${id}.recurrence`) }),
+    ...(data.occurrenceEditScope === undefined ? {} : { occurrenceEditScope: occurrenceScope(data.occurrenceEditScope, `expense ${id}.occurrenceEditScope`) }),
     ...(data.recurringTemplateId === undefined ? {} : { recurringTemplateId: requiredString(data.recurringTemplateId, `expense ${id}.recurringTemplateId`) }),
+    ...(data.deletedAt === undefined ? {} : { deletedAt: isoTimestamp(data.deletedAt, `expense ${id}.deletedAt`) }),
   }
 }
 
@@ -66,8 +77,12 @@ export function decodeActivity(groupId: string, id: string, value: unknown): Act
 
 export function decodeRecurringExpense(groupId: string, id: string, value: unknown): RecurringExpense {
   const data = record(value, `recurring ${id}`)
+  const total = moneyValue(data.total, `recurring ${id}.total`)
+  const payments = allocationArray(data.payments, `recurring ${id}.payments`, total.currency)
+  assertUniqueParticipants(payments, `recurring ${id}`, 'payer')
+  if (payments.length === 0 || sumAllocations(payments) !== BigInt(total.minorAmount)) throw new DocumentDecodeError(`recurring ${id}`, 'payments must equal total')
   return {
-    id, groupId, description: requiredString(data.description, `recurring ${id}.description`), total: moneyValue(data.total, `recurring ${id}.total`), payerId: requiredString(data.payerId, `recurring ${id}.payerId`),
+    id, groupId, description: requiredString(data.description, `recurring ${id}.description`), total, payments,
     recurrence: recurrenceValue(data.recurrence, `recurring ${id}.recurrence`), nextDate: isoDate(data.nextDate, `recurring ${id}.nextDate`), syncState: 'fresh',
   }
 }
@@ -79,9 +94,64 @@ function recurrenceValue(value: unknown, path: string): Recurrence {
   const anchor = record(data.anchor, `${path}.anchor`)
   const month = positiveInteger(anchor.month, `${path}.anchor.month`)
   const day = positiveInteger(anchor.day, `${path}.anchor.day`)
+  const timeZone = requiredString(data.timeZone, `${path}.timeZone`)
+  try { new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date(0)) } catch { throw new DocumentDecodeError(path, 'timeZone is not an IANA time zone') }
   if (month > 12 || day > new Date(Date.UTC(2024, month, 0)).getUTCDate()) throw new DocumentDecodeError(path, 'anchor is not a calendar date')
-  return { frequency, anchor: { month, day } }
+  return { frequency, anchor: { month, day }, timeZone }
 }
+
+function allocationArray(value: unknown, path: string, currency: ExpenseRow['total']['currency']): readonly Allocation[] {
+  return requiredArray(value, path).map((item, index) => {
+    const allocation = record(item, `${path}[${index}]`)
+    const money = moneyValue(allocation.money, `${path}[${index}].money`)
+    if (money.currency !== currency) throw new DocumentDecodeError(path, 'currency must match total currency')
+    return { participantId: requiredString(allocation.participantId, `${path}[${index}].participantId`), money }
+  })
+}
+
+function splitMethodValue(value: unknown, path: string, total: ExpenseRow['total']): SplitMethod {
+  const data = record(value, path)
+  const type = data.type
+  if (type === 'equal') return { type, participantIds: requiredStringArray(data.participantIds, `${path}.participantIds`) }
+  if (type === 'exact') return { type, allocations: allocationArray(data.allocations, `${path}.allocations`, total.currency) }
+  if (type === 'percentage' || type === 'shares' || type === 'adjustment') {
+    const participantIds = requiredStringArray(data.participantIds, `${path}.participantIds`)
+    const field = type === 'percentage' ? 'percentages' : type === 'shares' ? 'shares' : 'adjustments'
+    const values = numberRecord(data[field], `${path}.${field}`)
+    if (type === 'percentage') return { type, participantIds, percentages: values }
+    if (type === 'shares') return { type, participantIds, shares: values }
+    return { type, participantIds, adjustments: values }
+  }
+  if (type === 'itemized') {
+    const items = requiredArray(data.items, `${path}.items`).map((item, index) => {
+      const recordItem = record(item, `${path}.items[${index}]`)
+      const money = moneyValue(recordItem.money, `${path}.items[${index}].money`)
+      if (money.currency !== total.currency) throw new DocumentDecodeError(path, 'item currency must match total currency')
+      return { description: requiredString(recordItem.description, `${path}.items[${index}].description`), money, participantIds: requiredStringArray(recordItem.participantIds, `${path}.items[${index}].participantIds`) }
+    })
+    return { type, items }
+  }
+  throw new DocumentDecodeError(path, 'split type is invalid')
+}
+
+function numberRecord(value: unknown, path: string): Readonly<Record<string, number>> {
+  const data = record(value, path)
+  return Object.fromEntries(Object.entries(data).map(([key, item]) => {
+    if (typeof item !== 'number' || !Number.isFinite(item)) throw new DocumentDecodeError(`${path}.${key}`, 'must be a finite number')
+    return [key, item]
+  }))
+}
+
+function assertUniqueParticipants(allocations: readonly Allocation[], path: string, label: string): void {
+  if (new Set(allocations.map(({ participantId }) => participantId)).size !== allocations.length) throw new DocumentDecodeError(path, `${label} cannot be repeated`)
+}
+function sumAllocations(allocations: readonly Allocation[]): bigint { return allocations.reduce((sum, allocation) => sum + BigInt(allocation.money.minorAmount), 0n) }
+function sameAllocations(left: readonly Allocation[], right: readonly Allocation[]): boolean {
+  const normalize = (values: readonly Allocation[]) => [...values].sort((a, b) => a.participantId.localeCompare(b.participantId)).map(({ participantId, money }) => `${participantId}\u0000${money.currency}\u0000${money.minorAmount}`)
+  const first = normalize(left); const second = normalize(right)
+  return first.length === second.length && first.every((value, index) => value === second[index])
+}
+function occurrenceScope(value: unknown, path: string): 'future' | 'single' { if (value !== 'future' && value !== 'single') throw new DocumentDecodeError(path, 'must be future or single'); return value }
 function moneyValue(value: unknown, path: string): ExpenseRow['total'] {
   const data = record(value, path)
   const currency = currencyValue(data.currency, `${path}.currency`)
@@ -104,4 +174,10 @@ function isoDate(value: unknown, path: string): string {
   const parsed = new Date(`${date}T00:00:00.000Z`)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== date) throw new DocumentDecodeError(path, 'must be an ISO date')
   return date
+}
+function isoTimestamp(value: unknown, path: string): string {
+  const timestamp = requiredString(value, path)
+  const parsed = new Date(timestamp)
+  if (Number.isNaN(parsed.valueOf()) || parsed.toISOString() !== timestamp) throw new DocumentDecodeError(path, 'must be an ISO timestamp')
+  return timestamp
 }

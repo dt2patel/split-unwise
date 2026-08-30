@@ -5,7 +5,9 @@ export function buildCurrencyTotals(rows: readonly ExpenseRow[], currentUserId: 
   for (const row of rows) {
     const current = amounts.get(row.total.currency) ?? { totalPaid: 0n, currentUserPaid: 0n, currentUserShare: 0n }
     current.totalPaid = checkedAdd(current.totalPaid, row.total.minorAmount)
-    if (row.payerId === currentUserId) current.currentUserPaid = checkedAdd(current.currentUserPaid, row.total.minorAmount)
+    for (const payment of row.payments) {
+      if (payment.participantId === currentUserId) current.currentUserPaid = checkedAdd(current.currentUserPaid, payment.money.minorAmount)
+    }
     const allocation = row.allocations.find(({ participantId }) => participantId === currentUserId)
     if (allocation) current.currentUserShare = checkedAdd(current.currentUserShare, allocation.money.minorAmount)
     amounts.set(row.total.currency, current)

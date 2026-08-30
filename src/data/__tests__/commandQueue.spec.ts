@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CommandConflictError, CommandQueue, createMemoryCommandStorage } from '../commandQueue'
+import { CommandConflictError, CommandFailedError, CommandQueue, createMemoryCommandStorage } from '../commandQueue'
 import { OperationReplayConflictError } from '../operationIdentity'
 import type { ExpenseAddCommand, ExpenseAddResult } from '../repositories'
 
@@ -10,7 +10,7 @@ const addExpense = (operationId: string): ExpenseAddCommand => ({
   description: 'Firewood',
   date: '2026-08-30',
   total: { currency: 'USD', minorAmount: 2400 },
-  payerId: 'maya-p',
+  payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2400 } }],
   allocations: [
     { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 600 } },
     { participantId: 'jordan-k', money: { currency: 'USD', minorAmount: 600 } },
@@ -18,16 +18,55 @@ const addExpense = (operationId: string): ExpenseAddCommand => ({
     { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 600 } },
   ],
   category: 'Supplies',
+  splitMethod: { type: 'equal', participantIds: ['maya-p', 'jordan-k', 'alex-r', 'taylor-s'] },
+  attachmentRefs: [],
 })
 
 const savedExpense = (operationId: string): ExpenseAddResult => ({
   kind: 'expense.add',
   operationId,
   status: 'saved',
-  expense: { ...addExpense(operationId), id: 'demo-expense-006', createdAt: '2026-08-30T12:00:00.000Z', syncState: 'fresh' },
+  expense: { ...addExpense(operationId), id: 'demo-expense-006', createdAt: '2026-08-30T12:00:00.000Z', updatedAt: '2026-08-30T12:00:00.000Z', revision: 1, syncState: 'fresh' },
 })
 
 describe('CommandQueue', () => {
+  it('returns defensive snapshots and discards failed drafts only', async () => {
+    const queue = new CommandQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.add': async () => { throw new Error('offline') } },
+    })
+    await expect(queue.submit(addExpense('discardable')).result()).rejects.toThrow('offline')
+
+    const snapshot = queue.snapshot()
+    expect(snapshot).toEqual([expect.objectContaining({ status: 'failed', error: expect.objectContaining({ code: 'unknown' }) })])
+    expect(queue.discard('discardable')).toBe(true)
+    expect(queue.snapshot()).toEqual([])
+
+    const conflicted = new CommandQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.add': async () => { throw new CommandConflictError('remote changed', { revision: 2 }) } },
+    })
+    await expect(conflicted.submit(addExpense('keep-conflict')).result()).rejects.toThrow('remote changed')
+    expect(() => conflicted.discard('keep-conflict')).toThrow('Only failed operations can be discarded')
+    expect(conflicted.snapshot()).toHaveLength(1)
+  })
+
+  it('turns a not-supported handler result into a typed failed operation', async () => {
+    const queue = new CommandQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'expense.add': async (command) => ({
+          kind: 'expense.add', operationId: command.operationId, status: 'not-supported', reason: 'Provider unavailable',
+        }),
+      },
+    })
+
+    await expect(queue.submit(addExpense('unsupported')).result()).rejects.toMatchObject({
+      name: 'CommandFailedError',
+      code: 'not-supported',
+    } satisfies Partial<CommandFailedError>)
+    expect(queue.get('unsupported')).toMatchObject({ status: 'failed', error: { code: 'not-supported', message: 'Provider unavailable' } })
+  })
   it('uses an operation ID once while exposing pending and fresh states', async () => {
     const queue = new CommandQueue({
       storage: createMemoryCommandStorage(),

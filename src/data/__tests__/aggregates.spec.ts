@@ -3,8 +3,9 @@ import { buildCurrencyTotals, buildGroupCharts } from '../aggregates'
 import type { ExpenseRow } from '../repositories'
 
 const expense = (id: string, amount: number): ExpenseRow => ({
-  id, groupId: 'lake-house-weekend', description: id, date: '2026-08-30', category: 'Food', createdAt: '2026-08-30T12:00:00.000Z', syncState: 'fresh',
-  total: { currency: 'USD', minorAmount: amount }, payerId: 'maya-p', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: amount } }],
+  id, groupId: 'lake-house-weekend', description: id, date: '2026-08-30', category: 'Food', createdAt: '2026-08-30T12:00:00.000Z', updatedAt: '2026-08-30T12:00:00.000Z', revision: 1, syncState: 'fresh',
+  total: { currency: 'USD', minorAmount: amount }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: amount } }], allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: amount } }],
+  splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: amount } }] }, attachmentRefs: [],
 })
 
 describe('checked aggregates', () => {

@@ -29,32 +29,33 @@ const equalAllocations = (minorAmount: number) => lakeHouseMembers.map((member) 
   participantId: member.id,
   money: { currency: 'USD' as const, minorAmount },
 }))
+const equalSplit = { type: 'equal' as const, participantIds: lakeHouseMembers.map(({ id }) => id) }
 
 export const lakeHouseExpenses: readonly ExpenseRow[] = [
   {
     id: 'gas-for-the-boat', groupId: LAKE_HOUSE_GROUP_ID, description: 'Gas for the boat', date: '2026-08-26',
-    total: { currency: 'USD', minorAmount: 5600 }, payerId: 'maya-p', allocations: equalAllocations(1400),
-    category: 'Transport', createdAt: '2026-08-26T16:00:00.000Z', syncState: 'fresh',
+    total: { currency: 'USD', minorAmount: 5600 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 5600 } }], allocations: equalAllocations(1400),
+    category: 'Transport', createdAt: '2026-08-26T16:00:00.000Z', updatedAt: '2026-08-26T16:00:00.000Z', revision: 1, syncState: 'fresh', splitMethod: equalSplit, attachmentRefs: [],
   },
   {
     id: 'dinner', groupId: LAKE_HOUSE_GROUP_ID, description: 'Dinner', date: '2026-08-27',
-    total: { currency: 'USD', minorAmount: 7300 }, payerId: 'taylor-s', allocations: equalAllocations(1825),
-    category: 'Food', createdAt: '2026-08-27T19:00:00.000Z', syncState: 'fresh',
+    total: { currency: 'USD', minorAmount: 7300 }, payments: [{ participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 7300 } }], allocations: equalAllocations(1825),
+    category: 'Food', createdAt: '2026-08-27T19:00:00.000Z', updatedAt: '2026-08-27T19:00:00.000Z', revision: 1, syncState: 'fresh', splitMethod: equalSplit, attachmentRefs: [],
   },
   {
     id: 'cabin-deposit', groupId: LAKE_HOUSE_GROUP_ID, description: 'Cabin deposit', date: '2026-08-28',
-    total: { currency: 'USD', minorAmount: 40000 }, payerId: 'alex-r', allocations: equalAllocations(10000),
-    category: 'Lodging', createdAt: '2026-08-28T15:00:00.000Z', syncState: 'fresh', recurringTemplateId: 'cabin-deposit-monthly',
+    total: { currency: 'USD', minorAmount: 40000 }, payments: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 40000 } }], allocations: equalAllocations(10000),
+    category: 'Lodging', createdAt: '2026-08-28T15:00:00.000Z', updatedAt: '2026-08-28T15:00:00.000Z', revision: 1, syncState: 'fresh', splitMethod: equalSplit, attachmentRefs: [], recurringTemplateId: 'cabin-deposit-monthly',
   },
   {
     id: 'kayak-rental', groupId: LAKE_HOUSE_GROUP_ID, description: 'Kayak rental', date: '2026-08-29',
-    total: { currency: 'USD', minorAmount: 6000 }, payerId: 'jordan-k', allocations: equalAllocations(1500),
-    category: 'Transport', createdAt: '2026-08-29T11:00:00.000Z', syncState: 'fresh',
+    total: { currency: 'USD', minorAmount: 6000 }, payments: [{ participantId: 'jordan-k', money: { currency: 'USD', minorAmount: 6000 } }], allocations: equalAllocations(1500),
+    category: 'Transport', createdAt: '2026-08-29T11:00:00.000Z', updatedAt: '2026-08-29T11:00:00.000Z', revision: 1, syncState: 'fresh', splitMethod: equalSplit, attachmentRefs: [],
   },
   {
     id: 'groceries', groupId: LAKE_HOUSE_GROUP_ID, description: 'Groceries', date: '2026-08-30',
-    total: { currency: 'USD', minorAmount: 17000 }, payerId: 'maya-p', allocations: equalAllocations(4250),
-    category: 'Food', createdAt: '2026-08-30T10:00:00.000Z', syncState: 'fresh',
+    total: { currency: 'USD', minorAmount: 17000 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 17000 } }], allocations: equalAllocations(4250),
+    category: 'Food', createdAt: '2026-08-30T10:00:00.000Z', updatedAt: '2026-08-30T10:00:00.000Z', revision: 1, syncState: 'fresh', splitMethod: equalSplit, attachmentRefs: [],
   },
 ]
 
@@ -74,7 +75,7 @@ export const lakeHouseActivity: readonly ActivityItem[] = [
 
 export const lakeHouseRecurring: readonly RecurringExpense[] = [
   {
-    id: 'cabin-deposit-monthly', groupId: LAKE_HOUSE_GROUP_ID, description: 'Cabin deposit', total: { currency: 'USD', minorAmount: 40000 }, payerId: 'alex-r',
-    recurrence: { frequency: 'monthly', anchor: { month: 8, day: 28 } }, nextDate: '2026-09-28', syncState: 'fresh',
+    id: 'cabin-deposit-monthly', groupId: LAKE_HOUSE_GROUP_ID, description: 'Cabin deposit', total: { currency: 'USD', minorAmount: 40000 }, payments: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 40000 } }],
+    recurrence: { frequency: 'monthly', anchor: { month: 8, day: 28 }, timeZone: 'America/Chicago' }, nextDate: '2026-09-28', syncState: 'fresh',
   },
 ]

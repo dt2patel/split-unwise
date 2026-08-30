@@ -1,0 +1,21 @@
+.expense-sheet { min-height: 50vh; padding: 0 18px calc(18px + env(safe-area-inset-bottom)); background: var(--su-surface); color: var(--ion-text-color); }
+.expense-sheet header { display: grid; min-height: 54px; grid-template-columns: 72px 1fr 72px; align-items: center; border-bottom: 1px solid var(--su-divider); }
+.expense-sheet h2 { margin: 0; font-size: 1.04rem; text-align: center; }
+.expense-sheet button { min-height: 44px; border: 0; background: transparent; color: var(--su-accent); font: inherit; }
+.expense-sheet header button:first-child { text-align: start; }
+.expense-sheet header button:last-child { font-weight: 680; text-align: end; }
+.expense-sheet > p { color: var(--ion-color-medium); font-size: 0.86rem; line-height: 1.4; }
+.sheet-list { overflow: hidden; border: 1px solid color-mix(in srgb, var(--su-divider) 62%, transparent); border-radius: 14px; }
+.sheet-list label { display: grid; min-height: 54px; grid-template-columns: 28px minmax(0, 1fr) 110px; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--su-divider); }
+.sheet-list label:last-child { border-bottom: 0; }
+.sheet-list input[type="checkbox"], .sheet-list input[type="radio"] { width: 22px; height: 22px; accent-color: var(--su-accent); }
+.sheet-list input:not([type="checkbox"]):not([type="radio"]) { width: 100%; min-height: 44px; border: 0; background: transparent; color: inherit; font: inherit; text-align: end; }
+.sheet-list small { color: var(--ion-color-medium); font-size: 0.78rem; text-align: end; }
+.sheet-error { padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--ion-color-danger) 10%, transparent); color: var(--ion-color-danger) !important; }
+.sheet-note { color: var(--ion-color-medium); font-size: 0.8rem; }
+.frequency-grid { display: grid; gap: 8px; margin: 14px 0; }
+.frequency-grid button { min-height: 46px; border: 1px solid var(--su-divider); border-radius: 12px; color: var(--ion-text-color); text-align: start; text-transform: capitalize; }
+.frequency-grid button[aria-checked="true"] { border-color: var(--su-accent); background: color-mix(in srgb, var(--su-lilac) 52%, var(--su-surface)); color: var(--su-accent); }
+.stacked-label { display: grid; gap: 6px; color: var(--ion-color-medium); font-size: 0.82rem; }
+.stacked-label input { min-height: 46px; border: 1px solid var(--su-divider); border-radius: 12px; padding: 0 12px; background: var(--su-surface); color: var(--ion-text-color); font: inherit; }
+@media (prefers-reduced-motion: reduce) { .expense-sheet * { scroll-behavior: auto; } }

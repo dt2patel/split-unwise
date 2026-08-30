@@ -16,12 +16,15 @@ const props = withDefaults(defineProps<{
   journal?: boolean
   payerName?: string
   participantCount?: number
+  retryable?: boolean
 }>(), {
   balanceLabel: undefined,
   journal: false,
   payerName: undefined,
   participantCount: undefined,
+  retryable: false,
 })
+const emit = defineEmits<{ retry: []; discard: [] }>()
 
 const dateParts = computed(() => {
   const date = new Date(`${props.expense.date}T00:00:00.000Z`)
@@ -78,6 +81,11 @@ watch(
       <template v-if="journal">
         <span>Paid by {{ payerName }}</span>
         <span>Split between {{ participantCount }} of you<span v-if="expense.recurringTemplateId"> · Recurring</span></span>
+        <sync-status v-if="expense.syncState !== 'fresh'" :state="expense.syncState" />
+        <span v-if="retryable && expense.syncState === 'failed'" class="expense-row__sync-actions">
+          <button type="button" data-action="retry-expense" @click="emit('retry')">Retry</button>
+          <button type="button" data-action="discard-expense" @click="emit('discard')">Discard</button>
+        </span>
       </template>
       <template v-else>
         <span>{{ expense.date }}</span>
@@ -104,6 +112,9 @@ watch(
 .expense-row--journal .expense-row__summary { gap: 2px; }
 .expense-row--journal .expense-row__summary strong { font-size: 0.91rem; line-height: 1.15; }
 .expense-row--journal .expense-row__summary > span { font-size: 0.68rem; line-height: 1.22; }
+.expense-row--journal .expense-row__summary :deep(.sync-status) { justify-self: start; font-size: 0.68rem; }
+.expense-row__sync-actions { display: flex; gap: 4px; }
+.expense-row__sync-actions button { min-width: 44px; min-height: 44px; margin: -5px 0; padding: 0 5px; border: 0; background: transparent; color: var(--su-accent); font: inherit; font-weight: 650; }
 .expense-row--journal .expense-row__amount { font-size: 0.78rem; }
 .expense-row--journal .expense-row__amount--balance :deep(.money-amount__direction) { order: -1; color: var(--su-accent); font-size: 0.72rem; line-height: 1.1; }
 .expense-row--journal .expense-row__category--transport { background: #E6F5FF; }
@@ -115,9 +126,14 @@ watch(
 .expense-row--reflow .expense-row__amount--balance { grid-area: balance; }
 .expense-row--journal.expense-row--reflow { grid-template-areas: "date category summary" "date category paid" "date category balance"; grid-template-columns: 30px 44px minmax(0, 1fr); }
 .expense-row--journal.expense-row--reflow .expense-row__date { grid-area: date; }
+.expense-row[data-sync-state="pending"] { animation: pending-row-enter 200ms ease-out both; }
+@keyframes pending-row-enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
 @media (prefers-color-scheme: dark) {
   .expense-row--journal .expense-row__category--transport { background: #1E3950; }
   .expense-row--journal .expense-row__category--lodging { background: #342B5A; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .expense-row[data-sync-state="pending"] { animation: none; }
 }
 </style>
