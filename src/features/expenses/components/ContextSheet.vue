@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import type { Group } from '../../../data/repositories'
+import { useSheetKeyboardAvoidance } from './useSheetKeyboardAvoidance'
 
 const props = defineProps<{ groups: readonly Group[]; modelValue: string }>()
 const emit = defineEmits<{ apply: [groupId: string]; cancel: [] }>()
 const draft = ref(props.modelValue)
 const error = ref('')
 const sheet = ref<HTMLElement>()
+useSheetKeyboardAvoidance(sheet)
 
 watch(() => props.modelValue, (value) => { draft.value = value; error.value = '' })
 

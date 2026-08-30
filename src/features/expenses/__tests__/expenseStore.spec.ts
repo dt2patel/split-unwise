@@ -2,7 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import { createMemoryReceiptStore, type ReceiptProvider, type ReceiptRecognitionResult } from '../../../data/receipts'
+import { createMemoryReceiptStore, type LocalReceiptReference, type ReceiptAsset, type ReceiptBlobStore, type ReceiptDurability, type ReceiptProvider, type ReceiptRecognitionResult } from '../../../data/receipts'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import type { AppRepository, Group, Member } from '../../../data/repositories'
 import { validateExpenseInput, useExpenseStore } from '../expenseStore'
@@ -121,6 +121,41 @@ describe('expense store lifecycle', () => {
     expect(store.origin).toBe('home')
     expect(store.editor.groupId).toBe('')
     expect(store.contextName).toBe('')
+  })
+
+  it('lets only the latest context selection commit when selections resolve out of order', async () => {
+    const base = createDemoRepository()
+    const currentUser = await base.app.getCurrentUser()
+    const firstMembers = deferred<readonly Member[]>()
+    const secondMembers = deferred<readonly Member[]>()
+    const firstGroup: Group = { id: 'first-context', name: 'First context', currency: 'EUR', memberIds: [currentUser.id], syncState: 'fresh' }
+    const secondGroup: Group = { id: 'second-context', name: 'Second context', currency: 'BHD', memberIds: [currentUser.id], syncState: 'fresh' }
+    const repository: AppRepository = {
+      ...base,
+      groups: {
+        ...base.groups,
+        async list() { return [...await base.groups.list(), firstGroup, secondGroup] },
+        async listMembers(groupId) {
+          if (groupId === firstGroup.id) return firstMembers.promise
+          if (groupId === secondGroup.id) return secondMembers.promise
+          return base.groups.listMembers(groupId)
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    const first = store.selectContext(firstGroup.id)
+    const second = store.selectContext(secondGroup.id)
+    secondMembers.resolve([currentUser])
+    await expect(second).resolves.toBe(true)
+    firstMembers.resolve([currentUser])
+
+    await expect(first).resolves.toBe(false)
+    expect(store.editor.groupId).toBe(secondGroup.id)
+    expect(store.contextName).toBe(secondGroup.name)
+    expect(store.editor.currency).toBe('BHD')
   })
 
   it('accepts only one save while an attempt is pending and keeps its operation ID', async () => {
@@ -263,6 +298,10 @@ describe('expense store lifecycle', () => {
 
     await store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
     expect(store.editor.attachmentRefs).toEqual(['local-receipt:receipt-test'])
+    expect(store.receiptDurability).toEqual({
+      status: 'local-only',
+      reason: 'Receipt is stored only on this device until upload succeeds.',
+    })
     expect(store.receiptMessage).toContain('not configured')
     expect(store.editor.split).toEqual(before)
 
@@ -325,6 +364,136 @@ describe('expense store lifecycle', () => {
     expect(store.receiptSuggestions).toEqual([])
     expect(store.receiptMessage).toBe('')
   })
+
+  it('lets only the latest receipt attachment commit when local writes resolve out of order', async () => {
+    const firstWrite = deferred<LocalReceiptReference>()
+    const deleted: LocalReceiptReference[] = []
+    const assets = new Map<LocalReceiptReference, ReceiptAsset>()
+    let writeCount = 0
+    const receipts: ReceiptBlobStore = {
+      async put(blob, metadata) {
+        writeCount += 1
+        const reference = writeCount === 1 ? await firstWrite.promise : 'local-receipt:second-write'
+        assets.set(reference, receiptAsset(reference, blob, metadata.fileName))
+        return reference
+      },
+      async get(reference) { return assets.get(reference) },
+      async delete(reference) { deleted.push(reference); assets.delete(reference) },
+      async setDurability(reference, durability) {
+        const asset = assets.get(reference)
+        if (asset) assets.set(reference, { ...asset, durability })
+      },
+    }
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts,
+    }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    const first = store.attachReceipt(new Blob(['first'], { type: 'image/jpeg' }), 'first.jpg')
+    const second = store.attachReceipt(new Blob(['second'], { type: 'image/jpeg' }), 'second.jpg')
+    await expect(second).resolves.toBe(true)
+    firstWrite.resolve('local-receipt:first-write')
+
+    await expect(first).resolves.toBe(false)
+    expect(store.editor.attachmentRefs).toEqual(['local-receipt:second-write'])
+    expect(store.receiptPreview?.reference).toBe('local-receipt:second-write')
+    expect(deleted).toEqual(['local-receipt:first-write'])
+  })
+
+  it('keeps newer receipt recognition when an older provider response arrives last', async () => {
+    const firstRecognition = deferred<ReceiptRecognitionResult>()
+    const secondRecognition = deferred<ReceiptRecognitionResult>()
+    const firstStarted = deferred<void>()
+    const secondStarted = deferred<void>()
+    const ids = ['first-recognition', 'second-recognition']
+    const receipts = createMemoryReceiptStore({ id: () => ids.shift() ?? 'unexpected-receipt' })
+    const provider: ReceiptProvider = {
+      async upload() { return { status: 'unavailable', reason: 'Upload unavailable.' } },
+      recognize(reference) {
+        if (reference === 'local-receipt:first-recognition') { firstStarted.resolve(); return firstRecognition.promise }
+        secondStarted.resolve()
+        return secondRecognition.promise
+      },
+      async delete() { /* no remote asset exists */ },
+    }
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts, receiptProvider: provider,
+    }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    const first = store.attachReceipt(new Blob(['first'], { type: 'image/jpeg' }), 'first.jpg')
+    await firstStarted.promise
+    const second = store.attachReceipt(new Blob(['second'], { type: 'image/jpeg' }), 'second.jpg')
+    await secondStarted.promise
+    secondRecognition.resolve({ status: 'suggestions', source: 'provider', items: [{ description: 'New item', amountText: '12.00' }] })
+    await expect(second).resolves.toBe(true)
+    firstRecognition.resolve({ status: 'suggestions', source: 'provider', items: [{ description: 'Stale item', amountText: '99.00' }] })
+
+    await expect(first).resolves.toBe(false)
+    expect(store.editor.attachmentRefs).toEqual(['local-receipt:first-recognition', 'local-receipt:second-recognition'])
+    expect(store.receiptPreview?.reference).toBe('local-receipt:second-recognition')
+    expect(store.receiptSuggestions).toEqual([{ description: 'New item', amountText: '12.00' }])
+  })
+
+  it('invalidates recognition when its selected receipt is removed', async () => {
+    const recognition = deferred<ReceiptRecognitionResult>()
+    const recognitionStarted = deferred<void>()
+    const receipts = createMemoryReceiptStore({ id: () => 'removed-during-recognition' })
+    const provider: ReceiptProvider = {
+      async upload() { return { status: 'unavailable', reason: 'Upload unavailable.' } },
+      recognize() { recognitionStarted.resolve(); return recognition.promise },
+      async delete() { /* no remote asset exists */ },
+    }
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts, receiptProvider: provider,
+    }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    const attachment = store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
+    await recognitionStarted.promise
+    await store.removeReceipt('local-receipt:removed-during-recognition')
+    recognition.resolve({ status: 'suggestions', source: 'provider', items: [{ description: 'Removed item', amountText: '10.00' }] })
+
+    await expect(attachment).resolves.toBe(false)
+    expect(store.editor.attachmentRefs).toEqual([])
+    expect(store.receiptPreview).toBeUndefined()
+    expect(store.receiptDurability).toBeUndefined()
+    expect(store.receiptSuggestions).toEqual([])
+    expect(store.receiptMessage).toBe('')
+  })
+
+  it('surfaces the persisted provider upload reason after local saving remains available', async () => {
+    const receipts = createMemoryReceiptStore({ id: () => 'offline-durability' })
+    const session = createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts,
+      receiptProvider: {
+        async upload() { return { status: 'unavailable', reason: 'No network. Receipt remains only on this device.' } },
+        async recognize() { return { status: 'unavailable', reason: 'Recognition unavailable.' } },
+        async delete() { /* no remote asset exists */ },
+      },
+    })
+    setAppSessionForTesting(session)
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+    await store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
+    completeValidEditor(store)
+
+    expect(store.submit('offline-receipt-save')).toBe(true)
+    const operation = session.queue.get('offline-receipt-save')
+    if (!operation) throw new Error('Expected persisted receipt operation')
+    await session.queue.submit(operation.envelope).result()
+    await eventually(() => store.receiptDurability?.status === 'upload-unavailable')
+
+    expect(store.saveState).toBe('saved')
+    expect(store.receiptDurability).toEqual({
+      status: 'upload-unavailable',
+      reason: 'No network. Receipt remains only on this device.',
+    })
+    expect(store.editor.attachmentRefs).toEqual(['local-receipt:offline-durability'])
+  })
 })
 
 function completeValidEditor(store: ReturnType<typeof useExpenseStore>): void {
@@ -337,4 +506,20 @@ function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>((done) => { resolve = done })
   return { promise, resolve }
+}
+
+function receiptAsset(reference: LocalReceiptReference, blob: Blob, fileName: string): ReceiptAsset {
+  const durability: ReceiptDurability = {
+    status: 'local-only',
+    reason: 'Receipt is stored only on this device until upload succeeds.',
+  }
+  return { reference, blob, fileName, mimeType: blob.type, size: blob.size, createdAt: '2026-08-30T12:00:00.000Z', durability }
+}
+
+async function eventually(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (condition()) return
+    await Promise.resolve()
+  }
+  throw new Error('Expected asynchronous store state was not observed')
 }

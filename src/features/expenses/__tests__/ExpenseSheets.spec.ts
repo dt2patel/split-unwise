@@ -87,6 +87,60 @@ describe('staged expense sheets', () => {
     ])
   })
 
+  it('emits dirty when Add item stages a receipt row', async () => {
+    const wrapper = mount(ReceiptReview, { props: {
+      modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
+    } })
+
+    await wrapper.get('.add-line').trigger('click')
+
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
+    expect(wrapper.findAll('.receipt-item')).toHaveLength(1)
+    expect(wrapper.emitted('confirm')).toBeUndefined()
+  })
+
+  it('emits dirty for each staged recurrence button change', async () => {
+    const wrapper = mountAttached(RecurrenceSheet, { props: {
+      modelValue: undefined,
+      date: '2026-08-30',
+      isRecurringInstance: true,
+    } })
+
+    await wrapper.get('[data-frequency="weekly"]').trigger('click')
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
+
+    await wrapper.get('[data-frequency="weekly"]').trigger('click')
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
+
+    await wrapper.get('[data-occurrence-scope="future"]').trigger('click')
+    expect(wrapper.emitted('dirty')).toHaveLength(2)
+
+    await wrapper.get('[data-frequency="weekly"]').trigger('keydown', { key: 'ArrowRight' })
+    expect(wrapper.emitted('dirty')).toHaveLength(3)
+  })
+
+  it.each([
+    [{ status: 'local-only', reason: 'Upload has not completed.' }, 'Saved only on this device.', 'Upload has not completed.'],
+    [{ status: 'upload-unavailable', reason: 'Receipt uploads are offline.' }, 'Upload unavailable; saved only on this device.', 'Receipt uploads are offline.'],
+  ] as const)('shows an explicit receipt durability warning for %s', (durability, summary, reason) => {
+    const wrapper = mount(ReceiptReview, { props: {
+      modelValue: [], members, currency: 'USD', totalMinorAmount: 1000, durability,
+    } })
+
+    const warning = wrapper.get('[data-testid="receipt-durability-warning"]')
+    expect(warning.text()).toContain(summary)
+    expect(warning.text()).toContain(reason)
+  })
+
+  it('does not warn that an uploaded receipt is device-only', () => {
+    const wrapper = mount(ReceiptReview, { props: {
+      modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
+      durability: { status: 'uploaded', attachmentRef: 'receipts/expense-1.jpg' },
+    } })
+
+    expect(wrapper.find('[data-testid="receipt-durability-warning"]').exists()).toBe(false)
+  })
+
   it('marks and focuses the context selector when no context is chosen', async () => {
     const context = mountAttached(ContextSheet, { props: { groups, modelValue: '' } })
     await context.get('[data-action="apply-context"]').trigger('click')
@@ -245,7 +299,10 @@ describe('staged expense sheets', () => {
     ['recurrence', RecurrenceSheet, { modelValue: undefined, date: '2026-08-30' }],
   ] as const)('%s sheet exposes the shared bounded scroll surface and sticky header', (_name, component, props) => {
     const wrapper = mount(component, { props } as never)
-    expect(wrapper.get('[data-sheet-scroll]').classes()).toContain('expense-sheet')
+    const scrollSurface = wrapper.get<HTMLElement>('[data-sheet-scroll]')
+    expect(scrollSurface.classes()).toContain('expense-sheet')
+    expect(scrollSurface.element.style.getPropertyValue('--su-keyboard-inset')).toBe('0px')
+    expect(scrollSurface.element.style.getPropertyValue('--su-visual-viewport-height')).toBe('')
     expect(wrapper.get('header').classes()).toContain('expense-sheet__header')
   })
 
@@ -310,8 +367,12 @@ describe('staged expense sheets', () => {
 
     expect(sheetRule?.style.overflowY).toBe('auto')
     expect(sheetRule?.style.minHeight).toBe('min(50dvh, 420px)')
-    expect(sheetRule?.style.maxHeight).toContain('dvh')
-    expect(sheetRule?.style.padding).toContain('keyboard-inset-height')
+    expect(sheetRule?.style.maxHeight).toBe('min(86dvh, 760px)')
+    expect(sheetRule?.style.getPropertyValue('--su-visual-viewport-height')).toBe('')
+    expect(sheetRule?.style.getPropertyValue('--su-keyboard-inset')).toBe('0px')
+    expect(sheetRule?.style.padding).toContain('env(safe-area-inset-bottom, 0px)')
+    expect(sheetRule?.style.padding).toContain('var(--su-keyboard-inset)')
+    expect(sheetRule?.style.padding).not.toContain('keyboard-inset-height')
     expect(headerRule?.style.position).toBe('sticky')
     expect(headerRule?.style.top).toBe('0px')
   })

@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import type { Member } from '../../../data/repositories'
+import { useSheetKeyboardAvoidance } from './useSheetKeyboardAvoidance'
 
 const props = defineProps<{ modelValue: readonly string[]; members: readonly Member[] }>()
 const emit = defineEmits<{ apply: [value: readonly string[]]; cancel: [] }>()
 const draft = ref<string[]>([...props.modelValue])
 const error = ref('')
 const sheet = ref<HTMLElement>()
+useSheetKeyboardAvoidance(sheet)
 watch(() => props.modelValue, (value) => { draft.value = [...value]; error.value = '' }, { deep: true })
 function toggle(id: string, event: Event): void { draft.value = (event.target as HTMLInputElement).checked ? [...new Set([...draft.value, id])] : draft.value.filter((value) => value !== id); error.value = '' }
 function apply(): void {

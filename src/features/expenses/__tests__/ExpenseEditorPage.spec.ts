@@ -97,6 +97,31 @@ describe('ExpenseEditorPage', () => {
     await expect(canDismiss(undefined, 'gesture')).resolves.toBe(true)
   })
 
+  it.each([
+    ['split method', '#split-sheet-trigger', '[data-method="exact"]'],
+    ['recurrence frequency', '#recurrence-sheet-trigger', '[data-frequency="monthly"]'],
+    ['receipt item', '#receipt-sheet-trigger', '.add-line'],
+  ] as const)('protects a staged %s button mutation from backdrop dismissal', async (_name, triggerSelector, mutationSelector) => {
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    await wrapper.get(triggerSelector).trigger('click')
+    await wrapper.get(mutationSelector).trigger('click')
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const canDismiss = wrapper.getComponent({ name: 'IonModal' }).props('canDismiss') as (data?: unknown, role?: string) => Promise<boolean>
+
+    await expect(canDismiss(undefined, 'backdrop')).resolves.toBe(false)
+    expect(confirm).toHaveBeenCalledWith('Discard staged sheet changes?')
+  })
+
+  it('passes the explicit local receipt durability state into receipt review copy', async () => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    await store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
+    await wrapper.get('#receipt-sheet-trigger').trigger('click')
+
+    const warning = wrapper.get('[data-testid="receipt-durability-warning"]')
+    expect(warning.text()).toContain('Saved only on this device.')
+    expect(warning.text()).toContain('until upload succeeds')
+  })
+
   it('connects every inline validation message to its invalid control', async () => {
     const { wrapper, store } = await mountRoute('/tabs/home/expenses/new')
     store.editor.participants = []

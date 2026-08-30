@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { Member } from '../../../data/repositories'
+import type { ReceiptDurability } from '../../../data/receipts'
 import { toMinorUnits, type CurrencyCode } from '../../../domain/money'
 import { computeAllocations } from '../../../domain/splits'
 import type { ReceiptItemInput } from '../expenseStore'
+import { useSheetKeyboardAvoidance } from './useSheetKeyboardAvoidance'
 
 const props = defineProps<{
   modelValue: readonly ReceiptItemInput[]
@@ -12,17 +14,30 @@ const props = defineProps<{
   totalMinorAmount: number
   providerMessage?: string
   imageUrl?: string
+  durability?: ReceiptDurability
 }>()
-const emit = defineEmits<{ confirm: [value: readonly ReceiptItemInput[]]; cancel: [] }>()
+const emit = defineEmits<{ confirm: [value: readonly ReceiptItemInput[]]; cancel: []; dirty: [] }>()
 const items = ref<ReceiptItemInput[]>(props.modelValue.map((item) => ({ ...item, participantIds: [...item.participantIds] })))
 const taxText = ref('')
 const tipText = ref('')
 const error = ref('')
 const errorTarget = ref('')
 const sheet = ref<HTMLElement>()
+const durabilityMessage = computed(() => {
+  if (!props.durability || props.durability.status === 'uploaded') return ''
+  const summary = props.durability.status === 'local-only'
+    ? 'Saved only on this device.'
+    : 'Upload unavailable; saved only on this device.'
+  return `${summary} ${props.durability.reason}`
+})
+useSheetKeyboardAvoidance(sheet)
 watch(() => props.modelValue, (value) => { items.value = value.map((item) => ({ ...item, participantIds: [...item.participantIds] })); error.value = '' }, { deep: true })
 function clearError(): void { error.value = ''; errorTarget.value = '' }
-function addItem(): void { items.value = [...items.value, { description: '', amountText: '', participantIds: props.members.map(({ id }) => id) }]; clearError() }
+function addItem(): void {
+  items.value = [...items.value, { description: '', amountText: '', participantIds: props.members.map(({ id }) => id) }]
+  clearError()
+  emit('dirty')
+}
 function update(index: number, field: 'amountText' | 'description', value: string): void { items.value = items.value.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item); clearError() }
 function toggle(index: number, memberId: string, checked: boolean): void {
   items.value = items.value.map((item, itemIndex) => itemIndex === index ? { ...item, participantIds: checked ? [...new Set([...item.participantIds, memberId])] : item.participantIds.filter((id) => id !== memberId) } : item)
@@ -95,6 +110,7 @@ function confirm(): void {
   <section ref="sheet" class="expense-sheet receipt-review" data-sheet-scroll aria-labelledby="receipt-title">
     <header class="expense-sheet__header"><button type="button" @click="emit('cancel')">Cancel</button><h2 id="receipt-title">Receipt review</h2><button type="button" data-action="confirm-receipt" @click="confirm">Confirm</button></header>
     <img v-if="imageUrl" :src="imageUrl" alt="Attached receipt preview" class="receipt-review__image">
+    <p v-if="durabilityMessage" data-testid="receipt-durability-warning" role="status" aria-live="polite" class="durability-warning">{{ durabilityMessage }}</p>
     <p v-if="providerMessage" role="status" class="provider-message">{{ providerMessage }}</p>
     <article v-for="(item, index) in items" :key="index" class="receipt-item">
       <label><span>Item</span><input :value="item.description" :data-item-description="index" :aria-invalid="errorTarget === `description-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `description-${index}` ? 'receipt-error' : undefined" @input="update(index, 'description', ($event.target as HTMLInputElement).value)"></label>
@@ -114,6 +130,7 @@ function confirm(): void {
 <style scoped src="./expense-sheet.css"></style>
 <style scoped>
 .receipt-review__image { display: block; width: 100%; max-height: 190px; margin: 12px 0; border-radius: 14px; object-fit: cover; }
+.durability-warning { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--ion-color-warning) 58%, var(--su-divider)); border-radius: 10px; background: color-mix(in srgb, var(--ion-color-warning) 13%, var(--su-surface)); color: var(--ion-text-color) !important; font-size: 0.84rem; }
 .provider-message { padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--su-lilac) 52%, var(--su-surface)); color: var(--ion-color-medium); font-size: 0.84rem; }
 .receipt-item { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--su-divider); }
 .receipt-item > label, .receipt-extras label { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 8px; }

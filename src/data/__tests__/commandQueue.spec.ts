@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CommandConflictError, CommandFailedError, CommandQueue, createBrowserCommandStorage, createMemoryCommandStorage, type CommandQueueOptions, type CommandStorage } from '../commandQueue'
+import { CommandConflictError, CommandFailedError, CommandQueue, createBrowserCommandStorage, createMemoryCommandStorage, type CommandOperation, type CommandQueueOptions, type CommandStorage } from '../commandQueue'
 import { OperationReplayConflictError } from '../operationIdentity'
 import type { CommandEnvelope, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseEditResult, ExpenseRow } from '../repositories'
 
@@ -48,14 +48,14 @@ const expenseRow = (groupId = 'lake-house-weekend', id = 'demo-expense-006'): Ex
   id,
 })
 
-const savedEdit = (command: ExpenseEditCommand, row = expenseRow(command.groupId, command.expenseId)): ExpenseEditResult => ({
+const savedEdit = (command: ExpenseEditCommand, row = { ...expenseRow(command.groupId, command.expenseId), revision: command.expectedRevision + 1 }): ExpenseEditResult => ({
   kind: 'expense.edit', operationId: command.operationId, status: 'saved', expense: row,
 })
 
 const DEMO_UID = 'maya-p'
 
-function createBoundQueue(options: CommandQueueOptions, originUid = DEMO_UID): CommandQueue {
-  return new CommandQueue({ ...options, originUid } as CommandQueueOptions & { readonly originUid: string })
+function createBoundQueue(options: CommandQueueOptions, originPrincipalKey = DEMO_UID): CommandQueue {
+  return new CommandQueue({ ...options, originPrincipalKey })
 }
 
 function createWebStorage(): Storage {
@@ -77,8 +77,8 @@ describe('CommandQueue', () => {
       handlers: { 'expense.add': async (command) => savedExpense(command.operationId) },
     })
 
-    expect(() => queue.submit(addExpense('unbound-submit'))).toThrow('authenticated owner')
-    await expect(queue.resume()).rejects.toThrow('authenticated owner')
+    expect(() => queue.submit(addExpense('unbound-submit'))).toThrow('authenticated principal')
+    await expect(queue.resume()).rejects.toThrow('authenticated principal')
     expect(queue.snapshot()).toEqual([])
   })
 
@@ -90,10 +90,10 @@ describe('CommandQueue', () => {
 
     await queue.submit(addExpense('owned-write')).result()
 
-    expect(queue.get('owned-write')).toMatchObject({ originUid: DEMO_UID, status: 'fresh' })
+    expect(queue.get('owned-write')).toMatchObject({ originPrincipalKey: DEMO_UID, status: 'fresh' })
   })
 
-  it('persists a versioned document under a UID-namespaced browser key and ignores obsolete account-agnostic data', async () => {
+  it('persists a versioned document under a principal-namespaced browser key and ignores obsolete account-agnostic data', async () => {
     const browser = createWebStorage()
     browser.setItem('split-unwise:command-queue:v1', JSON.stringify([
       { status: 'pending', envelope: addExpense('obsolete-write') },
@@ -106,30 +106,167 @@ describe('CommandQueue', () => {
     expect(queue.snapshot()).toEqual([])
     await queue.submit(addExpense('namespaced-write')).result()
 
-    expect(JSON.parse(browser.getItem('split-unwise:command-queue:v2:maya-p') ?? 'null')).toMatchObject({
-      version: 2,
-      originUid: DEMO_UID,
-      operations: [{ originUid: DEMO_UID, envelope: { operationId: 'namespaced-write' } }],
+    expect(JSON.parse(browser.getItem('split-unwise:command-queue:v3:maya-p') ?? 'null')).toMatchObject({
+      version: 3,
+      principalKey: DEMO_UID,
+      operations: [{ originPrincipalKey: DEMO_UID, envelope: { operationId: 'namespaced-write' } }],
     })
     expect(browser.getItem('split-unwise:command-queue:v1')).not.toBeNull()
   })
 
+  it('does not start a handler until the pending envelope is durably saved', async () => {
+    let releasePendingSave!: () => void
+    const pendingSave = new Promise<void>((resolve) => { releasePendingSave = resolve })
+    let writes = 0
+    let handlerCalls = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 1) await pendingSave
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: {
+        'expense.add': async (command) => {
+          handlerCalls += 1
+          return savedExpense(command.operationId)
+        },
+      },
+    })
+
+    const handle = queue.submit(addExpense('durable-before-execute'))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(writes).toBe(1)
+    expect(handlerCalls).toBe(0)
+
+    releasePendingSave()
+    await expect(handle.result()).resolves.toMatchObject({ status: 'saved' })
+    expect(handlerCalls).toBe(1)
+  })
+
+  it('serializes async queue documents so an older write cannot overwrite a newer snapshot', async () => {
+    const releases: Array<() => void> = []
+    const documents: Array<{ readonly operations: readonly CommandOperation[] }> = []
+    const handlerCalls: string[] = []
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async (_scopeKey, document) => {
+        documents.push(document)
+        if (documents.length <= 2) await new Promise<void>((resolve) => { releases.push(resolve) })
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: {
+        'expense.add': async (command) => {
+          handlerCalls.push(command.operationId)
+          return savedExpense(command.operationId)
+        },
+      },
+    })
+
+    const first = queue.submit(addExpense('serialized-first'))
+    const second = queue.submit(addExpense('serialized-second'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(documents).toHaveLength(1)
+    expect(handlerCalls).toEqual([])
+
+    releases[0]()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(documents).toHaveLength(2)
+    expect(documents[1].operations.map(({ envelope }) => envelope.operationId)).toEqual(['serialized-first', 'serialized-second'])
+    expect(handlerCalls).toEqual(['serialized-first'])
+
+    releases[1]()
+    await Promise.all([first.result(), second.result()])
+    expect(handlerCalls).toEqual(['serialized-first', 'serialized-second'])
+  })
+
+  it('returns a typed retryable nonexecuted failure when the pending save fails', async () => {
+    let writes = 0
+    let handlerCalls = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 1) throw new Error('disk unavailable')
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: {
+        'expense.add': async (command) => {
+          handlerCalls += 1
+          return savedExpense(command.operationId)
+        },
+      },
+    })
+
+    const handle = queue.submit(addExpense('pending-save-failed'))
+
+    await expect(handle.result()).rejects.toMatchObject({
+      name: 'CommandFailedError',
+      code: 'persistence',
+      retryable: true,
+      executed: false,
+    })
+    expect(handlerCalls).toBe(0)
+    expect(queue.get('pending-save-failed')).toMatchObject({
+      status: 'failed',
+      error: { code: 'persistence', retryable: true, executed: false },
+    })
+  })
+
+  it('contains a repeated storage rejection without attempting to persist the nonexecuted failure', async () => {
+    let writes = 0
+    let handlerCalls = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        throw new Error('storage remains unavailable')
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: {
+        'expense.add': async (command) => {
+          handlerCalls += 1
+          return savedExpense(command.operationId)
+        },
+      },
+    })
+
+    await expect(queue.submit(addExpense('contained-storage-failure')).result()).rejects.toMatchObject({
+      code: 'persistence', executed: false,
+    })
+    await Promise.resolve()
+
+    expect(writes).toBe(1)
+    expect(handlerCalls).toBe(0)
+  })
+
   it('quarantines invalid and cross-owner records from a versioned document', () => {
     const quarantined: unknown[] = []
-    const valid = { originUid: DEMO_UID, status: 'pending', envelope: addExpense('valid-owned') }
+    const valid = { originPrincipalKey: DEMO_UID, status: 'pending', envelope: addExpense('valid-owned') }
     const storage = {
       load: () => ({
-        version: 2,
-        originUid: DEMO_UID,
+        version: 3,
+        principalKey: DEMO_UID,
         operations: [
           valid,
-          { ...valid, originUid: 'someone-else', envelope: addExpense('cross-owner') },
+          { ...valid, originPrincipalKey: 'someone-else', envelope: addExpense('cross-owner') },
           { ...valid, status: 'invented', envelope: addExpense('invalid-status') },
           { status: 'pending', envelope: addExpense('obsolete-unowned') },
         ],
       }),
-      save: () => undefined,
-      quarantine: (_originUid: string, records: readonly unknown[]) => quarantined.push(...records),
+      save: async () => undefined,
+      quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as unknown as CommandStorage
     let queue: CommandQueue | undefined
 
@@ -138,22 +275,229 @@ describe('CommandQueue', () => {
     expect(quarantined).toHaveLength(3)
   })
 
+  it('uses an opaque principal key in strict version-3 browser persistence', async () => {
+    const principalKey = 'firebase:split-unwise-prod:user/maya@example.com'
+    const browser = createWebStorage()
+    const queue = createBoundQueue({
+      storage: createBrowserCommandStorage({ storage: browser }),
+      handlers: { 'expense.add': async (command) => savedExpense(command.operationId) },
+    }, principalKey)
+
+    await queue.submit(addExpense('principal-scoped-write')).result()
+
+    const document = JSON.parse(browser.getItem(`split-unwise:command-queue:v3:${encodeURIComponent(principalKey)}`) ?? 'null')
+    expect(document).toMatchObject({
+      version: 3,
+      principalKey,
+      operations: [{ originPrincipalKey: principalKey, envelope: { operationId: 'principal-scoped-write' } }],
+    })
+  })
+
+  it('propagates browser storage write failures to the queue', async () => {
+    const browser = createWebStorage()
+    browser.setItem = () => { throw new Error('quota exceeded') }
+    const storage = createBrowserCommandStorage({ storage: browser })
+    const principalKey = 'demo:local:browser-write-failure'
+    const operation = { originPrincipalKey: principalKey, status: 'pending' as const, envelope: addExpense('browser-write-failure') }
+
+    await expect(storage.save(principalKey, {
+      version: 3,
+      principalKey,
+      operations: [operation],
+    })).rejects.toThrow('quota exceeded')
+  })
+
+  it('quarantines version-2 owner documents instead of hydrating them into a principal scope', () => {
+    const legacyDocument = {
+      version: 2,
+      originUid: DEMO_UID,
+      operations: [{ originUid: DEMO_UID, status: 'pending', envelope: addExpense('legacy-owned-write') }],
+    }
+    const quarantined: unknown[] = []
+    const storage = {
+      load: () => legacyDocument,
+      save: async () => undefined,
+      quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
+    } as CommandStorage
+
+    const queue = createBoundQueue({ storage, handlers: {} })
+
+    expect(queue.snapshot()).toEqual([])
+    expect(quarantined).toEqual([legacyDocument])
+  })
+
+  it('does not finish binding until quarantine and sanitized persistence finish', async () => {
+    const principalKey = 'demo:local:bind-awaits-cleanup'
+    const invalid = { originPrincipalKey: 'another-principal', status: 'pending', envelope: addExpense('cross-principal') }
+    let releaseQuarantine!: () => void
+    let releaseSave!: () => void
+    const quarantineGate = new Promise<void>((resolve) => { releaseQuarantine = resolve })
+    const saveGate = new Promise<void>((resolve) => { releaseSave = resolve })
+    const events: string[] = []
+    const storage: CommandStorage = {
+      load: () => ({ version: 3, principalKey, operations: [invalid] }),
+      quarantine: async () => {
+        events.push('quarantine-start')
+        await quarantineGate
+        events.push('quarantine-finish')
+      },
+      save: async () => {
+        events.push('save-start')
+        await saveGate
+        events.push('save-finish')
+      },
+    }
+    const queue = new CommandQueue({ storage, handlers: {} })
+
+    const binding = queue.bind(principalKey) as unknown as Promise<void>
+
+    expect(binding).toBeInstanceOf(Promise)
+    expect(events).toEqual(['quarantine-start'])
+
+    releaseQuarantine()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(events).toEqual(['quarantine-start', 'quarantine-finish', 'save-start'])
+
+    let bound = false
+    void binding.then(() => { bound = true })
+    await Promise.resolve()
+    expect(bound).toBe(false)
+
+    releaseSave()
+    await binding
+    expect(events).toEqual(['quarantine-start', 'quarantine-finish', 'save-start', 'save-finish'])
+  })
+
+  it('does not execute a submitted command while principal cleanup is still binding', async () => {
+    const principalKey = 'demo:local:binding-barrier'
+    let releaseQuarantine!: () => void
+    const quarantineGate = new Promise<void>((resolve) => { releaseQuarantine = resolve })
+    let handlerCalls = 0
+    const storage: CommandStorage = {
+      load: () => ({
+        version: 3,
+        principalKey,
+        operations: [{ originPrincipalKey: 'cross-principal', status: 'pending', envelope: addExpense('quarantined-before-submit') }],
+      }),
+      quarantine: async () => { await quarantineGate },
+      save: async () => undefined,
+    }
+    const queue = new CommandQueue({
+      storage,
+      handlers: {
+        'expense.add': async (command) => {
+          handlerCalls += 1
+          return savedExpense(command.operationId)
+        },
+      },
+    })
+    const binding = queue.bind(principalKey)
+
+    const handle = queue.submit(addExpense('wait-for-principal-cleanup'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(handlerCalls).toBe(0)
+
+    releaseQuarantine()
+    await binding
+    await expect(handle.result()).resolves.toMatchObject({ status: 'saved' })
+    expect(handlerCalls).toBe(1)
+  })
+
+  it('quarantines persisted saved results with invalid targets or revision transitions', () => {
+    const principalKey = 'demo:local:maya-p'
+    const valid = {
+      originPrincipalKey: principalKey,
+      status: 'pending',
+      envelope: addExpense('valid-v3-pending'),
+    }
+    const invalidAdd = {
+      originPrincipalKey: principalKey,
+      status: 'fresh',
+      envelope: addExpense('persisted-bad-add'),
+      result: {
+        ...savedExpense('persisted-bad-add'),
+        expense: { ...savedExpense('persisted-bad-add').expense, revision: 2 },
+      },
+    }
+    const edit = editExpense('persisted-bad-edit')
+    const invalidEdit = {
+      originPrincipalKey: principalKey,
+      status: 'fresh',
+      envelope: edit,
+      result: savedEdit(edit, { ...expenseRow(edit.groupId, edit.expenseId), revision: edit.expectedRevision }),
+    }
+    const deletion = deleteExpense('persisted-bad-delete')
+    const invalidDelete = {
+      originPrincipalKey: principalKey,
+      status: 'fresh',
+      envelope: deletion,
+      result: {
+        kind: 'expense.delete', operationId: deletion.operationId, status: 'saved',
+        tombstone: { id: deletion.expenseId, groupId: deletion.groupId, revision: deletion.expectedRevision, deletedAt: '2026-08-30T13:00:00.000Z' },
+      },
+    }
+    const defaultSplit: CommandEnvelope = {
+      kind: 'group.default-split', operationId: 'persisted-bad-default-split', groupId: 'lake-house-weekend',
+      defaultSplit: { type: 'equal', participantIds: ['maya-p', 'jordan-k'] },
+    }
+    const invalidDefaultSplit = {
+      originPrincipalKey: principalKey,
+      status: 'fresh',
+      envelope: defaultSplit,
+      result: { kind: 'group.default-split', operationId: defaultSplit.operationId, status: 'saved', resourceId: 'another-group' },
+    }
+    const invalid = [invalidAdd, invalidEdit, invalidDelete, invalidDefaultSplit]
+    const quarantined: unknown[] = []
+    const storage = {
+      load: () => ({ version: 3, principalKey, operations: [valid, ...invalid] }),
+      save: async () => undefined,
+      quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
+    } as CommandStorage
+
+    const queue = createBoundQueue({ storage, handlers: {} }, principalKey)
+
+    expect(queue.snapshot()).toEqual([valid])
+    expect(quarantined).toEqual(invalid)
+  })
+
+  it('quarantines a persisted storage failure without a boolean execution marker', () => {
+    const principalKey = 'demo:local:invalid-persistence-marker'
+    const operation = {
+      originPrincipalKey: principalKey,
+      status: 'failed',
+      envelope: addExpense('invalid-persistence-marker'),
+      error: { code: 'persistence', message: 'disk unavailable', retryable: true, executed: 'false' },
+    }
+    const quarantined: unknown[] = []
+    const storage: CommandStorage = {
+      load: () => ({ version: 3, principalKey, operations: [operation] }),
+      save: async () => undefined,
+      quarantine: async (_scopeKey, records) => { quarantined.push(...records) },
+    }
+
+    const queue = createBoundQueue({ storage, handlers: {} }, principalKey)
+
+    expect(queue.snapshot()).toEqual([])
+    expect(quarantined).toEqual([operation])
+  })
+
   it('accepts occurrence-scoped edits and quarantines obsolete single-scope records', () => {
     const quarantined: unknown[] = []
     const occurrence = {
-      originUid: DEMO_UID,
+      originPrincipalKey: DEMO_UID,
       status: 'pending',
       envelope: { ...addExpense('current-occurrence-scope'), occurrenceEditScope: 'occurrence' },
     }
     const obsolete = {
-      originUid: DEMO_UID,
+      originPrincipalKey: DEMO_UID,
       status: 'pending',
       envelope: { ...addExpense('obsolete-single-scope'), occurrenceEditScope: 'single' },
     }
     const storage = {
-      load: () => ({ version: 2, originUid: DEMO_UID, operations: [occurrence, obsolete] }),
-      save: () => undefined,
-      quarantine: (_originUid: string, records: readonly unknown[]) => quarantined.push(...records),
+      load: () => ({ version: 3, principalKey: DEMO_UID, operations: [occurrence, obsolete] }),
+      save: async () => undefined,
+      quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as unknown as CommandStorage
 
     const queue = createBoundQueue({ storage, handlers: {} })
@@ -171,7 +515,7 @@ describe('CommandQueue', () => {
 
     const snapshot = queue.snapshot()
     expect(snapshot).toEqual([expect.objectContaining({ status: 'failed', error: expect.objectContaining({ code: 'unknown' }) })])
-    expect(queue.discard('discardable')).toBe(true)
+    await expect(queue.discard('discardable')).resolves.toBe(true)
     expect(queue.snapshot()).toEqual([])
 
     const conflicted = createBoundQueue({
@@ -179,7 +523,7 @@ describe('CommandQueue', () => {
       handlers: { 'expense.add': async () => { throw new CommandConflictError('remote changed', { revision: 2 }) } },
     })
     await expect(conflicted.submit(addExpense('keep-conflict')).result()).rejects.toThrow('remote changed')
-    expect(() => conflicted.discard('keep-conflict')).toThrow('Only failed operations can be discarded')
+    await expect(conflicted.discard('keep-conflict')).rejects.toThrow('Only failed operations can be discarded')
     expect(conflicted.snapshot()).toHaveLength(1)
   })
 
@@ -198,6 +542,30 @@ describe('CommandQueue', () => {
       code: 'not-supported',
     } satisfies Partial<CommandFailedError>)
     expect(queue.get('unsupported')).toMatchObject({ status: 'failed', error: { code: 'not-supported', message: 'Provider unavailable' } })
+  })
+
+  it('does not publish a missing-handler failure before the pending envelope is durable', async () => {
+    let releasePendingSave!: () => void
+    const pendingSave = new Promise<void>((resolve) => { releasePendingSave = resolve })
+    let writes = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 1) await pendingSave
+      },
+    }
+    const queue = createBoundQueue({ storage, handlers: {} })
+
+    const handle = queue.submit(addExpense('missing-handler-after-persist'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(writes).toBe(1)
+    expect(queue.get('missing-handler-after-persist')).toMatchObject({ status: 'pending' })
+
+    releasePendingSave()
+    await expect(handle.result()).rejects.toMatchObject({ code: 'handler-missing', executed: false })
+    expect(queue.get('missing-handler-after-persist')).toMatchObject({ status: 'failed', error: { code: 'handler-missing', executed: false } })
   })
 
   it('rejects a saved add result whose expense belongs to another group', async () => {
@@ -227,6 +595,71 @@ describe('CommandQueue', () => {
     expect(queue.get(command.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation', retryable: false } })
   })
 
+  it.each([
+    ['revision 2', { ...savedExpense('bad-add-transition'), expense: { ...savedExpense('bad-add-transition').expense, revision: 2 } }],
+    ['a deletion marker', { ...savedExpense('bad-add-transition'), expense: { ...savedExpense('bad-add-transition').expense, deletedAt: '2026-08-30T13:00:00.000Z' } }],
+  ] as const)('rejects a saved add result with %s', async (_label, result) => {
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.add': async () => result },
+    })
+
+    await expect(queue.submit(addExpense('bad-add-transition')).result()).rejects.toMatchObject({ code: 'validation' })
+    expect(queue.get('bad-add-transition')).toMatchObject({ status: 'failed', error: { code: 'validation' } })
+  })
+
+  it.each([
+    ['the unchanged revision', { ...expenseRow(), revision: 1 }],
+    ['a skipped revision', { ...expenseRow(), revision: 3 }],
+    ['a deletion marker', { ...expenseRow(), revision: 2, deletedAt: '2026-08-30T13:00:00.000Z' }],
+  ] as const)('rejects a saved edit result with %s', async (_label, resultExpense) => {
+    const command = editExpense('bad-edit-transition')
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.edit': async () => savedEdit(command, resultExpense) },
+    })
+
+    await expect(queue.submit(command).result()).rejects.toMatchObject({ code: 'validation' })
+    expect(queue.get(command.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation' } })
+  })
+
+  it.each([
+    ['the unchanged revision', 1],
+    ['a skipped revision', 3],
+  ] as const)('rejects a saved delete tombstone with %s', async (_label, revision) => {
+    const command = deleteExpense('bad-delete-transition')
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'expense.delete': async () => ({
+          kind: 'expense.delete', operationId: command.operationId, status: 'saved',
+          tombstone: { id: command.expenseId, groupId: command.groupId, revision, deletedAt: '2026-08-30T13:00:00.000Z' },
+        }),
+      },
+    })
+
+    await expect(queue.submit(command).result()).rejects.toMatchObject({ code: 'validation' })
+    expect(queue.get(command.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation' } })
+  })
+
+  it('binds a saved default-split result to the command group', async () => {
+    const command: CommandEnvelope = {
+      kind: 'group.default-split', operationId: 'wrong-default-split-group', groupId: 'lake-house-weekend',
+      defaultSplit: { type: 'equal', participantIds: ['maya-p', 'jordan-k'] },
+    }
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'group.default-split': async () => ({
+          kind: 'group.default-split', operationId: command.operationId, status: 'saved', resourceId: 'another-group',
+        }),
+      },
+    })
+
+    await expect(queue.submit(command).result()).rejects.toMatchObject({ code: 'validation' })
+    expect(queue.get(command.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation' } })
+  })
+
   it('uses an operation ID once while exposing pending and fresh states', async () => {
     const queue = createBoundQueue({
       storage: createMemoryCommandStorage(),
@@ -248,8 +681,73 @@ describe('CommandQueue', () => {
     await expect(waitingQueue.submit(addExpense('write-firewood')).result()).resolves.toMatchObject({ status: 'saved' })
     expect(calls).toBe(1)
     expect(waitingQueue.get('write-firewood')).toMatchObject({ status: 'fresh', result: { status: 'saved' } })
-    expect(waitingQueue.markStale('write-firewood')).toMatchObject({ status: 'stale', result: { status: 'saved' } })
-    expect(waitingQueue.markFresh('write-firewood')).toMatchObject({ status: 'fresh', result: { status: 'saved' } })
+    await expect(waitingQueue.markStale('write-firewood')).resolves.toMatchObject({ status: 'stale', result: { status: 'saved' } })
+    await expect(waitingQueue.markFresh('write-firewood')).resolves.toMatchObject({ status: 'fresh', result: { status: 'saved' } })
+  })
+
+  it('does not resolve a saved result until the terminal queue state is durable', async () => {
+    let releaseTerminalSave!: () => void
+    const terminalSave = new Promise<void>((resolve) => { releaseTerminalSave = resolve })
+    let writes = 0
+    let handlerCalls = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 2) await terminalSave
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: {
+        'expense.add': async (command) => {
+          handlerCalls += 1
+          return savedExpense(command.operationId)
+        },
+      },
+    })
+
+    const result = queue.submit(addExpense('durable-terminal-result')).result()
+    let settled = false
+    void result.finally(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(handlerCalls).toBe(1)
+    expect(writes).toBe(2)
+    expect(settled).toBe(false)
+
+    releaseTerminalSave()
+    await expect(result).resolves.toMatchObject({ status: 'saved' })
+  })
+
+  it('returns a typed executed persistence failure when the terminal save rejects', async () => {
+    let writes = 0
+    let handlerCalls = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 2) throw new Error('terminal storage unavailable')
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: {
+        'expense.add': async (command) => {
+          handlerCalls += 1
+          return savedExpense(command.operationId)
+        },
+      },
+    })
+
+    await expect(queue.submit(addExpense('terminal-save-failed')).result()).rejects.toMatchObject({
+      code: 'persistence', retryable: true, executed: true,
+    })
+    expect(handlerCalls).toBe(1)
+    expect(writes).toBe(2)
+    expect(queue.get('terminal-save-failed')).toMatchObject({
+      status: 'failed', error: { code: 'persistence', retryable: true, executed: true },
+    })
   })
 
   it('retries only failed operations and publishes each retry transition', async () => {
@@ -342,7 +840,7 @@ describe('CommandQueue', () => {
   it('quarantines a persisted conflict with an invalid edit remote', () => {
     const command = editExpense('persisted-invalid-remote')
     const operation = {
-      originUid: DEMO_UID,
+      originPrincipalKey: DEMO_UID,
       status: 'conflicted',
       envelope: command,
       error: { code: 'conflict', message: 'remote changed', retryable: false },
@@ -350,9 +848,9 @@ describe('CommandQueue', () => {
     }
     const quarantined: unknown[] = []
     const storage = {
-      load: () => ({ version: 2, originUid: DEMO_UID, operations: [operation] }),
-      save: () => undefined,
-      quarantine: (_originUid: string, records: readonly unknown[]) => quarantined.push(...records),
+      load: () => ({ version: 3, principalKey: DEMO_UID, operations: [operation] }),
+      save: async () => undefined,
+      quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as unknown as CommandStorage
 
     const queue = createBoundQueue({ storage, handlers: {} })
@@ -380,9 +878,9 @@ describe('CommandQueue', () => {
   })
 
   it('persists a pending envelope and resumes it after re-instantiation without repeating the operation ID', async () => {
-    const pending = { originUid: DEMO_UID, status: 'pending' as const, envelope: addExpense('reload-safe') }
+    const pending = { originPrincipalKey: DEMO_UID, status: 'pending' as const, envelope: addExpense('reload-safe') }
     const storage = createMemoryCommandStorage({
-      [DEMO_UID]: { version: 2, originUid: DEMO_UID, operations: [pending] },
+      [DEMO_UID]: { version: 3, principalKey: DEMO_UID, operations: [pending] },
     })
     let calls = 0
     const handler = async (command: { readonly operationId: string }): Promise<ExpenseAddResult> => {
@@ -396,9 +894,9 @@ describe('CommandQueue', () => {
 
     expect(calls).toBe(1)
     expect(storage.load(DEMO_UID)).toMatchObject({
-      version: 2,
-      originUid: DEMO_UID,
-      operations: [expect.objectContaining({ originUid: DEMO_UID, status: 'fresh', envelope: expect.objectContaining({ operationId: 'reload-safe' }) })],
+      version: 3,
+      principalKey: DEMO_UID,
+      operations: [expect.objectContaining({ originPrincipalKey: DEMO_UID, status: 'fresh', envelope: expect.objectContaining({ operationId: 'reload-safe' }) })],
     })
   })
 
@@ -479,6 +977,61 @@ describe('CommandQueue', () => {
     expect(queue.get(`typed-${code}`)).toMatchObject({ status, error: { code, retryable } })
   })
 
+  it('does not expose a handler failure until the failed queue state is durable', async () => {
+    let releaseFailedSave!: () => void
+    const failedSave = new Promise<void>((resolve) => { releaseFailedSave = resolve })
+    let writes = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 2) await failedSave
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: {
+        'expense.add': async () => { throw Object.assign(new Error('offline'), { code: 'unavailable' }) },
+      },
+    })
+
+    const result = queue.submit(addExpense('durable-handler-failure')).result()
+    let settled = false
+    void result.catch(() => undefined).finally(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(writes).toBe(2)
+    expect(settled).toBe(false)
+
+    releaseFailedSave()
+    await expect(result).rejects.toMatchObject({ code: 'network', retryable: true })
+  })
+
+  it('converts failed-state persistence rejection into a typed executed storage failure', async () => {
+    let writes = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 2) throw new Error('cannot persist failed state')
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: {
+        'expense.add': async () => { throw Object.assign(new Error('offline'), { code: 'unavailable' }) },
+      },
+    })
+
+    await expect(queue.submit(addExpense('failed-state-save-failed')).result()).rejects.toMatchObject({
+      code: 'persistence', retryable: true, executed: true,
+    })
+    expect(writes).toBe(2)
+    expect(queue.get('failed-state-save-failed')).toMatchObject({
+      status: 'failed', error: { code: 'persistence', retryable: true, executed: true },
+    })
+  })
+
   it('retries network failures but refuses non-retryable failures', async () => {
     let networkCalls = 0
     const networkQueue = createBoundQueue({
@@ -511,8 +1064,87 @@ describe('CommandQueue', () => {
     await queue.submit(addExpense('acknowledge-fresh')).result()
 
     expect(typeof (queue as unknown as { acknowledge?: unknown }).acknowledge).toBe('function')
-    expect((queue as unknown as { acknowledge(operationId: string): boolean }).acknowledge('acknowledge-fresh')).toBe(true)
+    await expect(queue.acknowledge('acknowledge-fresh')).resolves.toBe(true)
     expect(queue.snapshot()).toEqual([])
     expect(observedSnapshots.at(-1)).toBe(0)
+  })
+
+  it('does not report discard success until the removal is durable', async () => {
+    let releaseRemoval!: () => void
+    const removalGate = new Promise<void>((resolve) => { releaseRemoval = resolve })
+    let blockWrites = false
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => { if (blockWrites) await removalGate },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: { 'expense.add': async () => { throw Object.assign(new Error('invalid'), { code: 'invalid-argument' }) } },
+    })
+    await expect(queue.submit(addExpense('durable-discard')).result()).rejects.toMatchObject({ code: 'validation' })
+    blockWrites = true
+
+    const removal = queue.discard('durable-discard') as unknown as Promise<boolean>
+
+    expect(removal).toBeInstanceOf(Promise)
+    expect(queue.get('durable-discard')).toMatchObject({ status: 'failed' })
+
+    releaseRemoval()
+    await expect(removal).resolves.toBe(true)
+    expect(queue.get('durable-discard')).toBeUndefined()
+  })
+
+  it('does not report acknowledgement success until the removal is durable', async () => {
+    let releaseRemoval!: () => void
+    const removalGate = new Promise<void>((resolve) => { releaseRemoval = resolve })
+    let blockWrites = false
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => { if (blockWrites) await removalGate },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: { 'expense.add': async (command) => savedExpense(command.operationId) },
+    })
+    await queue.submit(addExpense('durable-acknowledgement')).result()
+    blockWrites = true
+
+    const removal = queue.acknowledge('durable-acknowledgement') as unknown as Promise<boolean>
+
+    expect(removal).toBeInstanceOf(Promise)
+    expect(queue.get('durable-acknowledgement')).toMatchObject({ status: 'fresh' })
+
+    releaseRemoval()
+    await expect(removal).resolves.toBe(true)
+    expect(queue.get('durable-acknowledgement')).toBeUndefined()
+  })
+
+  it('does not publish read-state changes until each state is durable', async () => {
+    let releaseWrite!: () => void
+    let writeGate = Promise.resolve()
+    let blockWrites = false
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => { if (blockWrites) await writeGate },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: { 'expense.add': async (command) => savedExpense(command.operationId) },
+    })
+    await queue.submit(addExpense('durable-read-state')).result()
+
+    writeGate = new Promise<void>((resolve) => { releaseWrite = resolve })
+    blockWrites = true
+    const stale = queue.markStale('durable-read-state') as unknown as Promise<CommandOperation>
+    expect(stale).toBeInstanceOf(Promise)
+    expect(queue.get('durable-read-state')).toMatchObject({ status: 'fresh' })
+    releaseWrite()
+    await expect(stale).resolves.toMatchObject({ status: 'stale' })
+
+    writeGate = new Promise<void>((resolve) => { releaseWrite = resolve })
+    const fresh = queue.markFresh('durable-read-state') as unknown as Promise<CommandOperation>
+    expect(queue.get('durable-read-state')).toMatchObject({ status: 'stale' })
+    releaseWrite()
+    await expect(fresh).resolves.toMatchObject({ status: 'fresh' })
   })
 })

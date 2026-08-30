@@ -4,15 +4,16 @@ import { computeAllocations } from '../domain/splits'
 import type { CommandEnvelope, CommandKind, CommandResult, ExpenseDraft, ExpenseRow, SyncState } from './repositories'
 import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
 
-export const COMMAND_QUEUE_STORAGE_VERSION = 2 as const
+export const COMMAND_QUEUE_STORAGE_VERSION = 3 as const
 const COMMAND_QUEUE_STORAGE_PREFIX = `split-unwise:command-queue:v${COMMAND_QUEUE_STORAGE_VERSION}`
 const COMMAND_QUEUE_QUARANTINE_PREFIX = `split-unwise:command-queue:quarantine:v${COMMAND_QUEUE_STORAGE_VERSION}`
 
-export type CommandFailureCode = 'conflict' | 'handler-missing' | 'network' | 'not-supported' | 'permission-denied' | 'unknown' | 'validation'
+export type CommandFailureCode = 'conflict' | 'handler-missing' | 'network' | 'not-supported' | 'permission-denied' | 'persistence' | 'unknown' | 'validation'
 export interface CommandFailure {
   readonly code: CommandFailureCode
   readonly message: string
   readonly retryable: boolean
+  readonly executed?: boolean
   readonly conflict?: unknown
 }
 
@@ -23,14 +24,14 @@ export class CommandConflictError extends Error {
 
 export class CommandFailedError extends Error {
   readonly retryable: boolean
-  constructor(readonly code: CommandFailureCode, message: string) {
+  constructor(readonly code: CommandFailureCode, message: string, readonly executed?: boolean) {
     super(message)
     this.name = 'CommandFailedError'
     this.retryable = isRetryableFailureCode(code)
   }
 }
 
-interface OwnedOperation { readonly originUid: string; readonly envelope: CommandEnvelope }
+interface OwnedOperation { readonly originPrincipalKey: string; readonly envelope: CommandEnvelope }
 export type CommandOperation =
   | (OwnedOperation & { readonly status: 'pending' })
   | (OwnedOperation & { readonly status: 'fresh' | 'stale'; readonly result: CommandResult })
@@ -39,15 +40,15 @@ export type CommandOperation =
 
 export interface PersistedCommandQueue {
   readonly version: typeof COMMAND_QUEUE_STORAGE_VERSION
-  readonly originUid: string
+  readonly principalKey: string
   readonly operations: readonly CommandOperation[]
 }
 
-/** Storage is always addressed by UID. There is no account-agnostic load or save path. */
+/** Storage is always addressed by an opaque principal key. There is no account-agnostic path. */
 export interface CommandStorage {
-  load(originUid: string): unknown
-  save(originUid: string, document: PersistedCommandQueue): void
-  quarantine?(originUid: string, records: readonly unknown[]): void
+  load(scopeKey: string): unknown
+  save(scopeKey: string, document: PersistedCommandQueue): Promise<void>
+  quarantine?(scopeKey: string, records: readonly unknown[]): Promise<void>
 }
 
 export interface CommandHandle { readonly operationId: string; result(): Promise<CommandResult> }
@@ -57,7 +58,7 @@ export interface CommandQueueOptions {
   readonly handlers: CommandHandlers
   readonly storage?: CommandStorage
   /** Useful for deterministic seams. App sessions bind only after hydrating repository identity. */
-  readonly originUid?: string
+  readonly originPrincipalKey?: string
 }
 
 /** Serializable, timer-free queue. Commands are persisted before registered handlers run. */
@@ -66,34 +67,39 @@ export class CommandQueue {
   private readonly listeners = new Set<(operation: CommandOperation) => void>()
   private readonly running = new Map<string, Promise<void>>()
   private readonly storage: CommandStorage
-  private originUid: string | undefined
+  private principalKey: string | undefined
+  private binding: Promise<void> = Promise.resolve()
+  private persistenceTail: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: CommandQueueOptions) {
     this.storage = options.storage ?? createBrowserCommandStorage()
-    if (options.originUid !== undefined) this.bind(options.originUid)
+    if (options.originPrincipalKey !== undefined) this.binding = this.bind(options.originPrincipalKey)
   }
 
   /** A queue is permanently scoped to one authenticated identity for its lifetime. */
-  bind(originUid: string): void {
-    const owner = assertOriginUid(originUid)
-    if (this.originUid !== undefined) {
-      if (this.originUid !== owner) throw new Error('Command queue is already bound to a different authenticated owner')
-      return
+  bind(principalKey: string): Promise<void> {
+    const owner = assertPrincipalKey(principalKey)
+    if (this.principalKey !== undefined) {
+      if (this.principalKey !== owner) throw new Error('Command queue is already bound to a different authenticated principal')
+      return this.binding
     }
-    this.originUid = owner
+    this.principalKey = owner
     const decoded = decodePersistedQueue(this.storage.load(owner), owner)
     for (const operation of decoded.operations) {
       if (this.operations.has(operation.envelope.operationId)) decoded.rejected.push(operation)
       else this.operations.set(operation.envelope.operationId, operation)
     }
     if (decoded.rejected.length > 0) {
-      this.storage.quarantine?.(owner, clone(decoded.rejected))
-      this.persist()
+      this.binding = (async () => {
+        await this.storage.quarantine?.(owner, clone(decoded.rejected))
+        await this.persist()
+      })()
     }
+    return this.binding
   }
 
   submit(command: CommandEnvelope): CommandHandle {
-    const originUid = this.requireOwner()
+    const principalKey = this.requireOwner()
     assertOperationId(command.operationId)
     const existing = this.operations.get(command.operationId)
     if (existing) {
@@ -106,8 +112,10 @@ export class CommandQueue {
       }
       return this.handle(command.operationId)
     }
-    this.replace({ originUid, status: 'pending', envelope: clone(command) })
-    this.start(command.operationId)
+    this.replaceInMemory({ originPrincipalKey: principalKey, status: 'pending', envelope: clone(command) })
+    const pendingWrite = this.binding.then(() => this.persist())
+      .catch((error: unknown) => { throw new CommandFailedError('persistence', errorMessage(error), false) })
+    this.start(command.operationId, pendingWrite)
     return this.handle(command.operationId)
   }
 
@@ -116,52 +124,61 @@ export class CommandQueue {
     const operation = this.operations.get(operationId)
     if (!operation || operation.status !== 'failed') return rejectedHandle(operationId, new Error('Only failed operations can be retried'))
     if (!operation.error.retryable) return rejectedHandle(operationId, new Error(`The ${operation.error.code} failure is not retryable`))
-    this.replace({ originUid: operation.originUid, status: 'pending', envelope: operation.envelope })
-    this.start(operationId)
+    this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, status: 'pending', envelope: operation.envelope })
+    const pendingWrite = this.binding.then(() => this.persist())
+      .catch((error: unknown) => { throw new CommandFailedError('persistence', errorMessage(error), false) })
+    this.start(operationId, pendingWrite)
     return this.handle(operationId)
   }
 
   get(operationId: string): CommandOperation | undefined { return cloneOptional(this.operations.get(operationId)) }
   snapshot(): readonly CommandOperation[] { return clone([...this.operations.values()]) }
 
-  discard(operationId: string): boolean {
+  async discard(operationId: string): Promise<boolean> {
     this.requireOwner()
     const operation = this.operations.get(operationId)
     if (!operation) return false
     if (operation.status !== 'failed') throw new Error('Only failed operations can be discarded')
+    await this.persistProjection((next) => {
+      next.delete(operationId)
+      return next.values()
+    })
     this.operations.delete(operationId)
-    this.persist()
     this.notify(operation)
     return true
   }
 
   /** Removes a reconciled terminal journal record after its server state is reflected in reads. */
-  acknowledge(operationId: string): boolean {
+  async acknowledge(operationId: string): Promise<boolean> {
     this.requireOwner()
     const operation = this.operations.get(operationId)
     if (!operation) return false
     if (operation.status !== 'fresh' && operation.status !== 'stale' && operation.status !== 'conflicted') {
       throw new Error('Only fresh, stale, or conflicted operations can be acknowledged')
     }
+    await this.persistProjection((next) => {
+      next.delete(operationId)
+      return next.values()
+    })
     this.operations.delete(operationId)
-    this.persist()
     this.notify(operation)
     return true
   }
 
   subscribe(listener: (operation: CommandOperation) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
-  markStale(operationId: string): CommandOperation { return this.setReadState(operationId, 'stale') }
-  markFresh(operationId: string): CommandOperation { return this.setReadState(operationId, 'fresh') }
+  markStale(operationId: string): Promise<CommandOperation> { return this.setReadState(operationId, 'stale') }
+  markFresh(operationId: string): Promise<CommandOperation> { return this.setReadState(operationId, 'fresh') }
 
   async resume(): Promise<void> {
     this.requireOwner()
+    await this.binding
     const pending = [...this.operations.values()].filter((operation): operation is Extract<CommandOperation, { status: 'pending' }> => operation.status === 'pending')
     await Promise.all(pending.map((operation) => this.start(operation.envelope.operationId)))
   }
 
   private requireOwner(): string {
-    if (this.originUid === undefined) throw new Error('Command queue requires an authenticated owner before use')
-    return this.originUid
+    if (this.principalKey === undefined) throw new Error('Command queue requires an authenticated principal before use')
+    return this.principalKey
   }
 
   private handle(operationId: string): CommandHandle { return { operationId, result: async () => this.readResult(operationId) } }
@@ -177,43 +194,52 @@ export class CommandQueue {
     }
     if (operation.status === 'fresh' || operation.status === 'stale') return clone(operation.result)
     if (operation.status === 'conflicted') throw new CommandConflictError(operation.error.message, clone(operation.conflict))
-    if (operation.status === 'failed') throw new CommandFailedError(operation.error.code, operation.error.message)
+    if (operation.status === 'failed') throw new CommandFailedError(operation.error.code, operation.error.message, operation.error.executed)
     throw new Error(`Operation ${operationId} is unavailable`)
   }
 
-  private start(operationId: string): Promise<void> {
+  private start(operationId: string, pendingWrite: Promise<void> = Promise.resolve()): Promise<void> {
     const active = this.running.get(operationId)
     if (active) return active
     const operation = this.operations.get(operationId)
     if (!operation || operation.status !== 'pending') return Promise.resolve()
-    const handler = this.options.handlers[operation.envelope.kind]
-    if (!handler) {
-      this.replace({
-        originUid: operation.originUid,
-        status: 'failed',
-        envelope: operation.envelope,
-        error: failure('handler-missing', `No handler is registered for ${operation.envelope.kind}`),
+    const running = pendingWrite
+      .then(() => {
+        const handler = this.options.handlers[operation.envelope.kind]
+        if (!handler) throw new CommandFailedError('handler-missing', `No handler is registered for ${operation.envelope.kind}`, false)
+        return handler(operation.envelope)
       })
-      return Promise.resolve()
-    }
-    const running = Promise.resolve()
-      .then(() => handler(operation.envelope))
-      .then((result) => {
+      .then(async (result) => {
         if (result.status === 'not-supported') throw new CommandFailedError('not-supported', result.reason)
         if (!isCommandResultFor(result, operation.envelope)) throw new CommandFailedError('validation', 'Command handler returned an invalid or mismatched result')
         const current = this.operations.get(operationId)
         if (current?.status === 'pending' && canonicalEnvelopeFingerprint(current.envelope) === canonicalEnvelopeFingerprint(operation.envelope)) {
-          this.replace({ originUid: operation.originUid, status: 'fresh', envelope: operation.envelope, result: clone(result) })
+          await this.replace({ originPrincipalKey: operation.originPrincipalKey, status: 'fresh', envelope: operation.envelope, result: clone(result) })
+            .catch((error: unknown) => { throw new CommandFailedError('persistence', errorMessage(error), true) })
         }
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
         const current = this.operations.get(operationId)
-        if (current?.status !== 'pending' || canonicalEnvelopeFingerprint(current.envelope) !== canonicalEnvelopeFingerprint(operation.envelope)) return
+        if (!current || canonicalEnvelopeFingerprint(current.envelope) !== canonicalEnvelopeFingerprint(operation.envelope)) return
         const mapped = toFailure(error)
-        if (mapped.code === 'conflict') {
-          this.replace({ originUid: operation.originUid, status: 'conflicted', envelope: operation.envelope, error: mapped, conflict: conflictDetails(error, operation.envelope) })
+        if (mapped.code === 'persistence') {
+          this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, status: 'failed', envelope: operation.envelope, error: mapped })
+        } else if (current.status !== 'pending') {
+          return
         } else {
-          this.replace({ originUid: operation.originUid, status: 'failed', envelope: operation.envelope, error: mapped })
+          const terminal: CommandOperation = mapped.code === 'conflict'
+            ? { originPrincipalKey: operation.originPrincipalKey, status: 'conflicted', envelope: operation.envelope, error: mapped, conflict: conflictDetails(error, operation.envelope) }
+            : { originPrincipalKey: operation.originPrincipalKey, status: 'failed', envelope: operation.envelope, error: mapped }
+          try {
+            await this.replace(terminal)
+          } catch (storageError: unknown) {
+            this.replaceInMemory({
+              originPrincipalKey: operation.originPrincipalKey,
+              status: 'failed',
+              envelope: operation.envelope,
+              error: failure('persistence', errorMessage(storageError), true),
+            })
+          }
         }
       })
       .finally(() => { this.running.delete(operationId) })
@@ -221,26 +247,52 @@ export class CommandQueue {
     return running
   }
 
-  private setReadState(operationId: string, status: Extract<SyncState, 'fresh' | 'stale'>): CommandOperation {
+  private async setReadState(operationId: string, status: Extract<SyncState, 'fresh' | 'stale'>): Promise<CommandOperation> {
     this.requireOwner()
     const operation = this.operations.get(operationId)
     if (!operation || (operation.status !== 'fresh' && operation.status !== 'stale')) throw new Error('Only fresh or stale operations can be marked stale or fresh')
     const updated: CommandOperation = { ...operation, status }
-    this.replace(updated)
+    await this.persistProjection((next) => {
+      next.set(operationId, updated)
+      return next.values()
+    })
+    this.operations.set(operationId, clone(updated))
+    this.notify(updated)
     return clone(updated)
   }
 
-  private replace(operation: CommandOperation): void {
+  private replace(operation: CommandOperation): Promise<void> {
+    this.replaceInMemory(operation)
+    return this.persist()
+  }
+
+  private replaceInMemory(operation: CommandOperation): void {
     const owner = this.requireOwner()
-    if (operation.originUid !== owner) throw new Error('Command operation owner does not match the authenticated queue owner')
+    if (operation.originPrincipalKey !== owner) throw new Error('Command operation principal does not match the authenticated queue principal')
     this.operations.set(operation.envelope.operationId, clone(operation))
-    this.persist()
     this.notify(operation)
   }
 
-  private persist(): void {
-    const originUid = this.requireOwner()
-    this.storage.save(originUid, { version: COMMAND_QUEUE_STORAGE_VERSION, originUid, operations: clone([...this.operations.values()]) })
+  private persist(): Promise<void> {
+    return this.enqueuePersistence(() => this.operations.values())
+  }
+
+  private persistProjection(project: (current: Map<string, CommandOperation>) => Iterable<CommandOperation>): Promise<void> {
+    return this.enqueuePersistence(() => project(new Map(this.operations)))
+  }
+
+  private enqueuePersistence(operationsAtExecution: () => Iterable<CommandOperation>): Promise<void> {
+    const principalKey = this.requireOwner()
+    const write = this.persistenceTail.then(() => {
+      const document: PersistedCommandQueue = {
+        version: COMMAND_QUEUE_STORAGE_VERSION,
+        principalKey,
+        operations: clone([...operationsAtExecution()]),
+      }
+      return this.storage.save(principalKey, document)
+    })
+    this.persistenceTail = write.catch(() => undefined)
+    return write
   }
 
   private notify(operation: CommandOperation): void {
@@ -249,77 +301,82 @@ export class CommandQueue {
   }
 }
 
-/** Deterministic UID-indexed storage seam for tests and non-browser hosts. */
+/** Deterministic principal-key-indexed storage seam for tests and non-browser hosts. */
 export function createMemoryCommandStorage(initial: Readonly<Record<string, unknown>> = {}): CommandStorage {
   const documents = new Map(Object.entries(clone(initial)))
   const quarantined = new Map<string, unknown[]>()
   return {
-    load: (originUid) => cloneOptional(documents.get(originUid)),
-    save: (originUid, document) => { documents.set(originUid, clone(document)) },
-    quarantine: (originUid, records) => { quarantined.set(originUid, [...(quarantined.get(originUid) ?? []), ...clone(records)]) },
+    load: (scopeKey) => cloneOptional(documents.get(scopeKey)),
+    save: async (scopeKey, document) => { documents.set(scopeKey, clone(document)) },
+    quarantine: async (scopeKey, records) => { quarantined.set(scopeKey, [...(quarantined.get(scopeKey) ?? []), ...clone(records)]) },
   }
 }
 
 export interface BrowserCommandStorageOptions { readonly storage?: Storage; readonly keyPrefix?: string }
 
-/** Browser persistence uses a distinct key for each authenticated UID. */
+/** Browser persistence uses a distinct key for each authenticated principal. */
 export function createBrowserCommandStorage(options: BrowserCommandStorageOptions = {}): CommandStorage {
   const storage = options.storage ?? readBrowserStorage()
   const prefix = options.keyPrefix ?? COMMAND_QUEUE_STORAGE_PREFIX
-  const keyFor = (originUid: string) => `${prefix}:${encodeURIComponent(originUid)}`
-  const quarantineKeyFor = (originUid: string) => `${COMMAND_QUEUE_QUARANTINE_PREFIX}:${encodeURIComponent(originUid)}`
-  const quarantine = (originUid: string, records: readonly unknown[]) => {
+  const keyFor = (scopeKey: string) => `${prefix}:${encodeURIComponent(scopeKey)}`
+  const quarantineKeyFor = (scopeKey: string) => `${COMMAND_QUEUE_QUARANTINE_PREFIX}:${encodeURIComponent(scopeKey)}`
+  const quarantine = async (scopeKey: string, records: readonly unknown[]) => {
     if (!storage || records.length === 0) return
     try {
-      const key = quarantineKeyFor(originUid)
+      const key = quarantineKeyFor(scopeKey)
       const current = parseQuarantine(storage.getItem(key))
-      storage.setItem(key, JSON.stringify({ version: COMMAND_QUEUE_STORAGE_VERSION, originUid, records: [...current, ...toSerializableRecords(records)] }))
+      storage.setItem(key, JSON.stringify({ version: COMMAND_QUEUE_STORAGE_VERSION, principalKey: scopeKey, records: [...current, ...toSerializableRecords(records)] }))
     } catch { /* persistence failures leave the in-memory queue usable */ }
   }
   return {
-    load: (originUid) => {
+    load: (scopeKey) => {
       if (!storage) return undefined
-      const key = keyFor(originUid)
+      const key = keyFor(scopeKey)
       try {
         const value = storage.getItem(key)
         if (value === null) return undefined
         try { return JSON.parse(value) as unknown } catch {
-          quarantine(originUid, [{ reason: 'invalid-json', raw: value }])
+          quarantine(scopeKey, [{ reason: 'invalid-json', raw: value }])
           storage.removeItem(key)
           return undefined
         }
       } catch { return undefined }
     },
-    save: (originUid, document) => { try { storage?.setItem(keyFor(originUid), JSON.stringify(document)) } catch { /* unavailable storage leaves the in-memory queue usable */ } },
+    save: async (scopeKey, document) => {
+      if (!storage) throw new Error('Browser command storage is unavailable')
+      storage.setItem(keyFor(scopeKey), JSON.stringify(document))
+    },
     quarantine,
   }
 }
 
-function decodePersistedQueue(value: unknown, originUid: string): { operations: CommandOperation[]; rejected: unknown[] } {
+function decodePersistedQueue(value: unknown, principalKey: string): { operations: CommandOperation[]; rejected: unknown[] } {
   if (value === undefined || value === null) return { operations: [], rejected: [] }
-  if (!isRecord(value) || value.version !== COMMAND_QUEUE_STORAGE_VERSION || value.originUid !== originUid || !Array.isArray(value.operations)) {
+  if (!isRecord(value) || value.version !== COMMAND_QUEUE_STORAGE_VERSION || value.principalKey !== principalKey || !Array.isArray(value.operations)) {
     return { operations: [], rejected: [value] }
   }
   const operations: CommandOperation[] = []
   const rejected: unknown[] = []
   for (const candidate of value.operations) {
-    if (isCommandOperation(candidate, originUid)) operations.push(clone(candidate))
+    if (isCommandOperation(candidate, principalKey)) operations.push(clone(candidate))
     else rejected.push(candidate)
   }
   return { operations, rejected }
 }
 
-function isCommandOperation(value: unknown, originUid: string): value is CommandOperation {
-  if (!isRecord(value) || value.originUid !== originUid || !isCommandEnvelope(value.envelope)) return false
-  if (value.status === 'pending') return onlyOperationFields(value, ['originUid', 'status', 'envelope'])
-  if (value.status === 'fresh' || value.status === 'stale') return onlyOperationFields(value, ['originUid', 'status', 'envelope', 'result']) && isCommandResultFor(value.result, value.envelope)
-  if (value.status === 'failed') return onlyOperationFields(value, ['originUid', 'status', 'envelope', 'error']) && isCommandFailure(value.error) && value.error.code !== 'conflict'
-  if (value.status === 'conflicted') return onlyOperationFields(value, ['originUid', 'status', 'envelope', 'error', 'conflict']) && isCommandFailure(value.error) && value.error.code === 'conflict' && isConflictForEnvelope(value.conflict, value.envelope)
+function isCommandOperation(value: unknown, principalKey: string): value is CommandOperation {
+  if (!isRecord(value) || value.originPrincipalKey !== principalKey || !isCommandEnvelope(value.envelope)) return false
+  if (value.status === 'pending') return onlyOperationFields(value, ['originPrincipalKey', 'status', 'envelope'])
+  if (value.status === 'fresh' || value.status === 'stale') return onlyOperationFields(value, ['originPrincipalKey', 'status', 'envelope', 'result']) && isCommandResultFor(value.result, value.envelope)
+  if (value.status === 'failed') return onlyOperationFields(value, ['originPrincipalKey', 'status', 'envelope', 'error']) && isCommandFailure(value.error) && value.error.code !== 'conflict'
+  if (value.status === 'conflicted') return onlyOperationFields(value, ['originPrincipalKey', 'status', 'envelope', 'error', 'conflict']) && isCommandFailure(value.error) && value.error.code === 'conflict' && isConflictForEnvelope(value.conflict, value.envelope)
   return false
 }
 
 function isCommandFailure(value: unknown): value is CommandFailure {
   if (!isRecord(value) || !isFailureCode(value.code) || typeof value.message !== 'string' || typeof value.retryable !== 'boolean') return false
+  if (value.executed !== undefined && typeof value.executed !== 'boolean') return false
+  if (value.code === 'persistence' && typeof value.executed !== 'boolean') return false
   return value.retryable === isRetryableFailureCode(value.code) && (value.conflict === undefined || isJsonValue(value.conflict))
 }
 
@@ -340,13 +397,14 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
 function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is CommandResult {
   if (!isRecord(value) || value.kind !== envelope.kind || value.operationId !== envelope.operationId || value.status !== 'saved') return false
   switch (envelope.kind) {
-    case 'expense.add': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId
+    case 'expense.add': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId && value.expense.revision === 1 && value.expense.deletedAt === undefined
     case 'expense.edit': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId && value.expense.id === envelope.expenseId
+      && value.expense.revision === envelope.expectedRevision + 1 && value.expense.deletedAt === undefined
     case 'expense.delete': return isTombstone(value.tombstone, envelope)
     case 'comment.add':
-    case 'group.default-split':
     case 'profile.update':
     case 'settlement.record': return isNonEmptyString(value.resourceId)
+    case 'group.default-split': return value.resourceId === envelope.groupId
   }
 }
 
@@ -366,7 +424,7 @@ function isExpenseRow(value: unknown): value is ExpenseRow {
 }
 
 function isTombstone(value: unknown, envelope: Extract<CommandEnvelope, { kind: 'expense.delete' }>): boolean {
-  return isRecord(value) && value.id === envelope.expenseId && value.groupId === envelope.groupId && isPositiveInteger(value.revision) && isIsoTimestamp(value.deletedAt)
+  return isRecord(value) && value.id === envelope.expenseId && value.groupId === envelope.groupId && value.revision === envelope.expectedRevision + 1 && isIsoTimestamp(value.deletedAt)
 }
 
 function isMoney(value: unknown): value is Money {
@@ -400,7 +458,7 @@ function isRecurrence(value: unknown): value is Recurrence {
 }
 
 function toFailure(error: unknown): CommandFailure {
-  if (error instanceof CommandFailedError) return failure(error.code, error.message)
+  if (error instanceof CommandFailedError) return failure(error.code, error.message, error.executed)
   if (error instanceof CommandConflictError || error instanceof OperationReplayConflictError) return failure('conflict', error.message)
   const externalCode = normalizedExternalCode(error)
   if (NETWORK_CODES.has(externalCode) || isFetchFailure(error)) return failure('network', errorMessage(error))
@@ -411,9 +469,11 @@ function toFailure(error: unknown): CommandFailure {
   return failure('unknown', errorMessage(error))
 }
 
-function failure(code: CommandFailureCode, message: string): CommandFailure { return { code, message, retryable: isRetryableFailureCode(code) } }
-function isRetryableFailureCode(code: CommandFailureCode): boolean { return code === 'network' }
-function isFailureCode(value: unknown): value is CommandFailureCode { return typeof value === 'string' && ['conflict', 'handler-missing', 'network', 'not-supported', 'permission-denied', 'unknown', 'validation'].includes(value) }
+function failure(code: CommandFailureCode, message: string, executed?: boolean): CommandFailure {
+  return { code, message, retryable: isRetryableFailureCode(code), ...(executed === undefined ? {} : { executed }) }
+}
+function isRetryableFailureCode(code: CommandFailureCode): boolean { return code === 'network' || code === 'persistence' }
+function isFailureCode(value: unknown): value is CommandFailureCode { return typeof value === 'string' && ['conflict', 'handler-missing', 'network', 'not-supported', 'permission-denied', 'persistence', 'unknown', 'validation'].includes(value) }
 
 const NETWORK_CODES = new Set(['deadline-exceeded', 'network-error', 'network-request-failed', 'unavailable'])
 const PERMISSION_CODES = new Set(['operation-not-allowed', 'permission-denied', 'unauthenticated', 'unauthorized'])
@@ -447,9 +507,9 @@ function isConflictForEnvelope(value: unknown, envelope: CommandEnvelope): boole
   return isExpenseRow(value.remote) && value.remote.groupId === envelope.groupId && value.remote.id === envelope.expenseId
 }
 
-function assertOriginUid(originUid: string): string {
-  if (typeof originUid !== 'string' || !originUid.trim() || originUid.length > 256 || /[\u0000-\u001F\u007F]/.test(originUid)) throw new Error('Authenticated owner UID is required')
-  return originUid
+function assertPrincipalKey(principalKey: string): string {
+  if (typeof principalKey !== 'string' || !principalKey.trim() || principalKey.length > 512 || /[\u0000-\u001F\u007F]/.test(principalKey)) throw new Error('Authenticated principal key is required')
+  return principalKey
 }
 
 function isOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }

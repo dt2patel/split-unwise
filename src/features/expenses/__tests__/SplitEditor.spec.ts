@@ -129,12 +129,31 @@ describe('SplitEditor', () => {
     wrapper.unmount()
   })
 
+  it('emits dirty for each staged split-method button change', async () => {
+    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+      modelValue: { type: 'equal' }, participants, currency: 'USD', totalMinorAmount: 100,
+    } })
+
+    await wrapper.get('[data-method="exact"]').trigger('click')
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
+
+    await wrapper.get('[data-method="exact"]').trigger('click')
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
+
+    await wrapper.get('[data-method="exact"]').trigger('keydown', { key: 'ArrowRight' })
+    expect(wrapper.emitted('dirty')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
   it('exposes a bounded scroll surface and sticky sheet header', () => {
     const wrapper = mount(SplitEditor, { props: {
       modelValue: { type: 'equal' }, participants, currency: 'USD', totalMinorAmount: 100,
     } })
 
-    expect(wrapper.get('[data-sheet-scroll]').classes()).toContain('expense-sheet')
+    const scrollSurface = wrapper.get<HTMLElement>('[data-sheet-scroll]')
+    expect(scrollSurface.classes()).toContain('expense-sheet')
+    expect(scrollSurface.element.style.getPropertyValue('--su-keyboard-inset')).toBe('0px')
+    expect(scrollSurface.element.style.getPropertyValue('--su-visual-viewport-height')).toBe('')
     expect(wrapper.get('header').classes()).toContain('expense-sheet__header')
   })
 })

@@ -11,13 +11,14 @@ type FirebaseClient = { readonly auth: ReturnType<AuthModule['getAuth']>; readon
 type FirebaseContext = FirebaseClient & { readonly userId: string }
 
 /** Firebase facade: SDK modules are loaded only on the first actual repository call. */
-export function createFirebaseRepository(configuration: FirebaseConfiguration): AppRepository {
+export function createFirebaseRepository(configuration: FirebaseConfiguration, expectedUserId?: string): AppRepository {
   let clientPromise: Promise<FirebaseClient> | undefined
   const client = () => clientPromise ??= connect(configuration)
 
   async function context(): Promise<FirebaseContext> {
     const firebase = await client()
     const { userId } = await resolveFirebaseSession(firebase.auth)
+    if (expectedUserId !== undefined && userId !== expectedUserId) throw new Error('Firebase authenticated principal changed')
     return { ...firebase, userId }
   }
   async function currentUser(): Promise<Member> {
@@ -38,6 +39,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration): 
 
   return {
     mode: 'firebase',
+    projectId: configuration.projectId,
     app: { getCurrentUser: currentUser, updateProfile: execute },
     groups: {
       async list() {

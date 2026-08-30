@@ -8,9 +8,33 @@ describe('receipt ports', () => {
 
     expect(reference).toBe('local-receipt:receipt-001')
     expect(JSON.stringify({ attachmentRefs: [reference] })).toBe('{"attachmentRefs":["local-receipt:receipt-001"]}')
-    await expect(store.get(reference)).resolves.toMatchObject({ reference, fileName: 'cabin.jpg', mimeType: 'image/jpeg', size: 13 })
+    await expect(store.get(reference)).resolves.toMatchObject({
+      reference,
+      fileName: 'cabin.jpg',
+      mimeType: 'image/jpeg',
+      size: 13,
+      durability: {
+        status: 'local-only',
+        reason: 'Receipt is stored only on this device until upload succeeds.',
+      },
+    })
     await store.delete(reference)
     await expect(store.get(reference)).resolves.toBeUndefined()
+  })
+
+  it('persists the provider reason until a later promotion succeeds', async () => {
+    const store = createMemoryReceiptStore({ id: () => 'promotion-state' })
+    const reference = await store.put(new Blob(['receipt'], { type: 'image/png' }), { fileName: 'receipt.png' })
+
+    await store.setDurability(reference, { status: 'upload-unavailable', reason: 'Offline. Try again later.' })
+    await expect(store.get(reference)).resolves.toMatchObject({
+      durability: { status: 'upload-unavailable', reason: 'Offline. Try again later.' },
+    })
+
+    await store.setDurability(reference, { status: 'uploaded', attachmentRef: 'remote-receipt:promotion-state' })
+    await expect(store.get(reference)).resolves.toMatchObject({
+      durability: { status: 'uploaded', attachmentRef: 'remote-receipt:promotion-state' },
+    })
   })
 
   it('labels demo recognition as unavailable instead of claiming OCR output', async () => {
@@ -54,9 +78,26 @@ describe('receipt ports', () => {
 
     await expect(write).rejects.toThrow('quota transaction aborted')
   })
+
+  it('opens an IndexedDB database scoped to the complete principal namespace', async () => {
+    const database = fakeIndexedDb()
+    const store = createIndexedDbReceiptStore({
+      indexedDb: database.factory,
+      namespace: 'demo:split-unwise:maya-p',
+      id: () => 'principal-scoped',
+    })
+    const write = store.put(new Blob(['image'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
+
+    await database.flushRequest()
+    database.complete()
+    await write
+
+    expect(database.openedNames).toEqual(['split-unwise-receipts:demo:split-unwise:maya-p'])
+  })
 })
 
 function fakeIndexedDb() {
+  const openedNames: string[] = []
   let activeTransaction: {
     oncomplete: ((event: Event) => void) | null
     onabort: ((event: Event) => void) | null
@@ -80,7 +121,8 @@ function fakeIndexedDb() {
     },
   }
   const factory = {
-    open() {
+    open(name: string) {
+      openedNames.push(name)
       const openRequest = { result: db, error: null, onupgradeneeded: null as ((event: Event) => void) | null, onsuccess: null as ((event: Event) => void) | null, onerror: null as ((event: Event) => void) | null }
       queueMicrotask(() => openRequest.onsuccess?.(new Event('success')))
       return openRequest
@@ -99,6 +141,7 @@ function fakeIndexedDb() {
 
   return {
     factory,
+    openedNames,
     flushRequest: async () => { await ready; await flushRequest() },
     complete: () => activeTransaction?.oncomplete?.(new Event('complete')),
     abort: (error: Error) => { if (activeTransaction) { activeTransaction.error = error; activeTransaction.onabort?.(new Event('abort')) } },

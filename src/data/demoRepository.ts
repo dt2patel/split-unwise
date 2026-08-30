@@ -49,11 +49,12 @@ export function createDemoRepository(options: { readonly now?: () => string } = 
       }
       case 'expense.edit': {
         assertLakeHouseGroup(command.groupId)
-        const allocations = validateDraft(command.draft)
         const index = expenses.findIndex((expense) => expense.id === command.expenseId && expense.groupId === command.groupId)
         if (index < 0) throw new Error(`Unknown demo expense: ${command.expenseId}`)
         const previous = expenses[index]
+        if (previous.deletedAt) throw new Error(`Cannot edit deleted demo expense: ${command.expenseId}`)
         if (command.expectedRevision !== previous.revision) throw new CommandConflictError('The expense changed remotely.', { local: clone(command.draft), remote: cloneExpense(previous) })
+        const allocations = validateDraft(command.draft)
         const { notes: _previousNotes, recurrence: _previousRecurrence, occurrenceEditScope: _previousOccurrenceEditScope, ...retained } = previous
         const updated: ExpenseRow = {
           ...retained, ...command.draft, id: previous.id, groupId: previous.groupId, createdAt: previous.createdAt, updatedAt: now(), revision: previous.revision + 1, syncState: 'fresh',
@@ -69,6 +70,7 @@ export function createDemoRepository(options: { readonly now?: () => string } = 
         const index = expenses.findIndex((expense) => expense.id === command.expenseId && expense.groupId === command.groupId)
         if (index < 0) throw new Error(`Unknown demo expense: ${command.expenseId}`)
         const previous = expenses[index]
+        if (previous.deletedAt) throw new Error(`Demo expense is already deleted: ${command.expenseId}`)
         if (command.expectedRevision !== previous.revision) throw new CommandConflictError('The expense changed remotely.', { local: clone(command), remote: cloneExpense(previous) })
         const deletedAt = now()
         const retained: ExpenseRow = { ...previous, revision: previous.revision + 1, updatedAt: deletedAt, deletedAt }
@@ -97,6 +99,7 @@ export function createDemoRepository(options: { readonly now?: () => string } = 
 
   return {
     mode: 'demo',
+    projectId: 'split-unwise-demo',
     app: { async getCurrentUser(): Promise<Member> { return { ...currentUser } }, updateProfile: execute },
     groups: {
       async list() { return [{ ...lakeHouseGroup, memberIds: [...lakeHouseGroup.memberIds] }] },

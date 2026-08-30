@@ -133,6 +133,8 @@ export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEdit
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'
+  /** Stable backing-data project. Together with mode and UID, this owns local state. */
+  readonly projectId: string
   readonly app: AppProfileRepository
   readonly groups: GroupRepository
   readonly expenses: ExpenseRepository

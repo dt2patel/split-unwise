@@ -3,6 +3,7 @@ import { nextTick, ref, watch } from 'vue'
 import type { Member } from '../../../data/repositories'
 import { toMinorUnits, type CurrencyCode } from '../../../domain/money'
 import type { PaymentInput } from '../expenseStore'
+import { useSheetKeyboardAvoidance } from './useSheetKeyboardAvoidance'
 
 const props = defineProps<{ modelValue: readonly PaymentInput[]; members: readonly Member[]; currency: CurrencyCode; totalMinorAmount: number }>()
 const emit = defineEmits<{ apply: [value: readonly PaymentInput[]]; cancel: [] }>()
@@ -11,6 +12,7 @@ const error = ref('')
 const errorKind = ref<'amount' | 'selection'>()
 const errorParticipantId = ref<string>()
 const sheet = ref<HTMLElement>()
+useSheetKeyboardAvoidance(sheet)
 watch(() => props.modelValue, (value) => { draft.value = value.map((item) => ({ ...item })); error.value = ''; errorKind.value = undefined; errorParticipantId.value = undefined }, { deep: true })
 
 function selected(memberId: string): boolean { return draft.value.some(({ participantId }) => participantId === memberId) }

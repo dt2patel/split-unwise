@@ -2,7 +2,7 @@ import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { getAppSession } from '../../data/session'
 import type { ExpenseDraft, ExpenseRow, Group, Member } from '../../data/repositories'
-import type { LocalReceiptReference, ReceiptAsset, ReceiptSuggestion } from '../../data/receipts'
+import type { LocalReceiptReference, ReceiptAsset, ReceiptDurability, ReceiptSuggestion } from '../../data/receipts'
 import { assertCurrencyCode, fromMinorUnits, toMinorUnits, type CurrencyCode } from '../../domain/money'
 import { computeAllocations } from '../../domain/splits'
 import type { ItemizedSplitItem, Recurrence, SplitMethod } from '../../domain/model'
@@ -152,13 +152,19 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   const loadError = ref('')
   let initialFingerprint = JSON.stringify(editor)
   let initializationRequest = 0
+  let contextSelectionRequest = 0
+  let contextSelectionTarget: string | undefined
+  let receiptAttachmentRequest = 0
+  let receiptRecognitionRequest = 0
 
   const isDirty = computed(() => JSON.stringify(editor) !== initialFingerprint)
   const returnPath = computed(() => origin.value === 'groups' && editor.groupId ? `/tabs/groups/${editor.groupId}` : `/tabs/${origin.value}`)
   const canSubmit = computed(() => hasInitialized.value && !isLoading.value && !loadError.value && saveState.value !== 'pending')
+  const receiptDurability = computed<ReceiptDurability | undefined>(() => receiptPreview.value?.durability)
 
   async function initialize(options: { readonly origin: ExpenseOrigin; readonly groupId?: string; readonly expenseId?: string; readonly today?: string }): Promise<void> {
     const request = ++initializationRequest
+    invalidateEditorSubrequests()
     reset()
     origin.value = options.origin
     expenseId.value = options.expenseId
@@ -222,7 +228,9 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   async function selectContext(groupId: string): Promise<boolean> {
-    const request = initializationRequest
+    const editorRequest = initializationRequest
+    const request = ++contextSelectionRequest
+    contextSelectionTarget = groupId
     const group = availableGroups.value.find(({ id }) => id === groupId)
     if (!group) {
       errors.value = { ...errors.value, context: 'This group or friend is not available.' }
@@ -231,7 +239,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     try {
       const loadedMembers = await session.repository.groups.listMembers(group.id)
       const user = currentUser.value ?? await session.repository.app.getCurrentUser()
-      if (request !== initializationRequest) return false
+      if (!isCurrentContextSelection(editorRequest, request, group.id)) return false
       if (!loadedMembers.some(({ id }) => id === user.id)) throw new Error('You are not an active member of this group.')
       const currencyChanged = editor.currency !== group.currency
       members.value = loadedMembers
@@ -249,7 +257,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         : 'Payers, participants, and split values were reset for the selected context.'
       return true
     } catch (reason) {
-      if (request !== initializationRequest) return false
+      if (!isCurrentContextSelection(editorRequest, request, group.id)) return false
       errors.value = { ...errors.value, context: messageFor(reason, 'This group or friend is not available.') }
       return false
     }
@@ -295,6 +303,10 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     const operationId = requestedOperationId ?? createOperationId()
     const editorContext = initializationRequest
     const submittedFingerprint = JSON.stringify(editor)
+    const submittedReceiptReference = receiptPreview.value?.reference
+    const refreshSubmittedReceipt = submittedReceiptReference && validation.draft.attachmentRefs.includes(submittedReceiptReference)
+      ? submittedReceiptReference
+      : undefined
     const command = mode.value === 'edit'
       ? { kind: 'expense.edit' as const, operationId, groupId: validation.draft.groupId, expenseId: expenseId.value!, expectedRevision: revision.value!, draft: validation.draft }
       : { kind: 'expense.add' as const, operationId, ...validation.draft }
@@ -308,7 +320,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       errorSummary.value = messageFor(reason, 'The expense could not be queued.')
       return false
     }
-    void handle.result().then((result) => {
+    void handle.result().then(async (result) => {
       if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
       if (result.status !== 'saved') return
       saveState.value = 'saved'
@@ -317,8 +329,12 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         revision.value = savedExpense.revision
         initialFingerprint = submittedFingerprint
       }
+      if (refreshSubmittedReceipt) await refreshReceiptPreview(refreshSubmittedReceipt, editorContext)
+      if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
       notice.value = mode.value === 'edit' ? 'Expense updated.' : 'Expense saved.'
-    }).catch(() => {
+    }).catch(async () => {
+      if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
+      if (refreshSubmittedReceipt) await refreshReceiptPreview(refreshSubmittedReceipt, editorContext)
       if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
       const operation = session.queue.get(operationId)
       saveState.value = operation?.status === 'conflicted' ? 'conflicted' : 'failed'
@@ -328,23 +344,28 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   async function attachReceipt(blob: Blob, fileName: string): Promise<boolean> {
-    const request = initializationRequest
+    const editorRequest = initializationRequest
+    const attachmentRequest = ++receiptAttachmentRequest
+    receiptRecognitionRequest += 1
     const reference = await session.receipts.put(blob, { fileName })
-    if (request !== initializationRequest) {
-      await discardStaleReceipt(reference)
+    if (!isCurrentReceiptAttachment(editorRequest, attachmentRequest)) {
+      await rollbackStaleAttachment(reference)
       return false
     }
     editor.attachmentRefs = [...editor.attachmentRefs, reference]
     const preview = await session.receipts.get(reference)
-    if (request !== initializationRequest) {
-      await discardStaleReceipt(reference)
+    if (!isCurrentReceiptAttachment(editorRequest, attachmentRequest) || !editor.attachmentRefs.includes(reference) || !preview) {
+      await rollbackStaleAttachment(reference)
       return false
     }
     receiptPreview.value = preview
+    receiptSuggestions.value = []
+    receiptMessage.value = ''
+    const recognitionRequest = ++receiptRecognitionRequest
     try {
       const recognition = await session.receiptProvider.recognize(reference)
-      if (request !== initializationRequest) {
-        await discardStaleReceipt(reference)
+      if (!isCurrentReceiptRecognition(editorRequest, recognitionRequest, reference)) {
+        if (editorRequest !== initializationRequest) await discardStaleReceipt(reference)
         return false
       }
       if (recognition.status === 'suggestions') {
@@ -355,8 +376,8 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         receiptMessage.value = recognition.reason
       }
     } catch {
-      if (request !== initializationRequest) {
-        await discardStaleReceipt(reference)
+      if (!isCurrentReceiptRecognition(editorRequest, recognitionRequest, reference)) {
+        if (editorRequest !== initializationRequest) await discardStaleReceipt(reference)
         return false
       }
       receiptSuggestions.value = []
@@ -369,13 +390,32 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     try { await session.receipts.delete(reference) } catch { /* a stale editor cannot surface cleanup errors */ }
   }
 
+  async function rollbackStaleAttachment(reference: LocalReceiptReference): Promise<void> {
+    editor.attachmentRefs = editor.attachmentRefs.filter((item) => item !== reference)
+    if (receiptPreview.value?.reference === reference) receiptPreview.value = undefined
+    await discardStaleReceipt(reference)
+  }
+
   async function removeReceipt(reference: string): Promise<void> {
+    if (receiptPreview.value?.reference === reference) {
+      receiptRecognitionRequest += 1
+      receiptPreview.value = undefined
+      receiptSuggestions.value = []
+      receiptMessage.value = ''
+    }
     editor.attachmentRefs = editor.attachmentRefs.filter((item) => item !== reference)
     if (reference.startsWith('local-receipt:')) {
       await session.receipts.delete(reference as LocalReceiptReference)
-      if (receiptPreview.value?.reference === reference) receiptPreview.value = undefined
     }
     else await session.receiptProvider.delete(reference)
+  }
+
+  async function refreshReceiptPreview(reference: LocalReceiptReference, editorRequest: number): Promise<void> {
+    try {
+      const refreshed = await session.receipts.get(reference)
+      if (editorRequest !== initializationRequest || receiptPreview.value?.reference !== reference || !editor.attachmentRefs.includes(reference) || !refreshed) return
+      receiptPreview.value = refreshed
+    } catch { /* durability refresh must not replace the authoritative save result */ }
   }
 
   function confirmReceipt(items: readonly ReceiptItemInput[]): boolean {
@@ -398,10 +438,32 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   function closeSheet(): void { activeSheet.value = undefined }
-  function leaveEditor(): void { initializationRequest += 1; activeSheet.value = undefined }
+  function leaveEditor(): void { initializationRequest += 1; invalidateEditorSubrequests(); activeSheet.value = undefined }
+
+  function invalidateEditorSubrequests(): void {
+    contextSelectionRequest += 1
+    contextSelectionTarget = undefined
+    receiptAttachmentRequest += 1
+    receiptRecognitionRequest += 1
+  }
+
+  function isCurrentContextSelection(editorRequest: number, request: number, groupId: string): boolean {
+    return editorRequest === initializationRequest && request === contextSelectionRequest && contextSelectionTarget === groupId
+  }
+
+  function isCurrentReceiptAttachment(editorRequest: number, request: number): boolean {
+    return editorRequest === initializationRequest && request === receiptAttachmentRequest
+  }
+
+  function isCurrentReceiptRecognition(editorRequest: number, request: number, reference: LocalReceiptReference): boolean {
+    return editorRequest === initializationRequest
+      && request === receiptRecognitionRequest
+      && receiptPreview.value?.reference === reference
+      && editor.attachmentRefs.includes(reference)
+  }
 
   return {
-    editor, members, availableGroups, contextName, mode, origin, expenseId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview,
+    editor, members, availableGroups, contextName, mode, origin, expenseId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview, receiptDurability,
     activeSheet, focusTarget, lastOperationId, saveState, isLoading, hasInitialized, loadError, isDirty, returnPath, canSubmit,
     initialize, selectContext, changeCurrency, changeDate, submit, attachReceipt, removeReceipt, confirmReceipt, openSheet, closeSheet, leaveEditor,
   }

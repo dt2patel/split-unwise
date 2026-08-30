@@ -6,9 +6,10 @@ import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import type { ExpenseRow } from '../../../data/repositories'
-import { createAppSession, setAppSessionForTesting } from '../../../data/session'
+import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
 
 const ORIGIN_UID = 'maya-p'
+const PRINCIPAL_KEY = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: ORIGIN_UID })
 const groupDetailSource = readFileSync(resolve(process.cwd(), 'src/features/groups/GroupDetailPage.vue'), 'utf8')
 
 const ionicStubs = {
@@ -144,7 +145,7 @@ describe('Lake House group journal', () => {
     const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
     if (!groceries) throw new Error('Missing fixture expense')
     const queue = new CommandQueue({
-      originUid: ORIGIN_UID,
+      originPrincipalKey: PRINCIPAL_KEY,
       storage: createMemoryCommandStorage(),
       handlers: { 'expense.edit': async (envelope) => {
         if (envelope.kind !== 'expense.edit') throw new Error('Unexpected command')
@@ -177,7 +178,7 @@ describe('Lake House group journal', () => {
       kind: 'expense.edit', operationId: 'page-remote-edit', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 1, draft: expenseDraft(groceries, 'Remote page groceries'),
     })
     const queue = new CommandQueue({
-      originUid: ORIGIN_UID,
+      originPrincipalKey: PRINCIPAL_KEY,
       storage: createMemoryCommandStorage(),
       handlers: { 'expense.delete': async (envelope) => {
         if (envelope.kind !== 'expense.delete') throw new Error('Unexpected command')

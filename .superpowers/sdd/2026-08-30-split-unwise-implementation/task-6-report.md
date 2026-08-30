@@ -133,3 +133,53 @@ Each correction began with an isolated failing regression:
 - Production upload/OCR and Firebase mutations remain honest typed provider boundaries pending their credentialed/server implementations.
 - Upstream Ionic sourcemap and Node localStorage experimental warnings remain non-blocking test-environment notices.
 - `public/assets/images/app-icon-1024.png` remains untouched, untracked, and unstaged.
+
+## Fix Round 2 — 2026-08-30
+
+### Principal and durable-command lifecycle
+
+- Replaced UID-only persistence ownership with a canonical full principal `{ mode, projectId, uid }`. Queue local storage and receipt IndexedDB namespaces now include the complete principal, so identical UIDs in demo, Firebase, or different projects cannot share state.
+- Resolves the principal before constructing local persistence or repositories. Firebase auth changes synchronously freeze the outgoing session, detach its queue subscribers, reject stale repository completions, dispose its feature stores/app, and only then create a fresh repository, queue, receipt store, Pinia instance, router, and app for the incoming principal.
+- Made every queue persistence transition asynchronous and failure-aware. The handler cannot begin until the pending envelope is durably written; failed pending or terminal writes surface the typed `persistence` failure and cannot masquerade as executed/saved work. Writes are serialized using execution-time snapshots so an older write cannot overwrite newer state.
+- Upgraded persisted queue documents to strict version 3 with `principalKey` and `originPrincipalKey`, validation of the executed marker and result shape, and quarantine of malformed, obsolete, cross-principal, or invalid-result records.
+- Tightened result transitions: adds must return a non-deleted initial revision, edits and deletes must target the exact command expense and advance exactly one revision, edit results must remain live, and delete results must be tombstones. Group default-split results are bound to the commanded group.
+
+### Journal, editor, receipt, and sheet corrections
+
+- Retains terminal deletes in principal-scoped durable queue state until `getById` confirms an equal-or-newer tombstone. Repository list absence never acknowledges deletion, so a fresh store/session cannot resurrect an older saved row. The demo repository keeps tombstones audit-visible while rejecting ordinary edits and repeated deletes.
+- Reconciliation selects the highest authoritative revision; a stale conflict payload cannot replace a newer repository row. Remote reload and local-retention actions resolve against the current highest revision. Every failed operation can be durably discarded regardless of retryability, while retry remains failure-code specific.
+- Added independent monotonic request identities for context selection, receipt attachment, and receipt recognition. Supersession/removal invalidates pending recognition, and completions apply only when both the current request and selected context/reference still match.
+- Persists receipt durability as `local-only`, `upload-unavailable`, or `uploaded`, including a truthful provider reason. Already-uploaded references are reused, unavailable promotion keeps the local image/manual workflow and remains replayable, and the UI no longer describes a local-only image as cloud-durable.
+- Every staged button mutation emits dirty state, including split method, recurrence frequency/scope, keyboard radio changes, and manual item addition; backdrop and gesture dismissal therefore require confirmation.
+- Replaced the nonstandard keyboard inset CSS with a shared VisualViewport/window-resize controller used by all six sheets. It computes one keyboard offset, scrolls the focused bottom field into view, removes listeners on teardown, honors reduced motion, and preserves safe-area padding without double avoidance.
+
+### Round 2 RED evidence
+
+Every listed correction was introduced by a failing regression before implementation:
+
+- Principal lifecycle: 4 initial failures, 1 mount-host reset failure, and 1 stale-subscriber notification failure.
+- Queue durability and decoder: pending execution began before persistence; save errors were misclassified; terminal state settled before persistence; browser storage errors were swallowed; async mutation contracts were missing; concurrent writes overlapped; malformed execution markers hydrated. Exact result-transition coverage initially produced 8 failures, with 3 additional version-3/quarantine failures.
+- Journal/demo: 3 initial failures for absence-based delete acknowledgement and tombstoned mutation acceptance, 11 version-3 fixture failures, 2 async-discard failures, and 1 persistence-error regression.
+- Editor/receipt lifecycle: 14 expected failures covering stale context/attachment/recognition completions and honest receipt durability/promotion state.
+- Sheet dirty and keyboard behavior: 11 initial failures, 6 controller-integration failures, 3 focus/fallback/cleanup failures, and 9 double-avoidance regressions.
+
+### Round 2 GREEN and final verification
+
+- Command queue — 58/58 passed.
+- Principal/session combined slice — 112/112 passed.
+- Queue/session/journal/group/editor integration — 126/126 passed.
+- Journal/group/demo/queue slice — 102/102 passed.
+- Expense/receipt slice — 94/94 passed; receipt promotion subset — 5/5 passed.
+- Sheet-focused slice — 64/64 passed; full expense slice — 87/87 passed.
+- Final integrated focus run — 12 files passed, 213 tests passed.
+- `pnpm test` — 28 files passed, 326 tests passed.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed; Vite emitted only its existing large-chunk advisory.
+- `git diff --check` — passed.
+
+### Round 2 residual QA
+
+- No browser or Playwright verification is claimed. Real iOS keyboard motion, safe areas, Dynamic Type, gesture physics, IndexedDB persistence, and 390 × 844 visual behavior remain device/browser QA.
+- Production receipt upload/OCR and Firebase financial mutations remain explicit provider/server boundaries; local-only and upload-unavailable states are preserved and shown honestly.
+- Upstream Ionic sourcemap and Node localStorage experimental warnings remain non-blocking test-environment notices.
+- `public/assets/images/app-icon-1024.png` remains untouched, untracked, and unstaged.

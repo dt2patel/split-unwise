@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import type { Member } from '../../../data/repositories'
 import { toMinorUnits, type CurrencyCode } from '../../../domain/money'
 import { computeSplitPreview, type SplitInput } from '../expenseStore'
+import { useSheetKeyboardAvoidance } from './useSheetKeyboardAvoidance'
 
 const props = defineProps<{
   modelValue: SplitInput
@@ -13,6 +14,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   apply: [value: { readonly input: SplitInput; readonly allocations: ReturnType<typeof computeSplitPreview> }]
   cancel: []
+  dirty: []
 }>()
 
 const methods = [
@@ -27,6 +29,7 @@ const draft = ref<SplitInput>(clone(props.modelValue))
 const error = ref('')
 const errorParticipantId = ref<string>()
 const sheet = ref<HTMLElement>()
+useSheetKeyboardAvoidance(sheet)
 const memberById = computed(() => new Map(props.participants.map((member) => [member.id, member])))
 
 watch(() => props.modelValue, (value) => { draft.value = clone(value); error.value = ''; errorParticipantId.value = undefined }, { deep: true })
@@ -42,6 +45,7 @@ function choose(type: SplitInput['type']): void {
   } else draft.value = { type, values: Object.fromEntries(ids.map((id) => [id, '0'])) }
   error.value = ''
   errorParticipantId.value = undefined
+  emit('dirty')
 }
 
 function defaultPercentages(participantIds: readonly string[]): Readonly<Record<string, string>> {

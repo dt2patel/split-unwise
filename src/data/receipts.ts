@@ -1,5 +1,10 @@
 export type LocalReceiptReference = `local-receipt:${string}`
 
+export type ReceiptDurability =
+  | { readonly status: 'local-only'; readonly reason: string }
+  | { readonly status: 'upload-unavailable'; readonly reason: string }
+  | { readonly status: 'uploaded'; readonly attachmentRef: string }
+
 export interface ReceiptAsset {
   readonly reference: LocalReceiptReference
   readonly blob: Blob
@@ -7,11 +12,13 @@ export interface ReceiptAsset {
   readonly mimeType: string
   readonly size: number
   readonly createdAt: string
+  readonly durability: ReceiptDurability
 }
 
 export interface ReceiptBlobStore {
   put(blob: Blob, metadata: { readonly fileName: string }): Promise<LocalReceiptReference>
   get(reference: LocalReceiptReference): Promise<ReceiptAsset | undefined>
+  setDurability(reference: LocalReceiptReference, durability: ReceiptDurability): Promise<void>
   delete(reference: LocalReceiptReference): Promise<void>
 }
 
@@ -37,6 +44,12 @@ export interface ReceiptProvider {
 export interface ReceiptStoreOptions {
   readonly id?: () => string
   readonly now?: () => string
+  readonly namespace?: string
+}
+
+const LOCAL_ONLY_DURABILITY: ReceiptDurability = {
+  status: 'local-only',
+  reason: 'Receipt is stored only on this device until upload succeeds.',
 }
 
 export function createMemoryReceiptStore(options: ReceiptStoreOptions = {}): ReceiptBlobStore {
@@ -47,10 +60,14 @@ export function createMemoryReceiptStore(options: ReceiptStoreOptions = {}): Rec
     async put(blob, metadata) {
       const fileName = validateReceipt(blob, metadata.fileName)
       const reference = referenceFor(id())
-      assets.set(reference, { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now() })
+      assets.set(reference, { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now(), durability: LOCAL_ONLY_DURABILITY })
       return reference
     },
     async get(reference) { return assets.get(reference) },
+    async setDurability(reference, durability) {
+      const asset = assets.get(reference)
+      if (asset) assets.set(reference, { ...asset, durability })
+    },
     async delete(reference) { assets.delete(reference) },
   }
 }
@@ -60,16 +77,20 @@ export function createIndexedDbReceiptStore(options: ReceiptStoreOptions & { rea
   const id = options.id ?? createReceiptId
   const now = options.now ?? (() => new Date().toISOString())
   let database: Promise<IDBDatabase> | undefined
-  const getDatabase = () => database ??= openDatabase(indexedDb)
+  const getDatabase = () => database ??= openDatabase(indexedDb, options.namespace)
   return {
     async put(blob, metadata) {
       const fileName = validateReceipt(blob, metadata.fileName)
       const reference = referenceFor(id())
-      const asset: ReceiptAsset = { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now() }
+      const asset: ReceiptAsset = { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now(), durability: LOCAL_ONLY_DURABILITY }
       await requestFrom(getDatabase(), 'readwrite', (store) => store.put(asset))
       return reference
     },
     async get(reference) { return requestFrom(getDatabase(), 'readonly', (store) => store.get(reference)) as Promise<ReceiptAsset | undefined> },
+    async setDurability(reference, durability) {
+      const asset = await requestFrom(getDatabase(), 'readonly', (store) => store.get(reference)) as ReceiptAsset | undefined
+      if (asset) await requestFrom(getDatabase(), 'readwrite', (store) => store.put({ ...asset, durability }))
+    },
     async delete(reference) { await requestFrom(getDatabase(), 'readwrite', (store) => store.delete(reference)) },
   }
 }
@@ -105,10 +126,12 @@ function validateReceipt(blob: Blob, fileName: string): string {
   return normalizedName
 }
 
-function openDatabase(indexedDb: IDBFactory | undefined): Promise<IDBDatabase> {
+function openDatabase(indexedDb: IDBFactory | undefined, namespace?: string): Promise<IDBDatabase> {
   if (!indexedDb) return Promise.reject(new Error('IndexedDB is unavailable on this device'))
   return new Promise((resolve, reject) => {
-    const request = indexedDb.open('split-unwise-receipts', 1)
+    const normalizedNamespace = namespace?.trim()
+    const databaseName = normalizedNamespace ? `split-unwise-receipts:${normalizedNamespace}` : 'split-unwise-receipts'
+    const request = indexedDb.open(databaseName, 1)
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains('receipts')) request.result.createObjectStore('receipts', { keyPath: 'reference' })
     }

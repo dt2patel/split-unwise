@@ -2,12 +2,13 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import { createAppSession, setAppSessionForTesting } from '../../../data/session'
+import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
 import type { CommandOperation } from '../../../data/commandQueue'
 import type { ExpenseAddCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow } from '../../../data/repositories'
 import { useGroupStore } from '../groupStore'
 
 const ORIGIN_UID = 'maya-p'
+const PRINCIPAL_KEY = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: ORIGIN_UID })
 
 const command = (operationId: string): ExpenseAddCommand => ({
   kind: 'expense.add', operationId, groupId: 'lake-house-weekend', description: 'Ice', date: '2026-08-30', total: { currency: 'USD', minorAmount: 400 },
@@ -53,11 +54,11 @@ describe('pending journal projection', () => {
         },
       },
     }
-    const pending: CommandOperation = { originUid: ORIGIN_UID, status: 'pending', envelope: command('hydrated-pending') }
+    const pending: CommandOperation = { originPrincipalKey: PRINCIPAL_KEY, status: 'pending', envelope: command('hydrated-pending') }
     const queue = new CommandQueue({ storage: storageWith([pending]), handlers: {}, })
     let releaseIdentity!: () => void
     const ready = new Promise<void>((resolve) => {
-      releaseIdentity = () => { queue.bind(ORIGIN_UID); resolve() }
+      releaseIdentity = () => { void queue.bind(PRINCIPAL_KEY).then(resolve) }
     })
     const baseSession = createAppSession({ repository, commandStorage: createMemoryCommandStorage() })
     setAppSessionForTesting({ ...baseSession, queue, ready })
@@ -77,7 +78,7 @@ describe('pending journal projection', () => {
     const storage = createMemoryCommandStorage()
     let release!: () => void
     const blocked = new Promise<void>((resolve) => { release = resolve })
-    const queue = new CommandQueue({ originUid: ORIGIN_UID, storage, handlers: { 'expense.add': async (envelope) => {
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage, handlers: { 'expense.add': async (envelope) => {
       if (envelope.kind !== 'expense.add') throw new Error('Unexpected command')
       await blocked
       return repository.expenses.add(envelope)
@@ -106,7 +107,7 @@ describe('pending journal projection', () => {
   it('retains failed rows for retry and removes only a failed draft on discard', async () => {
     const repository = createDemoRepository()
     let attempts = 0
-    const queue = new CommandQueue({ originUid: ORIGIN_UID, storage: createMemoryCommandStorage(), handlers: { 'expense.add': async (envelope) => {
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: createMemoryCommandStorage(), handlers: { 'expense.add': async (envelope) => {
       if (envelope.kind !== 'expense.add') throw new Error('Unexpected command')
       attempts += 1
       if (attempts < 2 || envelope.operationId === 'discard-ice') throw Object.assign(new Error('offline'), { code: 'unavailable' })
@@ -123,8 +124,36 @@ describe('pending journal projection', () => {
 
     await expect(queue.submit(command('discard-ice')).result()).rejects.toThrow('offline')
     expect(store.journalExpenses.some(({ clientOperationId }) => clientOperationId === 'discard-ice')).toBe(true)
-    expect(store.discardFailedOperation('discard-ice')).toBe(true)
+    await expect(store.discardFailedOperation('discard-ice')).resolves.toBe(true)
     expect(store.journalExpenses.some(({ clientOperationId }) => clientOperationId === 'discard-ice')).toBe(false)
+  })
+
+  it('keeps a failed draft visible and surfaces an error when discard persistence fails', async () => {
+    const repository = createDemoRepository()
+    const failed = {
+      originPrincipalKey: PRINCIPAL_KEY,
+      status: 'failed',
+      envelope: command('discard-storage-failure'),
+      error: { code: 'validation', message: 'invalid draft', retryable: false },
+    } as CommandOperation
+    const durable = storageWith([failed])
+    const queue = new CommandQueue({
+      originPrincipalKey: PRINCIPAL_KEY,
+      storage: {
+        load: durable.load,
+        save: async () => { throw new Error('Command storage is unavailable') },
+      },
+      handlers: {},
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const store = useGroupStore()
+    await store.loadGroup('lake-house-weekend')
+
+    await expect(store.discardFailedOperation('discard-storage-failure')).resolves.toBe(false)
+
+    expect(store.error).toBe('Command storage is unavailable')
+    expect(queue.get('discard-storage-failure')).toMatchObject({ status: 'failed' })
+    expect(store.journalExpenses.some(({ clientOperationId }) => clientOperationId === 'discard-storage-failure')).toBe(true)
   })
 
   it('applies a confirmed delete tombstone even when an older saved edit appears later in the queue', async () => {
@@ -134,19 +163,19 @@ describe('pending journal projection', () => {
     const oldEdit = { ...groceries, description: 'Older groceries', revision: 2 }
     const operations: readonly CommandOperation[] = [
       {
-        originUid: ORIGIN_UID,
+        originPrincipalKey: PRINCIPAL_KEY,
         status: 'fresh',
         envelope: { kind: 'expense.delete', operationId: 'delete-groceries', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 2 },
         result: { kind: 'expense.delete', operationId: 'delete-groceries', status: 'saved', tombstone: { id: groceries.id, groupId: groceries.groupId, revision: 3, deletedAt: '2026-08-30T13:00:00.000Z' } },
       },
       {
-        originUid: ORIGIN_UID,
+        originPrincipalKey: PRINCIPAL_KEY,
         status: 'fresh',
         envelope: editCommand('older-edit', groceries, 1, oldEdit.description),
         result: { kind: 'expense.edit', operationId: 'older-edit', status: 'saved', expense: oldEdit },
       },
     ]
-    const queue = new CommandQueue({ originUid: ORIGIN_UID, storage: storageWith(operations), handlers: {} })
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith(operations), handlers: {} })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
     const store = useGroupStore()
 
@@ -166,24 +195,30 @@ describe('pending journal projection', () => {
         async listForGroup(groupId: string) {
           return (await baseRepository.expenses.listForGroup(groupId)).filter(({ id }) => id !== groceries.id)
         },
+        async getById(groupId: string, expenseId: string) {
+          if (groupId === groceries.groupId && expenseId === groceries.id) {
+            return { ...groceries, revision: 3, updatedAt: '2026-08-30T13:00:00.000Z', deletedAt: '2026-08-30T13:00:00.000Z' }
+          }
+          return baseRepository.expenses.getById(groupId, expenseId)
+        },
       },
     }
     const olderEdit = { ...groceries, description: 'Older groceries', revision: 2 }
     const operations: readonly CommandOperation[] = [
       {
-        originUid: ORIGIN_UID,
+        originPrincipalKey: PRINCIPAL_KEY,
         status: 'fresh',
         envelope: editCommand('older-edit-before-delete', groceries, 1, olderEdit.description),
         result: { kind: 'expense.edit', operationId: 'older-edit-before-delete', status: 'saved', expense: olderEdit },
       },
       {
-        originUid: ORIGIN_UID,
+        originPrincipalKey: PRINCIPAL_KEY,
         status: 'fresh',
         envelope: { kind: 'expense.delete', operationId: 'acknowledged-delete', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 2 },
         result: { kind: 'expense.delete', operationId: 'acknowledged-delete', status: 'saved', tombstone: { id: groceries.id, groupId: groceries.groupId, revision: 3, deletedAt: '2026-08-30T13:00:00.000Z' } },
       },
     ]
-    const queue = new CommandQueue({ originUid: ORIGIN_UID, storage: storageWith(operations), handlers: {} })
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith(operations), handlers: {} })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
     const store = useGroupStore()
 
@@ -199,6 +234,55 @@ describe('pending journal projection', () => {
     expect(reloaded.journalExpenses.some(({ id }) => id === groceries.id)).toBe(false)
   })
 
+  it('retains a deletion across a fresh session until an authoritative tombstone confirms it', async () => {
+    const baseRepository = createDemoRepository()
+    const groceries = await baseRepository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture expense')
+    const olderEdit = { ...groceries, description: 'Cached groceries', revision: 2, updatedAt: '2026-08-30T12:00:00.000Z' }
+    const storage = storageWith([
+      {
+        originPrincipalKey: PRINCIPAL_KEY,
+        status: 'fresh',
+        envelope: editCommand('cached-edit-before-unconfirmed-delete', groceries, 1, olderEdit.description),
+        result: { kind: 'expense.edit', operationId: 'cached-edit-before-unconfirmed-delete', status: 'saved', expense: olderEdit },
+      },
+      {
+        originPrincipalKey: PRINCIPAL_KEY,
+        status: 'fresh',
+        envelope: { kind: 'expense.delete', operationId: 'unconfirmed-delete', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 2 },
+        result: { kind: 'expense.delete', operationId: 'unconfirmed-delete', status: 'saved', tombstone: { id: groceries.id, groupId: groceries.groupId, revision: 3, deletedAt: '2026-08-30T13:00:00.000Z' } },
+      },
+    ])
+    const absentListRepository = {
+      ...baseRepository,
+      expenses: {
+        ...baseRepository.expenses,
+        async listForGroup(groupId: string) {
+          return (await baseRepository.expenses.listForGroup(groupId)).filter(({ id }) => id !== groceries.id)
+        },
+      },
+    }
+    const firstSession = createAppSession({ repository: absentListRepository, commandStorage: storage })
+    setAppSessionForTesting(firstSession)
+    const firstStore = useGroupStore()
+
+    await firstStore.loadGroup('lake-house-weekend')
+
+    expect(firstSession.queue.get('cached-edit-before-unconfirmed-delete')).toBeUndefined()
+    expect(firstSession.queue.get('unconfirmed-delete')).toMatchObject({ status: 'fresh' })
+    expect(firstStore.journalExpenses.some(({ id }) => id === groceries.id)).toBe(false)
+
+    setActivePinia(createPinia())
+    const freshSession = createAppSession({ repository: baseRepository, commandStorage: storage })
+    setAppSessionForTesting(freshSession)
+    const freshStore = useGroupStore()
+
+    await freshStore.loadGroup('lake-house-weekend')
+
+    expect(freshSession.queue.get('unconfirmed-delete')).toMatchObject({ status: 'fresh' })
+    expect(freshStore.journalExpenses.some(({ id }) => id === groceries.id)).toBe(false)
+  })
+
   it('selects the highest confirmed expense revision independent of queue order and clears acknowledged overlays', async () => {
     const repository = createDemoRepository()
     const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
@@ -207,19 +291,19 @@ describe('pending journal projection', () => {
     const revisionTwo = { ...groceries, description: 'Old groceries', revision: 2, updatedAt: '2026-08-30T12:00:00.000Z' }
     const operations: readonly CommandOperation[] = [
       {
-        originUid: ORIGIN_UID,
+        originPrincipalKey: PRINCIPAL_KEY,
         status: 'fresh',
         envelope: editCommand('newest-first', groceries, 3, revisionFour.description),
         result: { kind: 'expense.edit', operationId: 'newest-first', status: 'saved', expense: revisionFour },
       },
       {
-        originUid: ORIGIN_UID,
+        originPrincipalKey: PRINCIPAL_KEY,
         status: 'stale',
         envelope: editCommand('older-last', groceries, 1, revisionTwo.description),
         result: { kind: 'expense.edit', operationId: 'older-last', status: 'saved', expense: revisionTwo },
       },
     ]
-    const queue = new CommandQueue({ originUid: ORIGIN_UID, storage: storageWith(operations), handlers: {} })
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith(operations), handlers: {} })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
     const store = useGroupStore()
 
@@ -246,11 +330,11 @@ describe('pending journal projection', () => {
       ],
     }
     const operation: CommandOperation = {
-      originUid: ORIGIN_UID,
+      originPrincipalKey: PRINCIPAL_KEY,
       status: 'pending',
       envelope: { kind: 'expense.edit', operationId: 'pending-net-edit', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 1, draft: localDraft },
     }
-    const queue = new CommandQueue({ originUid: ORIGIN_UID, storage: storageWith([operation]), handlers: {} })
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith([operation]), handlers: {} })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
     const store = useGroupStore()
 
@@ -265,7 +349,7 @@ describe('pending journal projection', () => {
     const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
     if (!groceries) throw new Error('Missing fixture expense')
     const queue = new CommandQueue({
-      originUid: ORIGIN_UID,
+      originPrincipalKey: PRINCIPAL_KEY,
       storage: createMemoryCommandStorage(),
       handlers: { 'expense.edit': async (envelope) => {
         if (envelope.kind !== 'expense.edit') throw new Error('Unexpected command')
@@ -314,7 +398,7 @@ describe('pending journal projection', () => {
     const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
     if (!groceries) throw new Error('Missing fixture expense')
     const queue = new CommandQueue({
-      originUid: ORIGIN_UID,
+      originPrincipalKey: PRINCIPAL_KEY,
       storage: createMemoryCommandStorage(),
       handlers: { 'expense.edit': async (envelope) => {
         if (envelope.kind !== 'expense.edit') throw new Error('Unexpected command')
@@ -344,7 +428,7 @@ describe('pending journal projection', () => {
     if (!groceries) throw new Error('Missing fixture expense')
     await repository.expenses.edit(editCommand('remote-before-delete-conflict', groceries, 1, 'Remote revision two'))
     const queue = new CommandQueue({
-      originUid: ORIGIN_UID,
+      originPrincipalKey: PRINCIPAL_KEY,
       storage: createMemoryCommandStorage(),
       handlers: { 'expense.delete': async (envelope) => {
         if (envelope.kind !== 'expense.delete') throw new Error('Unexpected command')
@@ -377,12 +461,12 @@ describe('pending journal projection', () => {
   it('marks only retryable failures as retryable journal rows', async () => {
     const repository = createDemoRepository()
     const retryable = {
-      originUid: ORIGIN_UID, status: 'failed', envelope: command('network-failure'), error: { code: 'network', message: 'offline', retryable: true },
+      originPrincipalKey: PRINCIPAL_KEY, status: 'failed', envelope: command('network-failure'), error: { code: 'network', message: 'offline', retryable: true },
     } as CommandOperation
     const finalFailure = {
-      originUid: ORIGIN_UID, status: 'failed', envelope: command('validation-failure'), error: { code: 'validation', message: 'invalid', retryable: false },
+      originPrincipalKey: PRINCIPAL_KEY, status: 'failed', envelope: command('validation-failure'), error: { code: 'validation', message: 'invalid', retryable: false },
     } as CommandOperation
-    const queue = new CommandQueue({ originUid: ORIGIN_UID, storage: storageWith([retryable, finalFailure]), handlers: {} })
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith([retryable, finalFailure]), handlers: {} })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
     const store = useGroupStore()
 
@@ -390,13 +474,13 @@ describe('pending journal projection', () => {
 
     expect(store.journalExpenses.find(({ clientOperationId }) => clientOperationId === 'network-failure')?.retryable).toBe(true)
     expect(store.journalExpenses.find(({ clientOperationId }) => clientOperationId === 'validation-failure')?.retryable).toBe(false)
-    expect(store.discardFailedOperation('validation-failure')).toBe(true)
+    await expect(store.discardFailedOperation('validation-failure')).resolves.toBe(true)
     expect(store.journalExpenses.some(({ clientOperationId }) => clientOperationId === 'validation-failure')).toBe(false)
   })
 })
 
 function storageWith(operations: readonly CommandOperation[]) {
   return createMemoryCommandStorage({
-    [ORIGIN_UID]: { version: 2, originUid: ORIGIN_UID, operations },
+    [PRINCIPAL_KEY]: { version: 3, principalKey: PRINCIPAL_KEY, operations },
   })
 }

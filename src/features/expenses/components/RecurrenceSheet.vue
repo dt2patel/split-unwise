@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import type { Recurrence } from '../../../domain/model'
+import { useSheetKeyboardAvoidance } from './useSheetKeyboardAvoidance'
 
 type OccurrenceEditScope = 'occurrence' | 'future'
 interface RecurrenceApplyValue { readonly recurrence: Recurrence | undefined; readonly occurrenceEditScope?: OccurrenceEditScope }
@@ -8,17 +9,30 @@ const frequencyOptions = ['none', 'weekly', 'fortnightly', 'monthly', 'yearly'] 
 const scopeOptions = ['occurrence', 'future'] as const
 
 const props = defineProps<{ modelValue?: Recurrence; date: string; occurrenceEditScope?: OccurrenceEditScope; isRecurringInstance?: boolean }>()
-const emit = defineEmits<{ apply: [value: RecurrenceApplyValue]; cancel: [] }>()
+const emit = defineEmits<{ apply: [value: RecurrenceApplyValue]; cancel: []; dirty: [] }>()
 const frequency = ref<Recurrence['frequency'] | 'none'>(props.modelValue?.frequency ?? 'none')
 const timeZone = ref(props.modelValue?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC')
 const editScope = ref<OccurrenceEditScope | undefined>(props.occurrenceEditScope)
 const error = ref('')
 const errorKind = ref<'scope' | 'time-zone' | 'date'>()
 const sheet = ref<HTMLElement>()
+useSheetKeyboardAvoidance(sheet)
 watch(() => props.modelValue, (value) => { frequency.value = value?.frequency ?? 'none'; timeZone.value = value?.timeZone ?? timeZone.value; error.value = ''; errorKind.value = undefined })
 watch(() => props.occurrenceEditScope, (value) => { editScope.value = value; error.value = ''; errorKind.value = undefined })
-function chooseFrequency(value: typeof frequencyOptions[number]): void { frequency.value = value; error.value = ''; errorKind.value = undefined }
-function chooseScope(scope: OccurrenceEditScope): void { editScope.value = scope; error.value = ''; errorKind.value = undefined }
+function chooseFrequency(value: typeof frequencyOptions[number]): void {
+  if (frequency.value === value) return
+  frequency.value = value
+  error.value = ''
+  errorKind.value = undefined
+  emit('dirty')
+}
+function chooseScope(scope: OccurrenceEditScope): void {
+  if (editScope.value === scope) return
+  editScope.value = scope
+  error.value = ''
+  errorKind.value = undefined
+  emit('dirty')
+}
 function onFrequencyKeydown(event: KeyboardEvent, current: typeof frequencyOptions[number]): void {
   moveRadio(event, frequencyOptions, current, chooseFrequency, 'frequency')
 }

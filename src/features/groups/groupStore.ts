@@ -94,7 +94,7 @@ export const useGroupStore = defineStore('groups', () => {
       expenses.value = loadedExpenses
       activity.value = loadedActivity
       for (const operation of queue.snapshot()) rememberTombstone(operation, tombstoneWatermarks)
-      acknowledgeConfirmedOperations(groupId, loadedExpenses)
+      await acknowledgeConfirmedOperations(groupId, loadedExpenses)
     } catch (reason) {
       if (request !== latestGroupRequest) return
       clearActiveGroup()
@@ -120,12 +120,17 @@ export const useGroupStore = defineStore('groups', () => {
   }
 
   function retryOperation(operationId: string): CommandHandle { return queue.retry(operationId) }
-  function discardFailedOperation(operationId: string): boolean {
+  async function discardFailedOperation(operationId: string): Promise<boolean> {
     const operation = queue.get(operationId)
     if (!operation || operation.status !== 'failed') return false
-    const removed = queue.discard(operationId)
-    queueRevision.value += 1
-    return removed
+    try {
+      const removed = await queue.discard(operationId)
+      if (removed) queueRevision.value += 1
+      return removed
+    } catch (reason) {
+      error.value = messageFor(reason)
+      return false
+    }
   }
 
   async function reloadRemoteConflict(operationId: string): Promise<boolean> {
@@ -137,9 +142,9 @@ export const useGroupStore = defineStore('groups', () => {
     const current = queue.get(operationId)
     if (!current || current.status !== 'conflicted') return false
     if (remote && remote.groupId !== target.groupId) return false
+    if (!(await acknowledge(operationId))) return false
     if (remote) replaceExpense(remote)
     else expenses.value = expenses.value.filter(({ id }) => id !== target.expenseId)
-    acknowledge(operationId)
     return true
   }
 
@@ -150,8 +155,8 @@ export const useGroupStore = defineStore('groups', () => {
     const current = queue.get(operationId)
     if (!current || current.status !== 'conflicted' || current.envelope.kind !== 'expense.edit') return undefined
     if (!remote || remote.deletedAt || remote.groupId !== operation.envelope.groupId || remote.id !== operation.envelope.expenseId) return undefined
+    if (!(await acknowledge(operationId))) return undefined
     replaceExpense(remote)
-    acknowledge(operationId)
     const retained: ExpenseEditCommand = {
       ...operation.envelope,
       operationId: retainedIntentId(operationId, remote.revision),
@@ -168,12 +173,12 @@ export const useGroupStore = defineStore('groups', () => {
     if (!current || current.status !== 'conflicted' || current.envelope.kind !== 'expense.delete') return undefined
     if (!remote || remote.groupId !== operation.envelope.groupId || remote.id !== operation.envelope.expenseId) return undefined
     if (remote.deletedAt) {
+      if (!(await acknowledge(operationId))) return undefined
       replaceExpense(remote)
-      acknowledge(operationId)
       return undefined
     }
+    if (!(await acknowledge(operationId))) return undefined
     replaceExpense(remote)
-    acknowledge(operationId)
     const retained: ExpenseDeleteCommand = {
       ...operation.envelope,
       operationId: deleteIntentId(operationId, remote.revision),
@@ -218,14 +223,20 @@ export const useGroupStore = defineStore('groups', () => {
     expenses.value = remote.deletedAt ? withoutRemote : [...withoutRemote, cloneExpense(remote)]
   }
 
-  function acknowledge(operationId: string): void {
-    acknowledgedOperationIds.add(operationId)
-    const acknowledgeQueue = (queue as typeof queue & { acknowledge?: (id: string) => boolean }).acknowledge
-    if (acknowledgeQueue) acknowledgeQueue.call(queue, operationId)
-    queueRevision.value += 1
+  async function acknowledge(operationId: string): Promise<boolean> {
+    try {
+      const removed = await queue.acknowledge(operationId)
+      if (!removed) return false
+      acknowledgedOperationIds.add(operationId)
+      queueRevision.value += 1
+      return true
+    } catch (reason) {
+      error.value = messageFor(reason)
+      return false
+    }
   }
 
-  function acknowledgeConfirmedOperations(groupId: string, loadedExpenses: readonly ExpenseRow[]): void {
+  async function acknowledgeConfirmedOperations(groupId: string, loadedExpenses: readonly ExpenseRow[]): Promise<void> {
     const byId = new Map(loadedExpenses.map((expense) => [expense.id, expense]))
     for (const operation of queue.snapshot()) {
       if (operation.status !== 'fresh' && operation.status !== 'stale') continue
@@ -235,18 +246,27 @@ export const useGroupStore = defineStore('groups', () => {
       if ('expense' in operation.result) {
         const saved = operation.result.expense
         if (isRevisionRetired(groupId, saved.id, saved.revision, tombstoneWatermarks)) {
-          acknowledge(operation.envelope.operationId)
+          await acknowledge(operation.envelope.operationId)
           continue
         }
         const repositoryExpense = byId.get(saved.id)
         if (!repositoryExpense || repositoryExpense.revision < saved.revision) continue
       } else if ('tombstone' in operation.result) {
-        const repositoryExpense = byId.get(operation.result.tombstone.id)
-        if (repositoryExpense && (!repositoryExpense.deletedAt || repositoryExpense.revision < operation.result.tombstone.revision)) continue
+        const tombstone = operation.result.tombstone
+        let repositoryExpense = byId.get(tombstone.id)
+        if (!isConfirmedTombstone(repositoryExpense, tombstone)) {
+          try {
+            repositoryExpense = await repository.expenses.getById(groupId, tombstone.id)
+          } catch {
+            continue
+          }
+        }
+        if (!isConfirmedTombstone(repositoryExpense, tombstone)) continue
+        rememberTombstoneRevision(groupId, tombstone.id, repositoryExpense.revision, tombstoneWatermarks)
       } else {
         continue
       }
-      acknowledge(operation.envelope.operationId)
+      await acknowledge(operation.envelope.operationId)
     }
   }
 
@@ -474,6 +494,16 @@ function isRevisionRetired(
 ): boolean {
   const tombstoneRevision = watermarks.get(groupId)?.get(expenseId)
   return tombstoneRevision !== undefined && tombstoneRevision >= revision
+}
+
+function isConfirmedTombstone(
+  expense: ExpenseRow | undefined,
+  tombstone: { readonly id: string; readonly groupId: string; readonly revision: number },
+): expense is ExpenseRow {
+  return expense?.id === tombstone.id
+    && expense.groupId === tombstone.groupId
+    && expense.deletedAt !== undefined
+    && expense.revision >= tombstone.revision
 }
 
 function retainedIntentId(operationId: string, remoteRevision: number): string {

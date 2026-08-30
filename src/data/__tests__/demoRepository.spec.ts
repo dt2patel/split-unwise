@@ -201,6 +201,31 @@ describe('demo repository', () => {
     await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.not.toContainEqual(expect.objectContaining({ id: 'gas-for-the-boat' }))
   })
 
+  it('rejects editing a deleted expense while keeping its tombstone audit-visible', async () => {
+    const repository = createDemoRepository()
+    await repository.expenses.delete({ kind: 'expense.delete', operationId: 'delete-before-edit', groupId: 'lake-house-weekend', expenseId: 'gas-for-the-boat', expectedRevision: 1 })
+
+    await expect(repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-deleted-gas', groupId: 'lake-house-weekend', expenseId: 'gas-for-the-boat', expectedRevision: 2,
+      draft: { ...firewoodDraft(), description: 'Restored gas' },
+    })).rejects.toThrow('Cannot edit deleted demo expense')
+    await expect(repository.expenses.getById('lake-house-weekend', 'gas-for-the-boat')).resolves.toMatchObject({
+      id: 'gas-for-the-boat', description: 'Gas for the boat', revision: 2, deletedAt: '2026-08-30T12:00:00.000Z',
+    })
+  })
+
+  it('rejects deleting an already-deleted expense without advancing its tombstone', async () => {
+    const repository = createDemoRepository()
+    await repository.expenses.delete({ kind: 'expense.delete', operationId: 'delete-once', groupId: 'lake-house-weekend', expenseId: 'gas-for-the-boat', expectedRevision: 1 })
+
+    await expect(repository.expenses.delete({
+      kind: 'expense.delete', operationId: 'delete-twice', groupId: 'lake-house-weekend', expenseId: 'gas-for-the-boat', expectedRevision: 2,
+    })).rejects.toThrow('Demo expense is already deleted')
+    await expect(repository.expenses.getById('lake-house-weekend', 'gas-for-the-boat')).resolves.toMatchObject({
+      id: 'gas-for-the-boat', revision: 2, deletedAt: '2026-08-30T12:00:00.000Z',
+    })
+  })
+
   it('reports a stale delete as a conflict with the local intent and remote expense', async () => {
     const repository = createDemoRepository()
     const command = {
