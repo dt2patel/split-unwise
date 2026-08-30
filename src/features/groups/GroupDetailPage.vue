@@ -28,7 +28,7 @@ type GroupView = 'expenses' | 'activity'
 
 const route = useRoute()
 const store = useGroupStore()
-const { activeGroup, currentUserNet, error, isLoading, journalExpenses, recentActivity } = storeToRefs(store)
+const { activeGroup, currentUserNets, error, isLoading, journalExpenses, recentActivity } = storeToRefs(store)
 const selectedView = ref<GroupView>('expenses')
 const isCollapsed = ref(false)
 const groupId = computed(() => String(route.params.groupId ?? ''))
@@ -79,7 +79,7 @@ function onScroll(event: CustomEvent<{ scrollTop?: number }>): void {
     <ion-content :fullscreen="true" :scroll-events="true" @ion-scroll="onScroll">
       <p v-if="isLoading && !activeGroup" class="group-detail__status" role="status">Loading group…</p>
       <main v-else-if="activeGroup" class="group-detail__main">
-        <group-hero :group="activeGroup" :balance="currentUserNet" :collapsed="isCollapsed" />
+        <group-hero :group="activeGroup" :balances="currentUserNets" :collapsed="isCollapsed" />
         <action-rail :group-id="groupId" />
 
         <section class="group-detail__ledger" aria-label="Group journal">

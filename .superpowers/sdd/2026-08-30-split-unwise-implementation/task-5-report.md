@@ -67,3 +67,30 @@ The illustrative `$137.07` value from the generated reference is explicitly excl
 - Financial text is stable and explicit; money does not animate.
 - Motion stays within 160–180 ms and is disabled by the existing reduced-motion rules.
 - Action targets are at least 44 points and icon-only settings/add controls have accessible names.
+
+## Fix round 1/5 — request identity and currency-safe summaries
+
+### Findings addressed
+
+1. Group navigation races now use a monotonic request identity. Every new group load immediately clears the active group, members, expenses, activity, and balance summaries. Only the latest request may commit data, publish an error, or clear the loading state; a delayed earlier request cannot overwrite the current route.
+2. Group summary balances are now checked per currency through the existing BigInt-backed `buildCurrencyTotals` path. The page renders one `BalanceSummary` per currency, prioritizes the group's base currency, never implicitly converts currencies, and exposes aggregate overflow as a visible alert.
+
+### RED evidence
+
+Command:
+
+`pnpm vitest run src/features/groups/__tests__/groupStore.spec.ts`
+
+Observed result before fixes: 1 file failed, 3 tests failed. The stale group remained visible while A loaded, mixed USD/EUR produced one summary, and two maximum-safe USD entries rendered a rounded aggregate instead of an error.
+
+### GREEN evidence
+
+- `pnpm vitest run src/features/groups/__tests__/groupStore.spec.ts src/features/groups/__tests__/GroupDetailPage.spec.ts` — 2 files passed, 19 tests passed.
+- `pnpm test` — 20 files passed, 142 tests passed.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed; only the existing Vite large-chunk advisory remains.
+- `git diff --check` — passed after the report update.
+
+### Covering test
+
+`src/features/groups/__tests__/groupStore.spec.ts` uses a complete `AppRepository` proxy at the production composition boundary. It deterministically resolves stale → delayed A → B, verifies B remains authoritative after A finishes, renders literal USD and EUR expectations separately, and verifies a safe-integer overflow reaches the page's live alert state.

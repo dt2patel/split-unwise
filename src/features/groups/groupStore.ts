@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { createRepository } from '../../data'
+import { buildCurrencyTotals } from '../../data/aggregates'
 import type { ActivityItem, ExpenseRow, Group, Member } from '../../data'
 import type { Money } from '../../domain/model'
 
@@ -19,21 +20,14 @@ export const useGroupStore = defineStore('groups', () => {
   const members = ref<readonly Member[]>([])
   const expenses = ref<readonly ExpenseRow[]>([])
   const activity = ref<readonly ActivityItem[]>([])
+  const currentUserNets = ref<readonly Money[]>([])
   const isLoading = ref(false)
   const error = ref<string>()
+  let latestGroupRequest = 0
 
   const memberNames = computed(() => new Map(members.value.map((member) => [member.id, member.displayName])))
   const journalExpenses = computed(() => [...expenses.value].sort(newestFirst))
   const recentActivity = computed(() => [...activity.value].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)))
-  const currentUserNet = computed<Money>(() => {
-    const currency = activeGroup.value?.currency ?? 'USD'
-    const total = expenses.value.reduce((sum, expense) => {
-      if (expense.total.currency !== currency || !currentUser.value) return sum
-      return sum + signedPosition(expense, currentUser.value.id)
-    }, 0)
-    return { currency, minorAmount: total }
-  })
-
   async function loadOverview(): Promise<void> {
     isLoading.value = true
     error.value = undefined
@@ -49,8 +43,10 @@ export const useGroupStore = defineStore('groups', () => {
   }
 
   async function loadGroup(groupId: string): Promise<void> {
+    const request = ++latestGroupRequest
     isLoading.value = true
     error.value = undefined
+    clearActiveGroup()
     try {
       const [group, user, loadedMembers, loadedExpenses, loadedActivity] = await Promise.all([
         repository.groups.getById(groupId),
@@ -59,20 +55,22 @@ export const useGroupStore = defineStore('groups', () => {
         repository.expenses.listForGroup(groupId),
         repository.activity.listForGroup(groupId),
       ])
+      if (request !== latestGroupRequest) return
       if (!group) throw new Error('This group is not available.')
+      if (group.id !== groupId) throw new Error('The loaded group did not match the requested group.')
+      const loadedNets = netsByCurrency(loadedExpenses, user.id, group.currency)
       activeGroup.value = group
       currentUser.value = user
       members.value = loadedMembers
       expenses.value = loadedExpenses
       activity.value = loadedActivity
+      currentUserNets.value = loadedNets
     } catch (reason) {
-      activeGroup.value = undefined
-      members.value = []
-      expenses.value = []
-      activity.value = []
+      if (request !== latestGroupRequest) return
+      clearActiveGroup()
       error.value = messageFor(reason)
     } finally {
-      isLoading.value = false
+      if (request === latestGroupRequest) isLoading.value = false
     }
   }
 
@@ -94,7 +92,7 @@ export const useGroupStore = defineStore('groups', () => {
     members,
     journalExpenses,
     recentActivity,
-    currentUserNet,
+    currentUserNets,
     isLoading,
     error,
     loadOverview,
@@ -102,7 +100,25 @@ export const useGroupStore = defineStore('groups', () => {
     positionFor,
     payerName,
   }
+
+  function clearActiveGroup(): void {
+    activeGroup.value = undefined
+    members.value = []
+    expenses.value = []
+    activity.value = []
+    currentUserNets.value = []
+  }
 })
+
+function netsByCurrency(rows: readonly ExpenseRow[], currentUserId: string, groupCurrency: Money['currency']): readonly Money[] {
+  const nets = buildCurrencyTotals(rows, currentUserId).map(({ currency, currentUserNet }) => ({ currency, minorAmount: currentUserNet }))
+  if (nets.length === 0) return [{ currency: groupCurrency, minorAmount: 0 }]
+  return nets.sort((left, right) => {
+    if (left.currency === groupCurrency && right.currency !== groupCurrency) return -1
+    if (right.currency === groupCurrency && left.currency !== groupCurrency) return 1
+    return left.currency.localeCompare(right.currency)
+  })
+}
 
 function signedPosition(expense: ExpenseRow, participantId: string): number {
   const share = expense.allocations.find((allocation) => allocation.participantId === participantId)?.money.minorAmount ?? 0
@@ -114,5 +130,7 @@ function newestFirst(left: ExpenseRow, right: ExpenseRow): number {
 }
 
 function messageFor(reason: unknown): string {
-  return reason instanceof Error ? reason.message : 'The group could not be loaded.'
+  if (!(reason instanceof Error)) return 'The group could not be loaded.'
+  if (reason.message === 'Aggregate exceeds safe integer range') return 'Money addition exceeds safe integer range.'
+  return reason.message
 }

@@ -3,7 +3,7 @@ import BalanceSummary from './BalanceSummary.vue'
 import type { Group } from '../../../data'
 import type { Money } from '../../../domain/model'
 
-defineProps<{ group: Group; balance: Money; collapsed: boolean }>()
+defineProps<{ group: Group; balances: readonly Money[]; collapsed: boolean }>()
 </script>
 
 <template>
@@ -19,7 +19,9 @@ defineProps<{ group: Group; balance: Money; collapsed: boolean }>()
     <div class="group-hero__identity">
       <div class="group-hero__monogram" data-testid="group-monogram" aria-hidden="true">LW</div>
       <h1 id="group-title">{{ group.name }}</h1>
-      <balance-summary :money="balance" />
+      <div class="group-hero__balances">
+        <balance-summary v-for="balance in balances" :key="balance.currency" :money="balance" />
+      </div>
     </div>
   </section>
 </template>
@@ -31,6 +33,7 @@ defineProps<{ group: Group; balance: Money; collapsed: boolean }>()
 .group-hero__identity { position: relative; z-index: 1; margin-top: -39px; padding: 0 18px; transition: transform var(--su-motion-fast) ease-out, opacity var(--su-motion-fast) ease-out; transform-origin: top center; }
 .group-hero__monogram { display: grid; width: 66px; height: 66px; margin: 0 auto; place-items: center; border: 6px solid var(--su-surface); border-radius: 20px; background: var(--su-indigo); color: #fff; box-shadow: 0 4px 14px rgb(38 32 127 / 18%); font-size: 1.7rem; font-weight: 590; letter-spacing: -0.04em; }
 .group-hero h1 { margin: 20px 0 7px; color: var(--su-text); font-size: clamp(1.4rem, 6vw, 1.72rem); font-weight: 710; letter-spacing: -0.025em; line-height: 1.12; }
+.group-hero__balances { display: grid; gap: 3px; }
 .group-hero--collapsed .group-hero__cover { transform: scale(1.025); }
 .group-hero--collapsed .group-hero__identity { opacity: 0.18; transform: translateY(-8px) scale(0.97); }
 

@@ -1,0 +1,199 @@
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import type { Component } from 'vue'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createAppRouter } from '../../../app/router'
+import { createDemoRepository } from '../../../data/demoRepository'
+import type { ActivityItem, AppRepository, ExpenseRow, Group, Member } from '../../../data/repositories'
+import { useGroupStore } from '../groupStore'
+
+const repositoryHarness = vi.hoisted(() => ({ current: undefined as unknown }))
+
+vi.mock('../../../data', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../data')>()
+  const repository = new Proxy({}, {
+    get(_target, property) {
+      return (repositoryHarness.current as AppRepository)[property as keyof AppRepository]
+    },
+  }) as AppRepository
+  return { ...actual, createRepository: () => repository }
+})
+
+interface GroupSnapshot {
+  readonly group: Group
+  readonly members: readonly Member[]
+  readonly expenses: readonly ExpenseRow[]
+  readonly activity: readonly ActivityItem[]
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>
+  resolve(value: T): void
+}
+
+const maya: Member = { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true }
+const jordan: Member = { id: 'jordan-k', displayName: 'Jordan K.', initials: 'JK', isCurrentUser: false }
+
+const ionicStubs = {
+  IonPage: { template: '<main class="ion-page"><slot /></main>' },
+  IonHeader: { template: '<header><slot /></header>' },
+  IonToolbar: { template: '<div><slot /></div>' },
+  IonTitle: { template: '<div><slot /></div>' },
+  IonButtons: { template: '<div><slot /></div>' },
+  IonBackButton: { props: ['defaultHref', 'text'], template: '<a :href="defaultHref">{{ text }}</a>' },
+  IonContent: { template: '<section><slot /></section>' },
+  IonFooter: { template: '<footer><slot /></footer>' },
+  IonSegment: { template: '<nav><slot /></nav>' },
+  IonSegmentButton: { props: ['value'], template: '<button type="button"><slot /></button>' },
+  IonLabel: { template: '<span><slot /></span>' },
+  IonButton: { props: ['routerLink', 'ariaLabel'], template: '<a :href="routerLink" :aria-label="ariaLabel"><slot /></a>' },
+  IonIcon: { template: '<span aria-hidden="true" />' },
+  IonFab: { template: '<div><slot /></div>' },
+  IonFabButton: { props: ['routerLink'], template: '<a :href="routerLink"><slot /></a>' },
+}
+
+beforeEach(() => {
+  setActivePinia(createPinia())
+})
+
+describe('group load identity', () => {
+  it('clears stale content and lets the latest B request win after delayed A resolves', async () => {
+    const requestA = deferred<GroupSnapshot>()
+    const requestB = deferred<GroupSnapshot>()
+    repositoryHarness.current = repositoryFor({
+      stale: Promise.resolve(snapshot('stale', 'Stale group')),
+      a: requestA.promise,
+      b: requestB.promise,
+    })
+    const store = useGroupStore()
+    await store.loadGroup('stale')
+    expect(store.activeGroup?.id).toBe('stale')
+
+    const loadingA = store.loadGroup('a')
+    expect(store.activeGroup).toBeUndefined()
+    expect(store.journalExpenses).toEqual([])
+    expect(store.isLoading).toBe(true)
+
+    const loadingB = store.loadGroup('b')
+    requestB.resolve(snapshot('b', 'Group B'))
+    await loadingB
+    expect(store.activeGroup?.id).toBe('b')
+    expect(store.isLoading).toBe(false)
+
+    requestA.resolve(snapshot('a', 'Group A'))
+    await loadingA
+    expect(store.activeGroup?.id).toBe('b')
+    expect(store.error).toBeUndefined()
+    expect(store.isLoading).toBe(false)
+  })
+})
+
+describe('per-currency group balances', () => {
+  it('renders USD and EUR nets separately without an implicit conversion', async () => {
+    repositoryHarness.current = repositoryFor({ mixed: Promise.resolve(snapshot('mixed', 'Mixed trip', mixedCurrencyExpenses('mixed'))) })
+    const wrapper = await mountRoute('/tabs/groups/mixed')
+
+    const balances = wrapper.findAll('[data-testid="group-balance"]')
+    expect(balances).toHaveLength(2)
+    expect(balances[0].text()).toContain('You are owed')
+    expect(balances[0].text()).toContain('$75.00')
+    expect(balances[1].text()).toContain('You owe')
+    expect(balances[1].text()).toContain('€5.00')
+    expect(wrapper.text()).not.toContain('$70.00')
+  })
+
+  it('shows a visible error instead of rounding an overflowing aggregate', async () => {
+    repositoryHarness.current = repositoryFor({ overflow: Promise.resolve(snapshot('overflow', 'Overflow trip', overflowingExpenses('overflow'))) })
+    const wrapper = await mountRoute('/tabs/groups/overflow')
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('Money addition exceeds safe integer range')
+    expect(wrapper.find('[data-testid="group-cover"]').exists()).toBe(false)
+  })
+})
+
+async function mountRoute(path: string): Promise<VueWrapper> {
+  const router = createAppRouter()
+  await router.push(path)
+  await router.isReady()
+  const component = router.currentRoute.value.matched.at(-1)?.components?.default as Component | undefined
+  if (!component) throw new Error(`No component resolved for ${path}`)
+  const wrapper = mount(component, { global: { plugins: [createPinia(), router], stubs: ionicStubs } })
+  await flushPromises()
+  return wrapper
+}
+
+function repositoryFor(requests: Readonly<Record<string, Promise<GroupSnapshot>>>): AppRepository {
+  const base = createDemoRepository()
+  const read = (groupId: string): Promise<GroupSnapshot> => requests[groupId] ?? Promise.reject(new Error(`Unknown test group: ${groupId}`))
+  return {
+    ...base,
+    app: { ...base.app, async getCurrentUser() { return { ...maya } } },
+    groups: {
+      ...base.groups,
+      async getById(groupId) { return read(groupId).then(({ group }) => group) },
+      async listMembers(groupId) { return read(groupId).then(({ members }) => members) },
+    },
+    expenses: {
+      ...base.expenses,
+      async listForGroup(groupId) { return read(groupId).then(({ expenses }) => expenses) },
+    },
+    activity: {
+      async listForGroup(groupId) { return read(groupId).then(({ activity }) => activity) },
+    },
+  }
+}
+
+function snapshot(id: string, name: string, expenses: readonly ExpenseRow[] = []): GroupSnapshot {
+  return {
+    group: { id, name, currency: 'USD', coverImageUrl: '/assets/images/lake-house-cover.png', memberIds: [maya.id, jordan.id], syncState: 'fresh' },
+    members: [maya, jordan],
+    expenses,
+    activity: [],
+  }
+}
+
+function mixedCurrencyExpenses(groupId: string): readonly ExpenseRow[] {
+  return [
+    expense(groupId, 'usd', 'USD', 10000, maya.id, 2500, 7500),
+    expense(groupId, 'eur', 'EUR', 2000, jordan.id, 500, 1500),
+  ]
+}
+
+function overflowingExpenses(groupId: string): readonly ExpenseRow[] {
+  return [
+    expense(groupId, 'max-a', 'USD', Number.MAX_SAFE_INTEGER, maya.id, 0, Number.MAX_SAFE_INTEGER),
+    expense(groupId, 'max-b', 'USD', Number.MAX_SAFE_INTEGER, maya.id, 0, Number.MAX_SAFE_INTEGER),
+  ]
+}
+
+function expense(
+  groupId: string,
+  id: string,
+  currency: 'EUR' | 'USD',
+  total: number,
+  payerId: string,
+  mayaShare: number,
+  jordanShare: number,
+): ExpenseRow {
+  return {
+    id,
+    groupId,
+    description: id,
+    date: '2026-08-30',
+    total: { currency, minorAmount: total },
+    payerId,
+    allocations: [
+      { participantId: maya.id, money: { currency, minorAmount: mayaShare } },
+      { participantId: jordan.id, money: { currency, minorAmount: jordanShare } },
+    ],
+    category: 'Test',
+    createdAt: '2026-08-30T12:00:00.000Z',
+    syncState: 'fresh',
+  }
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolvePromise!: (value: T) => void
+  const promise = new Promise<T>((resolve) => { resolvePromise = resolve })
+  return { promise, resolve: resolvePromise }
+}
