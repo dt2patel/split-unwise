@@ -1,4 +1,5 @@
 import { computeBalances, simplifyDebts } from '../domain/balances'
+import { computeAllocations } from '../domain/splits'
 import { CommandConflictError } from './commandQueue'
 import { LAKE_HOUSE_GROUP_ID, lakeHouseActivity, lakeHouseComments, lakeHouseCurrentUser, lakeHouseExpenses, lakeHouseGroup, lakeHouseMembers, lakeHouseRecurring } from '../demo/lakeHouse'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
@@ -15,7 +16,7 @@ export function createDemoRepository(options: { readonly now?: () => string } = 
   let nextExpenseNumber = 6
   const now = options.now ?? (() => '2026-08-30T12:00:00.000Z')
 
-  const groupExpenses = (groupId: string): ExpenseRow[] => { assertLakeHouseGroup(groupId); return expenses.filter((expense) => expense.groupId === groupId).sort(byDateThenId) }
+  const groupExpenses = (groupId: string): ExpenseRow[] => { assertLakeHouseGroup(groupId); return expenses.filter((expense) => expense.groupId === groupId && expense.deletedAt === undefined).sort(byDateThenId) }
   const execute = async (command: CommandEnvelope): Promise<CommandResult> => {
     const identity = await createOperationIdentity(currentUser.id, command)
     const existing = operationLedger.get(command.operationId)
@@ -32,11 +33,11 @@ export function createDemoRepository(options: { readonly now?: () => string } = 
     switch (command.kind) {
       case 'expense.add': {
         assertLakeHouseGroup(command.groupId)
-        validateDraft(command)
+        const allocations = validateDraft(command)
         const createdAt = now()
         const expense: ExpenseRow = {
           id: `demo-expense-${String(nextExpenseNumber).padStart(3, '0')}`, groupId: command.groupId, description: command.description, date: command.date,
-          total: { ...command.total }, payments: command.payments.map(cloneAllocation), allocations: command.allocations.map(cloneAllocation), category: command.category,
+          total: { ...command.total }, payments: command.payments.map(cloneAllocation), allocations: allocations.map(cloneAllocation), category: command.category,
           createdAt, updatedAt: createdAt, revision: 1, syncState: 'fresh', splitMethod: clone(command.splitMethod), attachmentRefs: [...command.attachmentRefs],
           ...(command.notes ? { notes: command.notes } : {}), ...(command.recurrence ? { recurrence: clone(command.recurrence) } : {}),
           ...(command.occurrenceEditScope ? { occurrenceEditScope: command.occurrenceEditScope } : {}),
@@ -48,7 +49,7 @@ export function createDemoRepository(options: { readonly now?: () => string } = 
       }
       case 'expense.edit': {
         assertLakeHouseGroup(command.groupId)
-        validateDraft(command.draft)
+        const allocations = validateDraft(command.draft)
         const index = expenses.findIndex((expense) => expense.id === command.expenseId && expense.groupId === command.groupId)
         if (index < 0) throw new Error(`Unknown demo expense: ${command.expenseId}`)
         const previous = expenses[index]
@@ -56,7 +57,7 @@ export function createDemoRepository(options: { readonly now?: () => string } = 
         const { notes: _previousNotes, recurrence: _previousRecurrence, occurrenceEditScope: _previousOccurrenceEditScope, ...retained } = previous
         const updated: ExpenseRow = {
           ...retained, ...command.draft, id: previous.id, groupId: previous.groupId, createdAt: previous.createdAt, updatedAt: now(), revision: previous.revision + 1, syncState: 'fresh',
-          total: { ...command.draft.total }, payments: command.draft.payments.map(cloneAllocation), allocations: command.draft.allocations.map(cloneAllocation),
+          total: { ...command.draft.total }, payments: command.draft.payments.map(cloneAllocation), allocations: allocations.map(cloneAllocation),
           splitMethod: clone(command.draft.splitMethod), attachmentRefs: [...command.draft.attachmentRefs],
         }
         expenses[index] = updated
@@ -67,8 +68,12 @@ export function createDemoRepository(options: { readonly now?: () => string } = 
         assertLakeHouseGroup(command.groupId)
         const index = expenses.findIndex((expense) => expense.id === command.expenseId && expense.groupId === command.groupId)
         if (index < 0) throw new Error(`Unknown demo expense: ${command.expenseId}`)
-        const [previous] = expenses.splice(index, 1)
-        return { kind: command.kind, operationId: command.operationId, status: 'saved', tombstone: { id: previous.id, groupId: previous.groupId, revision: previous.revision + 1, deletedAt: now() } }
+        const previous = expenses[index]
+        if (command.expectedRevision !== previous.revision) throw new CommandConflictError('The expense changed remotely.', { local: clone(command), remote: cloneExpense(previous) })
+        const deletedAt = now()
+        const retained: ExpenseRow = { ...previous, revision: previous.revision + 1, updatedAt: deletedAt, deletedAt }
+        expenses[index] = retained
+        return { kind: command.kind, operationId: command.operationId, status: 'saved', tombstone: { id: retained.id, groupId: retained.groupId, revision: retained.revision, deletedAt } }
       }
       case 'comment.add': {
         assertLakeHouseGroup(command.groupId)
@@ -134,10 +139,22 @@ function byDateThenId(left: ExpenseRow, right: ExpenseRow): number { return left
 function initials(displayName: string): string { return displayName.split(/\s+/).filter(Boolean).map((part) => part[0]).join('').slice(0, 2).toUpperCase() }
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
 
-function validateDraft(draft: ExpenseDraft): void {
+function validateDraft(draft: ExpenseDraft): readonly ExpenseRow['allocations'][number][] {
   const active = new Set(lakeHouseMembers.map(({ id }) => id))
   const assertActive = (participantId: string, label: string) => { if (!active.has(participantId)) throw new Error(`${label} must be an active group member`) }
+  const allocations = computeAllocations(draft.total, draft.splitMethod)
   draft.payments.forEach(({ participantId }) => assertActive(participantId, 'Payer'))
-  draft.allocations.forEach(({ participantId }) => assertActive(participantId, 'Participant'))
-  computeBalances([{ id: 'draft', description: draft.description, date: draft.date, total: draft.total, payments: draft.payments, allocations: draft.allocations }])
+  allocations.forEach(({ participantId }) => assertActive(participantId, 'Participant'))
+  if (!sameAllocations(allocations, draft.allocations)) throw new Error('Expense allocations do not match split method')
+  computeBalances([{ id: 'draft', description: draft.description, date: draft.date, total: draft.total, payments: draft.payments, allocations }])
+  return allocations
+}
+
+function sameAllocations(left: readonly ExpenseRow['allocations'][number][], right: readonly ExpenseRow['allocations'][number][]): boolean {
+  const normalize = (values: readonly ExpenseRow['allocations'][number][]) => [...values]
+    .sort((a, b) => a.participantId.localeCompare(b.participantId))
+    .map(({ participantId, money }) => `${participantId}\u0000${money.currency}\u0000${money.minorAmount}`)
+  const first = normalize(left)
+  const second = normalize(right)
+  return first.length === second.length && first.every((value, index) => value === second[index])
 }

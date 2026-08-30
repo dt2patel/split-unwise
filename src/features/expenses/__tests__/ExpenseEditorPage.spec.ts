@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import type { Component } from 'vue'
@@ -5,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import { createMemoryReceiptStore } from '../../../data/receipts'
+import { createMemoryReceiptStore, type ReceiptProvider, type ReceiptRecognitionResult } from '../../../data/receipts'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import { useExpenseStore } from '../expenseStore'
 
@@ -109,9 +111,100 @@ describe('ExpenseEditorPage', () => {
     expect(wrapper.get('#participant-sheet-trigger').attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'expense-participants-error' })
     expect(wrapper.get('#expense-category').attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'expense-category-error' })
   })
+
+  it('disables Save outside a successfully initialized editor and while one save is pending', async () => {
+    const repository = createDemoRepository()
+    const pendingGroup = deferred<Awaited<ReturnType<typeof repository.groups.getById>>>()
+    const originalGetById = repository.groups.getById
+    repository.groups.getById = async (groupId) => groupId === 'lake-house-weekend' ? pendingGroup.promise : originalGetById(groupId)
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const mounted = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend', false)
+    expect(mounted.wrapper.get('[data-action="save-expense"]').attributes('disabled')).toBeDefined()
+    expect(mounted.wrapper.get('[data-testid="expense-loading"]').text()).toContain('Loading')
+    pendingGroup.resolve(await createDemoRepository().groups.getById('lake-house-weekend'))
+    await flushPromises()
+    expect(mounted.wrapper.get('[data-action="save-expense"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('resets a recurrence anchor deterministically when its expense date changes', async () => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    store.editor.recurrence = { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' }
+
+    await wrapper.get('#expense-date').setValue('2026-09-15')
+
+    expect(store.editor.recurrence.anchor).toEqual({ month: 9, day: 15 })
+  })
+
+  it('preserves recurring identity and requires an explicit occurrence or future edit scope', async () => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/cabin-deposit/edit?groupId=lake-house-weekend')
+    expect((store as unknown as { recurringTemplateId?: string }).recurringTemplateId).toBe('cabin-deposit-monthly')
+
+    await wrapper.get('#recurrence-sheet-trigger').trigger('click')
+    expect(wrapper.get('[data-testid="active-sheet"]').text()).toContain('Apply changes to')
+    await wrapper.get('[data-occurrence-scope="occurrence"]').trigger('click')
+    await wrapper.get('[data-action="apply-recurrence"]').trigger('click')
+    await flushPromises()
+
+    expect(store.editor.occurrenceEditScope).toBe('occurrence')
+  })
+
+  it('lets composer labels, icons, summaries, and native controls grow at Dynamic Type sizes', async () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/features/expenses/ExpenseEditorPage.vue'), 'utf8')
+    const css = source.match(/<style scoped>([\s\S]*?)<\/style>/)?.[1]
+    if (!css) throw new Error('Expected the editor stylesheet')
+    const style = document.createElement('style')
+    style.textContent = css
+    document.head.append(style)
+    document.documentElement.style.fontSize = '32px'
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+
+    const context = getComputedStyle(wrapper.get('.context-chip span').element)
+    expect(context.whiteSpace).toBe('normal')
+    expect(context.overflowWrap).toBe('anywhere')
+    const currency = getComputedStyle(wrapper.get('.expense-core__currency-symbol').element)
+    expect(currency.width).toBe('max-content')
+    expect(currency.minHeight).toBe('46px')
+    const row = getComputedStyle(wrapper.get('.editor-row').element)
+    expect(row.gridTemplateColumns).toContain('max-content')
+    const summary = getComputedStyle(wrapper.get('#participant-sheet-trigger small').element)
+    expect(summary.whiteSpace).toBe('normal')
+    expect(summary.overflowWrap).toBe('anywhere')
+    const date = getComputedStyle(wrapper.get('#expense-date').element)
+    expect(date.minWidth).toBe('0px')
+    expect(date.maxWidth).toBe('100%')
+
+    wrapper.unmount()
+    style.remove()
+    document.documentElement.style.removeProperty('font-size')
+  })
+
+  it('invalidates pending receipt work when the composer unmounts', async () => {
+    const recognition = deferred<ReceiptRecognitionResult>()
+    const receiptProvider: ReceiptProvider = {
+      async upload() { return { status: 'unavailable', reason: 'Upload unavailable.' } },
+      recognize: () => recognition.promise,
+      async delete() { /* no remote receipt was created */ },
+    }
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(),
+      receipts: createMemoryReceiptStore({ id: () => 'unmounted-receipt', now: () => '2026-08-30T12:00:00.000Z' }),
+      receiptProvider,
+    }))
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+
+    const attachment = store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
+    await Promise.resolve()
+    await Promise.resolve()
+    wrapper.unmount()
+    recognition.resolve({ status: 'unavailable', reason: 'Unavailable.' })
+
+    await expect(attachment).resolves.toBe(false)
+    expect(store.activeSheet).toBeUndefined()
+  })
 })
 
-async function mountRoute(path: string): Promise<{ wrapper: VueWrapper; router: ReturnType<typeof createAppRouter>; store: ReturnType<typeof useExpenseStore> }> {
+async function mountRoute(path: string, settle = true): Promise<{ wrapper: VueWrapper; router: ReturnType<typeof createAppRouter>; store: ReturnType<typeof useExpenseStore> }> {
   const router = createAppRouter()
   await router.push(path)
   await router.isReady()
@@ -119,6 +212,12 @@ async function mountRoute(path: string): Promise<{ wrapper: VueWrapper; router: 
   if (!component) throw new Error(`No component resolved for ${path}`)
   const pinia = createPinia()
   const wrapper = mount(component, { attachTo: document.body, global: { plugins: [pinia, router], stubs: ionicStubs } })
-  await flushPromises()
+  if (settle) await flushPromises()
   return { wrapper, router, store: useExpenseStore(pinia) }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
 }

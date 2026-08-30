@@ -17,14 +17,18 @@ const props = withDefaults(defineProps<{
   payerName?: string
   participantCount?: number
   retryable?: boolean
+  conflictRemote?: ExpenseRowRecord
+  conflictIntent?: 'delete' | 'edit'
 }>(), {
   balanceLabel: undefined,
   journal: false,
   payerName: undefined,
   participantCount: undefined,
   retryable: false,
+  conflictRemote: undefined,
+  conflictIntent: undefined,
 })
-const emit = defineEmits<{ retry: []; discard: [] }>()
+const emit = defineEmits<{ retry: []; discard: []; reloadRemote: []; retainLocal: []; deleteRemote: [] }>()
 
 const dateParts = computed(() => {
   const date = new Date(`${props.expense.date}T00:00:00.000Z`)
@@ -61,6 +65,11 @@ watch(
     props.journal,
     props.payerName,
     props.participantCount,
+    props.conflictRemote?.description,
+    props.conflictRemote?.revision,
+    props.conflictRemote?.total.currency,
+    props.conflictRemote?.total.minorAmount,
+    props.conflictIntent,
   ],
   invalidateContent,
 )
@@ -77,17 +86,39 @@ watch(
       <span class="su-visually-hidden">Category: {{ expense.category }}</span>
     </span>
     <div class="expense-row__summary">
-      <strong>{{ expense.description }}</strong>
-      <template v-if="journal">
-        <span>Paid by {{ payerName }}</span>
-        <span>Split between {{ participantCount }} of you<span v-if="expense.recurringTemplateId"> · Recurring</span></span>
-        <sync-status v-if="expense.syncState !== 'fresh'" :state="expense.syncState" />
-        <span v-if="retryable && expense.syncState === 'failed'" class="expense-row__sync-actions">
-          <button type="button" data-action="retry-expense" @click="emit('retry')">Retry</button>
-          <button type="button" data-action="discard-expense" @click="emit('discard')">Discard</button>
+      <template v-if="journal && expense.syncState === 'conflicted' && conflictRemote">
+        <div class="expense-row__conflict-versions" role="group" aria-label="Expense conflict versions">
+          <section data-testid="local-conflict-version">
+            <span>{{ conflictIntent === 'delete' ? 'Delete requested' : 'Your draft' }}</span>
+            <strong>{{ expense.description }}</strong>
+            <money-amount :money="expense.total" :label="conflictIntent === 'delete' ? 'Delete request total' : 'Local draft total'" :show-direction="false" />
+          </section>
+          <section data-testid="remote-conflict-version">
+            <span>Remote version · revision {{ conflictRemote.revision }}</span>
+            <strong>{{ conflictRemote.description }}</strong>
+            <money-amount :money="conflictRemote.total" label="Remote version total" :show-direction="false" />
+          </section>
+        </div>
+        <sync-status state="conflicted" />
+        <span class="expense-row__sync-actions expense-row__sync-actions--conflict">
+          <button type="button" data-action="reload-remote" @click="emit('reloadRemote')">Reload remote</button>
+          <button v-if="conflictIntent === 'delete'" type="button" data-action="delete-remote" @click="emit('deleteRemote')">Delete latest version</button>
+          <button v-else type="button" data-action="retain-save-local" @click="emit('retainLocal')">Retain and save local</button>
         </span>
       </template>
       <template v-else>
+        <strong>{{ expense.description }}</strong>
+      </template>
+      <template v-if="journal && !(expense.syncState === 'conflicted' && conflictRemote)">
+        <span>Paid by {{ payerName }}</span>
+        <span>Split between {{ participantCount }} of you<span v-if="expense.recurringTemplateId"> · Recurring</span></span>
+        <sync-status v-if="expense.syncState !== 'fresh'" :state="expense.syncState" />
+        <span v-if="expense.syncState === 'failed'" class="expense-row__sync-actions">
+          <button v-if="retryable" type="button" data-action="retry-expense" @click="emit('retry')">Retry</button>
+          <button type="button" data-action="discard-expense" @click="emit('discard')">Discard</button>
+        </span>
+      </template>
+      <template v-else-if="!journal">
         <span>{{ expense.date }}</span>
         <sync-status :state="expense.syncState" />
       </template>
@@ -114,9 +145,14 @@ watch(
 .expense-row--journal .expense-row__summary > span { font-size: 0.68rem; line-height: 1.22; }
 .expense-row--journal .expense-row__summary :deep(.sync-status) { justify-self: start; font-size: 0.68rem; }
 .expense-row__sync-actions { display: flex; gap: 4px; }
-.expense-row__sync-actions button { min-width: 44px; min-height: 44px; margin: -5px 0; padding: 0 5px; border: 0; background: transparent; color: var(--su-accent); font: inherit; font-weight: 650; }
+.expense-row__sync-actions button { min-width: 44px; min-height: 44px; margin: -5px 0; padding: 0 5px; border: 0; background: transparent; color: var(--ion-color-primary); font: inherit; font-weight: 650; }
+.expense-row__conflict-versions { display: grid; gap: 6px; }
+.expense-row__conflict-versions section { display: grid; gap: 2px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--su-divider) 72%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--su-surface) 92%, var(--su-lilac)); }
+.expense-row__conflict-versions section > span { color: var(--ion-color-medium); font-size: 0.68rem; font-weight: 650; }
+.expense-row__conflict-versions :deep(.money-amount) { justify-self: start; font-size: 0.72rem; }
+.expense-row__sync-actions--conflict { flex-wrap: wrap; }
 .expense-row--journal .expense-row__amount { font-size: 0.78rem; }
-.expense-row--journal .expense-row__amount--balance :deep(.money-amount__direction) { order: -1; color: var(--su-accent); font-size: 0.72rem; line-height: 1.1; }
+.expense-row--journal .expense-row__amount--balance :deep(.money-amount__direction) { order: -1; color: var(--ion-color-primary); font-size: 0.72rem; line-height: 1.1; }
 .expense-row--journal .expense-row__category--transport { background: #E6F5FF; }
 .expense-row--journal .expense-row__category--lodging { background: #EEE8FF; }
 .expense-row--reflow { grid-template-areas: "category summary" "category paid" "category balance"; grid-template-columns: 44px minmax(0, 1fr); row-gap: 0.3rem; }

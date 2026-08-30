@@ -106,12 +106,69 @@ describe('ExpenseRow', () => {
     await failed.get('[data-action="discard-expense"]').trigger('click')
     expect(failed.emitted('retry')).toHaveLength(1)
     expect(failed.emitted('discard')).toHaveLength(1)
+
+    const finalFailure = mount(ExpenseRow, { props: { expense: { ...expense, syncState: 'failed' }, balance: { currency: 'USD', minorAmount: 0 }, balanceDirection: 'settled', journal: true, retryable: false } })
+    expect(finalFailure.find('[data-action="retry-expense"]').exists()).toBe(false)
+    expect(finalFailure.find('[data-action="discard-expense"]').exists()).toBe(true)
+    await finalFailure.get('[data-action="discard-expense"]').trigger('click')
+    expect(finalFailure.emitted('discard')).toHaveLength(1)
+  })
+
+  it('renders local and remote conflict versions with explicit resolution actions', async () => {
+    const remote = { ...expense, description: 'Remote firewood', revision: 2, total: { currency: 'USD' as const, minorAmount: 2800 } }
+    const wrapper = mount(ExpenseRow, {
+      props: {
+        expense: { ...expense, description: 'My firewood draft', syncState: 'conflicted' },
+        conflictRemote: remote,
+        balance: { currency: 'USD', minorAmount: 0 },
+        balanceDirection: 'settled',
+        journal: true,
+        retryable: true,
+      },
+    })
+
+    expect(wrapper.get('[data-testid="local-conflict-version"]').text()).toContain('My firewood draft')
+    expect(wrapper.get('[data-testid="remote-conflict-version"]').text()).toContain('Remote firewood')
+    expect(wrapper.get('[data-testid="remote-conflict-version"]').text()).toContain('$28.00')
+    expect(wrapper.find('[data-action="retry-expense"]').exists()).toBe(false)
+    expect(wrapper.find('[data-action="discard-expense"]').exists()).toBe(false)
+    await wrapper.get('[data-action="reload-remote"]').trigger('click')
+    await wrapper.get('[data-action="retain-save-local"]').trigger('click')
+    expect(wrapper.emitted('reloadRemote')).toHaveLength(1)
+    expect(wrapper.emitted('retainLocal')).toHaveLength(1)
+  })
+
+  it('renders a delete conflict as an explicit delete intent with a delete-again resolution', async () => {
+    const remote = { ...expense, description: 'Remote firewood', revision: 3 }
+    const wrapper = mount(ExpenseRow, {
+      props: {
+        expense: { ...expense, syncState: 'conflicted' },
+        conflictRemote: remote,
+        conflictIntent: 'delete',
+        balance: { currency: 'USD', minorAmount: 0 },
+        balanceDirection: 'settled',
+        journal: true,
+      } as never,
+    })
+
+    expect(wrapper.get('[data-testid="local-conflict-version"]').text()).toContain('Delete requested')
+    expect(wrapper.get('[data-testid="local-conflict-version"]').text()).not.toContain('Your draft')
+    expect(wrapper.find('[data-action="retain-save-local"]').exists()).toBe(false)
+    expect(wrapper.get('[data-action="delete-remote"]').text()).toBe('Delete latest version')
+
+    await wrapper.get('[data-action="delete-remote"]').trigger('click')
+    expect(wrapper.emitted('deleteRemote')).toHaveLength(1)
   })
 
   it('uses a restrained pending-row entrance and removes transforms for reduced motion', () => {
     expect(expenseRowSource).toContain('pending-row-enter 200ms')
     expect(expenseRowSource).toContain('translateY(10px)')
     expect(expenseRowSource).toContain('animation: none')
+  })
+
+  it('uses the mode-aware primary foreground for journal actions and directions', () => {
+    expect(expenseRowSource).not.toContain('color: var(--su-accent)')
+    expect(expenseRowSource.match(/color: var\(--ion-color-primary\)/g)).toHaveLength(2)
   })
 
   it('uses shared 62px financial tracks and a reflow class instead of auto-sized columns', () => {

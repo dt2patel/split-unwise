@@ -85,3 +85,51 @@ Focused checkpoints included:
 - Conflicts preserve both the local draft and remote record and cannot be discarded/retried as ordinary failures.
 - Financial display does not roll/count money, and pending-row transforms are disabled for reduced motion.
 - Optional note/recurrence/scope removal and every rendered validation relationship have explicit regressions.
+
+## Fix Round 1 — 2026-08-30
+
+### Security, consistency, and lifecycle corrections
+
+- Replaced account-agnostic queue persistence with a strict version-2 document stored under a UID-specific key. Every operation records its originating UID; cross-user, malformed, and obsolete records are quarantined, and submit/resume remain unavailable until repository identity hydration binds the session.
+- Added explicit network, permission, validation, conflict, unsupported, missing-handler, and unknown failure mapping. Only network failures are retryable; only failed operations can be discarded, while reconciled terminal operations can be acknowledged and pruned.
+- Made editor initialization and saving race-safe. Route initialization has request identity, loading/failure states, and stale-result suppression. Save is single-flight, owns one operation ID per attempt, and ignores completions from a superseded editor context. Edit mode without both an ID and revision fails closed.
+- Recomputes canonical allocations from `splitMethod` at the repository boundary and rejects contradictory caller allocations. Delete now requires `expectedRevision`, preserves local delete intent and the remote revision on conflict, and produces a revisioned tombstone on success.
+- Reconciles the journal from repository rows plus queue results using the highest confirmed revision, applies tombstones, derives posted balances from reconciled rows, acknowledges confirmed successes, and renders local/remote conflict versions with explicit remote-reload and local-retention actions.
+- Hardened receipt storage with MIME, size, filename, and non-empty blob validation and with IndexedDB transaction-completion/abort handling. Durable local previews restore after navigation. Add/edit execution promotes local receipt references before the authoritative repository call when upload is available while retaining the persisted local reference for retry and honestly preserving the local fallback when upload is unavailable.
+- Standardized recurring-instance edit scope to `occurrence | future`, preserved the recurring-template backlink, and deterministically resets the recurrence anchor after a valid date change.
+- Made percentage defaults total exactly 100 for three and four participants. Split/recurrence controls now expose keyboard-operable radio semantics.
+- Added bounded, sticky, keyboard/safe-area-aware sheet scrolling; precise invalid-field focus and descriptions; 44-point receipt assignments; wrapping/growing composer and receipt layouts for Dynamic Type; and mode-aware Ionic primary/contrast foregrounds.
+- Validates the exact operation, expense, and group identity of saved and conflict results before they can affect durable state. Reusing an operation ID with a different envelope now fails without mutating the original operation, including while its first attempt is still pending.
+- Requires `occurrence | future` for every recurring-instance edit. Context and receipt work are request-scoped, so stale async completions cannot change a replaced editor; recognition failure retains the local image and manual-item path.
+- Gives delete conflicts their own visible intent and “delete latest version” action, permits every failed operation to be discarded independently of retryability, retires older saved versions with a confirmed tombstone, and resolves conflicts against the highest current repository revision rather than a stale payload.
+
+### Fix-round RED evidence
+
+Each correction began with an isolated failing regression:
+
+- Queue/auth/session: 13 initial expected failures, then 2 focused failures for obsolete recurrence scope and receipt promotion.
+- Repository/delete canonicalization: 6 expected failures.
+- Journal reconciliation and conflict actions: 7 expected failures.
+- Editor lifecycle: 7 expected failures; receipt storage: 3; recurrence decoding: 1; durable preview restoration: 1.
+- Sheets, keyboard semantics, percentage defaults, focus, scrolling, receipt reflow, and contrast: 14 initial expected failures plus focused follow-up regressions.
+- Page Dynamic Type and journal foreground tokens: 1 and 2 expected failures respectively.
+- Adversarial queue identity/replay checks: 9 expected failures; recurring-scope and stale editor/receipt lifecycle checks: 5 expected failures; delete-conflict, discard, tombstone-watermark, and latest-remote journal checks: 8 expected failures.
+
+### Fix-round GREEN and final verification
+
+- Queue/session focused slice: 31/31 passed; broader data/journal slice: 73/73 passed.
+- Repository/decoder focused slice: 19/19 passed.
+- Final queue/journal/group-row focused slice: 83/83 passed.
+- Sheet/split/theme component slice: 48/48 passed.
+- Editor/store/page slice: 29/29 passed.
+- `pnpm test` — 27 files passed, 265 tests passed.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed; Vite emitted only the existing large-chunk advisory.
+- `git diff --check` — passed.
+
+### Fix-round residual QA
+
+- No browser or Playwright verification is claimed. Real iOS Dynamic Type, keyboard, safe-area, sheet gesture, IndexedDB reload, and 390 × 844 visual checks remain device/browser QA.
+- Production upload/OCR and Firebase mutations remain honest typed provider boundaries pending their credentialed/server implementations.
+- Upstream Ionic sourcemap and Node localStorage experimental warnings remain non-blocking test-environment notices.
+- `public/assets/images/app-icon-1024.png` remains untouched, untracked, and unstaged.

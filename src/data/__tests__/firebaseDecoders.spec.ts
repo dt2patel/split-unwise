@@ -39,6 +39,19 @@ describe('Firebase boundary decoders', () => {
     })).toThrow('activity type')
   })
 
+  it('uses occurrence or future as the only persisted recurring-instance edit scopes', () => {
+    const raw = {
+      description: 'Cabin', date: '2026-08-30', category: 'Lodging', createdAt: '2026-08-30T12:00:00.000Z', updatedAt: '2026-08-30T12:00:00.000Z', revision: 3,
+      total: { currency: 'USD', minorAmount: 1000 },
+      payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+      splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [], recurringTemplateId: 'cabin-monthly',
+    }
+
+    expect(decodeExpense('lake-house-weekend', 'cabin', { ...raw, occurrenceEditScope: 'occurrence' })).toMatchObject({ occurrenceEditScope: 'occurrence', recurringTemplateId: 'cabin-monthly' })
+    expect(() => decodeExpense('lake-house-weekend', 'cabin', { ...raw, occurrenceEditScope: 'single' })).toThrow('must be occurrence or future')
+  })
+
   it('accepts Firebase configuration only when every value is non-blank after trimming', () => {
     expect(readFirebaseConfiguration({ VITE_FIREBASE_API_KEY: 'key' })).toBeUndefined()
     expect(readFirebaseConfiguration({

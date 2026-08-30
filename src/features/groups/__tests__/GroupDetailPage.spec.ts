@@ -1,8 +1,15 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import type { Component } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { createAppRouter } from '../../../app/router'
+import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
+import { createDemoRepository } from '../../../data/demoRepository'
+import type { ExpenseRow } from '../../../data/repositories'
+import { createAppSession, setAppSessionForTesting } from '../../../data/session'
+
+const ORIGIN_UID = 'maya-p'
+const groupDetailSource = readFileSync(resolve(process.cwd(), 'src/features/groups/GroupDetailPage.vue'), 'utf8')
 
 const ionicStubs = {
   IonPage: { template: '<main class="ion-page"><slot /></main>' },
@@ -37,6 +44,10 @@ const ionicStubs = {
     template: '<a :href="routerLink"><slot /></a>',
   },
 }
+
+beforeEach(() => {
+  setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
+})
 
 async function mountRoute(path: string): Promise<VueWrapper> {
   const router = createAppRouter()
@@ -122,6 +133,69 @@ describe('Lake House group journal', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.get('[data-testid="group-detail"]').classes()).toContain('group-detail--collapsed')
   })
+
+  it('uses the mode-aware selected foreground for the journal segment', () => {
+    expect(groupDetailSource).toContain('--color-checked: var(--ion-color-primary)')
+    expect(groupDetailSource).not.toContain('--color-checked: var(--su-accent)')
+  })
+
+  it('renders both conflict versions and wires Reload remote to the journal store resolution', async () => {
+    const repository = createDemoRepository()
+    const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture expense')
+    const queue = new CommandQueue({
+      originUid: ORIGIN_UID,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.edit': async (envelope) => {
+        if (envelope.kind !== 'expense.edit') throw new Error('Unexpected command')
+        return repository.expenses.edit(envelope)
+      } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    await expect(queue.submit({
+      kind: 'expense.edit', operationId: 'page-conflict', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 0, draft: expenseDraft(groceries, 'My page draft'),
+    }).result()).rejects.toThrow('changed remotely')
+
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+    const conflicted = wrapper.get('[data-expense-id="groceries"]')
+    expect(conflicted.get('[data-testid="local-conflict-version"]').text()).toContain('My page draft')
+    expect(conflicted.get('[data-testid="remote-conflict-version"]').text()).toContain('Groceries')
+    expect(conflicted.find('[data-action="retry-expense"]').exists()).toBe(false)
+    expect(conflicted.find('[data-action="discard-expense"]').exists()).toBe(false)
+
+    await conflicted.get('[data-action="reload-remote"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-expense-id="groceries"]').text()).toContain('Groceries')
+    expect(wrapper.find('[data-testid="local-conflict-version"]').exists()).toBe(false)
+  })
+
+  it('renders a delete conflict as delete intent and wires deleting the latest version', async () => {
+    const repository = createDemoRepository({ now: () => '2026-08-30T14:00:00.000Z' })
+    const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture expense')
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'page-remote-edit', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 1, draft: expenseDraft(groceries, 'Remote page groceries'),
+    })
+    const queue = new CommandQueue({
+      originUid: ORIGIN_UID,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.delete': async (envelope) => {
+        if (envelope.kind !== 'expense.delete') throw new Error('Unexpected command')
+        return repository.expenses.delete(envelope)
+      } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    await expect(queue.submit({ kind: 'expense.delete', operationId: 'page-delete-conflict', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 1 }).result()).rejects.toThrow('changed remotely')
+
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+    const conflicted = wrapper.get('[data-expense-id="groceries"]')
+    expect(conflicted.get('[data-testid="local-conflict-version"]').text()).toContain('Delete requested')
+    expect(conflicted.find('[data-action="retain-save-local"]').exists()).toBe(false)
+
+    await conflicted.get('[data-action="delete-remote"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-expense-id="groceries"]').exists()).toBe(false)
+  })
 })
 
 describe('route-specific browse pages', () => {
@@ -143,3 +217,19 @@ describe('route-specific browse pages', () => {
     expect(wrapper.get('[data-testid="lake-house-link"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend')
   })
 })
+
+function expenseDraft(expense: ExpenseRow, description: string) {
+  return {
+    groupId: expense.groupId,
+    description,
+    date: expense.date,
+    total: { ...expense.total },
+    payments: expense.payments.map((payment) => ({ participantId: payment.participantId, money: { ...payment.money } })),
+    allocations: expense.allocations.map((allocation) => ({ participantId: allocation.participantId, money: { ...allocation.money } })),
+    category: expense.category,
+    splitMethod: JSON.parse(JSON.stringify(expense.splitMethod)) as ExpenseRow['splitMethod'],
+    attachmentRefs: [...expense.attachmentRefs],
+  }
+}
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'

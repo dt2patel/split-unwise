@@ -73,6 +73,42 @@ describe('demo repository', () => {
     )
   })
 
+  it('persists add allocations recomputed from the split method', async () => {
+    const repository = createDemoRepository()
+    const draft = firewoodDraft()
+
+    const result = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'add-canonical-firewood',
+      ...draft, allocations: [...draft.allocations].reverse(),
+    })
+
+    expect(result).toMatchObject({
+      status: 'saved',
+      expense: {
+        allocations: [
+          { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 600 } },
+          { participantId: 'jordan-k', money: { currency: 'USD', minorAmount: 600 } },
+          { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 600 } },
+          { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 600 } },
+        ],
+      },
+    })
+  })
+
+  it('rejects add allocations that contradict the split method', async () => {
+    const repository = createDemoRepository()
+
+    await expect(repository.expenses.add({
+      kind: 'expense.add', operationId: 'add-contradictory-firewood', ...firewoodDraft(),
+      allocations: [
+        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 700 } },
+        { participantId: 'jordan-k', money: { currency: 'USD', minorAmount: 500 } },
+        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 600 } },
+        { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 600 } },
+      ],
+    })).rejects.toThrow('allocations do not match split method')
+  })
+
   it('hydrates an edit, enforces the expected revision, and returns the updated expense', async () => {
     const repository = createDemoRepository()
     const original = await repository.expenses.getById('lake-house-weekend', 'groceries')
@@ -89,6 +125,47 @@ describe('demo repository', () => {
       kind: 'expense.edit', operationId: 'stale-edit', groupId: 'lake-house-weekend', expenseId: 'groceries', expectedRevision: 1,
       draft: firewoodDraft(),
     })).rejects.toBeInstanceOf(CommandConflictError)
+  })
+
+  it('persists edit allocations recomputed from the split method', async () => {
+    const repository = createDemoRepository()
+    const draft = firewoodDraft()
+
+    const result = await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-canonical-groceries', groupId: 'lake-house-weekend', expenseId: 'groceries', expectedRevision: 1,
+      draft: { ...draft, allocations: [...draft.allocations].reverse() },
+    })
+
+    expect(result).toMatchObject({
+      status: 'saved',
+      expense: {
+        allocations: [
+          { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 600 } },
+          { participantId: 'jordan-k', money: { currency: 'USD', minorAmount: 600 } },
+          { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 600 } },
+          { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 600 } },
+        ],
+      },
+    })
+  })
+
+  it('rejects edit allocations that contradict the split method', async () => {
+    const repository = createDemoRepository()
+
+    await expect(repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-contradictory-groceries', groupId: 'lake-house-weekend', expenseId: 'groceries', expectedRevision: 1,
+      draft: {
+        ...firewoodDraft(),
+        allocations: [
+          { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 700 } },
+          { participantId: 'jordan-k', money: { currency: 'USD', minorAmount: 500 } },
+          { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 600 } },
+          { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 600 } },
+        ],
+      },
+    })).rejects.toThrow('allocations do not match split method')
+
+    await expect(repository.expenses.getById('lake-house-weekend', 'groceries')).resolves.toMatchObject({ revision: 1, description: 'Groceries' })
   })
 
   it('clears optional note, recurrence, and occurrence-scope fields when an edit removes them', async () => {
@@ -115,10 +192,31 @@ describe('demo repository', () => {
 
   it('returns a durable tombstone when deleting an expense', async () => {
     const repository = createDemoRepository()
-    await expect(repository.expenses.delete({ kind: 'expense.delete', operationId: 'delete-gas', groupId: 'lake-house-weekend', expenseId: 'gas-for-the-boat' })).resolves.toMatchObject({
-      status: 'saved', tombstone: { id: 'gas-for-the-boat', groupId: 'lake-house-weekend', revision: 2 },
+    await expect(repository.expenses.delete({ kind: 'expense.delete', operationId: 'delete-gas', groupId: 'lake-house-weekend', expenseId: 'gas-for-the-boat', expectedRevision: 1 })).resolves.toMatchObject({
+      status: 'saved', tombstone: { id: 'gas-for-the-boat', groupId: 'lake-house-weekend', revision: 2, deletedAt: '2026-08-30T12:00:00.000Z' },
     })
-    await expect(repository.expenses.getById('lake-house-weekend', 'gas-for-the-boat')).resolves.toBeUndefined()
+    await expect(repository.expenses.getById('lake-house-weekend', 'gas-for-the-boat')).resolves.toMatchObject({
+      id: 'gas-for-the-boat', revision: 2, deletedAt: '2026-08-30T12:00:00.000Z',
+    })
+    await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.not.toContainEqual(expect.objectContaining({ id: 'gas-for-the-boat' }))
+  })
+
+  it('reports a stale delete as a conflict with the local intent and remote expense', async () => {
+    const repository = createDemoRepository()
+    const command = {
+      kind: 'expense.delete', operationId: 'stale-delete-gas', groupId: 'lake-house-weekend', expenseId: 'gas-for-the-boat', expectedRevision: 0,
+    } as const
+
+    await expect(repository.expenses.delete(command)).rejects.toMatchObject({
+      name: 'CommandConflictError',
+      conflict: {
+        local: command,
+        remote: { id: 'gas-for-the-boat', groupId: 'lake-house-weekend', revision: 1, description: 'Gas for the boat' },
+      },
+    })
+    const retained = await repository.expenses.getById('lake-house-weekend', 'gas-for-the-boat')
+    expect(retained).toMatchObject({ revision: 1 })
+    expect(retained?.deletedAt).toBeUndefined()
   })
 
   it('keeps totals and chart values partitioned when an expense uses another currency', async () => {

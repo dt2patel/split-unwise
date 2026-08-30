@@ -31,7 +31,7 @@ export interface ExpenseRow extends Expense {
   readonly notes?: string
   readonly attachmentRefs: readonly string[]
   readonly recurrence?: Recurrence
-  readonly occurrenceEditScope?: 'future' | 'single'
+  readonly occurrenceEditScope?: 'future' | 'occurrence'
   readonly recurringTemplateId?: string
   readonly deletedAt?: string
 }
@@ -48,7 +48,7 @@ export interface ExpenseDraft {
   readonly notes?: string
   readonly attachmentRefs: readonly string[]
   readonly recurrence?: Recurrence
-  readonly occurrenceEditScope?: 'future' | 'single'
+  readonly occurrenceEditScope?: 'future' | 'occurrence'
 }
 
 export interface ExpenseComment {
@@ -100,7 +100,7 @@ export interface OperationRequest { readonly operationId: string }
 
 export interface ExpenseAddCommand extends ExpenseDraft, OperationRequest { readonly kind: 'expense.add' }
 export interface ExpenseEditCommand extends OperationRequest { readonly kind: 'expense.edit'; readonly groupId: string; readonly expenseId: string; readonly expectedRevision: number; readonly draft: ExpenseDraft }
-export interface ExpenseDeleteCommand extends OperationRequest { readonly kind: 'expense.delete'; readonly groupId: string; readonly expenseId: string }
+export interface ExpenseDeleteCommand extends OperationRequest { readonly kind: 'expense.delete'; readonly groupId: string; readonly expenseId: string; readonly expectedRevision: number }
 export interface CommentAddCommand extends OperationRequest { readonly kind: 'comment.add'; readonly groupId: string; readonly expenseId: string; readonly body: string }
 
 /** Only a confirmed manual settlement can be recorded from this client boundary. */

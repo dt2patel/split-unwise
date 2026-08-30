@@ -45,8 +45,9 @@ export function createMemoryReceiptStore(options: ReceiptStoreOptions = {}): Rec
   const now = options.now ?? (() => new Date().toISOString())
   return {
     async put(blob, metadata) {
+      const fileName = validateReceipt(blob, metadata.fileName)
       const reference = referenceFor(id())
-      assets.set(reference, { reference, blob, fileName: metadata.fileName, mimeType: blob.type || 'application/octet-stream', size: blob.size, createdAt: now() })
+      assets.set(reference, { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now() })
       return reference
     },
     async get(reference) { return assets.get(reference) },
@@ -62,8 +63,9 @@ export function createIndexedDbReceiptStore(options: ReceiptStoreOptions & { rea
   const getDatabase = () => database ??= openDatabase(indexedDb)
   return {
     async put(blob, metadata) {
+      const fileName = validateReceipt(blob, metadata.fileName)
       const reference = referenceFor(id())
-      const asset: ReceiptAsset = { reference, blob, fileName: metadata.fileName, mimeType: blob.type || 'application/octet-stream', size: blob.size, createdAt: now() }
+      const asset: ReceiptAsset = { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now() }
       await requestFrom(getDatabase(), 'readwrite', (store) => store.put(asset))
       return reference
     },
@@ -90,6 +92,19 @@ function createReceiptId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `receipt-${Date.now().toString(36)}`
 }
 
+const MAX_RECEIPT_BYTES = 15 * 1024 * 1024
+const RECEIPT_MIME_TYPES = new Set(['image/heic', 'image/heif', 'image/jpeg', 'image/png', 'image/webp'])
+
+function validateReceipt(blob: Blob, fileName: string): string {
+  if (!(blob instanceof Blob)) throw new Error('Receipt content must be an image Blob')
+  if (blob.size === 0) throw new Error('Receipt image cannot be empty')
+  if (blob.size > MAX_RECEIPT_BYTES) throw new Error('Receipt images must be 15 MB or smaller')
+  if (!RECEIPT_MIME_TYPES.has(blob.type.toLowerCase())) throw new Error('Receipt images must be JPEG, PNG, HEIC, or WebP')
+  const normalizedName = fileName.trim()
+  if (!normalizedName || normalizedName.length > 255 || /[\\/\u0000-\u001f\u007f]/.test(normalizedName)) throw new Error('Receipt file name is invalid')
+  return normalizedName
+}
+
 function openDatabase(indexedDb: IDBFactory | undefined): Promise<IDBDatabase> {
   if (!indexedDb) return Promise.reject(new Error('IndexedDB is unavailable on this device'))
   return new Promise((resolve, reject) => {
@@ -111,8 +126,23 @@ async function requestFrom(
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('receipts', mode)
     const result = request(transaction.objectStore('receipts'))
-    result.onsuccess = () => resolve(result.result)
-    result.onerror = () => reject(result.error ?? new Error('Receipt storage operation failed'))
-    transaction.onabort = () => reject(transaction.error ?? new Error('Receipt storage transaction was aborted'))
+    let requestResult: unknown
+    let requestSucceeded = false
+    let settled = false
+    const fail = (reason: unknown) => {
+      if (settled) return
+      settled = true
+      reject(reason)
+    }
+    result.onsuccess = () => { requestSucceeded = true; requestResult = result.result }
+    result.onerror = () => fail(result.error ?? new Error('Receipt storage operation failed'))
+    transaction.oncomplete = () => {
+      if (settled) return
+      if (!requestSucceeded) { fail(new Error('Receipt storage transaction completed without a result')); return }
+      settled = true
+      resolve(requestResult)
+    }
+    transaction.onerror = () => fail(transaction.error ?? new Error('Receipt storage transaction failed'))
+    transaction.onabort = () => fail(transaction.error ?? new Error('Receipt storage transaction was aborted'))
   })
 }

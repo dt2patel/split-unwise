@@ -2,9 +2,9 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import { createMemoryReceiptStore } from '../../../data/receipts'
+import { createMemoryReceiptStore, type ReceiptProvider, type ReceiptRecognitionResult } from '../../../data/receipts'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
-import type { Member } from '../../../data/repositories'
+import type { AppRepository, Group, Member } from '../../../data/repositories'
 import { validateExpenseInput, useExpenseStore } from '../expenseStore'
 
 const members: readonly Member[] = [
@@ -65,6 +65,137 @@ describe('expense input validation', () => {
 })
 
 describe('expense store lifecycle', () => {
+  it('ignores a stale initialization that resolves after a newer route context', async () => {
+    const base = createDemoRepository()
+    const slow = deferred<Group | undefined>()
+    const currentUser = await base.app.getCurrentUser()
+    const fastGroup: Group = { id: 'fast-context', name: 'Fast context', currency: 'USD', memberIds: [currentUser.id], syncState: 'fresh' }
+    const slowGroup: Group = { ...fastGroup, id: 'slow-context', name: 'Slow context' }
+    const repository: AppRepository = {
+      ...base,
+      groups: {
+        ...base.groups,
+        async list() { return [slowGroup, fastGroup] },
+        async getById(groupId) { return groupId === slowGroup.id ? slow.promise : groupId === fastGroup.id ? fastGroup : undefined },
+        async listMembers() { return [currentUser] },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useExpenseStore()
+
+    const first = store.initialize({ origin: 'groups', groupId: slowGroup.id, today: '2026-08-30' })
+    await Promise.resolve()
+    await store.initialize({ origin: 'home', groupId: fastGroup.id, today: '2026-08-31' })
+    slow.resolve(slowGroup)
+    await first
+
+    expect(store.editor.groupId).toBe('fast-context')
+    expect(store.contextName).toBe('Fast context')
+    expect(store.origin).toBe('home')
+    expect(store.editor.date).toBe('2026-08-31')
+  })
+
+  it('ignores a context selection that resolves after the editor route changes', async () => {
+    const base = createDemoRepository()
+    const currentUser = await base.app.getCurrentUser()
+    const slowMembers = deferred<readonly Member[]>()
+    const slowGroup: Group = { id: 'slow-context', name: 'Slow context', currency: 'EUR', memberIds: [currentUser.id], syncState: 'fresh' }
+    const repository: AppRepository = {
+      ...base,
+      groups: {
+        ...base.groups,
+        async list() { return [...await base.groups.list(), slowGroup] },
+        async listMembers(groupId) { return groupId === slowGroup.id ? slowMembers.promise : base.groups.listMembers(groupId) },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    const selection = store.selectContext(slowGroup.id)
+    await Promise.resolve()
+    await store.initialize({ origin: 'home', today: '2026-08-31' })
+    slowMembers.resolve([currentUser])
+
+    await expect(selection).resolves.toBe(false)
+    expect(store.origin).toBe('home')
+    expect(store.editor.groupId).toBe('')
+    expect(store.contextName).toBe('')
+  })
+
+  it('accepts only one save while an attempt is pending and keeps its operation ID', async () => {
+    const repository = createDemoRepository()
+    const gate = deferred<void>()
+    const queue = new CommandQueue({ storage: createMemoryCommandStorage(), handlers: { 'expense.add': async (command) => {
+      if (command.kind !== 'expense.add') throw new Error('Unexpected command kind')
+      await gate.promise
+      return repository.expenses.add(command)
+    } } })
+    queue.bind('maya-p')
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+    completeValidEditor(store)
+
+    expect(await store.submit('single-flight')).toBe(true)
+    expect(await store.submit('duplicate-attempt')).toBe(false)
+    expect(store.lastOperationId).toBe('single-flight')
+    expect(queue.snapshot().map(({ envelope }) => envelope.operationId)).toEqual(['single-flight'])
+    gate.resolve()
+    await queue.submit(queue.get('single-flight')!.envelope).result()
+  })
+
+  it('does not let an old save completion mutate a reinitialized editor context', async () => {
+    const repository = createDemoRepository()
+    const gate = deferred<void>()
+    const queue = new CommandQueue({ storage: createMemoryCommandStorage(), handlers: { 'expense.add': async (command) => {
+      if (command.kind !== 'expense.add') throw new Error('Unexpected command kind')
+      await gate.promise
+      return repository.expenses.add(command)
+    } } })
+    queue.bind('maya-p')
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+    completeValidEditor(store)
+    expect(await store.submit('old-context-save')).toBe(true)
+
+    await store.initialize({ origin: 'home', today: '2026-08-31' })
+    gate.resolve()
+    await queue.submit(queue.get('old-context-save')!.envelope).result()
+    await Promise.resolve()
+
+    expect(store.origin).toBe('home')
+    expect(store.editor.groupId).toBe('')
+    expect(store.saveState).toBe('idle')
+    expect(store.notice).toBe('')
+  })
+
+  it('never falls through to Add when edit hydration lacks a revision', async () => {
+    const session = createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'missing-expense' })
+    completeValidEditor(store)
+
+    expect(await store.submit('unsafe-edit')).toBe(false)
+    expect(session.queue.snapshot()).toEqual([])
+    expect(store.errorSummary).toContain('revision')
+  })
+
+  it('requires occurrence or future scope before saving any recurring-instance edit', async () => {
+    const session = createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
+
+    expect(store.recurringTemplateId).toBe('cabin-deposit-monthly')
+    expect(store.editor.occurrenceEditScope).toBeUndefined()
+    expect(store.submit('recurring-without-scope')).toBe(false)
+    expect(store.errors.recurrence).toContain('occurrence or future')
+    expect(session.queue.get('recurring-without-scope')).toBeUndefined()
+  })
+
   it('hydrates an existing revision for edit without losing persisted premium fields', async () => {
     const store = useExpenseStore()
     await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
@@ -74,6 +205,27 @@ describe('expense store lifecycle', () => {
     expect(store.editor).toMatchObject({ description: 'Cabin deposit', currency: 'USD', category: 'Lodging', split: { type: 'equal' } })
     expect(store.editor.recurrence).toBeUndefined()
     expect(store.editor.attachmentRefs).toEqual([])
+  })
+
+  it('restores a durable local receipt preview when an editor is reopened', async () => {
+    const repository = createDemoRepository()
+    const receipts = createMemoryReceiptStore({ id: () => 'restored-receipt', now: () => '2026-08-30T12:00:00.000Z' })
+    const reference = await receipts.put(new Blob(['image'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
+    const original = await repository.expenses.getById('lake-house-weekend', 'cabin-deposit')
+    if (!original) throw new Error('Expected cabin expense')
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'attach-local-receipt', groupId: original.groupId, expenseId: original.id, expectedRevision: original.revision,
+      draft: {
+        groupId: original.groupId, description: original.description, date: original.date, total: original.total, payments: original.payments,
+        allocations: original.allocations, category: original.category, splitMethod: original.splitMethod, attachmentRefs: [reference],
+      },
+    })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage(), receipts }))
+    const store = useExpenseStore()
+
+    await store.initialize({ origin: 'groups', groupId: original.groupId, expenseId: original.id })
+
+    expect((store as unknown as { receiptPreview?: { reference: string; blob: Blob } }).receiptPreview).toMatchObject({ reference, blob: expect.any(Blob) })
   })
 
   it('persists a command before returning and exposes a journal-projectable pending operation', async () => {
@@ -89,6 +241,7 @@ describe('expense store lifecycle', () => {
         return repository.expenses.add(command)
       } },
     })
+    queue.bind('maya-p')
     setAppSessionForTesting({ ...session, queue })
     const store = useExpenseStore()
     await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
@@ -120,4 +273,68 @@ describe('expense store lifecycle', () => {
     ])).toBe(true)
     expect(store.editor.split).toMatchObject({ type: 'itemized', items: [{ description: 'Snacks' }, { description: 'Ice' }] })
   })
+
+  it('retains the local image and manual item entry when recognition fails', async () => {
+    const receipts = createMemoryReceiptStore({ id: () => 'failed-recognition', now: () => '2026-08-30T12:00:00.000Z' })
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository(),
+      commandStorage: createMemoryCommandStorage(),
+      receipts,
+      receiptProvider: {
+        async upload() { return { status: 'unavailable', reason: 'Upload unavailable.' } },
+        async recognize() { throw new Error('Provider timed out') },
+        async delete() { /* no remote receipt was created */ },
+      },
+    }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    await expect(store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')).resolves.toBe(true)
+
+    expect(store.editor.attachmentRefs).toEqual(['local-receipt:failed-recognition'])
+    expect(store.receiptPreview).toMatchObject({ reference: 'local-receipt:failed-recognition' })
+    expect(store.receiptMessage).toContain('enter items manually')
+    expect(store.receiptSuggestions).toEqual([])
+  })
+
+  it('does not apply receipt recognition after the editor route changes', async () => {
+    const recognition = deferred<ReceiptRecognitionResult>()
+    const receiptProvider: ReceiptProvider = {
+      async upload() { return { status: 'unavailable', reason: 'Upload unavailable.' } },
+      recognize: () => recognition.promise,
+      async delete() { /* no remote receipt was created */ },
+    }
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(),
+      receipts: createMemoryReceiptStore({ id: () => 'stale-recognition', now: () => '2026-08-30T12:00:00.000Z' }),
+      receiptProvider,
+    }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    const attachment = store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
+    await Promise.resolve()
+    await Promise.resolve()
+    await store.initialize({ origin: 'home', today: '2026-08-31' })
+    recognition.resolve({ status: 'suggestions', source: 'provider', items: [{ description: 'Stale item', amountText: '10.00' }] })
+
+    await expect(attachment).resolves.toBe(false)
+    expect(store.origin).toBe('home')
+    expect(store.editor.attachmentRefs).toEqual([])
+    expect(store.receiptPreview).toBeUndefined()
+    expect(store.receiptSuggestions).toEqual([])
+    expect(store.receiptMessage).toBe('')
+  })
 })
+
+function completeValidEditor(store: ReturnType<typeof useExpenseStore>): void {
+  store.editor.description = 'Ice'
+  store.editor.amountText = '4.00'
+  store.editor.category = 'Supplies'
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}

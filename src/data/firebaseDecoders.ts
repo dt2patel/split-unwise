@@ -151,7 +151,7 @@ function sameAllocations(left: readonly Allocation[], right: readonly Allocation
   const first = normalize(left); const second = normalize(right)
   return first.length === second.length && first.every((value, index) => value === second[index])
 }
-function occurrenceScope(value: unknown, path: string): 'future' | 'single' { if (value !== 'future' && value !== 'single') throw new DocumentDecodeError(path, 'must be future or single'); return value }
+function occurrenceScope(value: unknown, path: string): 'future' | 'occurrence' { if (value !== 'future' && value !== 'occurrence') throw new DocumentDecodeError(path, 'must be occurrence or future'); return value }
 function moneyValue(value: unknown, path: string): ExpenseRow['total'] {
   const data = record(value, path)
   const currency = currencyValue(data.currency, `${path}.currency`)

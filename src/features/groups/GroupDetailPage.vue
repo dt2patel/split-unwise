@@ -55,6 +55,20 @@ function onScroll(event: CustomEvent<{ scrollTop?: number }>): void {
 }
 function retryExpense(operationId: string | undefined): void { if (operationId) void store.retryOperation(operationId).result().catch(() => undefined) }
 function discardExpense(operationId: string | undefined): void { if (operationId) store.discardFailedOperation(operationId) }
+async function reloadRemoteExpense(operationId: string | undefined): Promise<void> {
+  if (!operationId) return
+  await store.reloadRemoteConflict(operationId).catch(() => false)
+}
+async function retainLocalExpense(operationId: string | undefined): Promise<void> {
+  if (!operationId) return
+  const retained = await store.retainAndSaveLocal(operationId).catch(() => undefined)
+  await retained?.result().catch(() => undefined)
+}
+async function deleteRemoteExpense(operationId: string | undefined): Promise<void> {
+  if (!operationId) return
+  const retained = await store.deleteAgainstRemoteRevision(operationId).catch(() => undefined)
+  await retained?.result().catch(() => undefined)
+}
 </script>
 
 <template>
@@ -99,10 +113,15 @@ function discardExpense(operationId: string | undefined): void { if (operationId
                 :balance-label="store.positionFor(expense).label"
                 :payer-name="store.payerName(expense)"
                 :participant-count="expense.allocations.length"
-                :retryable="Boolean(expense.clientOperationId)"
+                :retryable="expense.retryable === true"
+                :conflict-remote="expense.conflictRemote"
+                :conflict-intent="expense.conflictIntent"
                 journal
                 @retry="retryExpense(expense.clientOperationId)"
                 @discard="discardExpense(expense.clientOperationId)"
+                @reload-remote="reloadRemoteExpense(expense.clientOperationId)"
+                @retain-local="retainLocalExpense(expense.clientOperationId)"
+                @delete-remote="deleteRemoteExpense(expense.clientOperationId)"
               />
             </div>
             <ol v-else key="activity" class="activity-list" data-testid="group-activity">
@@ -155,7 +174,7 @@ function discardExpense(operationId: string | undefined): void { if (operationId
 .group-detail__status { padding: 32px 18px; color: var(--ion-color-medium); text-align: center; }
 .group-detail__footer { padding: 5px 14px calc(5px + env(safe-area-inset-bottom)); background: color-mix(in srgb, var(--su-surface) 94%, transparent); backdrop-filter: blur(18px); }
 .group-detail__footer ion-segment { min-height: 46px; border: 1px solid color-mix(in srgb, var(--su-divider) 34%, transparent); border-radius: 13px; background: color-mix(in srgb, var(--su-surface) 90%, var(--su-lilac)); }
-.group-detail__footer ion-segment-button { min-height: 44px; --border-radius: 11px; --color: var(--ion-color-medium); --color-checked: var(--su-accent); --indicator-color: var(--su-surface); --indicator-box-shadow: 0 2px 8px rgb(38 32 127 / 10%); text-transform: none; }
+.group-detail__footer ion-segment-button { min-height: 44px; --border-radius: 11px; --color: var(--ion-color-medium); --color-checked: var(--ion-color-primary); --indicator-color: var(--su-surface); --indicator-box-shadow: 0 2px 8px rgb(38 32 127 / 10%); text-transform: none; }
 .group-detail__footer ion-icon { margin-inline-end: 5px; }
 .group-detail__fab :deep(ion-fab-button) { width: 52px; height: 52px; --box-shadow: 0 7px 18px rgb(63 45 164 / 36%); }
 .journal-fade-enter-active,

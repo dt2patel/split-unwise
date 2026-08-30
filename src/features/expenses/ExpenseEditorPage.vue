@@ -45,7 +45,14 @@ watch(() => route.fullPath, () => { void initialize() }, { immediate: true })
 watch(() => store.saveState, (state) => {
   if (state === 'saved') void haptics.light()
 })
-onBeforeUnmount(() => { if (receiptPreviewUrl.value) URL.revokeObjectURL(receiptPreviewUrl.value) })
+watch(() => store.receiptPreview, (asset) => {
+  if (receiptPreviewUrl.value && typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(receiptPreviewUrl.value)
+  receiptPreviewUrl.value = asset && typeof URL.createObjectURL === 'function' ? URL.createObjectURL(asset.blob) : undefined
+}, { immediate: true })
+onBeforeUnmount(() => {
+  store.leaveEditor()
+  if (receiptPreviewUrl.value && typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(receiptPreviewUrl.value)
+})
 
 async function initialize(): Promise<void> {
   const match = /^\/tabs\/(home|groups|activity|account)\/expenses\//.exec(route.path)
@@ -87,17 +94,19 @@ async function applyContext(groupId: string): Promise<void> { if (await store.se
 async function applyPayers(value: readonly PaymentInput[]): Promise<void> { store.editor.payments = value.map((item) => ({ ...item })); await closeSheet() }
 async function applyParticipants(value: readonly string[]): Promise<void> { store.editor.participants = [...value]; store.editor.split = { type: 'equal' }; await closeSheet() }
 async function applySplit(value: { readonly input: SplitInput }): Promise<void> { store.editor.split = value.input; await closeSheet() }
-async function applyRecurrence(value: typeof store.editor.recurrence): Promise<void> { store.editor.recurrence = value; await closeSheet() }
+async function applyRecurrence(value: { recurrence: typeof store.editor.recurrence; occurrenceEditScope?: 'occurrence' | 'future' }): Promise<void> {
+  store.editor.recurrence = value.recurrence
+  store.editor.occurrenceEditScope = value.occurrenceEditScope
+  await closeSheet()
+}
 async function confirmReceipt(items: readonly ReceiptItemInput[]): Promise<void> { if (store.confirmReceipt(items)) await closeSheet() }
 
 function changeCurrency(event: Event): void { store.changeCurrency((event.target as HTMLSelectElement).value as CurrencyCode) }
+function changeDate(event: Event): void { store.changeDate((event.target as HTMLInputElement).value) }
 async function selectReceipt(event: Event): Promise<void> {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file) return
-  if (receiptPreviewUrl.value) URL.revokeObjectURL(receiptPreviewUrl.value)
-  receiptPreviewUrl.value = URL.createObjectURL(file)
-  await store.attachReceipt(file, file.name)
-  openSheet('receipt', 'receipt-sheet-trigger')
+  if (await store.attachReceipt(file, file.name)) openSheet('receipt', 'receipt-sheet-trigger')
 }
 </script>
 
@@ -107,15 +116,16 @@ async function selectReceipt(event: Event): Promise<void> {
       <ion-toolbar>
         <ion-buttons slot="start"><ion-button data-action="cancel-expense" @click="cancel">Cancel</ion-button></ion-buttons>
         <ion-title>{{ pageTitle }}</ion-title>
-        <ion-buttons slot="end"><ion-button strong data-action="save-expense" @click="save">Save</ion-button></ion-buttons>
+        <ion-buttons slot="end"><ion-button strong data-action="save-expense" :disabled="!store.canSubmit" @click="save">Save</ion-button></ion-buttons>
       </ion-toolbar>
     </ion-header>
 
     <ion-content :fullscreen="true">
       <main class="expense-editor" :class="`expense-editor--${store.saveState}`">
         <h1 class="su-visually-hidden">{{ pageTitle }}</h1>
-        <p v-if="store.loadError" role="alert" class="load-error">{{ store.loadError }}</p>
-        <template v-else>
+        <p v-if="store.isLoading" data-testid="expense-loading" role="status" aria-live="polite" class="load-status">Loading expense editor…</p>
+        <p v-else-if="store.loadError" role="alert" class="load-error">{{ store.loadError }}</p>
+        <template v-else-if="store.hasInitialized">
           <button id="context-sheet-trigger" type="button" class="context-chip" data-testid="expense-context" :aria-invalid="store.errors.context ? 'true' : undefined" :aria-describedby="store.errors.context ? 'expense-context-error' : undefined" @click="openSheet('context', 'context-sheet-trigger')">
             <ion-icon :icon="peopleOutline" aria-hidden="true" />
             <span>{{ store.contextName || 'Choose a group or friend' }}</span>
@@ -150,7 +160,7 @@ async function selectReceipt(event: Event): Promise<void> {
             <label class="editor-row" for="expense-category"><ion-icon :icon="pricetagOutline" aria-hidden="true" /><span>Category</span><select id="expense-category" v-model="store.editor.category" :aria-invalid="store.errors.category ? 'true' : undefined" :aria-describedby="store.errors.category ? 'expense-category-error' : undefined"><option value="" disabled>Choose</option><option v-for="category in categories" :key="category">{{ category }}</option></select></label>
             <p v-if="store.errors.category" id="expense-category-error" class="field-error">{{ store.errors.category }}</p>
             <label class="editor-row" for="expense-currency"><ion-icon :icon="cashOutline" aria-hidden="true" /><span>Currency</span><select id="expense-currency" :value="store.editor.currency" @change="changeCurrency"><option v-for="currency in currencies" :key="currency">{{ currency }}</option></select></label>
-            <label class="editor-row" for="expense-date"><ion-icon :icon="calendarOutline" aria-hidden="true" /><span>Date</span><input id="expense-date" v-model="store.editor.date" type="date" :aria-invalid="store.errors.date ? 'true' : undefined" :aria-describedby="store.errors.date ? 'expense-date-error' : undefined"></label>
+            <label class="editor-row" for="expense-date"><ion-icon :icon="calendarOutline" aria-hidden="true" /><span>Date</span><input id="expense-date" :value="store.editor.date" type="date" :aria-invalid="store.errors.date ? 'true' : undefined" :aria-describedby="store.errors.date ? 'expense-date-error' : undefined" @input="changeDate"></label>
             <p v-if="store.errors.date" id="expense-date-error" class="field-error">{{ store.errors.date }}</p>
             <button id="participant-sheet-trigger" type="button" class="editor-row" :aria-invalid="store.errors.participants ? 'true' : undefined" :aria-describedby="store.errors.participants ? 'expense-participants-error' : undefined" @click="openSheet('participants', 'participant-sheet-trigger')"><ion-icon :icon="peopleOutline" aria-hidden="true" /><span>Split with</span><small>{{ store.editor.participants.length }} participant{{ store.editor.participants.length === 1 ? '' : 's' }}</small></button>
             <p v-if="store.errors.participants" id="expense-participants-error" class="field-error">{{ store.errors.participants }}</p>
@@ -174,7 +184,7 @@ async function selectReceipt(event: Event): Promise<void> {
       <payer-sheet v-else-if="store.activeSheet === 'payers'" :model-value="store.editor.payments" :members="store.members" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" @apply="applyPayers" @cancel="closeSheet" />
       <participant-sheet v-else-if="store.activeSheet === 'participants'" :model-value="store.editor.participants" :members="store.members" @apply="applyParticipants" @cancel="closeSheet" />
       <split-editor v-else-if="store.activeSheet === 'split'" :model-value="store.editor.split" :participants="store.members.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" @apply="applySplit" @cancel="closeSheet" />
-      <recurrence-sheet v-else-if="store.activeSheet === 'recurrence'" :model-value="store.editor.recurrence" :date="store.editor.date" @apply="applyRecurrence" @cancel="closeSheet" />
+      <recurrence-sheet v-else-if="store.activeSheet === 'recurrence'" :model-value="store.editor.recurrence" :occurrence-edit-scope="store.editor.occurrenceEditScope" :is-recurring-instance="Boolean(store.recurringTemplateId)" :date="store.editor.date" @apply="applyRecurrence" @cancel="closeSheet" />
       <receipt-review v-else-if="store.activeSheet === 'receipt'" :model-value="receiptItems" :members="store.members.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" :provider-message="store.receiptMessage" :image-url="receiptPreviewUrl" @confirm="confirmReceipt" @cancel="closeSheet" />
     </ion-modal>
   </ion-page>
@@ -187,29 +197,35 @@ async function selectReceipt(event: Event): Promise<void> {
 .expense-editor__header ion-button { min-width: 64px; min-height: 44px; margin: 0; text-transform: none; }
 .expense-editor { min-height: 100%; padding: 14px var(--su-editor-gutter) calc(26px + env(safe-area-inset-bottom)); background: var(--su-surface); }
 .context-chip { display: flex; width: 100%; min-height: 48px; align-items: center; gap: 9px; border: 0; border-bottom: 1px solid var(--su-divider); background: transparent; color: inherit; font: inherit; text-align: start; }
-.context-chip ion-icon { color: var(--su-accent); font-size: 1.2rem; }
-.context-chip span { min-width: 0; flex: 1; overflow: hidden; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
-.context-chip small { color: var(--ion-color-medium); }
-.expense-core { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 14px 10px; align-items: end; width: min(100%, 278px); margin: 28px auto 20px; }
-.expense-core__icon, .expense-core__currency-symbol { display: grid; width: 46px; height: 46px; place-items: center; border: 1px solid color-mix(in srgb, var(--su-divider) 70%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--su-lilac) 32%, var(--su-surface)); color: var(--su-accent); font-size: 1.38rem; font-weight: 650; box-shadow: 0 1px 2px rgb(40 31 93 / 8%); }
+.context-chip ion-icon { color: var(--ion-color-primary); font-size: 1.2rem; }
+.context-chip span { min-width: 0; flex: 1; overflow-wrap: anywhere; font-weight: 560; white-space: normal; }
+.context-chip small { min-width: 0; color: var(--ion-color-medium); overflow-wrap: anywhere; white-space: normal; }
+.expense-core { display: grid; grid-template-columns: minmax(46px, max-content) minmax(0, 1fr); gap: 14px 10px; align-items: end; width: min(100%, 278px); margin: 28px auto 20px; }
+.expense-core__icon, .expense-core__currency-symbol { display: grid; box-sizing: border-box; width: max-content; min-width: 46px; min-height: 46px; place-items: center; padding: 0.25rem; border: 1px solid color-mix(in srgb, var(--su-divider) 70%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--su-lilac) 32%, var(--su-surface)); color: var(--ion-color-primary); font-size: 1.38rem; font-weight: 650; line-height: 1.15; overflow-wrap: anywhere; box-shadow: 0 1px 2px rgb(40 31 93 / 8%); }
 .expense-core input { width: 100%; min-height: 46px; border: 0; border-bottom: 1px solid var(--ion-color-medium); border-radius: 0; background: transparent; color: inherit; font: inherit; }
 .expense-core__description input { font-size: 1.08rem; }
-.expense-core__amount input { border-color: var(--su-accent); font-size: 2rem; font-weight: 520; letter-spacing: -0.03em; }
+.expense-core__amount input { border-color: var(--ion-color-primary); font-size: 2rem; font-weight: 520; letter-spacing: -0.03em; }
 .paid-split-sentence { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; margin: 0 auto 24px; font-size: 0.86rem; }
 .paid-split-sentence button { min-height: 44px; padding: 0 11px; border: 1px solid color-mix(in srgb, var(--su-divider) 74%, transparent); border-radius: 9px; background: var(--su-surface); color: var(--ion-text-color); box-shadow: 0 1px 3px rgb(40 31 93 / 10%); font: inherit; }
 .editor-list { overflow: hidden; border-top: 1px solid var(--su-divider); }
-.editor-row { display: grid; width: 100%; min-height: 52px; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; border: 0; border-bottom: 1px solid var(--su-divider); background: transparent; color: inherit; font: inherit; text-align: start; }
-.editor-row ion-icon { color: var(--su-accent); font-size: 1.15rem; }
-.editor-row select, .editor-row input, .editor-row textarea { min-height: 42px; max-width: 170px; border: 0; background: transparent; color: var(--ion-color-medium); font: inherit; text-align: end; }
+.editor-row { display: grid; width: 100%; min-height: 52px; grid-template-columns: minmax(28px, max-content) minmax(0, 1fr) minmax(0, auto); align-items: center; gap: 8px; padding-block: 4px; border: 0; border-bottom: 1px solid var(--su-divider); background: transparent; color: inherit; font: inherit; text-align: start; }
+.editor-row ion-icon { color: var(--ion-color-primary); font-size: 1.15rem; }
+.editor-row select, .editor-row input, .editor-row textarea { width: 100%; min-width: 0; min-height: 42px; max-width: 100%; border: 0; background: transparent; color: var(--ion-color-medium); font: inherit; text-align: end; }
 .editor-row textarea { resize: vertical; text-align: start; }
-.editor-row small { max-width: 180px; overflow: hidden; color: var(--ion-color-medium); text-overflow: ellipsis; white-space: nowrap; }
+.editor-row small { min-width: 0; max-width: 180px; color: var(--ion-color-medium); overflow-wrap: anywhere; white-space: normal; }
 .editor-row--upload { min-height: 44px; grid-template-columns: 1fr; padding-left: 36px; }
 .editor-row--upload input { max-width: none; width: 100%; text-align: start; }
 .editor-row--notes { align-items: start; padding: 8px 0; }
 .field-error { margin: 5px 0 0; color: var(--ion-color-danger); font-size: 0.76rem; }
 .field-error--center { text-align: center; }
 .error-summary, .load-error { margin: 14px 0; padding: 12px; border: 1px solid color-mix(in srgb, var(--ion-color-danger) 36%, transparent); border-radius: 11px; background: color-mix(in srgb, var(--ion-color-danger) 8%, var(--su-surface)); color: var(--ion-color-danger); font-size: 0.86rem; }
-.editor-notice { color: var(--su-accent); font-size: 0.84rem; }
+.editor-notice { color: var(--ion-color-primary); font-size: 0.84rem; }
+.load-status { padding: 32px 0; color: var(--ion-color-medium); text-align: center; }
 .premium-copy { margin: 20px auto 0; color: var(--ion-color-medium); font-size: 0.74rem; line-height: 1.4; text-align: center; }
+@media (max-width: 420px) {
+  .editor-row { grid-template-columns: minmax(28px, max-content) minmax(0, 1fr); }
+  .editor-row > :last-child:not(ion-icon):not(span) { grid-column: 2; justify-self: stretch; max-width: none; text-align: start; }
+  .editor-row small { max-width: none; }
+}
 @media (prefers-reduced-motion: reduce) { .expense-editor * { scroll-behavior: auto; } }
 </style>

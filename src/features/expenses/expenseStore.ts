@@ -2,7 +2,7 @@ import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { getAppSession } from '../../data/session'
 import type { ExpenseDraft, ExpenseRow, Group, Member } from '../../data/repositories'
-import type { LocalReceiptReference, ReceiptSuggestion } from '../../data/receipts'
+import type { LocalReceiptReference, ReceiptAsset, ReceiptSuggestion } from '../../data/receipts'
 import { assertCurrencyCode, fromMinorUnits, toMinorUnits, type CurrencyCode } from '../../domain/money'
 import { computeAllocations } from '../../domain/splits'
 import type { ItemizedSplitItem, Recurrence, SplitMethod } from '../../domain/model'
@@ -30,7 +30,7 @@ export interface ExpenseEditorInput {
   notes?: string
   attachmentRefs: string[]
   recurrence?: Recurrence
-  occurrenceEditScope?: 'future' | 'single'
+  occurrenceEditScope?: 'future' | 'occurrence'
 }
 
 export interface ExpenseValidationResult {
@@ -101,7 +101,7 @@ export function validateExpenseInput(input: ExpenseEditorInput, members: readonl
   }
 
   if (input.recurrence && !isIanaTimeZone(input.recurrence.timeZone)) errors.recurrence = 'Choose a valid time zone.'
-  if (input.occurrenceEditScope && input.occurrenceEditScope !== 'single' && input.occurrenceEditScope !== 'future') errors.recurrence = 'Choose whether to edit one occurrence or future expenses.'
+  if (input.occurrenceEditScope && input.occurrenceEditScope !== 'occurrence' && input.occurrenceEditScope !== 'future') errors.recurrence = 'Choose whether to edit this occurrence or future expenses.'
   if (input.attachmentRefs.some((reference) => !reference.trim())) errors.receipt = 'Remove invalid receipt references.'
 
   if (Object.keys(errors).length || totalMinorAmount === undefined || !splitMethod || !allocations) return { valid: false, errors }
@@ -136,69 +136,93 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   const origin = ref<ExpenseOrigin>('home')
   const expenseId = ref<string>()
   const revision = ref<number>()
+  const recurringTemplateId = ref<string>()
   const errors = ref<Readonly<Record<string, string>>>({})
   const errorSummary = ref('')
   const notice = ref('')
   const receiptMessage = ref('')
+  const receiptPreview = ref<ReceiptAsset>()
   const receiptSuggestions = ref<readonly ReceiptSuggestion[]>([])
   const activeSheet = ref<ExpenseSheet>()
   const focusTarget = ref<string>()
   const lastOperationId = ref<string>()
   const saveState = ref<'idle' | 'pending' | 'saved' | 'failed' | 'conflicted'>('idle')
   const isLoading = ref(false)
+  const hasInitialized = ref(false)
   const loadError = ref('')
   let initialFingerprint = JSON.stringify(editor)
+  let initializationRequest = 0
 
   const isDirty = computed(() => JSON.stringify(editor) !== initialFingerprint)
   const returnPath = computed(() => origin.value === 'groups' && editor.groupId ? `/tabs/groups/${editor.groupId}` : `/tabs/${origin.value}`)
+  const canSubmit = computed(() => hasInitialized.value && !isLoading.value && !loadError.value && saveState.value !== 'pending')
 
   async function initialize(options: { readonly origin: ExpenseOrigin; readonly groupId?: string; readonly expenseId?: string; readonly today?: string }): Promise<void> {
+    const request = ++initializationRequest
     reset()
     origin.value = options.origin
     expenseId.value = options.expenseId
     mode.value = options.expenseId ? 'edit' : 'add'
-    editor.date = options.today ?? new Date().toISOString().slice(0, 10)
     isLoading.value = true
+    const nextEditor = emptyEditor()
+    nextEditor.date = options.today ?? new Date().toISOString().slice(0, 10)
     try {
+      const ready = (session as typeof session & { readonly ready?: Promise<void> }).ready
+      if (ready) await ready
       const [loadedCurrentUser, groups] = await Promise.all([
         session.repository.app.getCurrentUser(),
         session.repository.groups.list(),
       ])
-      currentUser.value = loadedCurrentUser
-      availableGroups.value = groups
+      let loadedMembers: readonly Member[] = [loadedCurrentUser]
+      let loadedContextName = ''
+      let loadedExpense: ExpenseRow | undefined
       if (options.groupId) {
-        const [group, loadedMembers] = await Promise.all([
+        const [group, groupMembers] = await Promise.all([
           session.repository.groups.getById(options.groupId),
           session.repository.groups.listMembers(options.groupId),
         ])
         if (!group || group.id !== options.groupId) throw new Error('This group is not available.')
-        if (!loadedMembers.some(({ id }) => id === loadedCurrentUser.id)) throw new Error('You are not an active member of this group.')
-        members.value = loadedMembers
-        contextName.value = group.name
-        editor.groupId = group.id
-        editor.currency = group.currency
-        editor.participants = loadedMembers.map(({ id }) => id)
-        editor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
+        if (!groupMembers.some(({ id }) => id === loadedCurrentUser.id)) throw new Error('You are not an active member of this group.')
+        loadedMembers = groupMembers
+        loadedContextName = group.name
+        nextEditor.groupId = group.id
+        nextEditor.currency = group.currency
+        nextEditor.participants = groupMembers.map(({ id }) => id)
+        nextEditor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
       } else {
-        members.value = [loadedCurrentUser]
-        editor.participants = [loadedCurrentUser.id]
-        editor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
+        nextEditor.participants = [loadedCurrentUser.id]
+        nextEditor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
       }
       if (options.expenseId) {
         if (!options.groupId) throw new Error('Editing an expense requires a valid group context.')
-        const expense = await session.repository.expenses.getById(options.groupId, options.expenseId)
-        if (!expense) throw new Error('This expense is not available.')
-        hydrate(expense)
+        loadedExpense = await session.repository.expenses.getById(options.groupId, options.expenseId)
+        if (!loadedExpense) throw new Error('This expense is not available.')
+        if (loadedExpense.groupId !== options.groupId) throw new Error('The loaded expense did not match its group context.')
+        Object.assign(nextEditor, editorInputFromExpense(loadedExpense))
       }
+      const localReceipt = nextEditor.attachmentRefs.find((reference): reference is LocalReceiptReference => reference.startsWith('local-receipt:'))
+      const loadedReceiptPreview = localReceipt ? await session.receipts.get(localReceipt) : undefined
+      if (request !== initializationRequest) return
+      Object.assign(editor, nextEditor)
+      currentUser.value = loadedCurrentUser
+      availableGroups.value = groups
+      members.value = loadedMembers
+      contextName.value = loadedContextName
+      revision.value = loadedExpense?.revision
+      recurringTemplateId.value = loadedExpense?.recurringTemplateId
+      receiptPreview.value = loadedReceiptPreview
       initialFingerprint = JSON.stringify(editor)
+      hasInitialized.value = true
     } catch (reason) {
+      if (request !== initializationRequest) return
       loadError.value = messageFor(reason, 'The expense editor could not be loaded.')
     } finally {
-      isLoading.value = false
+      if (request === initializationRequest) isLoading.value = false
     }
   }
 
   async function selectContext(groupId: string): Promise<boolean> {
+    const request = initializationRequest
     const group = availableGroups.value.find(({ id }) => id === groupId)
     if (!group) {
       errors.value = { ...errors.value, context: 'This group or friend is not available.' }
@@ -207,6 +231,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     try {
       const loadedMembers = await session.repository.groups.listMembers(group.id)
       const user = currentUser.value ?? await session.repository.app.getCurrentUser()
+      if (request !== initializationRequest) return false
       if (!loadedMembers.some(({ id }) => id === user.id)) throw new Error('You are not an active member of this group.')
       const currencyChanged = editor.currency !== group.currency
       members.value = loadedMembers
@@ -224,6 +249,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         : 'Payers, participants, and split values were reset for the selected context.'
       return true
     } catch (reason) {
+      if (request !== initializationRequest) return false
       errors.value = { ...errors.value, context: messageFor(reason, 'This group or friend is not available.') }
       return false
     }
@@ -238,7 +264,26 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     notice.value = 'Amount, payer amounts, and split values were reset for the new currency.'
   }
 
-  function submit(operationId = createOperationId()): boolean {
+  function changeDate(date: string): void {
+    editor.date = date
+    if (!editor.recurrence || !isIsoDate(date)) return
+    const [, month, day] = date.split('-').map(Number)
+    editor.recurrence = { ...editor.recurrence, anchor: { month, day } }
+  }
+
+  function submit(requestedOperationId?: string): boolean {
+    if (mode.value === 'edit' && (!expenseId.value || revision.value === undefined)) {
+      errorSummary.value = 'This edit is missing its expense revision. Reload the expense before saving.'
+      saveState.value = 'failed'
+      return false
+    }
+    if (!canSubmit.value) return false
+    if (mode.value === 'edit' && recurringTemplateId.value && !editor.occurrenceEditScope) {
+      errors.value = { ...errors.value, recurrence: 'Choose whether to edit this occurrence or future expenses.' }
+      errorSummary.value = 'Choose whether to edit this occurrence or future expenses.'
+      saveState.value = 'failed'
+      return false
+    }
     const validation = validateExpenseInput(editor, members.value)
     errors.value = validation.errors
     if (!validation.valid || !validation.draft) {
@@ -247,22 +292,34 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       return false
     }
     errorSummary.value = ''
-    const command = mode.value === 'edit' && expenseId.value && revision.value !== undefined
-      ? { kind: 'expense.edit' as const, operationId, groupId: validation.draft.groupId, expenseId: expenseId.value, expectedRevision: revision.value, draft: validation.draft }
+    const operationId = requestedOperationId ?? createOperationId()
+    const editorContext = initializationRequest
+    const submittedFingerprint = JSON.stringify(editor)
+    const command = mode.value === 'edit'
+      ? { kind: 'expense.edit' as const, operationId, groupId: validation.draft.groupId, expenseId: expenseId.value!, expectedRevision: revision.value!, draft: validation.draft }
       : { kind: 'expense.add' as const, operationId, ...validation.draft }
-    const handle = session.queue.submit(command)
     lastOperationId.value = operationId
     saveState.value = 'pending'
+    let handle
+    try {
+      handle = session.queue.submit(command)
+    } catch (reason) {
+      saveState.value = 'failed'
+      errorSummary.value = messageFor(reason, 'The expense could not be queued.')
+      return false
+    }
     void handle.result().then((result) => {
+      if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
       if (result.status !== 'saved') return
       saveState.value = 'saved'
       const savedExpense = 'expense' in result ? result.expense : undefined
       if (savedExpense) {
         revision.value = savedExpense.revision
-        initialFingerprint = JSON.stringify(editor)
+        initialFingerprint = submittedFingerprint
       }
       notice.value = mode.value === 'edit' ? 'Expense updated.' : 'Expense saved.'
     }).catch(() => {
+      if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
       const operation = session.queue.get(operationId)
       saveState.value = operation?.status === 'conflicted' ? 'conflicted' : 'failed'
       errorSummary.value = operation?.status === 'conflicted' ? 'This expense changed elsewhere. Your draft and the remote revision are both preserved.' : 'Save failed. Retry or discard the draft from the group journal.'
@@ -270,22 +327,54 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     return true
   }
 
-  async function attachReceipt(blob: Blob, fileName: string): Promise<void> {
+  async function attachReceipt(blob: Blob, fileName: string): Promise<boolean> {
+    const request = initializationRequest
     const reference = await session.receipts.put(blob, { fileName })
-    editor.attachmentRefs = [...editor.attachmentRefs, reference]
-    const recognition = await session.receiptProvider.recognize(reference)
-    if (recognition.status === 'suggestions') {
-      receiptSuggestions.value = recognition.items
-      receiptMessage.value = recognition.source === 'demo' ? 'Demo suggestions are ready to edit. Confirm them before applying a split.' : 'Suggestions are ready to edit. Confirm them before applying a split.'
-    } else {
-      receiptSuggestions.value = []
-      receiptMessage.value = recognition.reason
+    if (request !== initializationRequest) {
+      await discardStaleReceipt(reference)
+      return false
     }
+    editor.attachmentRefs = [...editor.attachmentRefs, reference]
+    const preview = await session.receipts.get(reference)
+    if (request !== initializationRequest) {
+      await discardStaleReceipt(reference)
+      return false
+    }
+    receiptPreview.value = preview
+    try {
+      const recognition = await session.receiptProvider.recognize(reference)
+      if (request !== initializationRequest) {
+        await discardStaleReceipt(reference)
+        return false
+      }
+      if (recognition.status === 'suggestions') {
+        receiptSuggestions.value = recognition.items
+        receiptMessage.value = recognition.source === 'demo' ? 'Demo suggestions are ready to edit. Confirm them before applying a split.' : 'Suggestions are ready to edit. Confirm them before applying a split.'
+      } else {
+        receiptSuggestions.value = []
+        receiptMessage.value = recognition.reason
+      }
+    } catch {
+      if (request !== initializationRequest) {
+        await discardStaleReceipt(reference)
+        return false
+      }
+      receiptSuggestions.value = []
+      receiptMessage.value = 'Receipt recognition failed. The image is still saved here, and you can enter items manually.'
+    }
+    return true
+  }
+
+  async function discardStaleReceipt(reference: LocalReceiptReference): Promise<void> {
+    try { await session.receipts.delete(reference) } catch { /* a stale editor cannot surface cleanup errors */ }
   }
 
   async function removeReceipt(reference: string): Promise<void> {
     editor.attachmentRefs = editor.attachmentRefs.filter((item) => item !== reference)
-    if (reference.startsWith('local-receipt:')) await session.receipts.delete(reference as LocalReceiptReference)
+    if (reference.startsWith('local-receipt:')) {
+      await session.receipts.delete(reference as LocalReceiptReference)
+      if (receiptPreview.value?.reference === reference) receiptPreview.value = undefined
+    }
     else await session.receiptProvider.delete(reference)
   }
 
@@ -309,11 +398,12 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   function closeSheet(): void { activeSheet.value = undefined }
+  function leaveEditor(): void { initializationRequest += 1; activeSheet.value = undefined }
 
   return {
-    editor, members, availableGroups, contextName, mode, origin, expenseId, revision, errors, errorSummary, notice, receiptMessage, receiptSuggestions,
-    activeSheet, focusTarget, lastOperationId, saveState, isLoading, loadError, isDirty, returnPath,
-    initialize, selectContext, changeCurrency, submit, attachReceipt, removeReceipt, confirmReceipt, openSheet, closeSheet,
+    editor, members, availableGroups, contextName, mode, origin, expenseId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview,
+    activeSheet, focusTarget, lastOperationId, saveState, isLoading, hasInitialized, loadError, isDirty, returnPath, canSubmit,
+    initialize, selectContext, changeCurrency, changeDate, submit, attachReceipt, removeReceipt, confirmReceipt, openSheet, closeSheet, leaveEditor,
   }
 
   function reset(): void {
@@ -324,35 +414,40 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     currentUser.value = undefined
     expenseId.value = undefined
     revision.value = undefined
+    recurringTemplateId.value = undefined
     errors.value = {}
     errorSummary.value = ''
     notice.value = ''
     receiptMessage.value = ''
     receiptSuggestions.value = []
+    receiptPreview.value = undefined
     activeSheet.value = undefined
     focusTarget.value = undefined
     lastOperationId.value = undefined
     saveState.value = 'idle'
+    hasInitialized.value = false
     loadError.value = ''
   }
 
-  function hydrate(expense: ExpenseRow): void {
-    editor.groupId = expense.groupId
-    editor.description = expense.description
-    editor.date = expense.date
-    editor.currency = expense.total.currency
-    editor.amountText = fromMinorUnits(expense.total.minorAmount, expense.total.currency)
-    editor.category = expense.category
-    editor.participants = expense.allocations.map(({ participantId }) => participantId)
-    editor.payments = expense.payments.map(({ participantId, money }) => ({ participantId, amountText: fromMinorUnits(money.minorAmount, money.currency) }))
-    editor.split = splitInputFromMethod(expense.splitMethod, expense.total.currency)
-    editor.notes = expense.notes ?? ''
-    editor.attachmentRefs = [...expense.attachmentRefs]
-    editor.recurrence = expense.recurrence
-    editor.occurrenceEditScope = expense.occurrenceEditScope
-    revision.value = expense.revision
-  }
 })
+
+function editorInputFromExpense(expense: ExpenseRow): ExpenseEditorInput {
+  return {
+    groupId: expense.groupId,
+    description: expense.description,
+    date: expense.date,
+    currency: expense.total.currency,
+    amountText: fromMinorUnits(expense.total.minorAmount, expense.total.currency),
+    category: expense.category,
+    participants: expense.allocations.map(({ participantId }) => participantId),
+    payments: expense.payments.map(({ participantId, money }) => ({ participantId, amountText: fromMinorUnits(money.minorAmount, money.currency) })),
+    split: splitInputFromMethod(expense.splitMethod, expense.total.currency),
+    notes: expense.notes ?? '',
+    attachmentRefs: [...expense.attachmentRefs],
+    recurrence: expense.recurrence,
+    occurrenceEditScope: expense.occurrenceEditScope,
+  }
+}
 
 function emptyEditor(): ExpenseEditorInput {
   return {

@@ -8,6 +8,9 @@ const participants = [
   { id: 'alex-r', displayName: 'Alex R.', initials: 'AR', isCurrentUser: false },
 ]
 
+const jordan = { id: 'jordan-k', displayName: 'Jordan K.', initials: 'JK', isCurrentUser: false }
+const taylor = { id: 'taylor-s', displayName: 'Taylor S.', initials: 'TS', isCurrentUser: false }
+
 const cases: readonly [string, SplitInput, readonly number[]][] = [
   ['equal', { type: 'equal' }, [51, 50]],
   ['exact', { type: 'exact', values: { 'maya-p': '1.01', 'alex-r': '0.00' } }, [101, 0]],
@@ -43,12 +46,95 @@ describe('SplitEditor', () => {
   })
 
   it('announces a bad split inline and does not apply it', async () => {
-    const wrapper = mount(SplitEditor, { props: {
+    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
       modelValue: { type: 'percentage', values: { 'maya-p': '90', 'alex-r': '5' } }, participants, currency: 'USD', totalMinorAmount: 101,
     } })
     await wrapper.get('[data-action="apply-split"]').trigger('click')
 
     expect(wrapper.get('[role="alert"]').text()).toContain('Percentages must total 100')
+    const firstValue = wrapper.get<HTMLInputElement>('[data-participant-id="maya-p"]')
+    expect(firstValue.attributes('aria-invalid')).toBe('true')
+    expect(firstValue.attributes('aria-describedby')).toBe('split-error')
+    expect(document.activeElement).toBe(firstValue.element)
     expect(wrapper.emitted('apply')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('focuses and describes the actual malformed split value', async () => {
+    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+      modelValue: { type: 'exact', values: { 'maya-p': '1.00', 'alex-r': 'not-a-number' } },
+      participants,
+      currency: 'USD',
+      totalMinorAmount: 101,
+    } })
+
+    await wrapper.get('[data-action="apply-split"]').trigger('click')
+
+    const invalid = wrapper.get<HTMLInputElement>('[data-participant-id="alex-r"]')
+    expect(invalid.attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'split-error' })
+    expect(wrapper.get('[data-participant-id="maya-p"]').attributes('aria-invalid')).toBeUndefined()
+    expect(document.activeElement).toBe(invalid.element)
+    wrapper.unmount()
+  })
+
+  it('connects an itemized split error to the selected method control', async () => {
+    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+      modelValue: { type: 'itemized', items: [] }, participants, currency: 'USD', totalMinorAmount: 101,
+    } })
+
+    await wrapper.get('[data-action="apply-split"]').trigger('click')
+
+    const itemized = wrapper.get<HTMLButtonElement>('[data-method="itemized"]')
+    expect(itemized.attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'split-error' })
+    expect(document.activeElement).toBe(itemized.element)
+    wrapper.unmount()
+  })
+
+  it.each([
+    [[...participants, jordan], ['33.34', '33.33', '33.33']],
+    [[...participants, jordan, taylor], ['25', '25', '25', '25']],
+  ] as const)('defaults percentage inputs to an exact deterministic 100 percent for %s participants', async (people, expected) => {
+    const wrapper = mount(SplitEditor, { props: {
+      modelValue: { type: 'equal' }, participants: people, currency: 'USD', totalMinorAmount: 100,
+    } })
+
+    await wrapper.get('[data-method="percentage"]').trigger('click')
+
+    expect(wrapper.findAll<HTMLInputElement>('[data-participant-id]').map(({ element }) => element.value)).toEqual(expected)
+    await wrapper.get('[data-action="apply-split"]').trigger('click')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('uses keyboard-operable radio semantics with roving focus for split methods', async () => {
+    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+      modelValue: { type: 'equal' }, participants, currency: 'USD', totalMinorAmount: 100,
+    } })
+    const equal = wrapper.get<HTMLButtonElement>('[data-method="equal"]')
+    const exact = wrapper.get<HTMLButtonElement>('[data-method="exact"]')
+
+    expect(wrapper.get('[aria-label="Split method"]').attributes('role')).toBe('radiogroup')
+    expect(equal.attributes()).toMatchObject({ role: 'radio', 'aria-checked': 'true', tabindex: '0' })
+    expect(exact.attributes('tabindex')).toBe('-1')
+
+    equal.element.focus()
+    await equal.trigger('keydown', { key: 'ArrowRight' })
+    expect(exact.attributes('aria-checked')).toBe('true')
+    expect(exact.attributes('tabindex')).toBe('0')
+    expect(document.activeElement).toBe(exact.element)
+
+    await exact.trigger('keydown', { key: 'End' })
+    const itemized = wrapper.get<HTMLButtonElement>('[data-method="itemized"]')
+    expect(itemized.attributes('aria-checked')).toBe('true')
+    expect(document.activeElement).toBe(itemized.element)
+    wrapper.unmount()
+  })
+
+  it('exposes a bounded scroll surface and sticky sheet header', () => {
+    const wrapper = mount(SplitEditor, { props: {
+      modelValue: { type: 'equal' }, participants, currency: 'USD', totalMinorAmount: 100,
+    } })
+
+    expect(wrapper.get('[data-sheet-scroll]').classes()).toContain('expense-sheet')
+    expect(wrapper.get('header').classes()).toContain('expense-sheet__header')
   })
 })
