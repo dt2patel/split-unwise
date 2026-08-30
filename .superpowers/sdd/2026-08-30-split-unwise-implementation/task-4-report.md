@@ -272,3 +272,61 @@ Tests 50 passed (50)
 ### Remaining QA boundary
 
 The terminal browser relay remains unavailable, so browser-visible Dynamic Type behavior and live forced-iOS palette verification remain later QA. Terminal regressions cover reflow persistence, observer cleanup, token contrast, and iOS-specific source contracts. The existing Vite chunk-size advisory and upstream Ionic sourcemap notices remain non-blocking.
+
+---
+
+## Fix Round 4/5
+
+### Finding mapping
+
+1. **Invariant reflow measurement:** While `expense-row--reflow` is active, `useExpenseRowLayout` now removes that class only long enough to synchronously read the unreflowed grid's `scrollWidth` and `clientWidth`, then restores it before updating reactive state. The probe runs inside one JavaScript task, so there is no painted intermediate layout and no dependency on a second observer callback. Same-width observer callbacks stay latched; invalidated content and a real available-width change re-evaluate the intrinsic grid in either direction. Observer cleanup remains unchanged.
+
+### Strict TDD evidence
+
+#### RED
+
+Command:
+
+```sh
+pnpm vitest run src/composables/__tests__/useExpenseRowLayout.spec.ts
+```
+
+Exit: `1`.
+
+Observed expected failure before the invariant probe was implemented:
+
+```text
+FAIL useExpenseRowLayout > probes unreflowed content for invalidation and width changes without dropping the reflow class
+expected false to be true
+
+Test Files 1 failed (1)
+Tests 1 failed | 1 passed (2)
+```
+
+#### GREEN
+
+Command:
+
+```sh
+pnpm vitest run src/composables/__tests__/useExpenseRowLayout.spec.ts src/components/__tests__/ExpenseRow.spec.ts
+```
+
+Output:
+
+```text
+Test Files 2 passed (2)
+Tests 19 passed (19)
+```
+
+The new composable regression drives a class-bound row through: intrinsic overflow, same-width content invalidation while reflowed, content shrink and growth, width growth from 390px to 450px, width shrink back to 390px, and unmount cleanup.
+
+### Fix-round validation
+
+- `pnpm test` — 18 files passed, 115 tests passed.
+- `pnpm run typecheck` — passed.
+- `pnpm run build` — passed; Vite built 202 modules.
+- `git diff --check` — passed.
+
+### Remaining QA boundary
+
+The terminal browser relay remains unavailable, so rendered Dynamic Type behavior remains later browser QA. The no-paint synchronous probe and state transitions are covered with class-bound DOM regression tests; Vite's existing chunk-size advisory and upstream Ionic sourcemap notices are non-blocking.

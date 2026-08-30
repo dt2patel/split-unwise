@@ -13,10 +13,10 @@ export function useExpenseRowLayout() {
     const element = row.value
     if (!element) return
 
-    const availableWidth = element.clientWidth
+    const { availableWidth, contentWidth } = measureUnreflowed(element, isReflow.value)
     if (isReflow.value && !contentChanged && availableWidth === lastMeasuredWidth) return
 
-    isReflow.value = element.scrollWidth > availableWidth
+    isReflow.value = contentWidth > availableWidth
     lastMeasuredWidth = availableWidth
     contentChanged = false
   }
@@ -42,6 +42,22 @@ export function useExpenseRowLayout() {
   })
 
   return { row, isReflow, invalidateContent }
+}
+
+/**
+ * The reflow class intentionally removes the narrow financial grid, so measuring it while
+ * active can hide the overflow that originally required reflow. Remove and restore it in the
+ * same JavaScript task to read the intrinsic grid without presenting an intermediate layout.
+ */
+function measureUnreflowed(element: HTMLElement, isReflowed: boolean): { availableWidth: number; contentWidth: number } {
+  const reflowClass = 'expense-row--reflow'
+  const hadReflowClass = isReflowed && element.classList.contains(reflowClass)
+  if (hadReflowClass) element.classList.remove(reflowClass)
+
+  const measurement = { availableWidth: element.clientWidth, contentWidth: element.scrollWidth }
+
+  if (hadReflowClass) element.classList.add(reflowClass)
+  return measurement
 }
 
 function requestFrame(callback: FrameRequestCallback): number {
