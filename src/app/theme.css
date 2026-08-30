@@ -13,7 +13,9 @@
   --su-violet: #5F43DB;
   --su-accent: #694BE8;
   --su-surface: #FFFFFF;
+  --su-surface-rgb: 255, 255, 255;
   --su-text: #1D1B2B;
+  --su-text-rgb: 29, 27, 43;
   --su-lilac: #F0EAFF;
   --su-avatar-bg: #F0EAFF;
   --su-avatar-fg: #26207F;
@@ -29,9 +31,14 @@
   --ion-color-primary-contrast-rgb: 255, 255, 255;
   --ion-color-primary-shade: #5C42CC;
   --ion-color-primary-tint: #785DEB;
-  --ion-background-color: var(--su-surface);
-  --ion-text-color: var(--su-text);
   --ion-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+:root.ios {
+  --ion-background-color: var(--su-surface);
+  --ion-background-color-rgb: var(--su-surface-rgb);
+  --ion-text-color: var(--su-text);
+  --ion-text-color-rgb: var(--su-text-rgb);
 }
 
 body {
@@ -42,15 +49,18 @@ body {
 }
 
 @media (prefers-color-scheme: dark) {
-  :root { --su-surface: #17152A; --su-text: #F7F5FF; --su-lilac: #29234B; --su-avatar-bg: #30295A; --su-avatar-fg: #F0EAFF; --su-category-fg: #C7BCFF; --su-divider: #9895A9; --su-owed: #7BE0A8; --su-owing: #FFB4A9; --ion-color-primary: #A897FF; --ion-color-primary-rgb: 168, 151, 255; --ion-color-primary-contrast: #000000; --ion-color-primary-contrast-rgb: 0, 0, 0; --ion-color-primary-shade: #9485E0; --ion-color-primary-tint: #B1A3FF; --ion-background-color: var(--su-surface); --ion-text-color: var(--su-text); }
+  :root { --su-surface: #17152A; --su-surface-rgb: 23, 21, 42; --su-text: #F7F5FF; --su-text-rgb: 247, 245, 255; --su-lilac: #29234B; --su-avatar-bg: #30295A; --su-avatar-fg: #F0EAFF; --su-category-fg: #C7BCFF; --su-divider: #9895A9; --su-owed: #7BE0A8; --su-owing: #FFB4A9; --ion-color-primary: #A897FF; --ion-color-primary-rgb: 168, 151, 255; --ion-color-primary-contrast: #000000; --ion-color-primary-contrast-rgb: 0, 0, 0; --ion-color-primary-shade: #9485E0; --ion-color-primary-tint: #B1A3FF; }
+  :root.ios { --ion-background-color: var(--su-surface); --ion-background-color-rgb: var(--su-surface-rgb); --ion-text-color: var(--su-text); --ion-text-color-rgb: var(--su-text-rgb); }
 }
 
 @media (prefers-contrast: more) and (prefers-color-scheme: light) {
-  :root { --su-surface: #FFFFFF; --su-text: #000000; --su-lilac: #E8E0FF; --su-avatar-bg: #E8E0FF; --su-avatar-fg: #171152; --su-category-fg: #171152; --su-divider: #000000; --su-owed: #005A32; --su-owing: #8A160D; --ion-color-primary: #3510A0; --ion-color-primary-rgb: 53, 16, 160; --ion-color-primary-contrast: #FFFFFF; --ion-color-primary-contrast-rgb: 255, 255, 255; --ion-color-primary-shade: #2F0E8C; --ion-color-primary-tint: #4A28AA; --ion-background-color: var(--su-surface); --ion-text-color: var(--su-text); }
+  :root { --su-surface: #FFFFFF; --su-surface-rgb: 255, 255, 255; --su-text: #000000; --su-text-rgb: 0, 0, 0; --su-lilac: #E8E0FF; --su-avatar-bg: #E8E0FF; --su-avatar-fg: #171152; --su-category-fg: #171152; --su-divider: #000000; --su-owed: #005A32; --su-owing: #8A160D; --ion-color-primary: #3510A0; --ion-color-primary-rgb: 53, 16, 160; --ion-color-primary-contrast: #FFFFFF; --ion-color-primary-contrast-rgb: 255, 255, 255; --ion-color-primary-shade: #2F0E8C; --ion-color-primary-tint: #4A28AA; }
+  :root.ios { --ion-background-color: var(--su-surface); --ion-background-color-rgb: var(--su-surface-rgb); --ion-text-color: var(--su-text); --ion-text-color-rgb: var(--su-text-rgb); }
 }
 
 @media (prefers-contrast: more) and (prefers-color-scheme: dark) {
-  :root { --su-surface: #000000; --su-text: #FFFFFF; --su-lilac: #221B4B; --su-avatar-bg: #221B4B; --su-avatar-fg: #FFFFFF; --su-category-fg: #D5CCFF; --su-divider: #FFFFFF; --su-owed: #8CFFB7; --su-owing: #FFD0C9; --ion-color-primary: #B7A9FF; --ion-color-primary-rgb: 183, 169, 255; --ion-color-primary-contrast: #000000; --ion-color-primary-contrast-rgb: 0, 0, 0; --ion-color-primary-shade: #A193E0; --ion-color-primary-tint: #BFB2FF; --ion-background-color: var(--su-surface); --ion-text-color: var(--su-text); }
+  :root { --su-surface: #000000; --su-surface-rgb: 0, 0, 0; --su-text: #FFFFFF; --su-text-rgb: 255, 255, 255; --su-lilac: #221B4B; --su-avatar-bg: #221B4B; --su-avatar-fg: #FFFFFF; --su-category-fg: #D5CCFF; --su-divider: #FFFFFF; --su-owed: #8CFFB7; --su-owing: #FFD0C9; --ion-color-primary: #B7A9FF; --ion-color-primary-rgb: 183, 169, 255; --ion-color-primary-contrast: #000000; --ion-color-primary-contrast-rgb: 0, 0, 0; --ion-color-primary-shade: #A193E0; --ion-color-primary-tint: #BFB2FF; }
+  :root.ios { --ion-background-color: var(--su-surface); --ion-background-color-rgb: var(--su-surface-rgb); --ion-text-color: var(--su-text); --ion-text-color-rgb: var(--su-text-rgb); }
 }
 
 @media (prefers-reduced-motion: reduce) {

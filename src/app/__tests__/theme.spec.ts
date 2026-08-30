@@ -38,11 +38,28 @@ describe('Split Unwise theme', () => {
     expect(theme).toContain('--su-category-fg:')
   })
 
+  it('scopes branded Ionic surfaces to iOS and preserves their RGB companions in every mode', () => {
+    expect((theme.match(/:root\.ios \{/g) ?? []).length).toBeGreaterThanOrEqual(4)
+    expect((theme.match(/--ion-background-color-rgb:/g) ?? []).length).toBeGreaterThanOrEqual(4)
+    expect((theme.match(/--ion-text-color-rgb:/g) ?? []).length).toBeGreaterThanOrEqual(4)
+    expect(theme).toContain('--su-surface-rgb: 23, 21, 42;')
+    expect(theme).toContain('--su-surface-rgb: 0, 0, 0;')
+  })
+
   it.each([
     ['light text', '#1D1B2B', '#FFFFFF'], ['light primary', '#FFFFFF', '#694BE8'], ['light divider', '#6A6878', '#FFFFFF'], ['light avatar', '#26207F', '#F0EAFF'], ['light owed', '#18794E', '#FFFFFF'], ['light owing', '#A33A2B', '#FFFFFF'],
     ['dark text', '#F7F5FF', '#17152A'], ['dark primary', '#000000', '#A897FF'], ['dark divider', '#9895A9', '#17152A'], ['dark avatar', '#F0EAFF', '#30295A'], ['dark owed', '#7BE0A8', '#17152A'], ['dark owing', '#FFB4A9', '#17152A'],
     ['high-contrast light text', '#000000', '#FFFFFF'], ['high-contrast light primary', '#FFFFFF', '#3510A0'], ['high-contrast light divider', '#000000', '#FFFFFF'], ['high-contrast light avatar', '#171152', '#E8E0FF'], ['high-contrast light owed', '#005A32', '#FFFFFF'], ['high-contrast light owing', '#8A160D', '#FFFFFF'],
     ['high-contrast dark text', '#FFFFFF', '#000000'], ['high-contrast dark primary', '#000000', '#B7A9FF'], ['high-contrast dark divider', '#FFFFFF', '#000000'], ['high-contrast dark avatar', '#FFFFFF', '#221B4B'], ['high-contrast dark owed', '#8CFFB7', '#000000'], ['high-contrast dark owing', '#FFD0C9', '#000000'],
+  ])('%s meets normal-text contrast', (_name, foreground, background) => {
+    expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it.each([
+    ['light pending', '#FFFFFF', '#694BE8'],
+    ['dark pending', '#000000', '#A897FF'],
+    ['high-contrast light pending', '#FFFFFF', '#3510A0'],
+    ['high-contrast dark pending', '#000000', '#B7A9FF'],
   ])('%s meets normal-text contrast', (_name, foreground, background) => {
     expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5)
   })

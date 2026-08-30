@@ -1,19 +1,35 @@
 <script setup lang="ts">
 import { IonIcon } from '@ionic/vue'
 import { pricetagOutline } from 'ionicons/icons'
+import { watch } from 'vue'
 import MoneyAmount from './MoneyAmount.vue'
 import SyncStatus from './SyncStatus.vue'
 import { useExpenseRowLayout } from '../composables/useExpenseRowLayout'
 import type { ExpenseRow as ExpenseRowRecord } from '../data/repositories'
 import type { Money } from '../domain/model'
 
-defineProps<{
+const props = defineProps<{
   expense: ExpenseRowRecord
   balance: Money
   balanceDirection: 'owed' | 'owing' | 'settled'
 }>()
 
-const { row, isReflow } = useExpenseRowLayout()
+const { row, isReflow, invalidateContent } = useExpenseRowLayout()
+
+watch(
+  () => [
+    props.expense.description,
+    props.expense.date,
+    props.expense.category,
+    props.expense.syncState,
+    props.expense.total.currency,
+    props.expense.total.minorAmount,
+    props.balance.currency,
+    props.balance.minorAmount,
+    props.balanceDirection,
+  ],
+  invalidateContent,
+)
 </script>
 
 <template>

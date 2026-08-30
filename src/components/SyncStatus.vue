@@ -27,5 +27,5 @@ const presentation = computed(() => presentations[props.state])
 <style scoped>
 .sync-status { display: inline-flex; align-items: center; gap: 0.3rem; max-width: 100%; color: var(--ion-color-medium); font-size: 0.82rem; overflow-wrap: anywhere; }
 .sync-status--failed, .sync-status--conflicted { color: var(--ion-color-danger); }
-.sync-status--pending { color: var(--su-accent); }
+.sync-status--pending { color: var(--ion-color-primary); }
 </style>

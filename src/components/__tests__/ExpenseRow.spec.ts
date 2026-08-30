@@ -30,6 +30,7 @@ const expense: ExpenseRowRecord = {
 }
 
 const expenseRowSource = readFileSync(resolve(process.cwd(), 'src/components/ExpenseRow.vue'), 'utf8')
+const syncStatusSource = readFileSync(resolve(process.cwd(), 'src/components/SyncStatus.vue'), 'utf8')
 
 describe('MoneyAmount', () => {
   it('formats ISO minor units without rolling glyphs and makes owed direction explicit', () => {
@@ -114,6 +115,10 @@ describe('SyncStatus', () => {
     expect(wrapper.text()).toContain(label)
     expect(wrapper.attributes('role')).toBe('status')
     expect(wrapper.attributes('aria-live')).toBe('polite')
+  })
+
+  it('uses the mode-aware Ionic primary token for pending status', () => {
+    expect(syncStatusSource).toContain('.sync-status--pending { color: var(--ion-color-primary); }')
   })
 })
 

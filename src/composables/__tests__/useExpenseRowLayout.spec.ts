@@ -35,6 +35,11 @@ describe('useExpenseRowLayout', () => {
     await nextTick()
     expect(state?.isReflow.value).toBe(true)
 
+    Object.defineProperty(element, 'scrollWidth', { configurable: true, value: 390 })
+    ResizeObserverHarness.instances[0].trigger()
+    await nextTick()
+    expect(state?.isReflow.value).toBe(true)
+
     wrapper.unmount()
     expect(ResizeObserverHarness.instances[0].disconnect).toHaveBeenCalledOnce()
   })

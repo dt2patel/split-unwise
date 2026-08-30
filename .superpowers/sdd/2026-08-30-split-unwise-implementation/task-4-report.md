@@ -208,3 +208,67 @@ Tests 44 passed (44)
 ### Remaining QA boundary
 
 The browser relay remains unavailable. The measured-overflow and real-Ionic public-prop tests cover the terminal-verifiable behavior; final browser visual confirmation of 390px Dynamic Type and Ionic safe-area placement remains later QA. The Vite chunk-size advisory and upstream Ionic sourcemap notices are non-blocking.
+
+---
+
+## Fix Round 3/5
+
+### Finding mapping
+
+1. **Stable Dynamic Type reflow:** `useExpenseRowLayout` now remembers the available width that triggered reflow and holds that state across follow-up `ResizeObserver` notifications at the same width. `ExpenseRow` explicitly invalidates the measurement only when rendered row content inputs change. This prevents the post-reflow layout from clearing its own state while still allowing a genuine width or content change to re-evaluate it. The observer remains disconnected on unmount.
+2. **Pending sync contrast:** Pending status now uses the mode-aware `--ion-color-primary` token rather than the fixed accent. Contrast regressions cover its foreground/background pair in light, dark, high-contrast-light, and high-contrast-dark modes at >=4.5:1.
+3. **iOS branded surfaces:** Brand background/text overrides now target `:root.ios`, matching Ionic's installed palette specificity. Each of the four modes declares surface/text RGB companion tokens and applies them as Ionic background/text RGB values, so forced iOS mode retains the branded surfaces even after the Ionic system palette import.
+
+### Strict TDD evidence
+
+#### RED
+
+Command:
+
+```sh
+pnpm vitest run src/composables/__tests__/useExpenseRowLayout.spec.ts src/components/__tests__/ExpenseRow.spec.ts src/app/__tests__/theme.spec.ts
+```
+
+Exit: `1`.
+
+Observed expected failures before the round-three production changes:
+
+```text
+FAIL useExpenseRowLayout > switches a 390px row to reflow only when measured content overflows and cleans up
+expected false to be true
+
+FAIL SyncStatus > uses the mode-aware Ionic primary token for pending status
+expected SyncStatus source to contain '.sync-status--pending { color: var(--ion-color-primary); }'
+
+FAIL Split Unwise theme > scopes branded Ionic surfaces to iOS and preserves their RGB companions in every mode
+expected 0 to be greater than or equal to 4
+
+Test Files 3 failed (3)
+Tests 3 failed | 47 passed (50)
+```
+
+#### GREEN
+
+Command:
+
+```sh
+pnpm vitest run src/composables/__tests__/useExpenseRowLayout.spec.ts src/components/__tests__/ExpenseRow.spec.ts src/app/__tests__/theme.spec.ts
+```
+
+Output:
+
+```text
+Test Files 3 passed (3)
+Tests 50 passed (50)
+```
+
+### Fix-round validation
+
+- `pnpm test` — 18 files passed, 114 tests passed.
+- `pnpm run typecheck` — passed.
+- `pnpm run build` — passed; Vite built 202 modules.
+- `git diff --check` — passed.
+
+### Remaining QA boundary
+
+The terminal browser relay remains unavailable, so browser-visible Dynamic Type behavior and live forced-iOS palette verification remain later QA. Terminal regressions cover reflow persistence, observer cleanup, token contrast, and iOS-specific source contracts. The existing Vite chunk-size advisory and upstream Ionic sourcemap notices remain non-blocking.

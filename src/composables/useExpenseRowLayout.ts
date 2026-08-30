@@ -6,14 +6,27 @@ export function useExpenseRowLayout() {
   const isReflow = ref(false)
   let observer: ResizeObserver | undefined
   let frame: number | undefined
+  let lastMeasuredWidth: number | undefined
+  let contentChanged = true
 
   const measure = () => {
     const element = row.value
-    if (element) isReflow.value = element.scrollWidth > element.clientWidth
+    if (!element) return
+
+    const availableWidth = element.clientWidth
+    if (isReflow.value && !contentChanged && availableWidth === lastMeasuredWidth) return
+
+    isReflow.value = element.scrollWidth > availableWidth
+    lastMeasuredWidth = availableWidth
+    contentChanged = false
   }
   const scheduleMeasure = () => {
     if (frame !== undefined) cancelFrame(frame)
     frame = requestFrame(() => { frame = undefined; measure() })
+  }
+  const invalidateContent = () => {
+    contentChanged = true
+    scheduleMeasure()
   }
 
   onMounted(() => {
@@ -28,7 +41,7 @@ export function useExpenseRowLayout() {
     if (frame !== undefined) cancelFrame(frame)
   })
 
-  return { row, isReflow }
+  return { row, isReflow, invalidateContent }
 }
 
 function requestFrame(callback: FrameRequestCallback): number {
