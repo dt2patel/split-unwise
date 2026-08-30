@@ -8,9 +8,11 @@ describe('application routes', () => {
     ['/tabs/activity', 'activity'],
     ['/tabs/account', 'account'],
     ['/tabs/groups/lake-house-weekend', 'group-detail'],
-  ])('resolves %s to %s', (path, routeName) => {
+  ])('resolves %s through the tabs shell to %s', (path, routeName) => {
     const router = createAppRouter()
+    const resolvedRoute = router.resolve(path)
 
-    expect(router.resolve(path).name).toBe(routeName)
+    expect(resolvedRoute.name).toBe(routeName)
+    expect(resolvedRoute.matched.map((route) => route.name)).toEqual(['tabs', routeName])
   })
 })
