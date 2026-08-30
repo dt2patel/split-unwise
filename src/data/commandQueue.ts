@@ -1,4 +1,5 @@
 import type { CommandEnvelope, CommandKind, CommandResult, SyncState } from './repositories'
+import { assertOperationId } from './operationIdentity'
 
 export interface CommandFailure { readonly message: string; readonly conflict?: unknown }
 export class CommandConflictError extends Error {
@@ -125,6 +126,5 @@ export function createBrowserCommandStorage(key = 'split-unwise:command-queue:v1
   }
 }
 function rejectedHandle(operationId: string, error: Error): CommandHandle { return { operationId, result: () => Promise.reject(error) } }
-function assertOperationId(operationId: string): void { if (!operationId.trim()) throw new Error('operationId is required') }
 function toFailure(error: unknown): CommandFailure { return { message: error instanceof Error ? error.message : String(error) } }
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }

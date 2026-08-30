@@ -82,7 +82,7 @@ describe('demo repository', () => {
         { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 600 } },
         { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 600 } },
       ],
-    })).resolves.toMatchObject({ status: 'saved', expense: { id: 'demo-expense-006', description: 'Firewood' } })
+    })).rejects.toThrow('different request context')
     await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.toHaveLength(6)
     await expect(repository.activity.listForGroup('lake-house-weekend')).resolves.toContainEqual(
       expect.objectContaining({ type: 'expense-created', expenseId: 'demo-expense-006' }),

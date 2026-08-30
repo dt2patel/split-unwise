@@ -92,3 +92,39 @@ Firebase configuration now trims values, rejects whitespace-only variables, and 
 - The Firestore operation ledger and transaction shape are source-validated, but no Firebase project, authenticated session, or emulator is available in this task; live rules/transaction behavior remains unverified.
 - Local browser storage intentionally contains only serializable command metadata and drafts; it contains no credentials. Storage privacy/quota failures leave the in-memory command state usable but cannot provide reload recovery.
 - The public cover assets remain pre-existing untracked files and were not changed or staged.
+
+---
+
+## Fix Round 2 / 5: Hydrated Auth, Bound Replay Identity, And Checked Aggregates
+
+### Review-Finding Mapping
+
+1. **Auth hydration:** `firebaseSession.ts` is the sole auth-decision boundary. Every Firebase repository read now first obtains its client/session context through it; `auth.authStateReady()` completes before a user-sensitive Firestore query, profile read, operation ledger read, or unauthenticated decision. Totals share one hydrated context with their expense read rather than racing `listExpenses()` against user lookup.
+2. **Replay/resource binding:** `operationIdentity.ts` validates bounded URL-safe operation IDs, canonicalizes the full request excluding only the operation ID, SHA-256 fingerprints it, and derives an expense resource ID from authenticated user ID plus operation ID. Firebase stores uid, kind, group context, fingerprint, and resource ID in the operation ledger, validates all on replay, and rejects mismatches with `OperationReplayConflictError`. Demo applies the same identity check before its ledger returns a prior result.
+3. **Checked aggregates:** `aggregates.ts` is shared by demo and Firebase totals/charts. It accumulates as `bigint`, bounds every intermediate and emitted value to JavaScript safe integers, and preserves currency partitions and established sorting behavior.
+
+### Regression RED / GREEN Evidence
+
+- **RED:** `pnpm exec vitest run src/data/__tests__/operationIdentity.spec.ts src/data/__tests__/firebaseSession.spec.ts src/data/__tests__/aggregates.spec.ts` failed before implementation: all three requested seams were unresolved (`operationIdentity`, `firebaseSession`, and `aggregates`; 3 failed files, 0 tests run).
+- **GREEN:** after the shared seams and adapter wiring, `pnpm exec vitest run src/data/__tests__/operationIdentity.spec.ts src/data/__tests__/firebaseSession.spec.ts src/data/__tests__/aggregates.spec.ts src/data/__tests__/commandQueue.spec.ts src/data/__tests__/demoRepository.spec.ts src/data/__tests__/firebaseDecoders.spec.ts` passed: 6 files, 16 tests. It covers hydrated-auth gating, exact replay vs payload/group conflicts, cross-user resource separation, unsafe operation IDs, aggregate overflow, and all previous data contracts.
+
+### Fix-Round Validation
+
+- Focused command above — passed: 6 files, 16 tests.
+- `pnpm test` — passed: 13 files, 49 tests. Existing Ionic source-map notices were emitted; no test failed.
+- `pnpm run typecheck` — passed.
+- `pnpm run build` — passed. Vite emitted the existing 1.14 MB chunk-size warning.
+- `git diff --check` — passed.
+
+### Fix-Round Files Changed
+
+- Added `src/data/firebaseSession.ts`, `operationIdentity.ts`, and `aggregates.ts`
+- Added focused tests for the three modules
+- Modified `commandQueue.ts`, `demoRepository.ts`, `firebaseRepository.ts`, and the demo repository test
+- Appended this report
+
+### Fix-Round Concerns
+
+- The replay identity and Firebase transaction record are pure/source-tested only. A Firebase emulator or authenticated project is still required to prove Firestore transaction/rule behavior under concurrent real clients.
+- SHA-256 uses the Web Crypto API supplied by supported browsers and the test runtime; environments without Web Crypto will fail command identity creation rather than silently weakening replay protection.
+- Pre-existing untracked `public/` assets and unrelated controller files remain untouched.

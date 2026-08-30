@@ -1,25 +1,28 @@
 import { computeBalances, simplifyDebts } from '../domain/balances'
 import { LAKE_HOUSE_GROUP_ID, lakeHouseActivity, lakeHouseComments, lakeHouseCurrentUser, lakeHouseExpenses, lakeHouseGroup, lakeHouseMembers, lakeHouseRecurring } from '../demo/lakeHouse'
-import type { ActivityItem, AppRepository, CommandEnvelope, CommandResult, CurrencyTotals, ExpenseAddCommand, ExpenseAddResult, ExpenseComment, ExpenseRow, GroupCharts, Member } from './repositories'
+import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
+import { assertReplayIdentity, createOperationIdentity, type OperationIdentity } from './operationIdentity'
+import type { ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseAddCommand, ExpenseAddResult, ExpenseComment, ExpenseRow, Member } from './repositories'
 
 /** A fresh deterministic in-memory repository; its operation ledger prevents duplicate same-ID effects. */
 export function createDemoRepository(): AppRepository {
   const expenses = lakeHouseExpenses.map(cloneExpense)
   const activity = lakeHouseActivity.map((item) => ({ ...item }))
   const comments = lakeHouseComments.map((comment) => ({ ...comment }))
-  const operationLedger = new Map<string, CommandResult>()
+  const operationLedger = new Map<string, { readonly identity: OperationIdentity; readonly result: CommandResult }>()
   let currentUser = { ...lakeHouseCurrentUser }
   let nextExpenseNumber = 6
 
   const groupExpenses = (groupId: string): ExpenseRow[] => { assertLakeHouseGroup(groupId); return expenses.filter((expense) => expense.groupId === groupId).sort(byDateThenId) }
   const execute = async (command: CommandEnvelope): Promise<CommandResult> => {
+    const identity = await createOperationIdentity(currentUser.id, command)
     const existing = operationLedger.get(command.operationId)
     if (existing) {
-      if (existing.kind !== command.kind) throw new Error(`Operation ID ${command.operationId} already belongs to ${existing.kind}`)
-      return clone(existing)
+      await assertReplayIdentity(existing.identity, identity)
+      return clone(existing.result)
     }
     const result = executeNew(command)
-    operationLedger.set(command.operationId, result)
+    operationLedger.set(command.operationId, { identity, result })
     return clone(result)
   }
 
@@ -82,8 +85,8 @@ export function createDemoRepository(): AppRepository {
       async getById(groupId) { return groupId === LAKE_HOUSE_GROUP_ID ? { ...lakeHouseGroup, memberIds: [...lakeHouseGroup.memberIds] } : undefined },
       async listMembers(groupId) { assertLakeHouseGroup(groupId); return lakeHouseMembers.map((member) => member.id === currentUser.id ? { ...currentUser } : { ...member }) },
       async getBalances(groupId) { return simplifyDebts(computeBalances(groupExpenses(groupId))) },
-      async getTotals(groupId): Promise<readonly CurrencyTotals[]> { return totalsFor(groupExpenses(groupId), currentUser.id) },
-      async getCharts(groupId): Promise<GroupCharts> { return chartsFor(groupExpenses(groupId)) },
+      async getTotals(groupId) { return buildCurrencyTotals(groupExpenses(groupId), currentUser.id) },
+      async getCharts(groupId) { return buildGroupCharts(groupExpenses(groupId)) },
       async listRecurring(groupId) { assertLakeHouseGroup(groupId); return lakeHouseRecurring.map((item) => ({ ...item, total: { ...item.total }, recurrence: { ...item.recurrence, anchor: { ...item.recurrence.anchor } } })) },
       setDefaultSplit: execute,
     },
@@ -101,26 +104,6 @@ export function createDemoRepository(): AppRepository {
   }
 }
 
-function totalsFor(rows: readonly ExpenseRow[], currentUserId: string): readonly CurrencyTotals[] {
-  return [...new Set(rows.map((row) => row.total.currency))].sort().map((currency) => {
-    const matching = rows.filter((row) => row.total.currency === currency)
-    const currentUserPaid = matching.filter((row) => row.payerId === currentUserId).reduce((total, row) => total + row.total.minorAmount, 0)
-    const currentUserShare = matching.reduce((total, row) => total + (row.allocations.find(({ participantId }) => participantId === currentUserId)?.money.minorAmount ?? 0), 0)
-    return { currency, totalPaid: matching.reduce((total, row) => total + row.total.minorAmount, 0), currentUserPaid, currentUserShare, currentUserNet: currentUserPaid - currentUserShare }
-  })
-}
-function chartsFor(rows: readonly ExpenseRow[]): GroupCharts {
-  return {
-    categorySpending: sumRows(rows, (row) => row.category, true).map(([currency, category, minorAmount]) => ({ currency, category, minorAmount })),
-    dailySpending: sumRows(rows, (row) => row.date, false).map(([currency, date, minorAmount]) => ({ currency, date, minorAmount })),
-  }
-}
-function sumRows(rows: readonly ExpenseRow[], key: (row: ExpenseRow) => string, sortByAmount: boolean): readonly (readonly [ExpenseRow['total']['currency'], string, number])[] {
-  const totals = new Map<string, number>()
-  rows.forEach((row) => { const id = `${row.total.currency}\u0000${key(row)}`; totals.set(id, (totals.get(id) ?? 0) + row.total.minorAmount) })
-  return [...totals].map(([id, amount]) => { const [currency, name] = id.split('\u0000'); return [currency as ExpenseRow['total']['currency'], name, amount] as const })
-    .sort(([leftCurrency, leftName, leftAmount], [rightCurrency, rightName, rightAmount]) => leftCurrency.localeCompare(rightCurrency) || (sortByAmount ? rightAmount - leftAmount : 0) || leftName.localeCompare(rightName))
-}
 function saved(command: Exclude<CommandEnvelope, ExpenseAddCommand>, resourceId: string): CommandResult {
   switch (command.kind) {
     case 'comment.add': return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId }
