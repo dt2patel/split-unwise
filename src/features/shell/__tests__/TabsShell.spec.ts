@@ -1,5 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
+import { IonFabButton } from '@ionic/vue'
 import { createAppRouter } from '../../../app/router'
 import TabsShell from '../TabsShell.vue'
 
@@ -39,5 +40,16 @@ describe('TabsShell', () => {
 
     expect(wrapper.findAll('[data-tab]').map((tab) => tab.attributes('data-tab'))).toEqual(['home', 'groups', 'activity', 'account'])
     expect(wrapper.get('[data-testid="add-expense"]').attributes('href')).toBe('/tabs/groups/expenses/new')
+  })
+
+  it('renders the real FAB as a direct IonTabs child above the active stack route', async () => {
+    const router = createAppRouter()
+    await router.push('/tabs/activity')
+    await router.isReady()
+    const wrapper = mount(TabsShell, { global: { plugins: [router] } })
+
+    expect(wrapper.get('ion-tabs > ion-fab').attributes('slot')).toBeUndefined()
+    expect(wrapper.getComponent(IonFabButton).props('routerLink')).toBe('/tabs/activity/expenses/new')
+    expect(wrapper.find('ion-tabs > ion-tab-bar').exists()).toBe(true)
   })
 })

@@ -15,6 +15,7 @@ const expenseRoute = computed(() => {
 <template>
   <ion-tabs>
     <ion-router-outlet />
+    <app-fab :to="expenseRoute" />
 
     <ion-tab-bar slot="bottom" aria-label="Primary navigation">
       <ion-tab-button tab="home" href="/tabs/home">
@@ -34,6 +35,5 @@ const expenseRoute = computed(() => {
         <ion-label>Account</ion-label>
       </ion-tab-button>
     </ion-tab-bar>
-    <app-fab :to="expenseRoute" />
   </ion-tabs>
 </template>

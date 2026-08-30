@@ -2,6 +2,9 @@
 @import '@ionic/vue/css/normalize.css';
 @import '@ionic/vue/css/structure.css';
 @import '@ionic/vue/css/typography.css';
+@import '@ionic/vue/css/palettes/dark.system.css';
+@import '@ionic/vue/css/palettes/high-contrast.system.css';
+@import '@ionic/vue/css/palettes/high-contrast-dark.system.css';
 
 :root {
   color-scheme: light dark;
@@ -9,7 +12,11 @@
   --su-indigo: #26207F;
   --su-violet: #5F43DB;
   --su-accent: #694BE8;
+  --su-surface: #FFFFFF;
+  --su-text: #1D1B2B;
   --su-lilac: #F0EAFF;
+  --su-avatar-bg: #F0EAFF;
+  --su-avatar-fg: #26207F;
   --su-divider: #E6E5EC;
   --su-owed: #18794E;
   --su-owing: #A33A2B;
@@ -17,24 +24,33 @@
   --su-motion-route: 320ms;
   --ion-color-primary: var(--su-accent);
   --ion-color-primary-rgb: 105, 75, 232;
+  --ion-background-color: var(--su-surface);
+  --ion-text-color: var(--su-text);
   --ion-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 }
 
 body {
   margin: 0;
-  background: var(--ion-background-color, #fff);
+  background: var(--su-surface);
+  color: var(--su-text);
   font-family: inherit;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root { --su-lilac: #29234B; --su-divider: #45445A; --su-owed: #68D391; --su-owing: #FC9B8D; }
+  :root { --su-surface: #17152A; --su-text: #F7F5FF; --su-lilac: #29234B; --su-avatar-bg: #30295A; --su-avatar-fg: #F0EAFF; --su-divider: #5B5872; --su-owed: #7BE0A8; --su-owing: #FFB4A9; --ion-background-color: var(--su-surface); --ion-text-color: var(--su-text); }
 }
 
-@media (prefers-contrast: more) {
-  :root { --su-divider: currentColor; --su-owed: #0C5A36; --su-owing: #8C1D12; }
+@media (prefers-contrast: more) and (prefers-color-scheme: light) {
+  :root { --su-surface: #FFFFFF; --su-text: #000000; --su-lilac: #E8E0FF; --su-avatar-bg: #E8E0FF; --su-avatar-fg: #171152; --su-divider: #000000; --su-owed: #005A32; --su-owing: #8A160D; --ion-background-color: var(--su-surface); --ion-text-color: var(--su-text); }
+}
+
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root { --su-surface: #000000; --su-text: #FFFFFF; --su-lilac: #221B4B; --su-avatar-bg: #221B4B; --su-avatar-fg: #FFFFFF; --su-divider: #FFFFFF; --su-owed: #8CFFB7; --su-owing: #FFD0C9; --ion-background-color: var(--su-surface); --ion-text-color: var(--su-text); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   :root { --su-motion-fast: 0ms; --su-motion-route: 0ms; }
   *, *::before, *::after { animation-duration: 0ms !important; scroll-behavior: auto !important; transition-duration: 0ms !important; }
 }
+
+.su-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

@@ -78,3 +78,72 @@ Tests 28 passed (28)
 - Vitest prints missing upstream Ionic sourcemap notices; all suites still pass.
 - Expense editor routes intentionally use the existing placeholder until Task 6 supplies the composer; their per-tab route shape preserves the independent tab-stack boundary now.
 - `public/assets/images/app-icon-1024.png` and `public/assets/images/lake-house-cover.png` remain untracked and untouched; they are not part of this task's commit.
+
+---
+
+## Fix Round 1/5
+
+### Finding mapping
+
+1. **Critical — FAB slot:** Removed the invalid `slot="fixed"` from the direct `ion-tabs` child. The real Ionic render test now asserts that `ion-tabs > ion-fab` has no slot and that its real `IonFabButton` receives the active-stack route. CSS fixes the FAB above the tab bar with a safe-area-aware fixed position.
+2. **Important — exact money:** Replaced decimal-string `Number()` conversion with `BigInt` minor-unit division and an `Intl.NumberFormat.formatToParts()` template. The implementation preserves the locale's sign, currency symbol, grouping, digit glyphs, and fixed ISO fraction padding. Regressions cover `Number.MAX_SAFE_INTEGER` in USD/BHD/CLF and negative USD sub-units.
+3. **Important — route motion:** Added the public Ionic `iosTransitionAnimation` builder as `navAnimation` in Ionic setup. It retains Ionic forward/back mechanics and reads `prefers-reduced-motion` at every navigation. Normal builder duration is 320ms; Ionic's public animation implementation clamps a requested 0ms duration to a one-frame `getDuration() === 1`, which is its immediate transition behavior.
+4. **Important — palette:** Imported Ionic's installed `dark.system`, `high-contrast.system`, and `high-contrast-dark.system` palettes. Brand overrides now define separate light, dark, high-contrast-light, and high-contrast-dark surface/text/divider/avatar/owed/owing tokens. The dark+high-contrast block is ordered and scoped after dark, so it cannot be replaced by light high-contrast values. Owed/owing use high-luminance green/coral on dark surfaces and dark green/red on white surfaces; avatar foreground/background and dividers use explicit high-contrast pairs.
+5. **Important — financial grid:** Replaced per-row `auto` money columns with a shared `--su-financial-track: 62px` contract and preserved right-aligned tabular columns at 390px. The persistent reflow class switches narrow viewports to a three-row layout, so long descriptions wrap and neither amount is clipped.
+6. **Important — category semantics:** Replaced the `IonButton` category tile with noninteractive 44px category content. It retains the Ionicon and exposes `Category: <name>` text to assistive technology.
+7. **Minor — MoneyAmount semantics:** Removed generic-span-only `aria-label` dependence. Visible amount/direction are hidden from duplicate speech and a visually-hidden contextual phrase provides the full debt statement.
+8. **Minor — MemberAvatar semantics:** The avatar now has `role="img"` with its member name while both the image alternative and initials avoid duplicate announcement.
+
+### Strict TDD evidence
+
+#### RED
+
+Command:
+
+```sh
+pnpm vitest run src/app/__tests__/navigation.spec.ts src/app/__tests__/theme.spec.ts src/components/__tests__/ExpenseRow.spec.ts src/features/shell/__tests__/TabsShell.spec.ts
+```
+
+Exit: `1`.
+
+Expected product failures included:
+
+```text
+Failed to resolve import "../navigation"
+expected "fixed" to be undefined
+expected '$90,071,992,547,409.90' to be '$90,071,992,547,409.91'
+expected 'BHD 9,007,199,254,740.990' to be 'BHD 9,007,199,254,740.991'
+expected '$0.01' to be '-$0.01'
+expected true to be false (interactive category button)
+expected undefined to be 'img'
+Test Files 4 failed (4)
+Tests 11 failed | 12 passed (23)
+```
+
+The first source-token test invocation used an unsupported Vite URL scheme for `readFileSync`; that test support was corrected before the recorded RED command above, without production changes.
+
+#### GREEN
+
+Command:
+
+```sh
+pnpm vitest run src/app/__tests__/navigation.spec.ts src/app/__tests__/theme.spec.ts src/components/__tests__/ExpenseRow.spec.ts src/features/shell/__tests__/TabsShell.spec.ts src/composables/__tests__/useMotion.spec.ts
+```
+
+Output:
+
+```text
+Test Files 5 passed (5)
+Tests 29 passed (29)
+```
+
+### Fix-round validation
+
+- `pnpm test` — 17 files passed, 81 tests passed.
+- `pnpm run typecheck` — passed.
+- `pnpm run build` — passed; Vite built 202 modules.
+- `git diff --check` — passed.
+
+### Remaining QA boundary
+
+The `terminal.local` browser relay is unreachable, so browser-visible FAB placement, 390px reflow, and live OS palette verification remain a later browser QA activity. The real-Ionic DOM test covers the direct-child/slot/active-route contract without a shallow slot stub. The Vite chunk-size advisory and upstream Ionic sourcemap notices remain non-blocking.

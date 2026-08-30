@@ -1,15 +1,73 @@
+<script lang="ts">
+import { currencyExponent } from '../domain/money'
+import type { Money as MoneyValue } from '../domain/model'
+
+export type DebtDirection = 'owed' | 'owing' | 'settled'
+
+export function formatMoney(money: MoneyValue, locale?: string): string {
+  const exponent = currencyExponent(money.currency)
+  const minor = BigInt(money.minorAmount)
+  const negative = minor < 0n
+  const magnitude = negative ? -minor : minor
+  const scale = 10n ** BigInt(exponent)
+  const formatter = new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency: money.currency,
+    minimumFractionDigits: exponent,
+    maximumFractionDigits: exponent,
+  })
+  const template = formatter.formatToParts(negative ? -0 : 0)
+  const integer = localizeDigits(groupInteger((magnitude / scale).toString(), locale), locale)
+  const fraction = localizeDigits((magnitude % scale).toString().padStart(exponent, '0'), locale)
+
+  return template.map((part) => {
+    if (part.type === 'integer') return integer
+    if (part.type === 'group') return ''
+    if (part.type === 'fraction') return fraction
+    if (part.type === 'decimal') return exponent === 0 ? '' : part.value
+    return part.value
+  }).join('')
+}
+
+function groupInteger(integer: string, locale?: string): string {
+  const parts = new Intl.NumberFormat(locale, { useGrouping: true, maximumFractionDigits: 0 }).formatToParts(9876543210123)
+  const chunks = parts.filter(({ type }) => type === 'integer').map(({ value }) => Array.from(value).length)
+  const separator = parts.find(({ type }) => type === 'group')?.value
+  if (!separator || chunks.length < 2) return integer
+
+  const rightSize = chunks.at(-1) as number
+  const repeatSize = chunks.at(-2) as number
+  const grouped: string[] = []
+  let remainder = integer
+  grouped.unshift(remainder.slice(-rightSize))
+  remainder = remainder.slice(0, -rightSize)
+  while (remainder.length > repeatSize) {
+    grouped.unshift(remainder.slice(-repeatSize))
+    remainder = remainder.slice(0, -repeatSize)
+  }
+  if (remainder) grouped.unshift(remainder)
+  return grouped.join(separator)
+}
+
+function localizeDigits(value: string, locale?: string): string {
+  const parts = new Intl.NumberFormat(locale, { useGrouping: false, maximumFractionDigits: 0 }).formatToParts(9876543210)
+  const localized = parts.filter(({ type }) => type === 'integer').map(({ value }) => value).join('')
+  const glyphs = Array.from(localized)
+  const digits = new Map(Array.from('9876543210').map((digit, index) => [digit, glyphs[index] ?? digit]))
+  return Array.from(value).map((character) => digits.get(character) ?? character).join('')
+}
+</script>
+
 <script setup lang="ts">
 import { computed } from 'vue'
-import { currencyExponent, fromMinorUnits } from '../domain/money'
 import type { Money } from '../domain/model'
-
-type DebtDirection = 'owed' | 'owing' | 'settled'
 
 const props = withDefaults(defineProps<{
   money: Money
   direction?: DebtDirection
   showDirection?: boolean
   label?: string
+  locale?: string
 }>(), {
   direction: 'settled',
   showDirection: true,
@@ -21,31 +79,21 @@ const directionCopy: Record<DebtDirection, string> = {
   settled: 'Settled',
 }
 
-const formatted = computed(() => formatMoney({ ...props.money, minorAmount: Math.abs(props.money.minorAmount) }))
+const formatted = computed(() => formatMoney(props.money, props.locale))
 const directionText = computed(() => props.label ?? directionCopy[props.direction])
 const accessibleLabel = computed(() => `${directionText.value} ${formatted.value}`)
 
-function formatMoney(money: Money): string {
-  const exponent = currencyExponent(money.currency)
-  const decimal = Number(fromMinorUnits(money.minorAmount, money.currency))
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: money.currency,
-    minimumFractionDigits: exponent,
-    maximumFractionDigits: exponent,
-  }).format(decimal)
-}
 </script>
 
 <template>
   <span
     class="money-amount"
     :class="`money-amount--${direction}`"
-    :aria-label="accessibleLabel"
     data-money-motion="none"
   >
-    <span class="money-amount__value">{{ formatted }}</span>
-    <span v-if="showDirection" class="money-amount__direction">{{ directionText }}</span>
+    <span class="money-amount__value" aria-hidden="true">{{ formatted }}</span>
+    <span v-if="showDirection" class="money-amount__direction" aria-hidden="true">{{ directionText }}</span>
+    <span class="su-visually-hidden money-amount__context">{{ accessibleLabel }}</span>
   </span>
 </template>
 
