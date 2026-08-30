@@ -6,8 +6,35 @@
 :root {
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --su-indigo: #26207F;
+  --su-violet: #5F43DB;
+  --su-accent: #694BE8;
+  --su-lilac: #F0EAFF;
+  --su-divider: #E6E5EC;
+  --su-owed: #18794E;
+  --su-owing: #A33A2B;
+  --su-motion-fast: 180ms;
+  --su-motion-route: 320ms;
+  --ion-color-primary: var(--su-accent);
+  --ion-color-primary-rgb: 105, 75, 232;
+  --ion-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 }
 
 body {
   margin: 0;
+  background: var(--ion-background-color, #fff);
+  font-family: inherit;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root { --su-lilac: #29234B; --su-divider: #45445A; --su-owed: #68D391; --su-owing: #FC9B8D; }
+}
+
+@media (prefers-contrast: more) {
+  :root { --su-divider: currentColor; --su-owed: #0C5A36; --su-owing: #8C1D12; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --su-motion-fast: 0ms; --su-motion-route: 0ms; }
+  *, *::before, *::after { animation-duration: 0ms !important; scroll-behavior: auto !important; transition-duration: 0ms !important; }
 }

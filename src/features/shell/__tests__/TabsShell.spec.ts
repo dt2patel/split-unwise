@@ -1,5 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
+import { createAppRouter } from '../../../app/router'
 import TabsShell from '../TabsShell.vue'
 
 const ionicStubs = {
@@ -11,6 +12,8 @@ const ionicStubs = {
     template: '<a :data-tab="tab" :href="href"><slot /></a>',
   },
   IonLabel: { template: '<span><slot /></span>' },
+  IonIcon: { template: '<span aria-hidden="true" />' },
+  AppFab: { props: ['to'], template: '<a data-testid="add-expense" :href="to">Add expense</a>' },
 }
 
 describe('TabsShell', () => {
@@ -26,5 +29,15 @@ describe('TabsShell', () => {
     expect(wrapper.find('[data-testid="tab-outlet"]').exists()).toBe(true)
     expect(wrapper.get(`[data-tab="${tab}"]`).attributes('href')).toBe(href)
     expect(wrapper.get(`[data-tab="${tab}"]`).text()).toBe(label)
+  })
+
+  it('keeps Add Expense outside the four-tab bar as a current-stack action', async () => {
+    const router = createAppRouter()
+    await router.push('/tabs/groups')
+    await router.isReady()
+    const wrapper = mount(TabsShell, { global: { plugins: [router], stubs: ionicStubs } })
+
+    expect(wrapper.findAll('[data-tab]').map((tab) => tab.attributes('data-tab'))).toEqual(['home', 'groups', 'activity', 'account'])
+    expect(wrapper.get('[data-testid="add-expense"]').attributes('href')).toBe('/tabs/groups/expenses/new')
   })
 })
