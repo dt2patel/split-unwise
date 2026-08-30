@@ -28,10 +28,13 @@ export async function createOperationIdentity(userId: string, command: CommandEn
 }
 
 export async function assertReplayIdentity(stored: OperationIdentity, requested: OperationIdentity): Promise<void> {
-  if (stored.userId !== requested.userId || stored.operationId !== requested.operationId || stored.kind !== requested.kind || stored.groupId !== requested.groupId || stored.requestFingerprint !== requested.requestFingerprint) {
+  if (stored.userId !== requested.userId || stored.operationId !== requested.operationId || stored.kind !== requested.kind || stored.groupId !== requested.groupId || stored.requestFingerprint !== requested.requestFingerprint || stored.resourceId !== requested.resourceId) {
     throw new OperationReplayConflictError()
   }
 }
+
+/** Synchronous canonical fingerprint for queue-local envelope comparisons. */
+export function canonicalEnvelopeFingerprint(command: CommandEnvelope): string { return stableJson(command) }
 
 export function assertOperationId(operationId: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(operationId)) throw new Error('operationId must be 1-128 URL-safe characters')

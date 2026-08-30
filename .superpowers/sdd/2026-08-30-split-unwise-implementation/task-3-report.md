@@ -128,3 +128,34 @@ Firebase configuration now trims values, rejects whitespace-only variables, and 
 - The replay identity and Firebase transaction record are pure/source-tested only. A Firebase emulator or authenticated project is still required to prove Firestore transaction/rule behavior under concurrent real clients.
 - SHA-256 uses the Web Crypto API supplied by supported browsers and the test runtime; environments without Web Crypto will fail command identity creation rather than silently weakening replay protection.
 - Pre-existing untracked `public/` assets and unrelated controller files remain untouched.
+
+---
+
+## Fix Round 3 / 5: Queue Envelope Conflicts And Ledger Resource Binding
+
+### Review-Finding Mapping
+
+1. **Queue envelope replay:** `CommandQueue.submit()` now compares the complete stable canonical envelope fingerprint when an operation ID is already known. Any payload, group, or kind change atomically persists a `conflicted` operation/handle without invoking another handler. Completion/error handling also verifies that a superseded pending operation cannot overwrite that conflict. `OperationReplayConflictError` from a registered handler is mapped to the same non-retryable conflicted state; only genuine failures can retry.
+2. **Ledger resource binding:** replay identity assertion now includes `resourceId`. Firebase validates the stored identity, including deterministic uid-plus-operation resource ID, before decoding/returning a ledgered expense. A corrupt resource ID is therefore a replay conflict rather than a new-command-context decode.
+
+### Regression RED / GREEN Evidence
+
+- **RED:** `pnpm exec vitest run src/data/__tests__/commandQueue.spec.ts src/data/__tests__/operationIdentity.spec.ts` ran 10 tests with 3 expected failures: changed payload replay resolved the old result, a handler `OperationReplayConflictError` was not a `CommandConflictError`, and a corrupt `resourceId` passed identity assertion.
+- **GREEN:** after canonical queue comparison, conflict mapping, stale-completion protection, and resource-ID assertion were added, `pnpm exec vitest run src/data/__tests__/commandQueue.spec.ts src/data/__tests__/operationIdentity.spec.ts src/data/__tests__/firebaseSession.spec.ts src/data/__tests__/aggregates.spec.ts src/data/__tests__/demoRepository.spec.ts src/data/__tests__/firebaseDecoders.spec.ts` passed: 6 files, 19 tests.
+
+### Fix-Round Validation
+
+- Focused command above — passed: 6 files, 19 tests.
+- `pnpm test` — passed: 13 files, 52 tests. Existing Ionic source-map notices were emitted; no test failed.
+- `pnpm run typecheck` — passed.
+- `pnpm run build` — passed. Vite emitted the existing 1.14 MB chunk-size warning.
+- `git diff --check` — passed.
+
+### Fix-Round Files Changed
+
+- Modified `src/data/commandQueue.ts`, `operationIdentity.ts`, and their focused tests
+- Appended this report
+
+### Fix-Round Concern
+
+- The transaction call path is source/pure-test verified but still needs an emulator-authenticated concurrency test in its dedicated Firebase work to establish backend rule behavior. Public assets and controller files remain untouched.

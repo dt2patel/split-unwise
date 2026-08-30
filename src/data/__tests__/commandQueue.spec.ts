@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CommandConflictError, CommandQueue, createMemoryCommandStorage } from '../commandQueue'
+import { OperationReplayConflictError } from '../operationIdentity'
 import type { ExpenseAddCommand, ExpenseAddResult } from '../repositories'
 
 const addExpense = (operationId: string): ExpenseAddCommand => ({
@@ -132,5 +133,40 @@ describe('CommandQueue', () => {
 
     expect(calls).toBe(1)
     expect(storage.load()).toEqual([expect.objectContaining({ status: 'fresh', envelope: expect.objectContaining({ operationId: 'reload-safe' }) })])
+  })
+
+  it('conflicts changed payload, group, or kind for an existing operation ID without running a second handler', async () => {
+    let calls = 0
+    const queue = new CommandQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.add': async (command) => { calls += 1; return savedExpense(command.operationId) } },
+    })
+    await queue.submit(addExpense('replay-identity')).result()
+
+    await expect(queue.submit({ ...addExpense('replay-identity'), description: 'Changed payload' }).result()).rejects.toBeInstanceOf(CommandConflictError)
+    expect(queue.get('replay-identity')).toMatchObject({ status: 'conflicted' })
+    expect(calls).toBe(1)
+    await expect(queue.retry('replay-identity').result()).rejects.toThrow('Only failed operations can be retried')
+
+    const groupQueue = new CommandQueue({ storage: createMemoryCommandStorage(), handlers: { 'expense.add': async (command) => savedExpense(command.operationId) } })
+    await groupQueue.submit(addExpense('replay-group')).result()
+    await expect(groupQueue.submit({ ...addExpense('replay-group'), groupId: 'other-group' }).result()).rejects.toBeInstanceOf(CommandConflictError)
+
+    const kindQueue = new CommandQueue({ storage: createMemoryCommandStorage(), handlers: { 'expense.add': async (command) => savedExpense(command.operationId) } })
+    await kindQueue.submit(addExpense('replay-kind')).result()
+    await expect(kindQueue.submit({ kind: 'comment.add', operationId: 'replay-kind', groupId: 'lake-house-weekend', expenseId: 'groceries', body: 'Different kind' }).result()).rejects.toBeInstanceOf(CommandConflictError)
+  })
+
+  it('maps a handler replay conflict to conflicted rather than retryable failed', async () => {
+    let calls = 0
+    const queue = new CommandQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.add': async () => { calls += 1; throw new OperationReplayConflictError() } },
+    })
+
+    await expect(queue.submit(addExpense('handler-replay-conflict')).result()).rejects.toBeInstanceOf(CommandConflictError)
+    expect(queue.get('handler-replay-conflict')).toMatchObject({ status: 'conflicted' })
+    expect(calls).toBe(1)
+    await expect(queue.retry('handler-replay-conflict').result()).rejects.toThrow('Only failed operations can be retried')
   })
 })

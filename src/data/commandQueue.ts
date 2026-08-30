@@ -1,5 +1,5 @@
 import type { CommandEnvelope, CommandKind, CommandResult, SyncState } from './repositories'
-import { assertOperationId } from './operationIdentity'
+import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
 
 export interface CommandFailure { readonly message: string; readonly conflict?: unknown }
 export class CommandConflictError extends Error {
@@ -35,7 +35,10 @@ export class CommandQueue {
     assertOperationId(command.operationId)
     const existing = this.operations.get(command.operationId)
     if (existing) {
-      if (existing.envelope.kind !== command.kind) throw new Error(`Operation ID ${command.operationId} already belongs to ${existing.envelope.kind}`)
+      if (canonicalEnvelopeFingerprint(existing.envelope) !== canonicalEnvelopeFingerprint(command)) {
+        const error = new OperationReplayConflictError()
+        this.replace({ status: 'conflicted', envelope: existing.envelope, error: toFailure(error), conflict: { existingFingerprint: canonicalEnvelopeFingerprint(existing.envelope), requestedFingerprint: canonicalEnvelopeFingerprint(command) } })
+      }
       return this.handle(command.operationId)
     }
     this.replace({ status: 'pending', envelope: clone(command) })
@@ -88,11 +91,17 @@ export class CommandQueue {
       .then(() => handler(operation.envelope))
       .then((result) => {
         if (result.operationId !== operationId || result.kind !== operation.envelope.kind) throw new Error('Command handler returned a mismatched result')
-        this.replace({ status: 'fresh', envelope: operation.envelope, result: clone(result) })
+        const current = this.operations.get(operationId)
+        if (current?.status === 'pending' && canonicalEnvelopeFingerprint(current.envelope) === canonicalEnvelopeFingerprint(operation.envelope)) {
+          this.replace({ status: 'fresh', envelope: operation.envelope, result: clone(result) })
+        }
       })
       .catch((error: unknown) => {
+        const current = this.operations.get(operationId)
+        if (current?.status !== 'pending' || canonicalEnvelopeFingerprint(current.envelope) !== canonicalEnvelopeFingerprint(operation.envelope)) return
         const failure = toFailure(error)
         if (error instanceof CommandConflictError) this.replace({ status: 'conflicted', envelope: operation.envelope, error: failure, conflict: error.conflict })
+        else if (error instanceof OperationReplayConflictError) this.replace({ status: 'conflicted', envelope: operation.envelope, error: failure, conflict: { reason: 'replay-identity' } })
         else this.replace({ status: 'failed', envelope: operation.envelope, error: failure })
       })
       .finally(() => { this.running.delete(operationId) })

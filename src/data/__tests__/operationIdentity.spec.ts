@@ -24,4 +24,9 @@ describe('operation identity', () => {
     expect(maya.resourceId).not.toBe(jordan.resourceId)
     await expect(createOperationIdentity('maya-p', command({ operationId: '../unsafe' }))).rejects.toThrow('operationId')
   })
+
+  it('rejects a corrupt replay whose resource ID no longer binds uid and operation ID', async () => {
+    const identity = await createOperationIdentity('maya-p', command())
+    await expect(assertReplayIdentity({ ...identity, resourceId: 'operation-corrupt' }, identity)).rejects.toBeInstanceOf(OperationReplayConflictError)
+  })
 })
