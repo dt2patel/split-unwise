@@ -147,3 +147,64 @@ Tests 29 passed (29)
 ### Remaining QA boundary
 
 The `terminal.local` browser relay is unreachable, so browser-visible FAB placement, 390px reflow, and live OS palette verification remain a later browser QA activity. The real-Ionic DOM test covers the direct-child/slot/active-route contract without a shallow slot stub. The Vite chunk-size advisory and upstream Ionic sourcemap notices remain non-blocking.
+
+---
+
+## Fix Round 2/5
+
+### Finding mapping
+
+1. **Exact locale grouping:** `MoneyAmount` now gives the native `Intl.NumberFormat` formatter a `BigInt` whole-unit value, then inserts the exact minor-unit fraction into the formatter's signed/currency-ordered part template. No grouping size or threshold is inferred. The `es-ES` EUR `1000.00` regression matches native output without a thousands separator, while the prior en-US maximum-safe and negative sub-unit regressions remain covered.
+2. **Dynamic Type at 390:** Added the SSR-safe `useExpenseRowLayout` seam. A `ResizeObserver` schedules a post-layout measurement; only actual `scrollWidth > clientWidth` applies `expense-row--reflow`. At a measured 390px default row the two fixed 62px financial tracks stay in place; simulated same-width overflow switches to multi-row layout and cleanup disconnects the observer.
+3. **Complete palette and contrast:** Each light, dark, high-contrast-light, and high-contrast-dark block now declares the full Ionic primary tuple: primary, RGB, contrast, contrast RGB, shade, and tint. Category foreground is mode-specific. Pure WCAG contrast tests cover body text, primary foreground, divider, avatar, owed, and owing against their corresponding surfaces in all four modes at >=4.5:1.
+4. **FAB safe area:** Removed custom `position`, `right`, and `bottom` declarations. The direct `IonFab` now relies solely on its public `vertical="bottom"` and `horizontal="end"` placement inside `ion-tabs`; only button presentation/press styling remains.
+
+### Strict TDD evidence
+
+#### RED
+
+Command:
+
+```sh
+pnpm vitest run src/composables/__tests__/useExpenseRowLayout.spec.ts src/components/__tests__/ExpenseRow.spec.ts src/app/__tests__/theme.spec.ts
+```
+
+Exit: `1`.
+
+Observed expected failures:
+
+```text
+Failed to resolve import "../useExpenseRowLayout"
+expected '1.000,00 €' to be '1000,00 €'
+expected ExpenseRow source to contain 'useExpenseRowLayout'
+expected AppFab source not to contain 'position: fixed'
+expected 1 to be greater than or equal to 4 (Ionic primary tuple)
+Test Files 3 failed (3)
+Tests 4 failed | 39 passed (43)
+```
+
+#### GREEN
+
+Command:
+
+```sh
+pnpm vitest run src/composables/__tests__/useExpenseRowLayout.spec.ts src/components/__tests__/ExpenseRow.spec.ts src/app/__tests__/theme.spec.ts
+```
+
+Output:
+
+```text
+Test Files 3 passed (3)
+Tests 44 passed (44)
+```
+
+### Fix-round validation
+
+- `pnpm test` — 18 files passed, 108 tests passed.
+- `pnpm run typecheck` — passed.
+- `pnpm run build` — passed; Vite built 202 modules.
+- `git diff --check` — passed.
+
+### Remaining QA boundary
+
+The browser relay remains unavailable. The measured-overflow and real-Ionic public-prop tests cover the terminal-verifiable behavior; final browser visual confirmation of 390px Dynamic Type and Ionic safe-area placement remains later QA. The Vite chunk-size advisory and upstream Ionic sourcemap notices are non-blocking.

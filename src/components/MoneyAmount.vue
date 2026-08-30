@@ -17,36 +17,21 @@ export function formatMoney(money: MoneyValue, locale?: string): string {
     maximumFractionDigits: exponent,
   })
   const template = formatter.formatToParts(negative ? -0 : 0)
-  const integer = localizeDigits(groupInteger((magnitude / scale).toString(), locale), locale)
+  const nativeWholeParts = formatter.formatToParts(magnitude / scale).filter(({ type }) => type === 'group' || type === 'integer')
   const fraction = localizeDigits((magnitude % scale).toString().padStart(exponent, '0'), locale)
+  let injectedWhole = false
 
   return template.map((part) => {
-    if (part.type === 'integer') return integer
+    if (part.type === 'integer') {
+      if (injectedWhole) return ''
+      injectedWhole = true
+      return nativeWholeParts.map(({ value }) => value).join('')
+    }
     if (part.type === 'group') return ''
     if (part.type === 'fraction') return fraction
     if (part.type === 'decimal') return exponent === 0 ? '' : part.value
     return part.value
   }).join('')
-}
-
-function groupInteger(integer: string, locale?: string): string {
-  const parts = new Intl.NumberFormat(locale, { useGrouping: true, maximumFractionDigits: 0 }).formatToParts(9876543210123)
-  const chunks = parts.filter(({ type }) => type === 'integer').map(({ value }) => Array.from(value).length)
-  const separator = parts.find(({ type }) => type === 'group')?.value
-  if (!separator || chunks.length < 2) return integer
-
-  const rightSize = chunks.at(-1) as number
-  const repeatSize = chunks.at(-2) as number
-  const grouped: string[] = []
-  let remainder = integer
-  grouped.unshift(remainder.slice(-rightSize))
-  remainder = remainder.slice(0, -rightSize)
-  while (remainder.length > repeatSize) {
-    grouped.unshift(remainder.slice(-repeatSize))
-    remainder = remainder.slice(0, -repeatSize)
-  }
-  if (remainder) grouped.unshift(remainder)
-  return grouped.join(separator)
 }
 
 function localizeDigits(value: string, locale?: string): string {

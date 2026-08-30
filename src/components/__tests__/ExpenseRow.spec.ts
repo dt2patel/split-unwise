@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { IonFabButton } from '@ionic/vue'
+import { IonFab, IonFabButton } from '@ionic/vue'
 import AppFab from '../AppFab.vue'
 import ExpenseRow from '../ExpenseRow.vue'
 import MemberAvatar from '../MemberAvatar.vue'
@@ -63,6 +63,14 @@ describe('MoneyAmount', () => {
 
     expect(wrapper.get('.money-amount__value').text()).toBe(expected)
   })
+
+  it('matches the native Spanish grouping threshold for an exact EUR amount', () => {
+    const wrapper = mount(MoneyAmount, { props: { money: { currency: 'EUR', minorAmount: 100000 }, locale: 'es-ES' } })
+    const native = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(1000)
+
+    expect(wrapper.get('.money-amount__value').text()).toBe(native)
+    expect(wrapper.get('.money-amount__value').text()).not.toContain('.')
+  })
 })
 
 describe('ExpenseRow', () => {
@@ -88,6 +96,8 @@ describe('ExpenseRow', () => {
     expect(expenseRowSource).toContain('var(--su-financial-track) var(--su-financial-track)')
     expect(expenseRowSource).toContain('.expense-row--reflow')
     expect(expenseRowSource).not.toContain('minmax(4.8rem, auto)')
+    expect(expenseRowSource).toContain('useExpenseRowLayout')
+    expect(expenseRowSource).toContain("'expense-row--reflow': isReflow")
   })
 })
 
@@ -124,7 +134,13 @@ describe('AppFab', () => {
     const wrapper = mount(AppFab, { props: { to: '/tabs/home/expenses/new' } })
 
     expect(wrapper.get('ion-fab').attributes('slot')).toBeUndefined()
+    expect(wrapper.getComponent(IonFab).props('vertical')).toBe('bottom')
+    expect(wrapper.getComponent(IonFab).props('horizontal')).toBe('end')
     expect(wrapper.getComponent(IonFabButton).props('routerLink')).toBe('/tabs/home/expenses/new')
     expect(wrapper.get('ion-fab-button').attributes('aria-label')).toBe('Add expense')
+    const source = readFileSync(resolve(process.cwd(), 'src/components/AppFab.vue'), 'utf8')
+    expect(source).not.toContain('position: fixed')
+    expect(source).not.toContain('right:')
+    expect(source).not.toContain('bottom:')
   })
 })
