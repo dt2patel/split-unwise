@@ -77,6 +77,33 @@ describe('settlement store authority and races', () => {
     expect(store.pendingSettlements).toEqual([])
   })
 
+  it('retains a saved operation until authoritative reads reach its balance revision', async () => {
+    const base = createDemoRepository()
+    const staleSnapshot = await base.groups.getBalanceSnapshot(groupId)
+    const repository: AppRepository = {
+      ...base,
+      groups: {
+        ...base.groups,
+        getBalanceSnapshot: async (id) => {
+          if (id !== groupId) return base.groups.getBalanceSnapshot(id)
+          return structuredClone(staleSnapshot)
+        },
+      },
+    }
+    const session = createAppSession({ repository, principal, commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    const store = useSettlementStore()
+    await store.loadGroup(groupId)
+
+    const saved = await store.recordPayment(recordCommand('store-stale-read', staleSnapshot.balanceRevision, 500))
+
+    expect(saved).toBe(false)
+    expect(store.balanceSnapshot?.balanceRevision).toBe(staleSnapshot.balanceRevision)
+    expect(store.settlements).toEqual([])
+    expect(session.queue.get('store-stale-read')).toMatchObject({ status: 'fresh' })
+    expect(store.pendingSettlements).toContainEqual(expect.objectContaining({ operationId: 'store-stale-read', status: 'fresh' }))
+  })
+
   it('retains stale-revision conflicts and disables writes when exact revisions are unknown', async () => {
     const repository = createDemoRepository()
     setAppSessionForTesting(createAppSession({ repository, principal, commandStorage: createMemoryCommandStorage() }))

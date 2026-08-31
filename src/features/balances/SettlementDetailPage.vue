@@ -13,13 +13,14 @@ import {
   IonToolbar,
 } from '@ionic/vue'
 import { formatMoney } from '../../components/MoneyAmount.vue'
+import { createClientOperationId } from '../../data/clientOperationId'
 import { isStrictId } from '../../data/identifiers'
 import { useMotion } from '../../composables/useMotion'
 import { useSettlementStore } from './settlementStore'
 
 const route = useRoute()
 const store = useSettlementStore()
-const { balanceSnapshot, group, isLoading, memberNames, settlements } = storeToRefs(store)
+const { balanceSnapshot, group, isLoading, memberNames, pendingSettlements, settlements } = storeToRefs(store)
 const { className: motionClass } = useMotion()
 const pageError = ref('')
 const showVoidForm = ref(false)
@@ -28,12 +29,14 @@ const voidError = ref('')
 const isVoiding = ref(false)
 const voidReasonInput = ref<HTMLTextAreaElement>()
 let loadNumber = 0
-let voidOperationNumber = 0
 
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
 const settlementId = computed(() => typeof route.params.settlementId === 'string' && isStrictId(route.params.settlementId) ? route.params.settlementId : '')
 const settlement = computed(() => settlements.value.find((record) => record.settlementId === settlementId.value))
 const canVoid = computed(() => Boolean(settlement.value && store.canVoid(settlement.value)))
+const voidOperations = computed(() => pendingSettlements.value.filter((operation) => operation.kind === 'void'
+  && operation.settlementId === settlementId.value
+  && (operation.status === 'pending' || operation.status === 'failed' || operation.status === 'conflicted')))
 
 watch(() => route.fullPath, () => { void load() }, { immediate: true })
 
@@ -96,7 +99,7 @@ async function voidSettlement(): Promise<void> {
   isVoiding.value = true
   const saved = await store.voidSettlement({
     kind: 'settlement.void',
-    operationId: `settlement-void-ui-${++voidOperationNumber}`,
+    operationId: createClientOperationId('settlement-void'),
     groupId: groupId.value,
     settlementId: record.settlementId,
     expectedRevision: record.revision,
@@ -110,6 +113,28 @@ async function voidSettlement(): Promise<void> {
   }
   showVoidForm.value = false
   voidReason.value = ''
+}
+
+function operationStatus(status: string): string {
+  if (status === 'failed') return 'Failed'
+  if (status === 'conflicted') return 'Conflict'
+  return 'Pending'
+}
+
+async function retryOperation(operationId: string): Promise<void> {
+  await store.retryOperation(operationId)
+}
+
+async function discardOperation(operationId: string): Promise<void> {
+  await store.discardOperation(operationId)
+}
+
+async function reloadOperation(): Promise<void> {
+  await load()
+}
+
+async function dismissOperation(operationId: string): Promise<void> {
+  await store.dismissOperation(operationId)
 }
 </script>
 
@@ -164,6 +189,22 @@ async function voidSettlement(): Promise<void> {
             <p>Voiding this ledger record does not cancel or refund money sent outside Split Unwise.</p>
           </section>
 
+          <section v-if="voidOperations.length" class="settlement-operations" aria-labelledby="void-updates-heading">
+            <h2 id="void-updates-heading">Void updates</h2>
+            <article v-for="operation in voidOperations" :key="operation.operationId" :data-operation-id="operation.operationId" :data-status="operation.status">
+              <div><strong>{{ operationStatus(operation.status) }}</strong><small>{{ operation.error ?? 'Saving this void request.' }}</small></div>
+              <div v-if="operation.status === 'failed'" class="settlement-operations__actions">
+                <button type="button" data-action="retry-operation" :disabled="!operation.retryable" @click="retryOperation(operation.operationId)">Retry</button>
+                <button type="button" data-action="discard-operation" @click="discardOperation(operation.operationId)">Discard</button>
+              </div>
+              <div v-else-if="operation.status === 'conflicted'" class="settlement-operations__actions">
+                <button type="button" data-action="reload-operation" @click="reloadOperation">Reload</button>
+                <button type="button" data-action="dismiss-operation" @click="dismissOperation(operation.operationId)">Dismiss</button>
+              </div>
+              <button v-else type="button" data-action="reload-operation" @click="reloadOperation">Reload</button>
+            </article>
+          </section>
+
           <ion-button v-if="!settlement.void && canVoid && !showVoidForm" fill="outline" expand="block" color="danger" data-action="show-void-form" @click="openVoidForm">
             Void payment record
           </ion-button>
@@ -200,8 +241,8 @@ async function voidSettlement(): Promise<void> {
 .payment-hero--voided { background: color-mix(in srgb, var(--su-divider) 20%, var(--su-surface)); }
 .payment-hero--voided .payment-hero__icon { background: color-mix(in srgb, var(--ion-color-danger) 12%, var(--su-surface)); color: var(--ion-color-danger); }
 .payment-hero__voided { margin-top: 10px; padding: 4px 10px; border-radius: 999px; background: color-mix(in srgb, var(--ion-color-danger) 12%, var(--su-surface)); color: var(--ion-color-danger); font-size: .7rem; font-weight: 750; text-transform: uppercase; }
-.audit-card, .voided-card, .outside-notice, .void-form { margin-top: 14px; padding: 15px; border: 1px solid color-mix(in srgb, var(--su-divider) 42%, transparent); border-radius: 16px; }
-.audit-card h2, .voided-card h2, .void-form h2 { margin: 0 0 10px; font-size: .92rem; }
+.audit-card, .voided-card, .outside-notice, .void-form, .settlement-operations { margin-top: 14px; padding: 15px; border: 1px solid color-mix(in srgb, var(--su-divider) 42%, transparent); border-radius: 16px; }
+.audit-card h2, .voided-card h2, .void-form h2, .settlement-operations h2 { margin: 0 0 10px; font-size: .92rem; }
 .audit-card dl { margin: 0; }
 .audit-card dl > div { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; }
 .audit-card dl > div + div { border-top: 1px solid color-mix(in srgb, var(--su-divider) 32%, transparent); }
@@ -213,6 +254,13 @@ async function voidSettlement(): Promise<void> {
 .outside-notice { background: color-mix(in srgb, var(--su-lilac) 28%, var(--su-surface)); }
 .outside-notice strong { font-size: .8rem; }
 .outside-notice p { margin: 4px 0 0; color: var(--ion-color-medium); font-size: .75rem; line-height: 1.4; }
+.settlement-operations article { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 10px; }
+.settlement-operations article + article { border-top: 1px solid color-mix(in srgb, var(--su-divider) 32%, transparent); }
+.settlement-operations strong, .settlement-operations small { display: block; }
+.settlement-operations strong { font-size: .8rem; }
+.settlement-operations small { margin-top: 2px; color: var(--ion-color-medium); font-size: .7rem; }
+.settlement-operations__actions { display: flex; gap: 6px; }
+.settlement-operations button { min-width: 62px; min-height: 44px; border: 0; border-radius: 10px; background: var(--su-lilac); color: var(--ion-color-primary); font-weight: 700; }
 .settlement-detail__main > ion-button { min-height: 46px; margin-top: 16px; --border-radius: 13px; text-transform: none; }
 .void-form label { display: grid; gap: 6px; color: var(--ion-color-medium); font-size: .75rem; font-weight: 650; }
 .void-form textarea { min-height: 76px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--su-divider) 70%, transparent); border-radius: 12px; outline: none; background: var(--su-surface); color: var(--ion-text-color); font: inherit; font-size: 16px; resize: vertical; }

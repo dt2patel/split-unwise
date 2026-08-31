@@ -62,6 +62,8 @@ export function decodeSettlement(groupId: string, id: string, value: unknown): S
   const revision = positiveInteger(data.revision, `settlement ${id}.revision`)
   const voided = data.void === undefined ? undefined : settlementVoid(data.void, `settlement ${id}.void`)
   if ((revision === 1) !== (voided === undefined) || (voided && voided.revision !== revision)) throw new DocumentDecodeError(`settlement ${id}`, 'void revision must match the settlement revision')
+  const createdBy = actorSnapshot(data.createdBy, `settlement ${id}.createdBy`)
+  if (createdBy.id !== senderId && createdBy.id !== recipientId) throw new DocumentDecodeError(`settlement ${id}`, 'creator must be the sender or recipient')
   return {
     settlementId: id,
     groupId,
@@ -73,7 +75,7 @@ export function decodeSettlement(groupId: string, id: string, value: unknown): S
     method: settlementMethod(data.method, `settlement ${id}.method`),
     occurredOn: isoDate(data.occurredOn, `settlement ${id}.occurredOn`),
     ...(data.note === undefined ? {} : { note: normalizedSettlementText(data.note, `settlement ${id}.note`, false) }),
-    createdBy: actorSnapshot(data.createdBy, `settlement ${id}.createdBy`),
+    createdBy,
     createdAt: isoTimestamp(data.createdAt, `settlement ${id}.createdAt`),
     revision,
     syncState: 'fresh',

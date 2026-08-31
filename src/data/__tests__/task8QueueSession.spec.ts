@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CommandQueue, COMMAND_QUEUE_STORAGE_VERSION, createMemoryCommandStorage } from '../commandQueue'
+import { CommandConflictError, CommandQueue, COMMAND_QUEUE_STORAGE_VERSION, createBrowserCommandStorage, createMemoryCommandStorage } from '../commandQueue'
 import { createDemoRepository } from '../demoRepository'
 import { createFirebaseRepository } from '../firebaseRepository'
 import type { CommandEnvelope, SettlementRecordCommand } from '../repositories'
@@ -31,6 +31,36 @@ describe('Task 8 strict command protocol', () => {
     expect(quarantined).toEqual([legacy])
   })
 
+  it('discovers the real principal-scoped v5 browser key and quarantines it without execution', async () => {
+    const browser = createWebStorage()
+    const legacy = {
+      version: 5,
+      principalKey,
+      operations: [{
+        originPrincipalKey: principalKey,
+        submittedAt: '2026-08-31T20:00:00.000Z',
+        status: 'pending',
+        envelope: recordCommand('browser-v5-settlement', 5, 500),
+      }],
+    }
+    const legacyKey = `split-unwise:command-queue:v5:${encodeURIComponent(principalKey)}`
+    const quarantineKey = `split-unwise:command-queue:quarantine:v6:${encodeURIComponent(principalKey)}`
+    browser.setItem(legacyKey, JSON.stringify(legacy))
+    let calls = 0
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createBrowserCommandStorage({ storage: browser }),
+      handlers: { 'settlement.record': async () => { calls += 1; throw new Error('must not run') } },
+    })
+
+    await queue.resume()
+
+    expect(calls).toBe(0)
+    expect(queue.snapshot()).toEqual([])
+    expect(browser.getItem(legacyKey)).toBeNull()
+    expect(JSON.parse(browser.getItem(quarantineKey) ?? 'null')).toMatchObject({ version: 6, principalKey, records: [legacy] })
+  })
+
   it('quarantines an amount-only legacy settlement instead of executing it', async () => {
     let calls = 0
     const legacyOperation = {
@@ -58,6 +88,36 @@ describe('Task 8 strict command protocol', () => {
 
     expect(queue.snapshot()).toEqual([])
     expect(quarantined).toEqual([legacyOperation])
+    expect(calls).toBe(0)
+  })
+
+  it.each([
+    ['unconfirmed payment', { outsidePaymentConfirmed: false }],
+    ['amount above selected debt', { money: { currency: 'USD', minorAmount: 3626 } }],
+  ])('quarantines persisted v6 settlement record with %s before its handler runs', async (_label, override) => {
+    const envelope = { ...recordCommand(`invalid-${_label.replaceAll(' ', '-')}`, 5, 500), ...override }
+    const operation = {
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'pending',
+      envelope,
+    }
+    const quarantined: unknown[] = []
+    let calls = 0
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      handlers: { 'settlement.record': async () => { calls += 1; throw new Error('must not run') } },
+      storage: {
+        load: () => ({ version: 6, principalKey, operations: [operation] }),
+        save: async () => undefined,
+        quarantine: async (_scope, records) => { quarantined.push(...records) },
+      },
+    })
+
+    await queue.resume()
+
+    expect(queue.snapshot()).toEqual([])
+    expect(quarantined).toEqual([operation])
     expect(calls).toBe(0)
   })
 
@@ -133,6 +193,84 @@ describe('Task 8 strict command protocol', () => {
 
     await expect(queue.submit(envelope).result()).rejects.toMatchObject({ code: 'validation' })
     expect(queue.get(envelope.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation', retryable: false } })
+  })
+
+  it('scrubs a settlement-record conflict whose balance snapshot crosses groups', async () => {
+    const repository = createDemoRepository()
+    const snapshot = await repository.groups.getBalanceSnapshot('lake-house-weekend')
+    const envelope = recordCommand('cross-group-record-conflict', snapshot.balanceRevision, 500)
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'settlement.record': async () => {
+          throw new CommandConflictError('remote changed', { balanceSnapshot: { ...snapshot, groupId: 'another-group' } })
+        },
+      },
+    })
+
+    await expect(queue.submit(envelope).result()).rejects.toMatchObject({ conflict: { reason: 'invalid-conflict' } })
+    expect(queue.get(envelope.operationId)).toMatchObject({ status: 'conflicted', conflict: { reason: 'invalid-conflict' } })
+  })
+
+  it('scrubs a settlement-void conflict whose remote settlement identity does not match the command', async () => {
+    const repository = createDemoRepository()
+    const before = await repository.groups.getBalanceSnapshot('lake-house-weekend')
+    const recorded = await repository.settlements.record(recordCommand('record-for-invalid-void-conflict', before.balanceRevision, 500))
+    if (recorded.status !== 'saved') throw new Error('Expected settlement')
+    const envelope = {
+      kind: 'settlement.void' as const,
+      operationId: 'mismatched-void-conflict',
+      groupId: 'lake-house-weekend',
+      settlementId: recorded.settlement.settlementId,
+      expectedRevision: recorded.settlement.revision,
+      expectedBalanceRevision: recorded.balanceSnapshot.balanceRevision,
+      reason: 'Duplicate record',
+    }
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'settlement.void': async () => {
+          throw new CommandConflictError('remote changed', {
+            remote: { ...recorded.settlement, settlementId: 'another-settlement' },
+            balanceSnapshot: recorded.balanceSnapshot,
+          })
+        },
+      },
+    })
+
+    await expect(queue.submit(envelope).result()).rejects.toMatchObject({ conflict: { reason: 'invalid-conflict' } })
+    expect(queue.get(envelope.operationId)).toMatchObject({ status: 'conflicted', conflict: { reason: 'invalid-conflict' } })
+  })
+
+  it('quarantines a persisted settlement conflict with mismatched group identity', async () => {
+    const repository = createDemoRepository()
+    const snapshot = await repository.groups.getBalanceSnapshot('lake-house-weekend')
+    const envelope = recordCommand('persisted-cross-group-conflict', snapshot.balanceRevision, 500)
+    const operation = {
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'conflicted',
+      envelope,
+      error: { code: 'conflict', message: 'remote changed', retryable: false },
+      conflict: { balanceSnapshot: { ...snapshot, groupId: 'another-group' } },
+    }
+    const quarantined: unknown[] = []
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      handlers: {},
+      storage: {
+        load: () => ({ version: 6, principalKey, operations: [operation] }),
+        save: async () => undefined,
+        quarantine: async (_scope, records) => { quarantined.push(...records) },
+      },
+    })
+
+    await queue.resume()
+
+    expect(queue.snapshot()).toEqual([])
+    expect(quarantined).toEqual([operation])
   })
 
   it('rejects a saved settlement whose immutable creator does not match its atomic activity actor', async () => {
@@ -216,5 +354,17 @@ function recordCommand(operationId: string, expectedBalanceRevision: number, amo
     kind: 'settlement.record', operationId, groupId: 'lake-house-weekend', expectedBalanceRevision,
     basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
     money: { currency: 'USD', minorAmount: amountMinor }, method: 'cash', occurredOn: '2026-08-31', note: 'Paid', outsidePaymentConfirmed: true,
+  }
+}
+
+function createWebStorage(): Storage {
+  const values = new Map<string, string>()
+  return {
+    get length() { return values.size },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => { values.delete(key) },
+    setItem: (key, value) => { values.set(key, value) },
   }
 }

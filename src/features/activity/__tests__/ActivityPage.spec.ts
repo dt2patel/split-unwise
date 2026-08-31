@@ -91,6 +91,16 @@ describe('global Activity page', () => {
 
     expect(activityDestination(event, 'activity')).toBeUndefined()
   })
+
+  it.each(['settlement.created', 'settlement.voided'] as const)('links %s activity to its durable settlement detail route', (kind) => {
+    const event: ActivityItem = {
+      id: `activity-${kind}`, groupId: 'lake-house-weekend', operationId: `operation-${kind}`, kind,
+      subject: { kind: 'settlement', id: 'settlement-record-a', label: 'Payment' }, actor: { id: 'maya-p', displayName: 'Maya P.' },
+      settlementId: 'settlement-record-a', createdAt: '2026-08-31T12:00:00.000Z', syncState: 'fresh',
+    }
+
+    expect(activityDestination(event, 'activity')).toBe('/tabs/groups/lake-house-weekend/settlements/settlement-record-a')
+  })
 })
 
 describe('Activity durable projection', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CommandConflictError } from '../commandQueue'
-import { createDemoRepository } from '../demoRepository'
+import { createDemoRepository, type DemoRepositoryStateStorage } from '../demoRepository'
 
 const groupId = 'lake-house-weekend'
 
@@ -54,6 +54,53 @@ describe('demo settlement repository', () => {
     await expect(repository.activity.listForGroup(groupId)).resolves.toContainEqual(
       expect.objectContaining({ kind: 'settlement.created', operationId: 'record-partial' }),
     )
+  })
+
+  it('does not let a rejected earlier save erase a later successful settlement', async () => {
+    let rejectFirstSave!: (error: Error) => void
+    let firstSaveStarted!: () => void
+    let secondSaveStarted!: () => void
+    const firstSavePending = new Promise<void>((_resolve, reject) => { rejectFirstSave = reject })
+    const firstSaveDidStart = new Promise<void>((resolve) => { firstSaveStarted = resolve })
+    const secondSaveDidStart = new Promise<void>((resolve) => { secondSaveStarted = resolve })
+    let saveCount = 0
+    const repository = createDemoRepository({
+      stateStorage: {
+        load: () => undefined,
+        save: () => {
+          saveCount += 1
+          if (saveCount === 1) {
+            firstSaveStarted()
+            return firstSavePending
+          }
+          secondSaveStarted()
+          return undefined
+        },
+      },
+    })
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+    const earlierSave = repository.notifications.updatePreferences({
+      kind: 'notification.preferences',
+      operationId: 'deferred-preferences',
+      preferences: { emailEnabled: false, pushEnabled: false },
+    })
+    const earlierFailure = earlierSave.catch((error: unknown) => error)
+    await firstSaveDidStart
+
+    const laterSettlement = repository.settlements.record(recordCommand('saved-after-deferred', before.balanceRevision, 500))
+    const laterSaveOvertookEarlier = await Promise.race([
+      secondSaveDidStart.then(() => true),
+      new Promise<false>((resolve) => { setTimeout(() => resolve(false), 50) }),
+    ])
+    if (laterSaveOvertookEarlier) await expect(laterSettlement).resolves.toMatchObject({ status: 'saved' })
+    rejectFirstSave(new Error('Deferred persistence failed'))
+
+    await expect(earlierFailure).resolves.toMatchObject({ message: 'Deferred persistence failed' })
+    await expect(laterSettlement).resolves.toMatchObject({ status: 'saved', operationId: 'saved-after-deferred' })
+    await expect(repository.settlements.listForGroup(groupId)).resolves.toContainEqual(
+      expect.objectContaining({ operationId: 'saved-after-deferred', money: { currency: 'USD', minorAmount: 500 } }),
+    )
+    await expect(repository.groups.getBalanceSnapshot(groupId)).resolves.toMatchObject({ balanceRevision: before.balanceRevision + 1 })
   })
 
   it('supports a full payment without creating a reverse selected debt', async () => {
@@ -180,6 +227,54 @@ describe('demo settlement repository', () => {
     })).resolves.toMatchObject({ status: 'saved', settlement: { createdBy: { id: 'taylor-s' }, void: { actor: { id: 'maya-p' } } } })
   })
 
+  it('rejects recording when the balance revision cannot advance safely, before any side effect', async () => {
+    const persisted = await persistedBaselineState()
+    persisted.balanceRevision = Number.MAX_SAFE_INTEGER
+    let saveCount = 0
+    const repository = createDemoRepository({
+      stateStorage: {
+        load: () => structuredClone(persisted),
+        save: () => { saveCount += 1 },
+      },
+    })
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+    const activityBefore = await repository.activity.listForGroup(groupId)
+
+    await expect(repository.settlements.record(recordCommand('record-revision-overflow', before.balanceRevision, 500)))
+      .rejects.toThrow('safe integer')
+
+    expect(saveCount).toBe(0)
+    await expect(repository.groups.getBalanceSnapshot(groupId)).resolves.toEqual(before)
+    await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
+    await expect(repository.activity.listForGroup(groupId)).resolves.toEqual(activityBefore)
+  })
+
+  it('rejects voiding when the balance revision cannot advance safely, before any side effect', async () => {
+    const persisted = await persistedRecordedSettlementState()
+    persisted.balanceRevision = Number.MAX_SAFE_INTEGER
+    let saveCount = 0
+    const repository = createDemoRepository({
+      stateStorage: {
+        load: () => structuredClone(persisted),
+        save: () => { saveCount += 1 },
+      },
+    })
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+    const activityBefore = await repository.activity.listForGroup(groupId)
+    const [settlement] = await repository.settlements.listForGroup(groupId)
+    if (!settlement) throw new Error('Expected restored settlement')
+
+    await expect(repository.settlements.void({
+      kind: 'settlement.void', operationId: 'void-revision-overflow', groupId, settlementId: settlement.settlementId,
+      expectedRevision: settlement.revision, expectedBalanceRevision: before.balanceRevision, reason: 'Duplicate record',
+    })).rejects.toThrow('safe integer')
+
+    expect(saveCount).toBe(0)
+    await expect(repository.groups.getBalanceSnapshot(groupId)).resolves.toEqual(before)
+    await expect(repository.settlements.getById(groupId, settlement.settlementId)).resolves.toEqual(settlement)
+    await expect(repository.activity.listForGroup(groupId)).resolves.toEqual(activityBefore)
+  })
+
   it('advances the balance revision exactly once for expense add, edit, delete, and replay', async () => {
     const repository = createDemoRepository()
     const initial = await repository.groups.getBalanceSnapshot(groupId)
@@ -246,7 +341,86 @@ describe('demo settlement repository', () => {
     expect(after.simplified).toContainEqual(debt('taylor-s', 'maya-p', 'EUR', 300))
     expect(after.simplified.filter(({ money }) => money.currency === 'USD')).toEqual(before.simplified)
   })
+
+  it.each([
+    ['settlement money', (state: MutableDemoState) => { state.settlements[0].money.minorAmount = 0 }],
+    ['settlement basis', (state: MutableDemoState) => { state.settlements[0].basis.senderId = 'alex-r' }],
+    ['settlement actor', (state: MutableDemoState) => { state.settlements[0].createdBy.id = 'forged-user' }],
+    ['settlement void', (state: MutableDemoState) => { if (state.settlements[0].void) state.settlements[0].void.revision = 99 }],
+    ['settlement activity', (state: MutableDemoState) => {
+      const event = state.activity.find(({ kind }) => kind === 'settlement.created')
+      if (event) event.subject.id = 'forged-settlement'
+    }],
+    ['operation ledger result', (state: MutableDemoState) => {
+      const entry = state.operationLedger.find(([, value]) => value.identity.kind === 'settlement.record')
+      const settlement = entry?.[1].result.settlement
+      if (settlement) settlement.money.minorAmount = 1
+    }],
+  ])('quarantines restored demo state with malformed %s invariants', async (_label, mutate) => {
+    const persisted = await persistedVoidedSettlementState()
+    const malformed = structuredClone(persisted)
+    mutate(malformed)
+    const quarantined: unknown[] = []
+    const storage = {
+      load: () => malformed,
+      save: () => undefined,
+      quarantine: (_scope: string, records: readonly unknown[]) => { quarantined.push(...records) },
+    } as DemoRepositoryStateStorage & { quarantine(scope: string, records: readonly unknown[]): void }
+
+    const repository = createDemoRepository({ stateStorage: storage })
+
+    expect(quarantined).toEqual([malformed])
+    await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
+    await expect(repository.groups.getBalanceSnapshot(groupId)).resolves.toMatchObject({ balanceRevision: 5 })
+  })
 })
+
+interface MutableDemoSettlement {
+  money: { minorAmount: number }
+  basis: { senderId: string }
+  createdBy: { id: string }
+  void?: { revision: number }
+}
+
+interface MutableDemoState {
+  balanceRevision: number
+  settlements: MutableDemoSettlement[]
+  activity: Array<{ kind: string; subject: { id: string } }>
+  operationLedger: Array<[string, { identity: { kind: string }; result: { settlement?: { money: { minorAmount: number } } } }]>
+}
+
+async function persistedBaselineState(): Promise<MutableDemoState> {
+  let persisted: unknown
+  const repository = createDemoRepository({ stateStorage: { load: () => undefined, save: (_scope, document) => { persisted = structuredClone(document) } } })
+  await repository.notifications.updatePreferences({
+    kind: 'notification.preferences', operationId: 'persisted-baseline', preferences: { emailEnabled: true, pushEnabled: true },
+  })
+  if (!persisted) throw new Error('Expected persisted demo state')
+  return persisted as MutableDemoState
+}
+
+async function persistedRecordedSettlementState(): Promise<MutableDemoState> {
+  let persisted: unknown
+  const repository = createDemoRepository({ stateStorage: { load: () => undefined, save: (_scope, document) => { persisted = structuredClone(document) } } })
+  const before = await repository.groups.getBalanceSnapshot(groupId)
+  const recorded = await repository.settlements.record(recordCommand('persisted-record-only', before.balanceRevision, 500))
+  if (recorded.status !== 'saved' || !persisted) throw new Error('Expected persisted settlement')
+  return persisted as MutableDemoState
+}
+
+async function persistedVoidedSettlementState(): Promise<MutableDemoState> {
+  let persisted: unknown
+  const repository = createDemoRepository({ stateStorage: { load: () => undefined, save: (_scope, document) => { persisted = structuredClone(document) } } })
+  const before = await repository.groups.getBalanceSnapshot(groupId)
+  const recorded = await repository.settlements.record(recordCommand('persisted-record', before.balanceRevision, 500))
+  if (recorded.status !== 'saved') throw new Error('Expected persisted settlement')
+  await repository.settlements.void({
+    kind: 'settlement.void', operationId: 'persisted-void', groupId, settlementId: recorded.settlement.settlementId,
+    expectedRevision: recorded.settlement.revision, expectedBalanceRevision: recorded.balanceSnapshot.balanceRevision, reason: 'Duplicate record',
+  })
+  if (!persisted) throw new Error('Expected persisted demo state')
+  return persisted as MutableDemoState
+}
 
 function recordCommand(operationId: string, expectedBalanceRevision: number, amountMinor: number) {
   return {

@@ -27,7 +27,7 @@ const ionicStubs = {
   IonButton: { props: ['routerLink', 'disabled', 'ariaLabel'], template: '<a v-if="routerLink" :href="routerLink" :aria-label="ariaLabel"><slot /></a><button v-else type="button" :disabled="disabled" :aria-label="ariaLabel" @click="$emit(\'click\', $event)"><slot /></button>' },
   IonContent: { template: '<section><slot /></section>' },
   IonIcon: { template: '<span aria-hidden="true" />' },
-  IonSegment: { template: '<div role="tablist"><slot /></div>' },
+  IonSegment: { name: 'IonSegment', props: ['value'], emits: ['ionChange'], template: '<div role="tablist"><slot /></div>' },
   IonSegmentButton: { props: ['value'], emits: ['click'], template: '<button type="button" role="tab" @click="$emit(\'click\', $event)"><slot /></button>' },
   IonLabel: { template: '<span><slot /></span>' },
 }
@@ -67,6 +67,16 @@ describe('balances page', () => {
     expect(wrapper.text()).toContain('USD')
     expect(wrapper.text()).not.toContain('Converted total')
   })
+
+  it('changes the balance plan from Ionic ionChange keyboard selection', async () => {
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/balances`, BalancesPage)
+
+    wrapper.getComponent({ name: 'IonSegment' }).vm.$emit('ionChange', { detail: { value: 'pairwise' } })
+    await flushPromises()
+
+    expect(wrapper.get('.balances-page__explanation').text()).toContain('Every direct balance')
+    expect(wrapper.find('[aria-label="Pairwise USD balances"]').exists()).toBe(true)
+  })
 })
 
 describe('settle up page', () => {
@@ -78,7 +88,7 @@ describe('settle up page', () => {
     expect(wrapper.get('[data-testid="selected-direction"]').text()).toBe('Taylor S. pays Maya P.')
     expect(wrapper.get('[data-action="record-payment"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-testid="outside-payment-copy"]').text()).toContain('already happened outside Split Unwise')
-    expect(wrapper.text()).toContain('not configured for this recipient')
+    expect(wrapper.text()).toContain('Only the payer can open a payment-provider link')
   })
 
   it('shows one currency at a time when the current user has independent multi-currency debts', async () => {
@@ -101,6 +111,16 @@ describe('settle up page', () => {
     expect(wrapper.findAll('[name="settlement-basis"]')).toHaveLength(1)
     expect((wrapper.get('[data-testid="amount-input"]').element as HTMLInputElement).value).toBe('4.00')
     expect(wrapper.text()).not.toContain('Converted total')
+  })
+
+  it('changes the settlement basis from Ionic ionChange keyboard selection', async () => {
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
+    expect(wrapper.findAll('[name="settlement-basis"]')).toHaveLength(1)
+
+    wrapper.getComponent({ name: 'IonSegment' }).vm.$emit('ionChange', { detail: { value: 'pairwise' } })
+    await flushPromises()
+
+    expect(wrapper.findAll('[name="settlement-basis"]')).toHaveLength(3)
   })
 
   it('records a partial payment once, then navigates to its durable detail route', async () => {
@@ -131,12 +151,37 @@ describe('settle up page', () => {
     await flushPromises()
     expect(calls).toBe(1)
     expect(wrapper.get('[data-action="record-payment"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-operation-id="settlement-ui-1"]').text()).toContain('Pending')
+    const pending = wrapper.get('[data-operation-id]')
+    const operationId = pending.attributes('data-operation-id')
+    expect(pending.text()).toContain('Pending')
+    expect(operationId).toBeTruthy()
 
     release()
     await flushPromises()
     await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('group-settlement-detail'))
-    expect(router.currentRoute.value.params.settlementId).toBe('settlement-settlement-ui-1')
+    expect(router.currentRoute.value.params.settlementId).toBe(`settlement-${operationId}`)
+  })
+
+  it('records a second payment after the settle-up page is remounted without reusing an operation ID', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+    const firstPage = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage, router)
+    await firstPage.get('[data-testid="amount-input"]').setValue('5.00')
+    await firstPage.get('[data-testid="outside-payment-confirmation"]').setValue(true)
+    await firstPage.get('[data-action="record-payment"]').trigger('click')
+    await vi.waitFor(async () => expect(await repository.settlements.listForGroup(groupId)).toHaveLength(1))
+    firstPage.unmount()
+
+    const secondPage = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage, router)
+    await secondPage.get('[data-testid="amount-input"]').setValue('4.00')
+    await secondPage.get('[data-testid="outside-payment-confirmation"]').setValue(true)
+    await secondPage.get('[data-action="record-payment"]').trigger('click')
+
+    await vi.waitFor(async () => expect(await repository.settlements.listForGroup(groupId)).toHaveLength(2))
+    const records = await repository.settlements.listForGroup(groupId)
+    expect(new Set(records.map(({ operationId }) => operationId)).size).toBe(2)
+    expect(records.map(({ money }) => money.minorAmount).sort((left, right) => left - right)).toEqual([400, 500])
   })
 
   it('renders a retained revision conflict without reducing the authoritative balance', async () => {
@@ -162,13 +207,22 @@ describe('settle up page', () => {
     expect(wrapper.get('[data-operation-id="page-conflict"]').text()).toContain('Conflict')
     expect(wrapper.get('[data-testid="amount-input"]').attributes('value')).not.toBe('31.25')
     expect((wrapper.get('[data-testid="amount-input"]').element as HTMLInputElement).value).toBe('36.25')
+    expect(wrapper.get('[data-operation-id="page-conflict"] [data-action="reload-operation"]').text()).toBe('Reload')
+    expect(wrapper.get('[data-operation-id="page-conflict"] [data-action="dismiss-operation"]').text()).toBe('Dismiss')
+
+    await wrapper.get('[data-operation-id="page-conflict"] [data-action="reload-operation"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-operation-id="page-conflict"]').exists()).toBe(true)
+    await wrapper.get('[data-operation-id="page-conflict"] [data-action="dismiss-operation"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[data-operation-id="page-conflict"]').exists()).toBe(false))
+    expect(session.queue.get('page-conflict')).toBeUndefined()
   })
 
   it('opens a trusted provider handoff without recording or projecting a ledger settlement', async () => {
-    const repository = createDemoRepository()
+    const repository = createDemoRepository({ currentUserId: 'taylor-s' })
     const session = createAppSession({ repository, commandStorage: createMemoryCommandStorage() })
     setAppSessionForTesting(session)
-    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage, createAppRouter(), {
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up?plan=simplified&senderId=taylor-s&recipientId=maya-p&currency=USD&debtMinor=3625`, SettleUpPage, createAppRouter(), {
       providerConfiguration: { paypal: { 'maya-p': { recipientToken: 'maya.payments' } } },
     })
     const link = wrapper.get('a[href^="https://www.paypal.com/paypalme/"]')
@@ -180,6 +234,30 @@ describe('settle up page', () => {
 
     await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
     expect(session.queue.snapshot()).toEqual([])
+  })
+
+  it('does not offer the recipient a payer-mode provider handoff', async () => {
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage, createAppRouter(), {
+      providerConfiguration: { paypal: { 'maya-p': { recipientToken: 'maya.payments' } } },
+    })
+
+    expect(wrapper.find('a[href^="https://www.paypal.com/paypalme/"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Only the payer can open a payment-provider link')
+  })
+
+  it('disables provider handoffs for invalid, zero, or over-limit amounts instead of substituting the full debt', async () => {
+    const repository = createDemoRepository({ currentUserId: 'taylor-s' })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up?plan=simplified&senderId=taylor-s&recipientId=maya-p&currency=USD&debtMinor=3625`, SettleUpPage, createAppRouter(), {
+      providerConfiguration: { paypal: { 'maya-p': { recipientToken: 'maya.payments' } } },
+    })
+    expect(wrapper.find('a[href^="https://www.paypal.com/paypalme/"]').exists()).toBe(true)
+
+    for (const invalidAmount of ['not-a-number', '0', '36.26']) {
+      await wrapper.get('[data-testid="amount-input"]').setValue(invalidAmount)
+      expect(wrapper.find('a[href^="https://www.paypal.com/paypalme/"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('Enter a valid amount up to $36.25 to open a payment-provider link')
+    }
   })
 
   it('restores focus to an actionable amount error and presents failed commands with Retry and Discard', async () => {
@@ -202,6 +280,8 @@ describe('settle up page', () => {
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Failed')
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Retry')
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Discard')
+    expect(wrapper.get('.operations').attributes('role')).toBe('status')
+    expect(wrapper.get('.operations').attributes('aria-live')).toBe('polite')
 
     await wrapper.get('[data-testid="amount-input"]').setValue('')
     await wrapper.get('[data-testid="outside-payment-confirmation"]').setValue(true)
@@ -239,6 +319,91 @@ describe('settlement detail page', () => {
     expect(wrapper.text()).toContain('$5.00')
   })
 
+  it('voids a second payment after the detail page is remounted without reusing an operation ID', async () => {
+    const repository = createDemoRepository()
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+    const first = await repository.settlements.record({
+      kind: 'settlement.record', operationId: 'void-remount-first', groupId, expectedBalanceRevision: before.balanceRevision,
+      basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
+      money: { currency: 'USD', minorAmount: 500 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+    })
+    if (first.status !== 'saved') throw new Error('Expected first settlement')
+    const second = await repository.settlements.record({
+      kind: 'settlement.record', operationId: 'void-remount-second', groupId, expectedBalanceRevision: first.balanceSnapshot.balanceRevision,
+      basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3125 },
+      money: { currency: 'USD', minorAmount: 400 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+    })
+    if (second.status !== 'saved') throw new Error('Expected second settlement')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+
+    const firstPage = await mountRoute(`/tabs/groups/${groupId}/settlements/${first.settlement.settlementId}`, SettlementDetailPage, router)
+    await firstPage.get('[data-action="show-void-form"]').trigger('click')
+    await firstPage.get('[data-testid="void-reason"]').setValue('First duplicate')
+    await firstPage.get('[data-action="void-settlement"]').trigger('click')
+    await vi.waitFor(async () => expect(await repository.settlements.getById(groupId, first.settlement.settlementId)).toHaveProperty('void'))
+    firstPage.unmount()
+
+    const secondPage = await mountRoute(`/tabs/groups/${groupId}/settlements/${second.settlement.settlementId}`, SettlementDetailPage, router)
+    await secondPage.get('[data-action="show-void-form"]').trigger('click')
+    await secondPage.get('[data-testid="void-reason"]').setValue('Second duplicate')
+    await secondPage.get('[data-action="void-settlement"]').trigger('click')
+
+    await vi.waitFor(async () => expect(await repository.settlements.getById(groupId, second.settlement.settlementId)).toHaveProperty('void'))
+    const records = await repository.settlements.listForGroup(groupId)
+    const voidOperationIds = records.map((record) => record.void?.operationId)
+    expect(voidOperationIds.every(Boolean)).toBe(true)
+    expect(new Set(voidOperationIds).size).toBe(2)
+  })
+
+  it('retains a failed void across remount with working Retry and Discard recovery actions', async () => {
+    const repository = createDemoRepository()
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+    const recorded = await repository.settlements.record({
+      kind: 'settlement.record', operationId: 'failed-void-record', groupId, expectedBalanceRevision: before.balanceRevision,
+      basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
+      money: { currency: 'USD', minorAmount: 500 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+    })
+    if (recorded.status !== 'saved') throw new Error('Expected settlement')
+    let voidCalls = 0
+    const failing: AppRepository = {
+      ...repository,
+      commands: {
+        async execute(command) {
+          if (command.kind === 'settlement.void') {
+            voidCalls += 1
+            throw Object.assign(new Error('Connection lost'), { code: 'unavailable' })
+          }
+          return repository.commands.execute(command)
+        },
+      },
+    }
+    const session = createAppSession({ repository: failing, commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    await session.ready
+    await session.queue.submit({
+      kind: 'settlement.void', operationId: 'failed-void-retained', groupId, settlementId: recorded.settlement.settlementId,
+      expectedRevision: recorded.settlement.revision, expectedBalanceRevision: recorded.balanceSnapshot.balanceRevision, reason: 'Duplicate record',
+    }).result().catch(() => undefined)
+    expect(voidCalls).toBe(1)
+    const router = createAppRouter()
+    const firstPage = await mountRoute(`/tabs/groups/${groupId}/settlements/${recorded.settlement.settlementId}`, SettlementDetailPage, router)
+    firstPage.unmount()
+
+    const secondPage = await mountRoute(`/tabs/groups/${groupId}/settlements/${recorded.settlement.settlementId}`, SettlementDetailPage, router)
+    const retained = secondPage.get('[data-operation-id="failed-void-retained"]')
+    expect(retained.text()).toContain('Failed')
+    expect(retained.get('[data-action="retry-operation"]').text()).toBe('Retry')
+    expect(retained.get('[data-action="discard-operation"]').text()).toBe('Discard')
+
+    await retained.get('[data-action="retry-operation"]').trigger('click')
+    await vi.waitFor(() => expect(voidCalls).toBe(2))
+    await vi.waitFor(() => expect(secondPage.get('[data-operation-id="failed-void-retained"]').text()).toContain('Failed'))
+    await secondPage.get('[data-operation-id="failed-void-retained"] [data-action="discard-operation"]').trigger('click')
+    await vi.waitFor(() => expect(secondPage.find('[data-operation-id="failed-void-retained"]').exists()).toBe(false))
+    expect(session.queue.get('failed-void-retained')).toBeUndefined()
+  })
+
   it('distinguishes a missing settlement from an inaccessible group', async () => {
     const missing = await mountRoute(`/tabs/groups/${groupId}/settlements/not-there`, SettlementDetailPage)
     expect(missing.get('[role="alert"]').text()).toContain('not found')
@@ -249,6 +414,11 @@ describe('settlement detail page', () => {
 })
 
 describe('settlement mobile and accessibility contract', () => {
+  it('sizes the actual provider anchor to a 44-point touch target', () => {
+    expect(settleSource).toMatch(/\.provider-card a\s*\{[^}]*min-width:\s*44px/)
+    expect(settleSource).toMatch(/\.provider-card a\s*\{[^}]*min-height:\s*44px/)
+  })
+
   it('retains one semantic heading, labelled choices, 44-point controls, safe areas, wrapping, and reduced-motion fallbacks', async () => {
     const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
 
@@ -263,6 +433,7 @@ describe('settlement mobile and accessibility contract', () => {
     expect(balancesSource).toContain('overflow-wrap: anywhere')
     expect(settleSource).toContain('overflow-wrap: anywhere')
     expect(detailSource).toContain('overflow-wrap: anywhere')
+    expect(settleSource).toMatch(/\.basis-option:focus-within\s*\{[^}]*box-shadow:/)
   })
 })
 

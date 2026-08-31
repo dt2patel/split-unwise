@@ -108,7 +108,11 @@ export function projectActivityTimeline(
 }
 
 export function activityDestination(item: ActivityItem, origin: 'account' | 'activity' | 'groups' | 'home'): string | undefined {
-  if (!item.expenseId || !isStrictId(item.groupId) || !isStrictId(item.expenseId) || !['account', 'activity', 'groups', 'home'].includes(origin)) return undefined
+  if (!isStrictId(item.groupId) || !['account', 'activity', 'groups', 'home'].includes(origin)) return undefined
+  if ((item.kind === 'settlement.created' || item.kind === 'settlement.voided') && item.settlementId && isStrictId(item.settlementId)) {
+    return `/tabs/groups/${encodeURIComponent(item.groupId)}/settlements/${encodeURIComponent(item.settlementId)}`
+  }
+  if (!item.expenseId || !isStrictId(item.expenseId)) return undefined
   return `/tabs/${origin}/expenses/${encodeURIComponent(item.expenseId)}?groupId=${encodeURIComponent(item.groupId)}`
 }
 

@@ -7,6 +7,7 @@ import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflic
 export const COMMAND_QUEUE_STORAGE_VERSION = 6 as const
 const COMMAND_QUEUE_STORAGE_PREFIX = `split-unwise:command-queue:v${COMMAND_QUEUE_STORAGE_VERSION}`
 const COMMAND_QUEUE_QUARANTINE_PREFIX = `split-unwise:command-queue:quarantine:v${COMMAND_QUEUE_STORAGE_VERSION}`
+const LEGACY_COMMAND_QUEUE_STORAGE_PREFIX = 'split-unwise:command-queue:v5'
 
 export type CommandFailureCode = 'conflict' | 'handler-missing' | 'network' | 'not-supported' | 'permission-denied' | 'persistence' | 'unknown' | 'validation'
 export interface CommandFailure {
@@ -364,21 +365,29 @@ export function createBrowserCommandStorage(options: BrowserCommandStorageOption
   const storage = options.storage ?? readBrowserStorage()
   const prefix = options.keyPrefix ?? COMMAND_QUEUE_STORAGE_PREFIX
   const keyFor = (scopeKey: string) => `${prefix}:${encodeURIComponent(scopeKey)}`
+  const legacyKeyFor = (scopeKey: string) => `${LEGACY_COMMAND_QUEUE_STORAGE_PREFIX}:${encodeURIComponent(scopeKey)}`
   const quarantineKeyFor = (scopeKey: string) => `${COMMAND_QUEUE_QUARANTINE_PREFIX}:${encodeURIComponent(scopeKey)}`
+  const loadedLegacyScopes = new Set<string>()
   const quarantine = async (scopeKey: string, records: readonly unknown[]) => {
     if (!storage || records.length === 0) return
     try {
       const key = quarantineKeyFor(scopeKey)
       const current = parseQuarantine(storage.getItem(key))
       storage.setItem(key, JSON.stringify({ version: COMMAND_QUEUE_STORAGE_VERSION, principalKey: scopeKey, records: [...current, ...toSerializableRecords(records)] }))
+      if (loadedLegacyScopes.delete(scopeKey)) storage.removeItem(legacyKeyFor(scopeKey))
     } catch { /* persistence failures leave the in-memory queue usable */ }
   }
   return {
     load: (scopeKey) => {
       if (!storage) return undefined
-      const key = keyFor(scopeKey)
+      let key = keyFor(scopeKey)
       try {
-        const value = storage.getItem(key)
+        let value = storage.getItem(key)
+        if (value === null && prefix === COMMAND_QUEUE_STORAGE_PREFIX) {
+          key = legacyKeyFor(scopeKey)
+          value = storage.getItem(key)
+          if (value !== null) loadedLegacyScopes.add(scopeKey)
+        }
         if (value === null) return undefined
         try { return JSON.parse(value) as unknown } catch {
           quarantine(scopeKey, [{ reason: 'invalid-json', raw: value }])
@@ -480,7 +489,7 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
       return onlyOperationFields(value, fields) && isNonEmptyString(value.groupId) && isNonNegativeInteger(value.expectedBalanceRevision)
         && isSettlementBasis(value.basis) && isPositiveMoney(value.money) && value.money.currency === value.basis.currency
         && isSettlementMethod(value.method) && isIsoDate(value.occurredOn) && (value.note === undefined || isSettlementText(value.note, false))
-        && typeof value.outsidePaymentConfirmed === 'boolean'
+        && value.outsidePaymentConfirmed === true && value.money.minorAmount <= value.basis.debtMinor
     }
     case 'settlement.void': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'settlementId', 'expectedRevision', 'expectedBalanceRevision', 'reason'])
       && isNonEmptyString(value.groupId) && isNonEmptyString(value.settlementId) && isPositiveInteger(value.expectedRevision)
@@ -727,6 +736,7 @@ function conflictDetails(error: unknown, envelope: CommandEnvelope): unknown {
   else if (error instanceof OperationReplayConflictError) details = { reason: 'replay-identity' }
   else details = { reason: 'remote-conflict', code: normalizedExternalCode(error) || 'conflict' }
   if (isConflictForEnvelope(details, envelope)) return details
+  if (envelope.kind === 'settlement.record' || envelope.kind === 'settlement.void') return { reason: 'invalid-conflict' }
   if (isRecord(details) && Object.prototype.hasOwnProperty.call(details, 'remote')) {
     const { remote: _remote, ...withoutRemote } = details
     return Object.keys(withoutRemote).length > 0 ? withoutRemote : { reason: 'invalid-remote-conflict' }
@@ -736,8 +746,17 @@ function conflictDetails(error: unknown, envelope: CommandEnvelope): unknown {
 
 function isConflictForEnvelope(value: unknown, envelope: CommandEnvelope): boolean {
   if (!isJsonValue(value)) return false
-  if ((envelope.kind !== 'expense.edit' && envelope.kind !== 'expense.delete') || !isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'remote')) return true
-  return isExpenseRow(value.remote) && value.remote.groupId === envelope.groupId && value.remote.id === envelope.expenseId
+  if (!isRecord(value)) return envelope.kind !== 'expense.edit' && envelope.kind !== 'expense.delete'
+  if (envelope.kind === 'expense.edit' || envelope.kind === 'expense.delete') {
+    if (!Object.prototype.hasOwnProperty.call(value, 'remote')) return true
+    return isExpenseRow(value.remote) && value.remote.groupId === envelope.groupId && value.remote.id === envelope.expenseId
+  }
+  if (envelope.kind !== 'settlement.record' && envelope.kind !== 'settlement.void') return true
+  if (typeof value.reason === 'string') return Object.keys(value).every((key) => key === 'reason' || key === 'code') && (value.code === undefined || typeof value.code === 'string')
+  if (!isGroupBalanceSnapshot(value.balanceSnapshot) || value.balanceSnapshot.groupId !== envelope.groupId) return false
+  if (envelope.kind === 'settlement.record') return onlyOperationFields(value, ['balanceSnapshot'])
+  return onlyOperationFields(value, ['remote', 'balanceSnapshot']) && isSettlementRecord(value.remote)
+    && value.remote.groupId === envelope.groupId && value.remote.settlementId === envelope.settlementId
 }
 
 function assertPrincipalKey(principalKey: string): string {

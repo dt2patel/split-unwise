@@ -140,6 +140,20 @@ export const useSettlementStore = defineStore('settlements', () => {
     }
   }
 
+  async function dismissOperation(operationId: string): Promise<boolean> {
+    const operation = queue.get(operationId)
+    if (!operation || operation.status !== 'conflicted'
+      || (operation.envelope.kind !== 'settlement.record' && operation.envelope.kind !== 'settlement.void')) return false
+    try {
+      const dismissed = await queue.acknowledge(operationId)
+      if (dismissed) queueRevision.value += 1
+      return dismissed
+    } catch (reason) {
+      error.value = messageFor(reason)
+      return false
+    }
+  }
+
   async function executeAndRefresh(handle: CommandHandle, groupId: string): Promise<boolean> {
     error.value = undefined
     notice.value = ''
@@ -153,7 +167,8 @@ export const useSettlementStore = defineStore('settlements', () => {
         repository.settlements.listForGroup(groupId),
       ])
       if (generation !== loadGeneration || group.value?.id !== groupId) return false
-      if (snapshot.groupId !== groupId || !loadedSettlements.some((settlement) => settlement.settlementId === result.settlement.settlementId && settlement.revision >= result.settlement.revision)) {
+      if (snapshot.groupId !== groupId || snapshot.balanceRevision < result.balanceSnapshot.balanceRevision
+        || !loadedSettlements.some((settlement) => settlement.settlementId === result.settlement.settlementId && settlement.revision >= result.settlement.revision)) {
         throw new Error('Saved settlement is not yet available in authoritative reads.')
       }
       balanceSnapshot.value = snapshot
@@ -202,6 +217,7 @@ export const useSettlementStore = defineStore('settlements', () => {
     voidSettlement,
     retryOperation,
     discardOperation,
+    dismissOperation,
     canVoid,
     clear,
   }

@@ -16,6 +16,7 @@ import {
   IonToolbar,
 } from '@ionic/vue'
 import { formatMoney } from '../../components/MoneyAmount.vue'
+import { createClientOperationId } from '../../data/clientOperationId'
 import { isStrictId } from '../../data/identifiers'
 import type { SettlementBasis, SettlementMethod } from '../../data/repositories'
 import type { Debt } from '../../domain/model'
@@ -62,7 +63,6 @@ const outsidePaymentConfirmed = ref(false)
 const validationError = ref('')
 const isSubmitting = ref(false)
 const amountInput = ref<HTMLInputElement>()
-let operationNumber = 0
 
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
 const allCandidateDebts = computed(() => {
@@ -94,12 +94,19 @@ const canSubmit = computed(() => Boolean(selectedBasis.value && outsidePaymentCo
 const providerHandoffs = computed<readonly PaymentHandoff[]>(() => {
   const basis = selectedBasis.value
   if (!basis) return []
-  let minorAmount = basis.debtMinor
+  if (currentUser.value?.id !== basis.senderId) {
+    return unavailableProviderHandoffs('Only the payer can open a payment-provider link. Ask them to pay outside Split Unwise, then record it here after it happens.')
+  }
+  let minorAmount: number
   try {
-    const parsed = toMinorUnits(amount.value, basis.currency)
-    if (parsed > 0 && parsed <= basis.debtMinor) minorAmount = parsed
-  } catch { /* handoffs show the selected full debt until an amount is valid */ }
-  return (['paypal', 'venmo'] as const).map((provider) => createPaymentHandoff({
+    minorAmount = toMinorUnits(amount.value, basis.currency)
+  } catch {
+    return unavailableProviderHandoffs(`Enter a valid amount up to ${formatMoney({ currency: basis.currency, minorAmount: basis.debtMinor })} to open a payment-provider link.`)
+  }
+  if (!Number.isSafeInteger(minorAmount) || minorAmount <= 0 || minorAmount > basis.debtMinor) {
+    return unavailableProviderHandoffs(`Enter a valid amount up to ${formatMoney({ currency: basis.currency, minorAmount: basis.debtMinor })} to open a payment-provider link.`)
+  }
+  return paymentProviders.map((provider) => createPaymentHandoff({
     provider,
     recipientId: basis.recipientId,
     money: { currency: basis.currency, minorAmount },
@@ -107,6 +114,12 @@ const providerHandoffs = computed<readonly PaymentHandoff[]>(() => {
     configuration: props.providerConfiguration,
   }))
 })
+
+const paymentProviders = ['paypal', 'venmo'] as const
+
+function unavailableProviderHandoffs(reason: string): readonly PaymentHandoff[] {
+  return paymentProviders.map((provider) => ({ status: 'unavailable', provider, reason }))
+}
 
 watch(groupId, (id) => {
   selectedPlan.value = queryPlan() ?? 'simplified'
@@ -142,6 +155,10 @@ function selectPlan(plan: BalancePlan): void {
   if (selectedPlan.value === plan) return
   selectedPlan.value = plan
   selectedBasisKey.value = ''
+}
+
+function onSegmentChange(event: CustomEvent<{ value?: string | number }>): void {
+  if (event.detail.value === 'simplified' || event.detail.value === 'pairwise') selectPlan(event.detail.value)
 }
 
 function selectDebt(debt: Debt): void {
@@ -192,7 +209,7 @@ async function recordPayment(): Promise<void> {
   }
 
   isSubmitting.value = true
-  const operationId = `settlement-ui-${++operationNumber}`
+  const operationId = createClientOperationId('settlement-record')
   const saved = await store.recordPayment({
     kind: 'settlement.record',
     operationId,
@@ -227,6 +244,14 @@ async function retry(operationId: string): Promise<void> {
 
 async function discard(operationId: string): Promise<void> {
   await store.discardOperation(operationId)
+}
+
+async function reloadOperation(): Promise<void> {
+  if (groupId.value) await store.loadGroup(groupId.value)
+}
+
+async function dismiss(operationId: string): Promise<void> {
+  await store.dismissOperation(operationId)
 }
 
 function queryPlan(): BalancePlan | undefined {
@@ -292,7 +317,7 @@ function operationStatus(status: string): string {
               <small>Revision {{ balanceSnapshot.balanceRevision }}</small>
             </div>
 
-            <ion-segment :value="selectedPlan" aria-label="Settlement balance basis" class="settle-form__segment">
+            <ion-segment :value="selectedPlan" aria-label="Settlement balance basis" class="settle-form__segment" @ion-change="onSegmentChange">
               <ion-segment-button value="simplified" @click="selectPlan('simplified')"><ion-label>Simplified</ion-label></ion-segment-button>
               <ion-segment-button value="pairwise" @click="selectPlan('pairwise')"><ion-label>Pairwise</ion-label></ion-segment-button>
             </ion-segment>
@@ -367,13 +392,17 @@ function operationStatus(status: string): string {
           </ion-button>
         </form>
 
-        <section v-if="pendingSettlements.length" class="operations" aria-labelledby="operations-heading">
+        <section v-if="pendingSettlements.length" class="operations" aria-labelledby="operations-heading" role="status" aria-live="polite">
           <h2 id="operations-heading">Payment updates</h2>
           <article v-for="operation in pendingSettlements" :key="operation.operationId" :data-operation-id="operation.operationId" :data-status="operation.status">
             <div><strong>{{ operationStatus(operation.status) }}</strong><small>{{ operation.error ?? 'Saving this ledger update.' }}</small></div>
             <div v-if="operation.status === 'failed'" class="operations__actions">
-              <button type="button" :disabled="!operation.retryable" @click="retry(operation.operationId)">Retry</button>
-              <button type="button" @click="discard(operation.operationId)">Discard</button>
+              <button type="button" data-action="retry-operation" :disabled="!operation.retryable" @click="retry(operation.operationId)">Retry</button>
+              <button type="button" data-action="discard-operation" @click="discard(operation.operationId)">Discard</button>
+            </div>
+            <div v-else-if="operation.status === 'conflicted'" class="operations__actions">
+              <button type="button" data-action="reload-operation" @click="reloadOperation">Reload</button>
+              <button type="button" data-action="dismiss-operation" @click="dismiss(operation.operationId)">Dismiss</button>
             </div>
           </article>
         </section>
@@ -401,6 +430,7 @@ function operationStatus(status: string): string {
 .basis-list { display: grid; gap: 8px; margin: 13px 0 0; padding: 0; border: 0; }
 .basis-option { display: grid; min-height: 58px; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--su-divider) 42%, transparent); border-radius: 13px; cursor: pointer; transition: border-color var(--su-motion-fast), background-color var(--su-motion-fast); }
 .basis-option--selected { border-color: color-mix(in srgb, var(--ion-color-primary) 55%, transparent); background: color-mix(in srgb, var(--su-lilac) 42%, var(--su-surface)); }
+.basis-option:focus-within { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 18%, transparent); }
 .basis-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .basis-option__people { display: grid; min-width: 52px; min-height: 36px; place-items: center; border-radius: 11px; background: var(--su-lilac); color: var(--ion-color-primary); font-size: .7rem; font-weight: 750; }
 .basis-option strong, .basis-option small { display: block; overflow-wrap: anywhere; }
@@ -421,7 +451,7 @@ function operationStatus(status: string): string {
 .provider-card > p { margin: 10px 0; color: var(--ion-color-medium); font-size: .78rem; line-height: 1.4; }
 .provider-card ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .provider-card li { min-height: 44px; padding: 10px 12px; border-radius: 11px; background: color-mix(in srgb, var(--su-lilac) 32%, var(--su-surface)); font-size: .75rem; line-height: 1.35; }
-.provider-card a { display: flex; min-height: 24px; align-items: center; color: var(--ion-color-primary); font-weight: 700; text-decoration: none; }
+.provider-card a { display: flex; min-width: 44px; min-height: 44px; align-items: center; color: var(--ion-color-primary); font-weight: 700; text-decoration: none; }
 .confirmation-card { display: grid; min-height: 64px; grid-template-columns: auto 1fr; align-items: start; gap: 11px; padding: 13px; border: 1px solid color-mix(in srgb, var(--ion-color-primary) 30%, var(--su-divider)); border-radius: 15px; background: color-mix(in srgb, var(--su-lilac) 28%, var(--su-surface)); font-size: .78rem; line-height: 1.35; }
 .confirmation-card input { width: 22px; height: 22px; margin: 0; accent-color: var(--ion-color-primary); }
 .confirmation-card strong, .confirmation-card small { display: block; }

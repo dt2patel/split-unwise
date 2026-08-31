@@ -27,6 +27,15 @@ describe('Task 8 Firebase decoders', () => {
     expect(() => decodeSettlement('lake-house-weekend', 'settlement-a', { ...raw, revision: 2 })).toThrow('void revision')
     expect(() => decodeSettlement('lake-house-weekend', 'settlement-a', { ...raw, money: { currency: 'EUR', minorAmount: 500 } })).toThrow('basis currency')
   })
+
+  it('rejects a settlement creator who is neither the sender nor the recipient', () => {
+    const raw = settlementData()
+
+    expect(() => decodeSettlement('lake-house-weekend', 'settlement-a', {
+      ...raw,
+      createdBy: { id: 'alex-r', displayName: 'Alex R.' },
+    })).toThrow(DocumentDecodeError)
+  })
 })
 
 function settlementData() {

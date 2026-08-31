@@ -51,6 +51,10 @@ function selectPlan(plan: BalancePlan): void {
   selectedPlan.value = plan
 }
 
+function onSegmentChange(event: CustomEvent<{ value?: string | number }>): void {
+  if (event.detail.value === 'simplified' || event.detail.value === 'pairwise') selectPlan(event.detail.value)
+}
+
 function memberName(memberId: string): string {
   return memberNames.value.get(memberId) ?? 'Unknown member'
 }
@@ -100,7 +104,7 @@ function settleDestination(debt: Debt): string {
         <p v-else-if="error" role="alert" class="balances-page__status balances-page__status--error">{{ error }}</p>
 
         <template v-else-if="balanceSnapshot">
-          <ion-segment :value="selectedPlan" aria-label="Balance view" class="balances-page__segment">
+          <ion-segment :value="selectedPlan" aria-label="Balance view" class="balances-page__segment" @ion-change="onSegmentChange">
             <ion-segment-button value="simplified" @click="selectPlan('simplified')">
               <ion-label>Simplified</ion-label>
             </ion-segment-button>

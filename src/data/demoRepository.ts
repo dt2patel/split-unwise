@@ -13,6 +13,7 @@ import {
   lakeHouseRecurring,
 } from '../demo/lakeHouse'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
+import { decodeActivity, decodeBalanceSnapshot, decodeSettlement } from './firebaseDecoders'
 import { assertReplayIdentity, createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareFirestoreStrings, compareTimelineAscending, compareTimelineDescending, isAfterDescendingCursor } from './timeline'
 import type {
@@ -48,6 +49,7 @@ export interface DemoRepositoryOptions {
 export interface DemoRepositoryStateStorage {
   load(scope: string): unknown
   save(scope: string, document: unknown): void | Promise<void>
+  quarantine?(scope: string, records: readonly unknown[]): void
 }
 
 interface DemoRepositoryStateDocument {
@@ -71,7 +73,13 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   const selectedUser = lakeHouseMembers.find(({ id }) => id === (options.currentUserId ?? lakeHouseCurrentUser.id))
   if (!selectedUser) throw new Error(`Unknown demo user: ${options.currentUserId}`)
   const stateScope = `split-unwise-demo:v2:${selectedUser.id}`
-  const restored = decodeDemoState(options.stateStorage?.load(stateScope), selectedUser.id)
+  const storedState = options.stateStorage?.load(stateScope)
+  let restored: DemoRepositoryStateDocument | undefined
+  try {
+    restored = decodeDemoState(storedState, selectedUser.id)
+  } catch {
+    if (storedState !== undefined && storedState !== null) options.stateStorage?.quarantine?.(stateScope, [storedState])
+  }
   const expenses = (restored?.expenses ?? lakeHouseExpenses).map(cloneExpense)
   const settlements = (restored?.settlements ?? []).map(clone)
   const activity = (restored?.activity ?? lakeHouseActivity).map(clone)
@@ -83,6 +91,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   let notificationPreferences: NotificationPreferences = restored?.notificationPreferences ? { ...restored.notificationPreferences } : { emailEnabled: true, pushEnabled: true }
   let nextExpenseNumber = restored?.nextExpenseNumber ?? 6
   let balanceRevision = restored?.balanceRevision ?? lakeHouseExpenses.length
+  let executionTail: Promise<void> = Promise.resolve()
   const now = options.now ?? (() => '2026-08-30T12:00:00.000Z')
 
   const groupExpenses = (groupId: string): ExpenseRow[] => {
@@ -112,7 +121,13 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     }
   }
 
-  const execute = async (command: CommandEnvelope): Promise<CommandResult> => {
+  const execute = (command: CommandEnvelope): Promise<CommandResult> => {
+    const result = executionTail.then(() => executeSerialized(command))
+    executionTail = result.then(() => undefined, () => undefined)
+    return result
+  }
+
+  const executeSerialized = async (command: CommandEnvelope): Promise<CommandResult> => {
     const identity = await createOperationIdentity(currentUser.id, command)
     const existing = operationLedger.get(command.operationId)
     if (existing) {
@@ -330,6 +345,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         if (!memberIds.has(command.basis.senderId) || !memberIds.has(command.basis.recipientId)) throw new Error('Settlement participants must be active group members')
         if (!Number.isSafeInteger(command.money.minorAmount) || command.money.minorAmount <= 0) throw new Error('Settlement amount must be a positive minor-unit integer')
         if (command.money.minorAmount > command.basis.debtMinor) throw new Error('Settlement amount cannot exceed the selected debt')
+        assertBalanceRevisionCanAdvance(balanceRevision)
         const createdAt = checkedNow(now)
         const actor = actorSnapshot(currentUser)
         const settlement: SettlementRecord = {
@@ -374,6 +390,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         const member = lakeHouseMembers.find(({ id }) => id === currentUser.id)
         if (previous.createdBy.id !== currentUser.id && member?.canManage !== true) throw new Error('Only the settlement creator or an active group manager may void it')
         const reason = normalizedPlainText(command.reason, 'Void reason', true)
+        assertBalanceRevisionCanAdvance(balanceRevision)
         const createdAt = checkedNow(now)
         const actor = actorSnapshot(currentUser)
         const updated: SettlementRecord = {
@@ -603,6 +620,9 @@ function normalizedPlainText(value: string, label: string, required: boolean): s
   if ([...normalized].length > 500) throw new Error(`${label} must be at most 500 Unicode code points`)
   return normalized
 }
+function assertBalanceRevisionCanAdvance(value: number): void {
+  if (!Number.isSafeInteger(value) || value >= Number.MAX_SAFE_INTEGER) throw new Error('Balance revision cannot advance beyond a safe integer')
+}
 function assertSettlementBasis(
   expectedBalanceRevision: number,
   basis: SettlementRecord['basis'],
@@ -640,11 +660,114 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
     || !Number.isSafeInteger(value.nextExpenseNumber) || (value.nextExpenseNumber as number) < 1
     || !Number.isSafeInteger(value.balanceRevision) || (value.balanceRevision as number) < 0
     || !Array.isArray(value.expenses) || !Array.isArray(value.settlements) || !Array.isArray(value.activity) || !Array.isArray(value.comments) || !Array.isArray(value.notifications)
-    || !Array.isArray(value.revisions) || !Array.isArray(value.operationLedger)
-    || value.operationLedger.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || !isRecord(entry[1]))) {
+    || !Array.isArray(value.revisions) || !Array.isArray(value.operationLedger)) {
     throw new Error('Persisted demo repository state is invalid')
   }
+  const settlements = value.settlements.map(decodeDemoSettlement)
+  const activities = value.activity.map(decodeDemoActivity)
+  assertSettlementActivityLinks(settlements, activities)
+  value.operationLedger.forEach((entry) => assertDemoOperationLedgerEntry(entry, principalId, value.balanceRevision as number, settlements, activities))
   return clone(value) as unknown as DemoRepositoryStateDocument
+}
+
+function decodeDemoSettlement(value: unknown): SettlementRecord {
+  if (!isRecord(value) || typeof value.groupId !== 'string' || typeof value.settlementId !== 'string' || value.syncState !== 'fresh') throw new Error('Persisted demo settlement is invalid')
+  const settlement = decodeSettlement(value.groupId, value.settlementId, value)
+  if (!isDemoOperationId(settlement.operationId) || (settlement.createdBy.id !== settlement.senderId && settlement.createdBy.id !== settlement.recipientId)) {
+    throw new Error('Persisted demo settlement identity is invalid')
+  }
+  if (settlement.void && (!isDemoOperationId(settlement.void.operationId) || !lakeHouseMembers.some(({ id }) => id === settlement.void?.actor.id))) {
+    throw new Error('Persisted demo settlement void is invalid')
+  }
+  return settlement
+}
+
+function decodeDemoActivity(value: unknown): ActivityItem {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.groupId !== 'string' || value.syncState !== 'fresh' || !isDemoOperationId(value.operationId)) {
+    throw new Error('Persisted demo activity is invalid')
+  }
+  const item = decodeActivity(value.groupId, value.id, value)
+  if (!lakeHouseMembers.some(({ id }) => id === item.actor.id)) throw new Error('Persisted demo activity actor is invalid')
+  return item
+}
+
+function assertSettlementActivityLinks(settlements: readonly SettlementRecord[], activities: readonly ActivityItem[]): void {
+  for (const settlement of settlements) {
+    const created = activities.find((item) => item.operationId === settlement.operationId && item.kind === 'settlement.created')
+    if (!created || created.groupId !== settlement.groupId || created.settlementId !== settlement.settlementId
+      || !sameActor(created.actor, settlement.createdBy) || created.createdAt !== settlement.createdAt) {
+      throw new Error('Persisted demo settlement creation activity is invalid')
+    }
+    if (!settlement.void) continue
+    const voided = activities.find((item) => item.operationId === settlement.void?.operationId && item.kind === 'settlement.voided')
+    if (!voided || voided.groupId !== settlement.groupId || voided.settlementId !== settlement.settlementId
+      || !sameActor(voided.actor, settlement.void.actor) || voided.createdAt !== settlement.void.createdAt) {
+      throw new Error('Persisted demo settlement void activity is invalid')
+    }
+  }
+}
+
+function assertDemoOperationLedgerEntry(
+  entry: unknown,
+  principalId: string,
+  currentBalanceRevision: number,
+  settlements: readonly SettlementRecord[],
+  activities: readonly ActivityItem[],
+): void {
+  if (!Array.isArray(entry) || entry.length !== 2 || !isDemoOperationId(entry[0]) || !isRecord(entry[1]) || !isRecord(entry[1].identity) || !isRecord(entry[1].result)) {
+    throw new Error('Persisted demo operation ledger entry is invalid')
+  }
+  const [operationId, stored] = entry as [string, { identity: Record<string, unknown>; result: Record<string, unknown> }]
+  const identity = stored.identity
+  const result = stored.result
+  if (identity.userId !== principalId || identity.operationId !== operationId || !isCommandKind(identity.kind)
+    || (identity.groupId !== null && typeof identity.groupId !== 'string') || typeof identity.requestFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(identity.requestFingerprint)
+    || typeof identity.resourceId !== 'string' || !/^operation-[a-f0-9]{48}$/.test(identity.resourceId)
+    || result.kind !== identity.kind || result.operationId !== operationId || result.status !== 'saved') {
+    throw new Error('Persisted demo operation identity or result is invalid')
+  }
+  if (identity.kind !== 'settlement.record' && identity.kind !== 'settlement.void') return
+  if (identity.groupId !== LAKE_HOUSE_GROUP_ID || !isRecord(result.settlement) || !isRecord(result.balanceSnapshot) || !isRecord(result.activity)) {
+    throw new Error('Persisted demo settlement result is invalid')
+  }
+  const resultSettlement = decodeDemoSettlement(result.settlement)
+  const resultSnapshot = decodeBalanceSnapshot(identity.groupId, result.balanceSnapshot)
+  const resultActivity = decodeDemoActivity(result.activity)
+  const current = settlements.find(({ settlementId }) => settlementId === resultSettlement.settlementId)
+  const currentActivity = activities.find(({ operationId: id }) => id === operationId)
+  if (!current || !currentActivity || resultSnapshot.balanceRevision > currentBalanceRevision
+    || !sameImmutableSettlement(resultSettlement, current) || !sameActivity(resultActivity, currentActivity)) {
+    throw new Error('Persisted demo settlement result does not match restored state')
+  }
+  if (identity.kind === 'settlement.record') {
+    if (resultSettlement.operationId !== operationId || resultSettlement.revision !== 1 || resultSettlement.void !== undefined || resultActivity.kind !== 'settlement.created') {
+      throw new Error('Persisted demo settlement record result is invalid')
+    }
+  } else if (!resultSettlement.void || resultSettlement.void.operationId !== operationId || resultActivity.kind !== 'settlement.voided') {
+    throw new Error('Persisted demo settlement void result is invalid')
+  }
+}
+
+function sameImmutableSettlement(left: SettlementRecord, right: SettlementRecord): boolean {
+  return left.settlementId === right.settlementId && left.groupId === right.groupId && left.operationId === right.operationId
+    && left.senderId === right.senderId && left.recipientId === right.recipientId && sameMoney(left.money, right.money)
+    && left.basis.kind === right.basis.kind && left.basis.senderId === right.basis.senderId && left.basis.recipientId === right.basis.recipientId
+    && left.basis.currency === right.basis.currency && left.basis.debtMinor === right.basis.debtMinor
+    && left.method === right.method && left.occurredOn === right.occurredOn && left.note === right.note
+    && sameActor(left.createdBy, right.createdBy) && left.createdAt === right.createdAt
+}
+
+function sameActivity(left: ActivityItem, right: ActivityItem): boolean {
+  return left.id === right.id && left.groupId === right.groupId && left.operationId === right.operationId && left.kind === right.kind
+    && left.subject.kind === right.subject.kind && left.subject.id === right.subject.id && left.subject.label === right.subject.label
+    && sameActor(left.actor, right.actor) && left.settlementId === right.settlementId && left.createdAt === right.createdAt
+}
+
+function sameActor(left: ActorSnapshot, right: ActorSnapshot): boolean { return left.id === right.id && left.displayName === right.displayName }
+function sameMoney(left: SettlementRecord['money'], right: SettlementRecord['money']): boolean { return left.currency === right.currency && left.minorAmount === right.minorAmount }
+function isDemoOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
+function isCommandKind(value: unknown): value is CommandEnvelope['kind'] {
+  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'settlement.record', 'settlement.void'].includes(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
