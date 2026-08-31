@@ -6,6 +6,9 @@ import { createRouteAnimation } from './app/navigation'
 import { createAppRouter } from './app/router'
 import { createRepositorySessionRuntime } from './data/repositoryFactory'
 import { createAppSession, createAppSessionCoordinator, createAppSessionMountHost, setActiveAppSession } from './data/session'
+import { appPrincipalKey } from './data/principal'
+import { createIndexedDbReceiptStore } from './data/receipts'
+import { createFirebaseReceiptProvider } from './data/firebaseReceiptProvider'
 import { setAuthService } from './features/auth/authService'
 import './app/theme.css'
 
@@ -57,10 +60,17 @@ const mountHost = createAppSessionMountHost({
   },
 })
 const sessionCoordinator = createAppSessionCoordinator({
-  createSession: (principal) => createAppSession({
-    principal,
-    repository: repositoryRuntime.createRepository(principal),
-  }),
+  createSession: (principal) => {
+    const receipts = createIndexedDbReceiptStore({ namespace: appPrincipalKey(principal) })
+    return createAppSession({
+      principal,
+      repository: repositoryRuntime.createRepository(principal),
+      receipts,
+      ...(principal.mode === 'firebase' && repositoryRuntime.configuration.kind === 'firebase'
+        ? { receiptProvider: createFirebaseReceiptProvider(repositoryRuntime.configuration.firebase, receipts) }
+        : {}),
+    })
+  },
   resetFeatureStores: mountHost.resetFeatureStores,
   activateSession: mountHost.activateSession,
 })

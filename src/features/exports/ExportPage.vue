@@ -8,8 +8,13 @@ import { getPremiumProviderStates } from '../../domain/premiumProviders'
 import type { PremiumExportSnapshot } from '../premium/premiumData'
 import { loadPremiumExportSnapshot } from '../premium/premiumData'
 import { createClientDownloadManager } from './clientDownload'
+import { getAppSession } from '../../data/session'
+import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
+import { createClientOperationId } from '../../data/clientOperationId'
+import { downloadPrivateObject, waitForPrivateJob } from '../../data/firebaseReceiptProvider'
 
-const route = useRoute(); const snapshot = ref<PremiumExportSnapshot>(); const loading = ref(false); const error = ref(''); const status = ref(''); const manager = createClientDownloadManager(); const providerStates = getPremiumProviderStates(); let request = 0
+const route = useRoute(); const snapshot = ref<PremiumExportSnapshot>(); const loading = ref(false); const exporting = ref(false); const error = ref(''); const status = ref(''); const manager = createClientDownloadManager(); const providerStates = getPremiumProviderStates(); let request = 0
+const session = getAppSession()
 const accountScope = computed(() => route.name === 'account-export')
 const groupScope = computed(() => route.name === 'group-export')
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : undefined)
@@ -18,12 +23,31 @@ watch(() => route.fullPath, () => { manager.dispose(); void load() }, { immediat
 onBeforeUnmount(() => manager.dispose())
 
 async function load(): Promise<void> { const current = ++request; loading.value = true; error.value = ''; status.value = ''; snapshot.value = undefined; try { if (groupScope.value && !groupId.value) throw new Error('Open export from a valid group link.'); const loaded = await loadPremiumExportSnapshot(groupScope.value ? groupId.value : undefined); if (current === request) snapshot.value = loaded } catch (reason) { if (current === request) error.value = message(reason) } finally { if (current === request) loading.value = false } }
-function downloadCsv(): void { if (!snapshot.value) return; download(buildTransactionCsv(snapshot.value), `${fileStem()}-transactions.csv`, 'text/csv;charset=utf-8') }
-function downloadJson(): void { if (!snapshot.value) return; download(buildAccountBackup({ ...snapshot.value, exportedAt: new Date().toISOString() }), `${fileStem()}-backup.json`, 'application/json;charset=utf-8') }
-function download(exported: { content: string; rowCount: number }, fileName: string, mimeType: string): void { error.value = ''; status.value = ''; try { const result = manager.download(exported.content, exported.rowCount, fileName, mimeType); status.value = result.status === 'ready' ? `Downloaded ${fileName}.` : 'This export is too large for a safe mobile download. Secure server export is not configured yet.' } catch (reason) { error.value = message(reason) } }
+async function downloadCsv(): Promise<void> { if (!snapshot.value) return; await download(buildTransactionCsv(snapshot.value), `${fileStem()}-transactions.csv`, 'text/csv;charset=utf-8', 'csv') }
+async function downloadJson(): Promise<void> { if (!snapshot.value) return; await download(buildAccountBackup({ ...snapshot.value, exportedAt: new Date().toISOString() }), `${fileStem()}-backup.json`, 'application/json;charset=utf-8', 'json') }
+async function download(exported: { content: string; rowCount: number }, fileName: string, mimeType: string, format: 'csv' | 'json'): Promise<void> { error.value = ''; status.value = ''; try { const result = manager.download(exported.content, exported.rowCount, fileName, mimeType); if (result.status === 'ready') status.value = `Downloaded ${fileName}.`; else if (groupId.value && session.repository.mode === 'firebase') await serverExport(format); else status.value = 'This export exceeds the safe mobile limit. Open an individual group to prepare a secure server export.' } catch (reason) { error.value = message(reason) } }
+async function serverExport(format: 'csv' | 'json'): Promise<void> {
+  if (!groupId.value || session.repository.mode !== 'firebase' || exporting.value) return
+  exporting.value = true; error.value = ''
+  try {
+    const configuration = (await import('../../data/firebase')).readRuntimeConfiguration()
+    if (configuration.kind !== 'firebase') throw new Error('Firebase export service is unavailable.')
+    status.value = 'Preparing secure export…'
+    const queued = await callSplitUnwiseFunction('createLargeExportJob', { schemaVersion: 1, operationId: createClientOperationId('export'), groupId: groupId.value, format }, { replayProtected: true })
+    if (!isRecord(queued) || typeof queued.jobId !== 'string') throw new Error('Export service returned an invalid response.')
+    const job = await waitForPrivateJob(configuration.firebase, queued.jobId)
+    if (job.status !== 'complete' || typeof job.storagePath !== 'string') throw new Error('The secure export could not be completed.')
+    const fileName = `${fileStem()}-server.${format}`
+    await downloadPrivateObject(configuration.firebase, job.storagePath, fileName)
+    status.value = `Downloaded ${fileName}.`
+  } catch (reason) {
+    status.value = ''; error.value = message(reason)
+  } finally { exporting.value = false }
+}
 function fileStem(): string { return accountScope.value ? 'split-unwise-account' : `split-unwise-${groupId.value ?? 'group'}` }
 function coverage(): string { return snapshot.value?.coverage.status === 'complete' ? 'Complete demo history is ready for export.' : 'This is a bounded authorized snapshot. Complete server export is not configured yet.' }
 function message(reason: unknown): string { return reason instanceof Error ? reason.message : String(reason) }
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 </script>
 
 <template>
@@ -33,7 +57,8 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
       <template v-else-if="snapshot"><p class="coverage" data-testid="coverage">{{ coverage() }}</p>
         <section class="export-card"><div><h2>Transactions CSV</h2><p>Expenses and saved payments with currency and signed impact for each authorized member.</p></div><ion-button fill="outline" @click="downloadCsv">Download CSV</ion-button></section>
         <section class="export-card"><div><h2>Auditable JSON</h2><p>Versioned groups, members, ledger history, comments, settings, recurrence, and allowlisted durable attachment descriptors. No local files, URLs, tokens, or secrets.</p></div><ion-button fill="outline" @click="downloadJson">Download JSON</ion-button></section>
-        <p class="limits">Mobile downloads are limited to 5,000 rows and 5 MiB. Larger exports require the secure server job.</p><p v-if="error" role="alert" class="error">{{ error }}</p><p role="status" aria-live="polite" class="status">{{ status }}</p>
+        <section v-if="groupId && session.repository.mode === 'firebase'" class="export-card"><div><h2>Secure server export</h2><p>Prepare a private owner-only file when the full group is too large for a mobile download.</p></div><ion-button fill="outline" :disabled="exporting" @click="serverExport('csv')">{{ exporting ? 'Preparing…' : 'Prepare export' }}</ion-button></section>
+        <p class="limits">Mobile downloads are limited to 5,000 rows and 5 MiB. Larger group exports use the secure server job.</p><p v-if="error" role="alert" class="error">{{ error }}</p><p role="status" aria-live="polite" class="status">{{ status }}</p>
         <section class="provider-card" aria-labelledby="connected-heading"><h2 id="connected-heading">Connected services</h2><article><div><strong>Transaction import</strong><p>Requires a verified financial-data provider.</p></div><span>{{ providerStates.import.status === 'unavailable' ? 'Unavailable' : 'Available' }}</span></article><article><div><strong>Live currency conversion</strong><p>Requires an authoritative rate source and timestamp. Stored money is never relabeled.</p></div><span>{{ providerStates.fx.status === 'unavailable' ? 'Unavailable' : 'Available' }}</span></article></section>
       </template>
     </main></ion-content></ion-page>

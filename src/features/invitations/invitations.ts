@@ -1,4 +1,4 @@
-export type InvitationCapability = 'demo-local-preview' | 'server-required'
+export type InvitationCapability = 'demo-local-preview' | 'firebase-server' | 'server-required'
 export type InvitationStatus = 'active' | 'expired' | 'revoked' | 'used' | 'email-mismatch'
 
 export interface PreparedInvitation {
@@ -72,6 +72,10 @@ export function consumeTransientInvitationSecret(invitationId: string): string |
   const value = transientSecrets.get(id)
   transientSecrets.delete(id)
   return value
+}
+
+export function peekTransientInvitationSecret(invitationId: string): string | undefined {
+  return transientSecrets.get(strictId(invitationId, 'invitation'))
 }
 
 export function invitationStatus(record: InvitationRecord, identity: { readonly email?: string; readonly emailVerified: boolean }, now = new Date()): InvitationStatus {

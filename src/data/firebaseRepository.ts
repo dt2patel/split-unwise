@@ -5,6 +5,7 @@ import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, de
 import { resolveFirebaseSession } from './firebaseSession'
 import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseDeleteResult, ExpenseEditResult, ExpenseRow, Member, NotificationItem, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
+import { parseExecuteCommandRequest } from '@split-unwise/shared'
 
 type FirestoreModule = typeof import('firebase/firestore')
 type AuthModule = typeof import('firebase/auth')
@@ -12,8 +13,9 @@ type FirebaseClient = { readonly auth: ReturnType<AuthModule['getAuth']>; readon
 type FirebaseContext = FirebaseClient & { readonly userId: string }
 
 /** Firebase facade: SDK modules are loaded only on the first actual repository call. */
-export function createFirebaseRepository(configuration: FirebaseConfiguration, expectedUserId?: string): AppRepository {
+export function createFirebaseRepository(configuration: FirebaseConfiguration, expectedUserId?: string, functionsRegion?: string): AppRepository {
   let clientPromise: Promise<FirebaseClient> | undefined
+  let callablePromise: Promise<(request: unknown) => Promise<{ readonly data: unknown }>> | undefined
   const client = () => clientPromise ??= connect(configuration)
 
   async function context(): Promise<FirebaseContext> {
@@ -30,12 +32,17 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   }
   async function listExpenses(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
     const { db, firestore } = await readyContext
-    const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses'), firestore.orderBy('date', 'asc')))
+    const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses'), firestore.orderBy('date', 'asc'), firestore.limit(100)))
     return snapshot.docs.map((document) => decodeExpense(groupId, document.id, document.data())).filter(({ deletedAt }) => deletedAt === undefined)
   }
 
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
-    return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Secure financial writes require the authenticated callable service configured in Task 11.' } as CommandResult
+    if (!functionsRegion) return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Secure cloud writes are unavailable because Firebase Functions is not configured.' } as CommandResult
+    await context()
+    const request = parseExecuteCommandRequest({ schemaVersion: 1, command })
+    callablePromise ??= connectExecuteCommand(configuration, functionsRegion)
+    const response = await (await callablePromise)(request)
+    return decodeCommandResult(command, response.data)
   }
 
   return {
@@ -45,7 +52,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     groups: {
       async list() {
         const { db, firestore, userId } = await context()
-        const projection = await firestore.getDocs(firestore.collection(db, 'users', userId, 'groups'))
+        const projection = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
         const groups = await Promise.all(projection.docs.map(async (membership) => {
           const groupId = decodeGroupProjection(membership.id, membership.data())
           const group = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
@@ -60,7 +67,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       },
       async listMembers(groupId) {
         const { db, firestore, userId } = await context()
-        const snapshot = await firestore.getDocs(firestore.collection(db, 'groups', groupId, 'members'))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'members'), firestore.limit(100)))
         return snapshot.docs.map((document) => decodeMember(document.id, document.data(), document.id === userId)).sort((left, right) => left.displayName.localeCompare(right.displayName))
       },
       async getBalanceSnapshot(groupId) {
@@ -78,7 +85,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async getCharts(groupId) { const readyContext = context(); return buildGroupCharts(await listExpenses(groupId, readyContext)) },
       async listRecurring(groupId) {
         const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.collection(db, 'groups', groupId, 'recurring'))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'recurringTemplates'), firestore.limit(100)))
         return snapshot.docs.map((document) => decodeRecurringExpense(groupId, document.id, document.data()))
       },
       setDefaultSplit: execute,
@@ -95,14 +102,14 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async delete(command): Promise<ExpenseDeleteResult> { const result = await execute(command); if (result.kind !== 'expense.delete') throw new Error('Unexpected expense delete result'); return result },
       async listRevisions(groupId, expenseId) {
         const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses', expenseId, 'revisions'), firestore.orderBy('revision', 'asc'), firestore.orderBy(firestore.documentId(), 'asc')))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses', expenseId, 'revisions'), firestore.orderBy('revision', 'asc'), firestore.orderBy(firestore.documentId(), 'asc'), firestore.limit(100)))
         return snapshot.docs.map((document) => decodeExpenseRevision(groupId, expenseId, document.id, document.data()))
       },
     },
     comments: {
       async listForExpense(groupId, expenseId) {
         const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'comments'), firestore.where('expenseId', '==', expenseId), firestore.orderBy('createdAt', 'asc'), firestore.orderBy(firestore.documentId(), 'asc')))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'comments'), firestore.where('expenseId', '==', expenseId), firestore.orderBy('createdAt', 'asc'), firestore.orderBy(firestore.documentId(), 'asc'), firestore.limit(100)))
         return snapshot.docs.map((document) => decodeComment(groupId, expenseId, document.id, document.data()))
       },
       async add(command) { const result = await execute(command); if (result.kind !== 'comment.add') throw new Error('Unexpected comment result'); return result },
@@ -115,6 +122,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           firestore.collection(db, 'groups', groupId, 'settlements'),
           firestore.orderBy('occurredOn', 'asc'),
           firestore.orderBy(firestore.documentId(), 'asc'),
+          firestore.limit(100),
         ))
         return snapshot.docs.map((document) => decodeSettlement(groupId, document.id, document.data()))
       },
@@ -137,7 +145,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     activity: {
       async listForGroup(groupId) {
         const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'asc'), firestore.orderBy(firestore.documentId(), 'asc')))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'asc'), firestore.orderBy(firestore.documentId(), 'asc'), firestore.limit(100)))
         return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
       },
       async listForAccount(query) {
@@ -170,7 +178,10 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       },
       async unreadCount() {
         const { db, firestore, userId } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'notifications'), firestore.where('readAt', '==', null)))
+        const cursor = await firestore.getDoc(firestore.doc(db, 'users', userId, 'settings', 'notificationReadCursor'))
+        const projected = cursor.exists() ? cursor.data().unreadCount : undefined
+        if (Number.isSafeInteger(projected) && projected >= 0) return projected as number
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'notifications'), firestore.where('readAt', '==', null), firestore.limit(100)))
         return snapshot.size
       },
       async markRead(command) { const result = await execute(command); if (result.kind !== 'notification.read') throw new Error('Unexpected notification result'); return result },
@@ -222,4 +233,15 @@ function activityFilterConstraints(firestore: FirestoreModule, filter: ActivityF
 async function connect(configuration: FirebaseConfiguration): Promise<FirebaseClient> {
   const [app, authModule, firestore] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth'), import('firebase/firestore')])
   return { auth: authModule.getAuth(app), db: firestore.getFirestore(app), firestore }
+}
+
+async function connectExecuteCommand(configuration: FirebaseConfiguration, region: string): Promise<(request: unknown) => Promise<{ readonly data: unknown }>> {
+  const [app, functions] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/functions')])
+  const callable = functions.httpsCallable(functions.getFunctions(app, region), 'executeCommand', { limitedUseAppCheckTokens: true })
+  return (request) => callable(request)
+}
+
+function decodeCommandResult(command: CommandEnvelope, value: unknown): CommandResult {
+  if (!isRecord(value) || value.kind !== command.kind || value.operationId !== command.operationId || value.status !== 'saved') throw new Error('Callable command result is invalid')
+  return value as unknown as CommandResult
 }

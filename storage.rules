@@ -1,0 +1,55 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function activeMember(groupId) {
+      return signedIn()
+        && firestore.get(/databases/(default)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active';
+    }
+
+    function allowedDraftType() {
+      return request.resource.contentType.matches('image/(jpeg|png|heic|heif|webp)');
+    }
+
+    function exactDraftMetadata(uid) {
+      return request.resource.metadata.keys().hasAll(['ownerUid', 'operationId', 'purpose'])
+        && request.resource.metadata.keys().hasOnly(['ownerUid', 'operationId', 'purpose'])
+        && request.resource.metadata.ownerUid == uid
+        && request.resource.metadata.operationId.matches('^[0-9a-fA-F-]{36}$')
+        && request.resource.metadata.purpose.matches('^(expense-receipt|comment-attachment)$');
+    }
+
+    match /drafts/{uid}/{assetId} {
+      allow create: if owner(uid)
+        && resource == null
+        && request.resource.size > 0
+        && request.resource.size <= 15 * 1024 * 1024
+        && allowedDraftType()
+        && exactDraftMetadata(uid);
+      allow get: if owner(uid);
+      allow list, update: if false;
+      allow delete: if owner(uid);
+    }
+
+    match /groups/{groupId}/assets/{assetId} {
+      allow get: if activeMember(groupId);
+      allow list, write: if false;
+    }
+
+    match /exports/{uid}/{jobId}/{fileName} {
+      allow get, delete: if owner(uid);
+      allow list, create, update: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

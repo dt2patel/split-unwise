@@ -5,6 +5,8 @@ export const SPLIT_UNWISE_FIREBASE_APP_NAME = 'split-unwise'
 
 let activeConfiguration: FirebaseConfiguration | undefined
 let appPromise: Promise<FirebaseApp> | undefined
+let appCheckSiteKey: string | undefined
+let appCheckPromise: Promise<void> | undefined
 
 /** The single named Firebase app used by Auth, Firestore, Functions, and Storage. */
 export function getSplitUnwiseFirebaseApp(configuration: FirebaseConfiguration): Promise<FirebaseApp> {
@@ -17,6 +19,19 @@ export function getSplitUnwiseFirebaseApp(configuration: FirebaseConfiguration):
       return existing
     }
     return firebase.initializeApp(configuration, SPLIT_UNWISE_FIREBASE_APP_NAME)
+  })
+}
+
+/** App Check is initialized on the same named app before any protected callable is used. */
+export function initializeSplitUnwiseAppCheck(configuration: FirebaseConfiguration, siteKey?: string): Promise<void> {
+  if (!siteKey) return Promise.resolve()
+  if (appCheckSiteKey && appCheckSiteKey !== siteKey) throw new Error('The Split Unwise Firebase app already uses a different App Check site key')
+  appCheckSiteKey = siteKey
+  return appCheckPromise ??= Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/app-check')]).then(([app, appCheck]) => {
+    appCheck.initializeAppCheck(app, {
+      provider: new appCheck.ReCaptchaEnterpriseProvider(siteKey),
+      isTokenAutoRefreshEnabled: true,
+    })
   })
 }
 
@@ -45,4 +60,6 @@ function normalized(value: string | undefined): string { return value ?? '' }
 export function resetFirebaseBootstrapForTesting(): void {
   activeConfiguration = undefined
   appPromise = undefined
+  appCheckSiteKey = undefined
+  appCheckPromise = undefined
 }

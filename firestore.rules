@@ -1,0 +1,141 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owns(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function activeMember(groupId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active';
+    }
+
+    function bounded(maximum) {
+      return request.query.limit != null && request.query.limit > 0 && request.query.limit <= maximum;
+    }
+
+    match /users/{uid} {
+      allow get: if owns(uid);
+      allow list, create, update, delete: if false;
+
+      match /groups/{groupId} {
+        allow get: if owns(uid);
+        allow list: if owns(uid) && bounded(100);
+        allow write: if false;
+      }
+
+      match /activity/{activityId} {
+        allow get: if owns(uid);
+        allow list: if owns(uid) && bounded(100);
+        allow write: if false;
+      }
+
+      match /notifications/{notificationId} {
+        allow get: if owns(uid);
+        allow list: if owns(uid) && bounded(100);
+        allow write: if false;
+      }
+
+      match /settings/{settingId} {
+        allow get: if owns(uid);
+        allow list, write: if false;
+      }
+
+      match /jobs/{jobId} {
+        allow get: if owns(uid);
+        allow list: if owns(uid) && bounded(50);
+        allow write: if false;
+      }
+
+      match /exports/{jobId} {
+        allow get: if owns(uid);
+        allow list: if owns(uid) && bounded(50);
+        allow write: if false;
+      }
+
+      match /devices/{deviceId} {
+        allow get: if owns(uid);
+        allow list: if owns(uid) && bounded(25);
+        allow write: if false;
+      }
+
+      match /operations/{operationId} {
+        allow read, write: if false;
+      }
+    }
+
+    match /groups/{groupId} {
+      allow get: if activeMember(groupId);
+      allow list, write: if false;
+
+      match /members/{uid} {
+        allow get: if activeMember(groupId);
+        allow list: if activeMember(groupId) && bounded(100);
+        allow write: if false;
+      }
+
+      match /expenses/{expenseId} {
+        allow get: if activeMember(groupId);
+        allow list: if activeMember(groupId) && bounded(100);
+        allow write: if false;
+
+        match /revisions/{revisionId} {
+          allow get: if activeMember(groupId);
+          allow list: if activeMember(groupId) && bounded(100);
+          allow write: if false;
+        }
+      }
+
+      match /comments/{commentId} {
+        allow get: if activeMember(groupId);
+        allow list: if activeMember(groupId) && bounded(100);
+        allow write: if false;
+      }
+
+      match /settlements/{settlementId} {
+        allow get: if activeMember(groupId);
+        allow list: if activeMember(groupId) && bounded(100);
+        allow write: if false;
+      }
+
+      match /activity/{activityId} {
+        allow get: if activeMember(groupId);
+        allow list: if activeMember(groupId) && bounded(100);
+        allow write: if false;
+      }
+
+      match /balance/{snapshotId} {
+        allow get: if activeMember(groupId);
+        allow list, write: if false;
+      }
+
+      match /settings/{settingId} {
+        allow get: if activeMember(groupId);
+        allow list, write: if false;
+      }
+
+      match /recurringTemplates/{templateId} {
+        allow get: if activeMember(groupId);
+        allow list: if activeMember(groupId) && bounded(100);
+        allow write: if false;
+      }
+
+      match /assets/{assetId} {
+        allow get: if activeMember(groupId);
+        allow list, write: if false;
+      }
+    }
+
+    match /invitations/{invitationId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

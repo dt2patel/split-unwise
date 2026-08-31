@@ -16,6 +16,7 @@ export interface FirebasePrincipalSourceOptions {
   readonly auth: HydratableFirebaseAuth
   readonly projectId: string
   readonly subscribe: (listener: (user: { readonly uid: string } | null) => void) => () => void
+  readonly prepare?: (user: { readonly uid: string } | null) => Promise<void>
 }
 
 /** The only boundary that decides whether Firebase has an authenticated user. */
@@ -35,7 +36,7 @@ export function createFirebasePrincipalSource(options: FirebasePrincipalSourceOp
       let delivered = false
       const unsubscribe = options.subscribe((user) => {
         const principal = user ? firebasePrincipal(options.projectId, user.uid) : undefined
-        const delivery = Promise.resolve(listener(principal)).then(() => undefined)
+        const delivery = Promise.resolve(options.prepare?.(user)).then(() => listener(principal)).then(() => undefined)
         if (!delivered) {
           delivered = true
           resolveFirst(delivery)
@@ -50,13 +51,17 @@ export function createFirebasePrincipalSource(options: FirebasePrincipalSourceOp
 }
 
 /** Real Firebase connection used by the app composition root. */
-export async function connectFirebasePrincipalSource(configuration: FirebaseConfiguration): Promise<FirebasePrincipalSource> {
-  const [app, authModule] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth')])
+export async function connectFirebasePrincipalSource(configuration: FirebaseConfiguration, functionsRegion?: string): Promise<FirebasePrincipalSource> {
+  const [app, authModule, functionsModule] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth'), functionsRegion ? import('firebase/functions') : Promise.resolve(undefined)])
   const auth = authModule.getAuth(app)
+  const bootstrap = functionsModule && functionsRegion
+    ? functionsModule.httpsCallable(functionsModule.getFunctions(app, functionsRegion), 'bootstrapProfile', { limitedUseAppCheckTokens: true })
+    : undefined
   return createFirebasePrincipalSource({
     auth,
     projectId: configuration.projectId,
     subscribe: (listener) => authModule.onAuthStateChanged(auth, listener),
+    async prepare(user) { if (user && bootstrap) await bootstrap({ schemaVersion: 1 }) },
   })
 }
 

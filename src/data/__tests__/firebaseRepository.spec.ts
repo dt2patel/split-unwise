@@ -150,6 +150,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
       constraints: [
         { type: 'orderBy', field: 'occurredOn', direction: 'asc' },
         { type: 'orderBy', field: '__name__', direction: 'asc' },
+        { type: 'limit', value: 100 },
       ],
     })
   })

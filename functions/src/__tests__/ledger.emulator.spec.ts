@@ -1,0 +1,81 @@
+import { deleteApp, getApps, initializeApp } from 'firebase-admin/app'
+import { getFirestore } from 'firebase-admin/firestore'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { executeLedgerCommand, LedgerError } from '../ledger.js'
+
+const enabled = Boolean(process.env.FIRESTORE_EMULATOR_HOST)
+const suite = enabled ? describe : describe.skip
+const projectId = 'demo-split-unwise'
+const appName = 'split-unwise-functions-tests'
+
+suite('ledger against the Firestore emulator', () => {
+  const app = getApps().find(({ name }) => name === appName) ?? initializeApp({ projectId }, appName)
+  const db = getFirestore(app)
+
+  beforeAll(() => { db.settings({ ignoreUndefinedProperties: false }) })
+  beforeEach(async () => {
+    const response = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/${projectId}/databases/(default)/documents`, { method: 'DELETE' })
+    if (!response.ok) throw new Error(`Could not clear emulator: ${response.status}`)
+    await Promise.all([
+      db.doc('users/owner').set({ displayName: 'Owner', initials: 'O' }),
+      db.doc('users/member').set({ displayName: 'Member', initials: 'M' }),
+      db.doc('users/removed').set({ displayName: 'Removed', initials: 'R' }),
+      db.doc('groups/group-a').set({ name: 'Group A', currency: 'USD', memberIds: ['owner', 'member'] }),
+      db.doc('groups/group-a/members/owner').set({ status: 'active', role: 'owner', canManage: true }),
+      db.doc('groups/group-a/members/member').set({ status: 'active', role: 'member', canManage: false }),
+      db.doc('groups/group-a/members/removed').set({ status: 'removed', role: 'member', canManage: false }),
+      db.doc('groups/group-a/balance/current').set({ groupId: 'group-a', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] }),
+    ])
+  })
+  afterAll(async () => deleteApp(app))
+
+  it('deduplicates twenty concurrent identical commands into one immutable revision and activity', async () => {
+    const request = addRequest('same-operation')
+    const results = await Promise.all(Array.from({ length: 20 }, () => executeLedgerCommand(db, 'owner', request, new Date('2026-08-31T12:00:00.000Z'))))
+    expect(new Set(results.map((result) => JSON.stringify(result))).size).toBe(1)
+    const [expenses, activity, operations] = await Promise.all([
+      db.collection('groups/group-a/expenses').get(),
+      db.collection('groups/group-a/activity').get(),
+      db.collection('users/owner/operations').get(),
+    ])
+    expect(expenses.size).toBe(1)
+    expect(activity.size).toBe(1)
+    expect(operations.size).toBe(1)
+    expect((await expenses.docs[0].ref.collection('revisions').get()).size).toBe(1)
+    expect((await db.doc('groups/group-a/balance/current').get()).data()).toMatchObject({ balanceRevision: 1, simplified: [{ fromParticipantId: 'member', toParticipantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }] })
+    expect(operations.docs[0].data()).not.toHaveProperty('expiresAt')
+  }, 30_000)
+
+  it('rejects changed-payload collisions and removed-member replay', async () => {
+    const request = addRequest('collision-operation')
+    await executeLedgerCommand(db, 'owner', request)
+    await expect(executeLedgerCommand(db, 'owner', { ...request, command: { ...request.command, description: 'Changed' } })).rejects.toMatchObject({ code: 'already-exists' })
+    await db.doc('groups/group-a/members/owner').update({ status: 'removed' })
+    await expect(executeLedgerCommand(db, 'owner', request)).rejects.toMatchObject({ code: 'permission-denied' })
+  })
+
+  it('rejects inactive participants, unsafe totals, and stale revisions', async () => {
+    const inactive = addRequest('inactive-operation')
+    inactive.command.allocations = [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }, { participantId: 'removed', money: { currency: 'USD', minorAmount: 500 } }]
+    inactive.command.splitMethod = { type: 'equal', participantIds: ['owner', 'removed'] }
+    await expect(executeLedgerCommand(db, 'owner', inactive)).rejects.toMatchObject({ code: 'invalid-argument' })
+    const invalid = addRequest('invalid-operation')
+    invalid.command.total.minorAmount = 0
+    await expect(executeLedgerCommand(db, 'owner', invalid)).rejects.toBeInstanceOf(LedgerError)
+    const saved = await executeLedgerCommand(db, 'owner', addRequest('edit-source'))
+    const expense = saved.expense as Record<string, unknown>
+    const { kind: _kind, operationId: _operationId, ...draft } = addRequest('draft').command
+    await expect(executeLedgerCommand(db, 'owner', { schemaVersion: 1, command: { kind: 'expense.edit', operationId: 'stale-edit', groupId: 'group-a', expenseId: expense.id, expectedRevision: 99, draft } })).rejects.toMatchObject({ code: 'failed-precondition' })
+  })
+
+  it('records a confirmed settlement against the exact balance revision and updates debts', async () => {
+    await executeLedgerCommand(db, 'owner', addRequest('expense-before-settlement'))
+    const result = await executeLedgerCommand(db, 'member', { schemaVersion: 1, command: { kind: 'settlement.record', operationId: 'settlement-operation', groupId: 'group-a', expectedBalanceRevision: 1, basis: { kind: 'simplified', senderId: 'member', recipientId: 'owner', currency: 'USD', debtMinor: 500 }, money: { currency: 'USD', minorAmount: 200 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true } })
+    expect(result).toMatchObject({ status: 'saved', balanceSnapshot: { balanceRevision: 2, simplified: [{ fromParticipantId: 'member', toParticipantId: 'owner', money: { minorAmount: 300 } }] } })
+    await expect(executeLedgerCommand(db, 'member', { schemaVersion: 1, command: { kind: 'settlement.record', operationId: 'stale-settlement', groupId: 'group-a', expectedBalanceRevision: 1, basis: { kind: 'simplified', senderId: 'member', recipientId: 'owner', currency: 'USD', debtMinor: 500 }, money: { currency: 'USD', minorAmount: 100 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true } })).rejects.toMatchObject({ code: 'failed-precondition' })
+  })
+})
+
+function addRequest(operationId: string): { schemaVersion: 1; command: any } {
+  return { schemaVersion: 1, command: { kind: 'expense.add', operationId, groupId: 'group-a', description: 'Dinner', date: '2026-08-31', total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }], allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }, { participantId: 'member', money: { currency: 'USD', minorAmount: 500 } }], category: 'Dining', splitMethod: { type: 'equal', participantIds: ['owner', 'member'] }, attachmentRefs: [] } }
+}

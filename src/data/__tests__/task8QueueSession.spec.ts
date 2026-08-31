@@ -386,13 +386,13 @@ describe('Task 8 strict command protocol', () => {
     }).result()).resolves.toMatchObject({ kind: 'settlement.void', status: 'saved' })
   })
 
-  it('keeps Firebase settlement mutations explicitly unavailable until callable authority lands', async () => {
+  it('keeps Firebase settlement mutations explicitly unavailable when Functions is not configured', async () => {
     const repository = createFirebaseRepository(firebaseConfiguration, 'maya-p')
     const record = recordCommand('firebase-record', 5, 500)
 
     await expect(repository.settlements.record(record)).resolves.toEqual({
       kind: 'settlement.record', operationId: record.operationId, status: 'not-supported',
-      reason: 'Secure financial writes require the authenticated callable service configured in Task 11.',
+      reason: 'Secure cloud writes are unavailable because Firebase Functions is not configured.',
     })
     await expect(repository.settlements.void({
       kind: 'settlement.void', operationId: 'firebase-void', groupId: 'lake-house-weekend', settlementId: 'settlement-a',

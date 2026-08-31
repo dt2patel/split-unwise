@@ -1,30 +1,57 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { IonButton, IonContent, IonIcon, IonPage, IonSpinner } from '@ionic/vue'
 import { peopleOutline, shieldCheckmarkOutline } from 'ionicons/icons'
-import { captureInvitationFragment, consumeTransientInvitationSecret, productionInvitationCapability } from './invitations'
+import { captureInvitationFragment, consumeTransientInvitationSecret, peekTransientInvitationSecret } from './invitations'
 import { peekActiveAppSession } from '../../data/session'
 import { getAuthService } from '../auth/authService'
+import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
+import { storeReturnPath } from '../auth/returnPath'
 
 const route = useRoute()
+const router = useRouter()
 const invitationId = computed(() => String(route.params.invitationId ?? pathnameInvitationId()))
-const state = ref<'loading' | 'preview' | 'sign-in' | 'server-required' | 'invalid'>('loading')
+const state = ref<'loading' | 'preview' | 'sign-in' | 'ready' | 'accepted' | 'invalid'>('loading')
 const message = ref('')
+const groupId = ref('')
+const accepting = ref(false)
 
-onMounted(() => {
+onMounted(async () => {
   try {
     if (typeof location !== 'undefined' && location.hash) captureInvitationFragment(invitationId.value, location, history)
-    const secret = consumeTransientInvitationSecret(invitationId.value)
+    const secret = peekTransientInvitationSecret(invitationId.value)
     if (!secret) { state.value = 'invalid'; message.value = 'This invitation link is missing or has already been opened.'; return }
     const auth = getAuthService().getState()
     if (auth.status !== 'signed-in') { state.value = 'sign-in'; message.value = 'Sign in to inspect and accept this private invitation.'; return }
     const session = peekActiveAppSession()
-    if (!session || session.repository.mode === 'firebase') { state.value = 'server-required'; message.value = productionInvitationCapability().reason; return }
+    if (!session) { state.value = 'invalid'; message.value = 'Your signed-in account is not ready.'; return }
+    if (session.repository.mode === 'firebase') {
+      const preview = decodePreview(await callSplitUnwiseFunction('invitationInspect', { schemaVersion: 1, invitationId: invitationId.value, token: secret }))
+      groupId.value = preview.groupId
+      state.value = preview.alreadyMember ? 'accepted' : 'ready'
+      message.value = preview.alreadyMember ? `You already belong to ${preview.groupName}.` : `You’re invited to join ${preview.groupName}.`
+      return
+    }
     state.value = 'preview'; message.value = 'Demo invitation preview. Acceptance stays on this device and is not a production membership change.'
-  } catch { state.value = 'invalid'; message.value = 'This invitation link is invalid.' }
+  } catch { state.value = 'invalid'; message.value = 'This invitation link is invalid, expired, or no longer available.' }
 })
 
+async function accept(): Promise<void> {
+  const secret = peekTransientInvitationSecret(invitationId.value)
+  if (!secret) { state.value = 'invalid'; message.value = 'This invitation has already been consumed.'; return }
+  accepting.value = true
+  try {
+    const result = decodeAccept(await callSplitUnwiseFunction('invitationAccept', { schemaVersion: 1, invitationId: invitationId.value, token: secret }, { replayProtected: true }))
+    consumeTransientInvitationSecret(invitationId.value)
+    state.value = 'accepted'; groupId.value = result.groupId; message.value = 'You joined the group.'
+    await router.replace(`/tabs/groups/${encodeURIComponent(result.groupId)}`)
+  } catch { state.value = 'invalid'; message.value = 'This invitation could not be accepted.' } finally { accepting.value = false }
+}
+async function signIn(): Promise<void> { storeReturnPath(`/invite/${encodeURIComponent(invitationId.value)}`); await router.push('/auth') }
+function decodePreview(value: unknown): { groupId: string; groupName: string; alreadyMember: boolean } { if (!isRecord(value) || typeof value.groupId !== 'string' || typeof value.groupName !== 'string' || typeof value.alreadyMember !== 'boolean') throw new Error('Invalid invitation preview'); return { groupId: value.groupId, groupName: value.groupName, alreadyMember: value.alreadyMember } }
+function decodeAccept(value: unknown): { groupId: string } { if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error('Invalid invitation acceptance'); return { groupId: value.groupId } }
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function pathnameInvitationId(): string { return typeof location === 'undefined' ? '' : /^\/invite\/([^/]+)$/.exec(location.pathname)?.[1] ?? '' }
 </script>
 
@@ -39,7 +66,9 @@ function pathnameInvitationId(): string { return typeof location === 'undefined'
         <template v-else>
           <p>{{ message }}</p>
           <p class="privacy"><ion-icon :icon="shieldCheckmarkOutline" /> The private token was removed from this browser’s address.</p>
-          <ion-button v-if="state === 'sign-in'" router-link="/auth" expand="block" shape="round">Sign in to continue</ion-button>
+          <ion-button v-if="state === 'sign-in'" expand="block" shape="round" @click="signIn">Sign in to continue</ion-button>
+          <ion-button v-else-if="state === 'ready'" expand="block" shape="round" :disabled="accepting" @click="accept">{{ accepting ? 'Joining…' : 'Join group' }}</ion-button>
+          <ion-button v-else-if="state === 'accepted' && groupId" :router-link="`/tabs/groups/${groupId}`" expand="block" shape="round">Open group</ion-button>
           <ion-button v-else-if="state === 'preview'" router-link="/tabs/groups" expand="block" shape="round">Open demo groups</ion-button>
           <ion-button v-else router-link="/tabs/home" expand="block" fill="outline" shape="round">Go home</ion-button>
         </template>

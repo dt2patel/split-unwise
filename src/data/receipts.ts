@@ -42,7 +42,7 @@ export type ReceiptUploadResult =
 
 export interface ReceiptProvider {
   upload(groupId: string, reference: LocalReceiptReference): Promise<ReceiptUploadResult>
-  recognize(reference: LocalReceiptReference): Promise<ReceiptRecognitionResult>
+  recognize(reference: LocalReceiptReference, groupId?: string): Promise<ReceiptRecognitionResult>
   delete(attachmentRef: string): Promise<void>
 }
 

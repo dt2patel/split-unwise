@@ -395,7 +395,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     receiptMessage.value = ''
     const recognitionRequest = ++receiptRecognitionRequest
     try {
-      const recognition = await session.receiptProvider.recognize(reference)
+      const recognition = await session.receiptProvider.recognize(reference, editor.groupId)
       if (!isCurrentReceiptRecognition(editorRequest, recognitionRequest, reference)) {
         if (editorRequest !== initializationRequest) await discardStaleReceipt(reference)
         return false

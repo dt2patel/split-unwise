@@ -1,0 +1,24 @@
+{
+  "name": "@split-unwise/functions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "engines": { "node": "22" },
+  "scripts": {
+    "build": "pnpm --filter @split-unwise/shared build && tsc -p tsconfig.json",
+    "test": "pnpm --filter @split-unwise/shared build && vitest run",
+    "test:emulator": "pnpm test"
+  },
+  "dependencies": {
+    "@split-unwise/shared": "workspace:*",
+    "firebase-admin": "14.3.0",
+    "firebase-functions": "7.3.2",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.0",
+    "typescript": "6.0.2",
+    "vitest": "4.1.11"
+  }
+}
