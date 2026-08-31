@@ -4,7 +4,7 @@ import { computeAllocations } from '../domain/splits'
 import type { CommandEnvelope, CommandKind, CommandResult, ExpenseDraft, ExpenseRow, SyncState } from './repositories'
 import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
 
-export const COMMAND_QUEUE_STORAGE_VERSION = 3 as const
+export const COMMAND_QUEUE_STORAGE_VERSION = 4 as const
 const COMMAND_QUEUE_STORAGE_PREFIX = `split-unwise:command-queue:v${COMMAND_QUEUE_STORAGE_VERSION}`
 const COMMAND_QUEUE_QUARANTINE_PREFIX = `split-unwise:command-queue:quarantine:v${COMMAND_QUEUE_STORAGE_VERSION}`
 
@@ -110,6 +110,11 @@ export class CommandQueue {
 
   submit(command: CommandEnvelope): CommandHandle {
     const principalKey = this.requireOwner()
+    if (!isCommandEnvelope(command)) {
+      const candidate: unknown = command
+      const operationId = isRecord(candidate) && typeof candidate.operationId === 'string' ? candidate.operationId : 'invalid-operation'
+      return rejectedHandle(operationId, new CommandFailedError('validation', 'Command envelope is invalid', false))
+    }
     assertOperationId(command.operationId)
     const existing = this.operations.get(command.operationId)
     if (existing) {
@@ -183,7 +188,7 @@ export class CommandQueue {
     this.requireOwner()
     await this.binding
     const pending = [...this.operations.values()].filter((operation): operation is Extract<CommandOperation, { status: 'pending' }> => operation.status === 'pending')
-    await Promise.all(pending.map((operation) => this.start(operation.envelope.operationId)))
+    for (const operation of pending) this.start(operation.envelope.operationId)
   }
 
   private requireOwner(): string {
@@ -413,6 +418,7 @@ function isExecutionEnvelopeFor(execution: CommandEnvelope, original: CommandEnv
   if (execution.kind !== original.kind || execution.operationId !== original.operationId) return false
   if (execution.kind === 'expense.add' && original.kind === 'expense.add') return execution.groupId === original.groupId
   if (execution.kind === 'expense.edit' && original.kind === 'expense.edit') return execution.groupId === original.groupId && execution.expenseId === original.expenseId && execution.expectedRevision === original.expectedRevision
+  if (execution.kind === 'comment.add' && original.kind === 'comment.add') return execution.groupId === original.groupId && execution.expenseId === original.expenseId && execution.body === original.body
   return canonicalEnvelopeFingerprint(execution) === canonicalEnvelopeFingerprint(original)
 }
 
@@ -431,9 +437,13 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
   if (!isRecord(value) || !isOperationId(value.operationId) || typeof value.kind !== 'string') return false
   switch (value.kind) {
     case 'expense.add': return isExpenseDraft(value)
-    case 'expense.edit': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isPositiveInteger(value.expectedRevision) && isExpenseDraft(value.draft)
-    case 'expense.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isPositiveInteger(value.expectedRevision)
-    case 'comment.add': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.body)
+    case 'expense.edit': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision) && isExpenseDraft(value.draft)
+    case 'expense.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision)
+    case 'comment.add': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.body) && isStringArray(value.attachmentRefs)
+    case 'comment.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.commentId)
+    case 'notification.read': return isNonEmptyString(value.notificationId)
+    case 'notification.read-all': return isTimelineCursor(value.cutoff)
+    case 'notification.preferences': return isNotificationPreferences(value.preferences)
     case 'settlement.record': return isNonEmptyString(value.groupId) && isNonEmptyString(value.fromParticipantId) && isNonEmptyString(value.toParticipantId) && isMoney(value.money) && isRecord(value.confirmation) && value.confirmation.kind === 'manual' && isIsoTimestamp(value.confirmation.confirmedAt)
     case 'group.default-split': return isNonEmptyString(value.groupId) && isSplitMethod(value.defaultSplit)
     case 'profile.update': return isNonEmptyString(value.displayName) && (value.initials === undefined || isNonEmptyString(value.initials))
@@ -448,7 +458,11 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
     case 'expense.edit': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId && value.expense.id === envelope.expenseId
       && value.expense.revision === envelope.expectedRevision + 1 && value.expense.deletedAt === undefined
     case 'expense.delete': return isTombstone(value.tombstone, envelope)
-    case 'comment.add':
+    case 'comment.add': return isSavedComment(value, envelope, false)
+    case 'comment.delete': return isSavedComment(value, envelope, true)
+    case 'notification.read': return isSavedNotificationRead(value, envelope)
+    case 'notification.read-all': return isTimelineCursor(value.cutoff) && sameTimelineCursor(value.cutoff, envelope.cutoff) && isStringArray(value.readNotificationIds)
+    case 'notification.preferences': return isNotificationPreferences(value.preferences) && samePreferences(value.preferences, envelope.preferences)
     case 'profile.update':
     case 'settlement.record': return isNonEmptyString(value.resourceId)
     case 'group.default-split': return value.resourceId === envelope.groupId
@@ -468,7 +482,52 @@ function isExpenseDraft(value: unknown): value is ExpenseDraft {
 function isExpenseRow(value: unknown): value is ExpenseRow {
   return isExpenseDraft(value) && isRecord(value) && isNonEmptyString(value.id) && isIsoTimestamp(value.createdAt) && isIsoTimestamp(value.updatedAt) && isPositiveInteger(value.revision) && isSyncState(value.syncState)
     && (value.recurringTemplateId === undefined || isNonEmptyString(value.recurringTemplateId)) && (value.deletedAt === undefined || isIsoTimestamp(value.deletedAt))
+    && (value.createdBy === undefined || isActorSnapshot(value.createdBy)) && (value.updatedBy === undefined || isActorSnapshot(value.updatedBy))
 }
+
+function isSavedComment(value: Record<string, unknown>, envelope: Extract<CommandEnvelope, { kind: 'comment.add' | 'comment.delete' }>, deleted: boolean): boolean {
+  if (!isExpenseComment(value.comment) || !isActivityItem(value.activity)) return false
+  const comment = value.comment
+  const activity = value.activity
+  const commentId = envelope.kind === 'comment.delete' ? envelope.commentId : comment.commentId
+  return comment.groupId === envelope.groupId && comment.expenseId === envelope.expenseId
+    && (envelope.kind === 'comment.delete' || comment.operationId === envelope.operationId)
+    && comment.commentId === commentId && (deleted ? comment.deletedAt !== undefined : comment.deletedAt === undefined)
+    && activity.groupId === envelope.groupId && activity.expenseId === envelope.expenseId && activity.operationId === envelope.operationId
+    && activity.commentId === commentId && activity.subject.kind === 'comment' && activity.subject.id === commentId
+    && activity.kind === (deleted ? 'comment.deleted' : 'comment.added')
+}
+
+function isExpenseComment(value: unknown): value is import('./repositories').ExpenseComment {
+  return isRecord(value) && isNonEmptyString(value.commentId) && isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId)
+    && isOperationId(value.operationId) && isActorSnapshot(value.author) && isNonEmptyString(value.body) && isStringArray(value.attachmentRefs)
+    && isIsoTimestamp(value.createdAt) && (value.deletedAt === undefined || isIsoTimestamp(value.deletedAt)) && isSyncState(value.syncState)
+}
+
+function isActivityItem(value: unknown): value is import('./repositories').ActivityItem {
+  if (!isRecord(value) || !isNonEmptyString(value.id) || !isNonEmptyString(value.groupId) || !isOperationId(value.operationId)
+    || !isActivityKind(value.kind) || !isActivitySubject(value.subject) || !isActorSnapshot(value.actor) || !isIsoTimestamp(value.createdAt) || !isSyncState(value.syncState)) return false
+  return (value.expenseId === undefined || isNonEmptyString(value.expenseId)) && (value.revision === undefined || isPositiveInteger(value.revision))
+    && (value.commentId === undefined || isNonEmptyString(value.commentId)) && (value.settlementId === undefined || isNonEmptyString(value.settlementId))
+}
+
+function isSavedNotificationRead(value: Record<string, unknown>, envelope: Extract<CommandEnvelope, { kind: 'notification.read' }>): boolean {
+  return isNotificationItem(value.notification) && value.notification.notificationId === envelope.notificationId && value.notification.readAt !== undefined
+}
+
+function isNotificationItem(value: unknown): value is import('./repositories').NotificationItem {
+  return isRecord(value) && isNonEmptyString(value.notificationId) && isNonEmptyString(value.principalId) && isNonEmptyString(value.groupId)
+    && isNonEmptyString(value.activityId) && isActivityKind(value.kind) && isActivitySubject(value.subject) && isActorSnapshot(value.actor)
+    && isIsoTimestamp(value.createdAt) && (value.readAt === undefined || isIsoTimestamp(value.readAt)) && isSyncState(value.syncState)
+}
+
+function isActorSnapshot(value: unknown): value is import('./repositories').ActorSnapshot { return isRecord(value) && isNonEmptyString(value.id) && isNonEmptyString(value.displayName) }
+function isActivityKind(value: unknown): boolean { return typeof value === 'string' && ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'group.event', 'membership.changed', 'settlement.created', 'settlement.voided'].includes(value) }
+function isActivitySubject(value: unknown): boolean { return isRecord(value) && ['comment', 'expense', 'group', 'membership', 'settlement'].includes(String(value.kind)) && isNonEmptyString(value.id) && (value.label === undefined || isNonEmptyString(value.label)) }
+function isTimelineCursor(value: unknown): value is import('./repositories').TimelineCursor { return isRecord(value) && isIsoTimestamp(value.createdAt) && isNonEmptyString(value.id) }
+function sameTimelineCursor(left: import('./repositories').TimelineCursor, right: import('./repositories').TimelineCursor): boolean { return left.createdAt === right.createdAt && left.id === right.id }
+function isNotificationPreferences(value: unknown): value is import('./repositories').NotificationPreferences { return isRecord(value) && typeof value.emailEnabled === 'boolean' && typeof value.pushEnabled === 'boolean' && Object.keys(value).length === 2 }
+function samePreferences(left: import('./repositories').NotificationPreferences, right: import('./repositories').NotificationPreferences): boolean { return left.emailEnabled === right.emailEnabled && left.pushEnabled === right.pushEnabled }
 
 function isTombstone(value: unknown, envelope: Extract<CommandEnvelope, { kind: 'expense.delete' }>): boolean {
   return isRecord(value) && value.id === envelope.expenseId && value.groupId === envelope.groupId && value.revision === envelope.expectedRevision + 1 && isIsoTimestamp(value.deletedAt)
@@ -562,6 +621,7 @@ function assertPrincipalKey(principalKey: string): string {
 function isOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
 function isNonEmptyString(value: unknown): value is string { return typeof value === 'string' && Boolean(value.trim()) }
 function isPositiveInteger(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) > 0 }
+function isNonNegativeInteger(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0 }
 function isStringArray(value: unknown): value is readonly string[] { return Array.isArray(value) && value.every(isNonEmptyString) }
 function isNumberRecord(value: unknown): value is Readonly<Record<string, number>> { return isRecord(value) && Object.values(value).every((item) => typeof item === 'number' && Number.isFinite(item)) }
 function isSyncState(value: unknown): value is SyncState { return typeof value === 'string' && ['fresh', 'stale', 'pending', 'failed', 'conflicted'].includes(value) }

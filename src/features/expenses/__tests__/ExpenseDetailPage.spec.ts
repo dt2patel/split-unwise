@@ -1,0 +1,151 @@
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia } from 'pinia'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createAppRouter } from '../../../app/router'
+import { createMemoryCommandStorage } from '../../../data/commandQueue'
+import { createDemoRepository } from '../../../data/demoRepository'
+import { createAppSession, setAppSessionForTesting } from '../../../data/session'
+import type { AppRepository } from '../../../data/repositories'
+import ExpenseDetailPage from '../ExpenseDetailPage.vue'
+
+const ionicStubs = {
+  IonPage: { template: '<div class="ion-page"><slot /></div>' },
+  IonHeader: { template: '<header><slot /></header>' },
+  IonToolbar: { template: '<div><slot /></div>' },
+  IonTitle: { template: '<div><slot /></div>' },
+  IonButtons: { template: '<div><slot /></div>' },
+  IonBackButton: { props: ['defaultHref', 'text'], template: '<a data-testid="back" :href="defaultHref">{{ text }}</a>' },
+  IonButton: { props: ['routerLink', 'disabled'], template: '<a v-if="routerLink" :href="routerLink" :aria-disabled="disabled || undefined"><slot /></a><button v-else type="button" :disabled="disabled"><slot /></button>' },
+  IonContent: { template: '<section><slot /></section>' },
+  IonIcon: { template: '<span aria-hidden="true" />' },
+  IonAlert: { name: 'IonAlert', props: ['isOpen', 'header', 'message', 'buttons'], emits: ['didDismiss'], template: '<div v-if="isOpen" data-testid="delete-alert" />' },
+}
+
+beforeEach(() => {
+  setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
+})
+
+describe('expense detail route context', () => {
+  it.each([
+    ['/tabs/home/expenses/groceries?groupId=lake-house-weekend', '/tabs/home'],
+    ['/tabs/groups/expenses/groceries?groupId=lake-house-weekend', '/tabs/groups/lake-house-weekend'],
+    ['/tabs/activity/expenses/groceries?groupId=lake-house-weekend', '/tabs/activity'],
+    ['/tabs/account/expenses/groceries?groupId=lake-house-weekend', '/tabs/account'],
+  ])('loads %s through the exact group and preserves its origin return', async (path, back) => {
+    const wrapper = await mountRoute(path)
+
+    expect(wrapper.get('h1').text()).toBe('Groceries')
+    expect(wrapper.get('[data-testid="back"]').attributes('href')).toBe(back)
+    expect(wrapper.get('[data-action="edit-expense"]').attributes('href')).toContain(path.split('/expenses/')[0] + '/expenses/groceries/edit?groupId=lake-house-weekend')
+    expect(wrapper.get('[data-testid="expense-total"]').text()).toContain('$170.00')
+    expect(wrapper.get('[aria-labelledby="payers-title"]').findAll('li')).toHaveLength(1)
+    expect(wrapper.get('[aria-labelledby="allocations-title"]').findAll('li')).toHaveLength(4)
+    expect(wrapper.get('[aria-labelledby="audit-title"]').findAll('li')).toHaveLength(1)
+    expect(wrapper.findAll('h1')).toHaveLength(1)
+  })
+
+  it('fails closed on a repeated group query without attempting an expense scan', async () => {
+    const source = createDemoRepository()
+    const getById = vi.fn(source.expenses.getById)
+    setAppSessionForTesting(createAppSession({
+      repository: { ...source, expenses: { ...source.expenses, getById } },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+
+    const wrapper = await mountRoute('/tabs/home/expenses/groceries?groupId=lake-house-weekend&groupId=another-group')
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('valid group link')
+    expect(wrapper.get('[data-action="safe-return"]').attributes('href')).toBe('/tabs/home')
+    expect(getById).not.toHaveBeenCalled()
+  })
+
+  it('rejects an inaccessible or mismatched expense with an actionable safe return', async () => {
+    const wrapper = await mountRoute('/tabs/groups/expenses/groceries?groupId=another-group')
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('not available')
+    expect(wrapper.get('[data-action="safe-return"]').attributes('href')).toBe('/tabs/groups')
+    expect(wrapper.find('[data-action="edit-expense"]').exists()).toBe(false)
+  })
+
+  it('retains a deleted expense with prior audit and disables edit, delete, and new comments', async () => {
+    const repository = createDemoRepository()
+    await repository.expenses.delete({ kind: 'expense.delete', operationId: 'detail-delete-seed', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit', expectedRevision: 1 })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute('/tabs/groups/expenses/cabin-deposit?groupId=lake-house-weekend')
+
+    expect(wrapper.get('[data-testid="deleted-state"]').text()).toContain('deleted')
+    expect(wrapper.find('[data-action="edit-expense"]').exists()).toBe(false)
+    expect(wrapper.find('[data-action="delete-expense"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="comments"]').text()).toContain('Booked the refundable rate')
+    expect(wrapper.get('[data-testid="comments"]').text()).toContain('Comments are closed')
+    expect(wrapper.get('[aria-labelledby="audit-title"]').findAll('li')).toHaveLength(2)
+  })
+})
+
+describe('expense detail financial and destructive states', () => {
+  it('renders plural payments, attribution, recurrence, notes, and durable attachments', async () => {
+    const repository = createDemoRepository({ now: () => '2026-08-31T19:00:00.000Z' })
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'detail-plural', groupId: 'lake-house-weekend', description: 'Shared lodge', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 10000 },
+      payments: [
+        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 6000 } },
+        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 4000 } },
+      ],
+      allocations: [
+        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 5000 } },
+        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 5000 } },
+      ],
+      category: 'Lodging', splitMethod: { type: 'equal', participantIds: ['maya-p', 'alex-r'] },
+      notes: 'Lake view', attachmentRefs: ['receipts/lodge.jpg'],
+      recurrence: { frequency: 'monthly', anchor: { month: 8, day: 31 }, timeZone: 'America/Chicago' },
+    })
+    if (added.status !== 'saved') throw new Error('Expected demo save')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute(`/tabs/activity/expenses/${added.expense.id}?groupId=lake-house-weekend`)
+
+    expect(wrapper.get('[aria-labelledby="payers-title"]').text()).toContain('Maya P.')
+    expect(wrapper.get('[aria-labelledby="payers-title"]').text()).toContain('$60.00')
+    expect(wrapper.get('[aria-labelledby="payers-title"]').text()).toContain('Alex R.')
+    expect(wrapper.text()).toContain('Lake view')
+    expect(wrapper.text()).toContain('Monthly')
+    expect(wrapper.text()).toContain('America/Chicago')
+    expect(wrapper.text()).toContain('receipts/lodge.jpg')
+    expect(wrapper.text()).toContain('Created by Maya P.')
+    expect(wrapper.get('time').attributes('datetime')).toMatch(/^2026-/)
+  })
+
+  it('names the expense in confirmation, defaults to cancel, restores focus, and suppresses duplicate deletion', async () => {
+    const wrapper = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    const trigger = wrapper.get('[data-action="delete-expense"]')
+    const focus = vi.spyOn(trigger.element as HTMLElement, 'focus')
+
+    await trigger.trigger('click')
+    const alert = wrapper.getComponent({ name: 'IonAlert' })
+    expect(alert.props('header')).toBe('Delete Groceries?')
+    expect(alert.props('buttons')[0]).toMatchObject({ text: 'Cancel', role: 'cancel' })
+    alert.vm.$emit('didDismiss', { detail: { role: 'cancel' } })
+    await wrapper.vm.$nextTick()
+    expect(focus).toHaveBeenCalled()
+
+    await trigger.trigger('click')
+    const destructive = alert.props('buttons').find((button: { role?: string }) => button.role === 'destructive')
+    const first = destructive.handler()
+    const second = destructive.handler()
+    await Promise.all([first, second])
+    await flushPromises()
+    expect(wrapper.get('[data-testid="delete-state"]').text()).toMatch(/Deleted|Saving deletion/)
+    expect(wrapper.find('[data-action="delete-expense"]').exists()).toBe(false)
+  })
+})
+
+async function mountRoute(path: string): Promise<VueWrapper> {
+  const router = createAppRouter()
+  await router.push(path)
+  await router.isReady()
+  const wrapper = mount(ExpenseDetailPage, { global: { plugins: [createPinia(), router], stubs: ionicStubs } })
+  await flushPromises()
+  return wrapper
+}

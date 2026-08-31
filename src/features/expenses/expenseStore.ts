@@ -158,7 +158,12 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   let receiptRecognitionRequest = 0
 
   const isDirty = computed(() => JSON.stringify(editor) !== initialFingerprint)
-  const returnPath = computed(() => origin.value === 'groups' && editor.groupId ? `/tabs/groups/${editor.groupId}` : `/tabs/${origin.value}`)
+  const returnPath = computed(() => {
+    if (mode.value === 'edit' && expenseId.value && editor.groupId) {
+      return `/tabs/${origin.value}/expenses/${encodeURIComponent(expenseId.value)}?groupId=${encodeURIComponent(editor.groupId)}`
+    }
+    return origin.value === 'groups' && editor.groupId ? `/tabs/groups/${encodeURIComponent(editor.groupId)}` : `/tabs/${origin.value}`
+  })
   const canSubmit = computed(() => hasInitialized.value && !isLoading.value && !loadError.value && saveState.value !== 'pending')
   const receiptDurability = computed<ReceiptDurability | undefined>(() => receiptPreview.value?.durability)
 
@@ -204,6 +209,10 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         loadedExpense = await session.repository.expenses.getById(options.groupId, options.expenseId)
         if (!loadedExpense) throw new Error('This expense is not available.')
         if (loadedExpense.groupId !== options.groupId) throw new Error('The loaded expense did not match its group context.')
+        const activeMember = loadedMembers.find(({ id }) => id === loadedCurrentUser.id)
+        if (loadedExpense.createdBy?.id !== loadedCurrentUser.id && activeMember?.canManage !== true) {
+          throw new Error('You are not allowed to edit this expense.')
+        }
         Object.assign(nextEditor, editorInputFromExpense(loadedExpense))
       }
       const localReceipt = nextEditor.attachmentRefs.find((reference): reference is LocalReceiptReference => reference.startsWith('local-receipt:'))

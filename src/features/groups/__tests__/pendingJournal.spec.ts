@@ -481,6 +481,6 @@ describe('pending journal projection', () => {
 
 function storageWith(operations: readonly CommandOperation[]) {
   return createMemoryCommandStorage({
-    [PRINCIPAL_KEY]: { version: 3, principalKey: PRINCIPAL_KEY, operations },
+    [PRINCIPAL_KEY]: { version: 4, principalKey: PRINCIPAL_KEY, operations },
   })
 }

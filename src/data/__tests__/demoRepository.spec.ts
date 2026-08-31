@@ -34,9 +34,9 @@ describe('demo repository', () => {
       { fromParticipantId: 'taylor-s', toParticipantId: 'alex-r', money: { currency: 'USD', minorAmount: 8050 } },
       { fromParticipantId: 'taylor-s', toParticipantId: 'maya-p', money: { currency: 'USD', minorAmount: 3625 } },
     ])
-    await expect(repository.expenses.listComments('lake-house-weekend', 'cabin-deposit')).resolves.toEqual([
-      expect.objectContaining({ authorId: 'alex-r', body: 'Booked the refundable rate for us.' }),
-      expect.objectContaining({ authorId: 'maya-p', body: 'Perfect, thank you!' }),
+    await expect(repository.comments.listForExpense('lake-house-weekend', 'cabin-deposit')).resolves.toEqual([
+      expect.objectContaining({ author: expect.objectContaining({ id: 'alex-r' }), body: 'Booked the refundable rate for us.' }),
+      expect.objectContaining({ author: expect.objectContaining({ id: 'maya-p' }), body: 'Perfect, thank you!' }),
     ])
     await expect(repository.groups.getTotals('lake-house-weekend')).resolves.toEqual([{ currency: 'USD', totalPaid: 75900, currentUserPaid: 22600, currentUserShare: 18975, currentUserNet: 3625 }])
     await expect(repository.groups.getCharts('lake-house-weekend')).resolves.toEqual({
@@ -69,7 +69,7 @@ describe('demo repository', () => {
     })).rejects.toThrow('different request context')
     await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.toHaveLength(6)
     await expect(repository.activity.listForGroup('lake-house-weekend')).resolves.toContainEqual(
-      expect.objectContaining({ type: 'expense-created', expenseId: 'demo-expense-006' }),
+      expect.objectContaining({ kind: 'expense.created', expenseId: 'demo-expense-006' }),
     )
   })
 

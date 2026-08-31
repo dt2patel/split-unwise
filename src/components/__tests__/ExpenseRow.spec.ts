@@ -14,6 +14,7 @@ const ionicStubs = {
   IonFab: { template: '<div data-testid="fab"><slot /></div>' },
   IonFabButton: { props: ['routerLink', 'ariaLabel'], template: '<a :href="routerLink" :aria-label="ariaLabel"><slot /></a>' },
   IonIcon: { template: '<span aria-hidden="true" />' },
+  RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
 }
 
 const expense: ExpenseRowRecord = {
@@ -158,6 +159,27 @@ describe('ExpenseRow', () => {
 
     await wrapper.get('[data-action="delete-remote"]').trigger('click')
     expect(wrapper.emitted('deleteRemote')).toHaveLength(1)
+  })
+
+  it('links only the non-action row body and leaves failed/conflict controls outside the link', async () => {
+    const wrapper = mount(ExpenseRow, {
+      props: {
+        expense: { ...expense, syncState: 'failed' },
+        balance: { currency: 'USD', minorAmount: 0 },
+        balanceDirection: 'settled',
+        journal: true,
+        retryable: true,
+        detailTo: '/tabs/groups/expenses/firewood?groupId=lake-house-weekend',
+      },
+      global: { stubs: ionicStubs },
+    })
+
+    expect(wrapper.get('a.expense-row__body').attributes('href')).toBe('/tabs/groups/expenses/firewood?groupId=lake-house-weekend')
+    expect(wrapper.get('a.expense-row__body').text()).toContain('Firewood for the dock')
+    expect(wrapper.findAll('[data-action]').every((button) => button.element.closest('a') === null)).toBe(true)
+
+    await wrapper.setProps({ detailTo: undefined })
+    expect(wrapper.find('a').exists()).toBe(false)
   })
 
   it('uses a restrained pending-row entrance and removes transforms for reduced motion', () => {

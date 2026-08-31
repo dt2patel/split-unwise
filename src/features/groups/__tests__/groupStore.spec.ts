@@ -138,6 +138,7 @@ function repositoryFor(requests: Readonly<Record<string, Promise<GroupSnapshot>>
       async listForGroup(groupId) { return read(groupId).then(({ expenses }) => expenses) },
     },
     activity: {
+      ...base.activity,
       async listForGroup(groupId) { return read(groupId).then(({ activity }) => activity) },
     },
   }

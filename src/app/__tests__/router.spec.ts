@@ -13,6 +13,10 @@ describe('application routes', () => {
     ['/tabs/activity/expenses/new', 'activity-expense-create'],
     ['/tabs/account/expenses/new', 'account-expense-create'],
     ['/tabs/groups/expenses/groceries/edit?groupId=lake-house-weekend', 'groups-expense-edit'],
+    ['/tabs/home/expenses/groceries?groupId=lake-house-weekend', 'home-expense-detail'],
+    ['/tabs/groups/expenses/groceries?groupId=lake-house-weekend', 'groups-expense-detail'],
+    ['/tabs/activity/expenses/groceries?groupId=lake-house-weekend', 'activity-expense-detail'],
+    ['/tabs/account/expenses/groceries?groupId=lake-house-weekend', 'account-expense-detail'],
     ['/tabs/groups/lake-house-weekend/settle-up', 'group-settle-up'],
     ['/tabs/groups/lake-house-weekend/balances', 'group-balances'],
     ['/tabs/groups/lake-house-weekend/totals', 'group-totals'],
@@ -31,9 +35,11 @@ describe('application routes', () => {
     const router = createAppRouter()
     const create = router.resolve(`/tabs/${origin}/expenses/new?groupId=lake-house-weekend`)
     const edit = router.resolve(`/tabs/${origin}/expenses/groceries/edit?groupId=lake-house-weekend`)
+    const detail = router.resolve(`/tabs/${origin}/expenses/groceries?groupId=lake-house-weekend`)
 
     expect(create.meta.hideAppChrome).toBe(true)
     expect(edit.meta.hideAppChrome).toBe(true)
+    expect(detail.meta.hideAppChrome).toBe(true)
   })
 
   it('redirects the legacy group-specific composer to the origin-scoped route with validated context', async () => {

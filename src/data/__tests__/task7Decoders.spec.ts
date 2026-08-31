@@ -1,0 +1,84 @@
+import { describe, expect, it } from 'vitest'
+import {
+  decodeActivity,
+  decodeComment,
+  decodeExpense,
+  decodeExpenseRevision,
+  decodeMember,
+  decodeNotification,
+} from '../firebaseDecoders'
+
+describe('Task 7 Firebase boundary decoders', () => {
+  it('decodes explicit manager capability and rejects a non-boolean value', () => {
+    expect(decodeMember('maya-p', { displayName: 'Maya P.', initials: 'MP', canManage: true }, true)).toMatchObject({ canManage: true })
+    expect(decodeMember('jordan-k', { displayName: 'Jordan K.', initials: 'JK' }, false).canManage).toBeUndefined()
+    expect(() => decodeMember('alex-r', { displayName: 'Alex R.', initials: 'AR', canManage: 'yes' }, false)).toThrow('canManage')
+  })
+
+  it('decodes expense actor snapshots and rejects malformed actor identity', () => {
+    const raw = rawExpense()
+    expect(decodeExpense('lake-house-weekend', 'groceries', raw)).toMatchObject({
+      createdBy: { id: 'maya-p', displayName: 'Maya P.' },
+      updatedBy: { id: 'maya-p', displayName: 'Maya P.' },
+    })
+    expect(() => decodeExpense('lake-house-weekend', 'groceries', { ...raw, createdBy: { id: '', displayName: 'Maya P.' } })).toThrow('createdBy.id')
+  })
+
+  it('strictly decodes immutable revision snapshots and rejects mismatched revision identity', () => {
+    const raw = {
+      groupId: 'lake-house-weekend', expenseId: 'groceries', revision: 2, operationId: 'edit-groceries', action: 'updated',
+      actor: { id: 'maya-p', displayName: 'Maya P.' }, createdAt: '2026-08-31T12:00:00.000Z',
+      expense: { ...rawExpense(), revision: 2, updatedAt: '2026-08-31T12:00:00.000Z' },
+    }
+    expect(decodeExpenseRevision('lake-house-weekend', 'groceries', 'revision-groceries-2', raw)).toMatchObject({ revision: 2, action: 'updated' })
+    expect(() => decodeExpenseRevision('lake-house-weekend', 'groceries', 'revision-groceries-2', { ...raw, revision: 3 })).toThrow('snapshot revision')
+    expect(() => decodeExpenseRevision('lake-house-weekend', 'groceries', 'revision-groceries-2', { ...raw, createdAt: 'August 31' })).toThrow('ISO timestamp')
+  })
+
+  it('strictly decodes structured comments and activity without renderer HTML or URLs', () => {
+    expect(decodeComment('lake-house-weekend', 'groceries', 'comment-1', {
+      expenseId: 'groceries', operationId: 'comment-op', author: { id: 'maya-p', displayName: 'Maya P.' }, body: 'Hello',
+      attachmentRefs: [], createdAt: '2026-08-31T12:00:00.000Z',
+    })).toMatchObject({ commentId: 'comment-1', groupId: 'lake-house-weekend', operationId: 'comment-op' })
+    expect(() => decodeComment('lake-house-weekend', 'groceries', 'comment-1', {
+      expenseId: 'groceries', operationId: 'comment-op', author: { id: 'maya-p', displayName: 'Maya P.' }, body: 'Hello',
+      attachmentRefs: [], createdAt: 'yesterday',
+    })).toThrow('ISO timestamp')
+
+    const event = decodeActivity('lake-house-weekend', 'activity-1', {
+      operationId: 'comment-op', kind: 'comment.added', subject: { kind: 'comment', id: 'comment-1', label: 'Hello' },
+      actor: { id: 'maya-p', displayName: 'Maya P.' }, expenseId: 'groceries', commentId: 'comment-1',
+      createdAt: '2026-08-31T12:00:00.000Z',
+    })
+    expect(event).toMatchObject({ kind: 'comment.added', commentId: 'comment-1' })
+    expect(event).not.toHaveProperty('summary')
+    expect(event).not.toHaveProperty('url')
+    expect(() => decodeActivity('lake-house-weekend', 'activity-1', {
+      operationId: 'comment-op', kind: 'comment.added', subject: { kind: 'comment', id: 'comment-1' },
+      actor: { id: 'maya-p', displayName: 'Maya P.' }, createdAt: 'not-a-timestamp',
+    })).toThrow('ISO timestamp')
+  })
+
+  it('binds notifications to the repository principal and strictly decodes read timestamps', () => {
+    const raw = {
+      principalId: 'maya-p', groupId: 'lake-house-weekend', activityId: 'activity-1', kind: 'expense.updated',
+      subject: { kind: 'expense', id: 'groceries', label: 'Groceries' }, actor: { id: 'alex-r', displayName: 'Alex R.' },
+      createdAt: '2026-08-31T12:00:00.000Z', readAt: '2026-08-31T12:01:00.000Z',
+    }
+    expect(decodeNotification('maya-p', 'notification-1', raw)).toMatchObject({ notificationId: 'notification-1', readAt: raw.readAt })
+    expect(() => decodeNotification('jordan-k', 'notification-1', raw)).toThrow('principalId')
+    expect(() => decodeNotification('maya-p', 'notification-1', { ...raw, readAt: 'now' })).toThrow('ISO timestamp')
+  })
+})
+
+function rawExpense() {
+  return {
+    description: 'Groceries', date: '2026-08-30', category: 'Food',
+    createdAt: '2026-08-30T10:00:00.000Z', updatedAt: '2026-08-30T10:00:00.000Z', revision: 1,
+    createdBy: { id: 'maya-p', displayName: 'Maya P.' }, updatedBy: { id: 'maya-p', displayName: 'Maya P.' },
+    total: { currency: 'USD', minorAmount: 1000 },
+    payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+    allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+    splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [],
+  }
+}

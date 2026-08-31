@@ -9,6 +9,13 @@ export interface Member {
   readonly initials: string
   readonly avatarUrl?: string
   readonly isCurrentUser: boolean
+  /** Unknown/omitted capability is intentionally treated as false. */
+  readonly canManage?: boolean
+}
+
+export interface ActorSnapshot {
+  readonly id: ParticipantId
+  readonly displayName: string
 }
 
 export interface Group {
@@ -34,6 +41,8 @@ export interface ExpenseRow extends Expense {
   readonly occurrenceEditScope?: 'future' | 'occurrence'
   readonly recurringTemplateId?: string
   readonly deletedAt?: string
+  readonly createdBy?: ActorSnapshot
+  readonly updatedBy?: ActorSnapshot
 }
 
 export interface ExpenseDraft {
@@ -52,24 +61,87 @@ export interface ExpenseDraft {
 }
 
 export interface ExpenseComment {
-  readonly id: string
+  readonly commentId: string
+  readonly groupId: string
   readonly expenseId: string
-  readonly authorId: ParticipantId
+  readonly operationId: string
+  readonly author: ActorSnapshot
   readonly body: string
+  readonly attachmentRefs: readonly string[]
   readonly createdAt: string
+  readonly deletedAt?: string
   readonly syncState: SyncState
+}
+
+export type ActivityKind =
+  | 'comment.added'
+  | 'comment.deleted'
+  | 'expense.created'
+  | 'expense.updated'
+  | 'expense.deleted'
+  | 'group.event'
+  | 'membership.changed'
+  | 'settlement.created'
+  | 'settlement.voided'
+
+export type ActivityFilter = 'all' | 'comments' | 'expenses' | 'payments'
+
+export interface ActivitySubject {
+  readonly kind: 'comment' | 'expense' | 'group' | 'membership' | 'settlement'
+  readonly id: string
+  readonly label?: string
 }
 
 export interface ActivityItem {
   readonly id: string
   readonly groupId: string
+  readonly operationId: string
+  readonly kind: ActivityKind
+  readonly subject: ActivitySubject
+  readonly actor: ActorSnapshot
   readonly expenseId?: string
-  readonly actorId: ParticipantId
-  readonly type: 'comment-added' | 'expense-created' | 'expense-updated'
+  readonly revision?: number
+  readonly commentId?: string
+  readonly settlementId?: string
   readonly createdAt: string
-  readonly summary: string
   readonly syncState: SyncState
 }
+
+export interface ExpenseRevision {
+  readonly id: string
+  readonly groupId: string
+  readonly expenseId: string
+  readonly revision: number
+  readonly operationId: string
+  readonly action: 'created' | 'updated' | 'deleted'
+  readonly actor: ActorSnapshot
+  readonly createdAt: string
+  readonly expense: ExpenseRow
+}
+
+export interface TimelineCursor { readonly createdAt: string; readonly id: string }
+export interface ActivityQuery { readonly filter: ActivityFilter; readonly limit: number; readonly cursor?: TimelineCursor }
+export interface ActivityPage { readonly items: readonly ActivityItem[]; readonly nextCursor?: TimelineCursor }
+
+export interface NotificationItem {
+  readonly notificationId: string
+  readonly principalId: ParticipantId
+  readonly groupId: string
+  readonly activityId: string
+  readonly kind: ActivityKind
+  readonly subject: ActivitySubject
+  readonly actor: ActorSnapshot
+  readonly createdAt: string
+  readonly readAt?: string
+  readonly syncState: SyncState
+}
+
+export interface NotificationPreferences {
+  readonly emailEnabled: boolean
+  readonly pushEnabled: boolean
+}
+
+export interface NotificationPage { readonly items: readonly NotificationItem[]; readonly nextCursor?: TimelineCursor }
 
 export interface CurrencyTotals {
   readonly currency: Money['currency']
@@ -101,7 +173,11 @@ export interface OperationRequest { readonly operationId: string }
 export interface ExpenseAddCommand extends ExpenseDraft, OperationRequest { readonly kind: 'expense.add' }
 export interface ExpenseEditCommand extends OperationRequest { readonly kind: 'expense.edit'; readonly groupId: string; readonly expenseId: string; readonly expectedRevision: number; readonly draft: ExpenseDraft }
 export interface ExpenseDeleteCommand extends OperationRequest { readonly kind: 'expense.delete'; readonly groupId: string; readonly expenseId: string; readonly expectedRevision: number }
-export interface CommentAddCommand extends OperationRequest { readonly kind: 'comment.add'; readonly groupId: string; readonly expenseId: string; readonly body: string }
+export interface CommentAddCommand extends OperationRequest { readonly kind: 'comment.add'; readonly groupId: string; readonly expenseId: string; readonly body: string; readonly attachmentRefs: readonly string[] }
+export interface CommentDeleteCommand extends OperationRequest { readonly kind: 'comment.delete'; readonly groupId: string; readonly expenseId: string; readonly commentId: string }
+export interface NotificationReadCommand extends OperationRequest { readonly kind: 'notification.read'; readonly notificationId: string }
+export interface NotificationReadAllCommand extends OperationRequest { readonly kind: 'notification.read-all'; readonly cutoff: TimelineCursor }
+export interface NotificationPreferencesCommand extends OperationRequest { readonly kind: 'notification.preferences'; readonly preferences: NotificationPreferences }
 
 /** Only a confirmed manual settlement can be recorded from this client boundary. */
 export interface SettlementRecordCommand extends OperationRequest {
@@ -116,20 +192,30 @@ export interface SettlementRecordCommand extends OperationRequest {
 export interface GroupDefaultSplitCommand extends OperationRequest { readonly kind: 'group.default-split'; readonly groupId: string; readonly defaultSplit: SplitMethod }
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
-export type CommandEnvelope = CommentAddCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | ProfileUpdateCommand | SettlementRecordCommand
+export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | SettlementRecordCommand
 export type CommandKind = CommandEnvelope['kind']
 
 export interface SavedExpenseAddResult { readonly kind: 'expense.add'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
 export interface SavedExpenseEditResult { readonly kind: 'expense.edit'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
 export interface ExpenseTombstone { readonly id: string; readonly groupId: string; readonly revision: number; readonly deletedAt: string }
 export interface SavedExpenseDeleteResult { readonly kind: 'expense.delete'; readonly operationId: string; readonly status: 'saved'; readonly tombstone: ExpenseTombstone }
+export interface SavedCommentAddResult { readonly kind: 'comment.add'; readonly operationId: string; readonly status: 'saved'; readonly comment: ExpenseComment; readonly activity: ActivityItem }
+export interface SavedCommentDeleteResult { readonly kind: 'comment.delete'; readonly operationId: string; readonly status: 'saved'; readonly comment: ExpenseComment; readonly activity: ActivityItem }
+export interface SavedNotificationReadResult { readonly kind: 'notification.read'; readonly operationId: string; readonly status: 'saved'; readonly notification: NotificationItem }
+export interface SavedNotificationReadAllResult { readonly kind: 'notification.read-all'; readonly operationId: string; readonly status: 'saved'; readonly cutoff: TimelineCursor; readonly readNotificationIds: readonly string[] }
+export interface SavedNotificationPreferencesResult { readonly kind: 'notification.preferences'; readonly operationId: string; readonly status: 'saved'; readonly preferences: NotificationPreferences }
 export interface SavedCommandResult<K extends Exclude<CommandKind, 'expense.add' | 'expense.delete' | 'expense.edit'>> { readonly kind: K; readonly operationId: string; readonly status: 'saved'; readonly resourceId: string }
 export interface NotSupportedCommandResult<K extends CommandKind = CommandKind> { readonly kind: K; readonly operationId: string; readonly status: 'not-supported'; readonly reason: string }
 
 export type ExpenseAddResult = SavedExpenseAddResult | NotSupportedCommandResult<'expense.add'>
 export type ExpenseEditResult = SavedExpenseEditResult | NotSupportedCommandResult<'expense.edit'>
 export type ExpenseDeleteResult = SavedExpenseDeleteResult | NotSupportedCommandResult<'expense.delete'>
-export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | SavedCommandResult<'comment.add'> | SavedCommandResult<'group.default-split'> | SavedCommandResult<'profile.update'> | SavedCommandResult<'settlement.record'> | NotSupportedCommandResult<Exclude<CommandKind, 'expense.add' | 'expense.delete' | 'expense.edit'>>
+export type CommentAddResult = SavedCommentAddResult | NotSupportedCommandResult<'comment.add'>
+export type CommentDeleteResult = SavedCommentDeleteResult | NotSupportedCommandResult<'comment.delete'>
+export type NotificationReadResult = SavedNotificationReadResult | NotSupportedCommandResult<'notification.read'>
+export type NotificationReadAllResult = SavedNotificationReadAllResult | NotSupportedCommandResult<'notification.read-all'>
+export type NotificationPreferencesResult = SavedNotificationPreferencesResult | NotSupportedCommandResult<'notification.preferences'>
+export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'profile.update'> | SavedCommandResult<'settlement.record'> | NotSupportedCommandResult<'group.default-split' | 'profile.update' | 'settlement.record'>
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'
@@ -141,6 +227,7 @@ export interface AppRepository {
   readonly comments: CommentRepository
   readonly settlements: SettlementRepository
   readonly activity: ActivityRepository
+  readonly notifications: NotificationRepository
   readonly commands: CommandRepository
 }
 
@@ -161,10 +248,25 @@ export interface ExpenseRepository {
   add(command: ExpenseAddCommand): Promise<ExpenseAddResult>
   edit(command: ExpenseEditCommand): Promise<ExpenseEditResult>
   delete(command: ExpenseDeleteCommand): Promise<ExpenseDeleteResult>
-  listComments(groupId: string, expenseId: string): Promise<readonly ExpenseComment[]>
+  listRevisions(groupId: string, expenseId: string): Promise<readonly ExpenseRevision[]>
 }
-export interface CommentRepository { add(command: CommentAddCommand): Promise<CommandResult> }
+export interface CommentRepository {
+  listForExpense(groupId: string, expenseId: string): Promise<readonly ExpenseComment[]>
+  add(command: CommentAddCommand): Promise<CommentAddResult>
+  delete(command: CommentDeleteCommand): Promise<CommentDeleteResult>
+}
 export interface SettlementRepository { record(command: SettlementRecordCommand): Promise<CommandResult> }
 /** Durable command boundary for offline feature stores. */
 export interface CommandRepository { execute(command: CommandEnvelope): Promise<CommandResult> }
-export interface ActivityRepository { listForGroup(groupId: string): Promise<readonly ActivityItem[]> }
+export interface ActivityRepository {
+  listForGroup(groupId: string): Promise<readonly ActivityItem[]>
+  listForAccount(query: ActivityQuery): Promise<ActivityPage>
+}
+export interface NotificationRepository {
+  list(query: { readonly limit: number; readonly cursor?: TimelineCursor }): Promise<NotificationPage>
+  unreadCount(): Promise<number>
+  markRead(command: NotificationReadCommand): Promise<NotificationReadResult>
+  markAllRead(command: NotificationReadAllCommand): Promise<NotificationReadAllResult>
+  getPreferences(): Promise<NotificationPreferences>
+  updatePreferences(command: NotificationPreferencesCommand): Promise<NotificationPreferencesResult>
+}

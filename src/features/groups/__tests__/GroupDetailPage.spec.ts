@@ -115,6 +115,12 @@ describe('Lake House group journal', () => {
     expect(wrapper.get('[aria-label="Add expense"]').attributes('href')).toBe('/tabs/groups/expenses/new?groupId=lake-house-weekend')
   })
 
+  it('links durable journal expenses to the Groups-origin detail route', async () => {
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+
+    expect(wrapper.get('[data-expense-id="groceries"] a.expense-row__body').attributes('href')).toBe('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+  })
+
   it('switches between the expense journal and repository activity', async () => {
     const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
 

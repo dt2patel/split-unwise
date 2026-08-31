@@ -1,9 +1,9 @@
 import { computeBalances, simplifyDebts } from '../domain/balances'
 import type { FirebaseConfiguration } from './firebase'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
-import { decodeActivity, decodeComment, decodeExpense, decodeGroup, decodeGroupProjection, decodeMember, decodeRecurringExpense } from './firebaseDecoders'
+import { decodeActivity, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { AppRepository, CommandEnvelope, CommandResult, ExpenseAddResult, ExpenseDeleteResult, ExpenseEditResult, ExpenseRow, Member } from './repositories'
+import type { ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseAddResult, ExpenseDeleteResult, ExpenseEditResult, ExpenseRow, Member, NotificationItem, TimelineCursor } from './repositories'
 
 type FirestoreModule = typeof import('firebase/firestore')
 type AuthModule = typeof import('firebase/auth')
@@ -82,13 +82,21 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async add(command) { const result = await execute(command); if (result.kind !== 'expense.add') throw new Error('Unexpected expense result'); return result },
       async edit(command): Promise<ExpenseEditResult> { const result = await execute(command); if (result.kind !== 'expense.edit') throw new Error('Unexpected expense edit result'); return result },
       async delete(command): Promise<ExpenseDeleteResult> { const result = await execute(command); if (result.kind !== 'expense.delete') throw new Error('Unexpected expense delete result'); return result },
-      async listComments(groupId, expenseId) {
+      async listRevisions(groupId, expenseId) {
         const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'comments'), firestore.where('expenseId', '==', expenseId), firestore.orderBy('createdAt', 'asc')))
-        return snapshot.docs.map((document) => decodeComment(expenseId, document.id, document.data()))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses', expenseId, 'revisions'), firestore.orderBy('revision', 'asc'), firestore.orderBy(firestore.documentId(), 'asc')))
+        return snapshot.docs.map((document) => decodeExpenseRevision(groupId, expenseId, document.id, document.data()))
       },
     },
-    comments: { add: execute },
+    comments: {
+      async listForExpense(groupId, expenseId) {
+        const { db, firestore } = await context()
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'comments'), firestore.where('expenseId', '==', expenseId), firestore.orderBy('createdAt', 'asc'), firestore.orderBy(firestore.documentId(), 'asc')))
+        return snapshot.docs.map((document) => decodeComment(groupId, expenseId, document.id, document.data()))
+      },
+      async add(command) { const result = await execute(command); if (result.kind !== 'comment.add') throw new Error('Unexpected comment result'); return result },
+      async delete(command) { const result = await execute(command); if (result.kind !== 'comment.delete') throw new Error('Unexpected comment delete result'); return result },
+    },
     settlements: { record: execute },
     activity: {
       async listForGroup(groupId) {
@@ -96,9 +104,48 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'asc')))
         return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
       },
+      async listForAccount(query) {
+        const { db, firestore, userId } = await context()
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'activity'), firestore.orderBy('createdAt', 'desc'), firestore.orderBy(firestore.documentId(), 'desc')))
+        const decoded = snapshot.docs.map((document) => decodeActivity(String(document.data().groupId ?? ''), document.id, document.data()))
+        return pageTimeline(decoded.filter((item) => query.filter === 'all' || (query.filter === 'expenses' && item.kind.startsWith('expense.')) || (query.filter === 'comments' && item.kind.startsWith('comment.')) || (query.filter === 'payments' && item.kind.startsWith('settlement.'))), query.limit, query.cursor, (item) => item.id)
+      },
+    },
+    notifications: {
+      async list(query) {
+        const { db, firestore, userId } = await context()
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'notifications'), firestore.orderBy('createdAt', 'desc'), firestore.orderBy(firestore.documentId(), 'desc')))
+        return pageTimeline(snapshot.docs.map((document) => decodeNotification(userId, document.id, document.data())), query.limit, query.cursor, (item) => item.notificationId)
+      },
+      async unreadCount() {
+        const { db, firestore, userId } = await context()
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'notifications'), firestore.where('readAt', '==', null)))
+        return snapshot.size
+      },
+      async markRead(command) { const result = await execute(command); if (result.kind !== 'notification.read') throw new Error('Unexpected notification result'); return result },
+      async markAllRead(command) { const result = await execute(command); if (result.kind !== 'notification.read-all') throw new Error('Unexpected notification result'); return result },
+      async getPreferences() {
+        const { db, firestore, userId } = await context()
+        const snapshot = await firestore.getDoc(firestore.doc(db, 'users', userId, 'settings', 'notifications'))
+        if (!snapshot.exists()) return { emailEnabled: true, pushEnabled: true }
+        const data = snapshot.data()
+        if (typeof data.emailEnabled !== 'boolean' || typeof data.pushEnabled !== 'boolean') throw new Error('Notification preferences document is invalid')
+        return { emailEnabled: data.emailEnabled, pushEnabled: data.pushEnabled }
+      },
+      async updatePreferences(command) { const result = await execute(command); if (result.kind !== 'notification.preferences') throw new Error('Unexpected notification preferences result'); return result },
     },
     commands: { execute },
   }
+}
+
+function pageTimeline<T extends ActivityItem | NotificationItem>(values: readonly T[], limit: number, cursor: TimelineCursor | undefined, id: (value: T) => string): { items: readonly T[]; nextCursor?: TimelineCursor } {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Timeline limit must be between 1 and 100')
+  const sorted = [...values].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || id(right).localeCompare(id(left)))
+  const remaining = cursor ? sorted.filter((item) => item.createdAt.localeCompare(cursor.createdAt) < 0 || (item.createdAt === cursor.createdAt && id(item).localeCompare(cursor.id) < 0)) : sorted
+  const items = remaining.slice(0, limit)
+  if (remaining.length <= limit) return { items }
+  const last = items.at(-1)!
+  return { items, nextCursor: { createdAt: last.createdAt, id: id(last) } }
 }
 
 async function connect(configuration: FirebaseConfiguration): Promise<FirebaseClient> {

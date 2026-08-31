@@ -61,6 +61,28 @@ describe('ExpenseEditorPage', () => {
     expect(router.currentRoute.value.path).toBe('/tabs/home')
   })
 
+  it.each(['home', 'groups', 'activity', 'account'] as const)('returns an %s-origin edit to its originating detail route', async (origin) => {
+    const { wrapper, router, store } = await mountRoute(`/tabs/${origin}/expenses/groceries/edit?groupId=lake-house-weekend`)
+    const detail = `/tabs/${origin}/expenses/groceries?groupId=lake-house-weekend`
+
+    expect(store.returnPath).toBe(detail)
+    await wrapper.get('[data-action="cancel-expense"]').trigger('click')
+    await flushPromises()
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe(detail))
+  })
+
+  it('fails closed when a direct edit route is opened by neither the author nor a manager', async () => {
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository({ currentUserId: 'jordan-k' }), commandStorage: createMemoryCommandStorage(),
+    }))
+
+    const { wrapper, store } = await mountRoute('/tabs/home/expenses/groceries/edit?groupId=lake-house-weekend')
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('not allowed')
+    expect(store.hasInitialized).toBe(false)
+    expect(wrapper.find('[data-action="save-expense"]').attributes('disabled')).toBeDefined()
+  })
+
   it('keeps one staged sheet open and restores focus when Cancel closes it', async () => {
     const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
     const trigger = wrapper.get('#payer-sheet-trigger')

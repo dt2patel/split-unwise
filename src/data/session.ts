@@ -104,10 +104,14 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
     }
     const kinds: readonly CommandKind[] = [
       'comment.add',
+      'comment.delete',
       'expense.add',
       'expense.delete',
       'expense.edit',
       'group.default-split',
+      'notification.preferences',
+      'notification.read',
+      'notification.read-all',
       'profile.update',
       'settlement.record',
     ]
@@ -353,11 +357,26 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       add: (command) => call(() => source.expenses.add(command)),
       edit: (command) => call(() => source.expenses.edit(command)),
       delete: (command) => call(() => source.expenses.delete(command)),
-      listComments: (groupId, expenseId) => call(() => source.expenses.listComments(groupId, expenseId)),
+      listRevisions: (groupId, expenseId) => call(() => source.expenses.listRevisions(groupId, expenseId)),
     },
-    comments: { add: (command) => call(() => source.comments.add(command)) },
+    comments: {
+      listForExpense: (groupId, expenseId) => call(() => source.comments.listForExpense(groupId, expenseId)),
+      add: (command) => call(() => source.comments.add(command)),
+      delete: (command) => call(() => source.comments.delete(command)),
+    },
     settlements: { record: (command) => call(() => source.settlements.record(command)) },
-    activity: { listForGroup: (groupId) => call(() => source.activity.listForGroup(groupId)) },
+    activity: {
+      listForGroup: (groupId) => call(() => source.activity.listForGroup(groupId)),
+      listForAccount: (query) => call(() => source.activity.listForAccount(query)),
+    },
+    notifications: {
+      list: (query) => call(() => source.notifications.list(query)),
+      unreadCount: () => call(() => source.notifications.unreadCount()),
+      markRead: (command) => call(() => source.notifications.markRead(command)),
+      markAllRead: (command) => call(() => source.notifications.markAllRead(command)),
+      getPreferences: () => call(() => source.notifications.getPreferences()),
+      updatePreferences: (command) => call(() => source.notifications.updatePreferences(command)),
+    },
     commands: { execute: (command) => call(() => source.commands.execute(command)) },
   }
 }
@@ -374,6 +393,9 @@ function assertRepositoryPrincipal(repository: AppRepository, principal: AppPrin
  */
 export async function prepareCommandReceipts(command: CommandEnvelope, provider: ReceiptProvider, receipts?: ReceiptBlobStore): Promise<CommandEnvelope> {
   if (command.kind === 'expense.add') {
+    return { ...command, attachmentRefs: await promoteAttachmentRefs(command.groupId, command.attachmentRefs, provider, receipts) }
+  }
+  if (command.kind === 'comment.add') {
     return { ...command, attachmentRefs: await promoteAttachmentRefs(command.groupId, command.attachmentRefs, provider, receipts) }
   }
   if (command.kind === 'expense.edit') {
@@ -414,7 +436,11 @@ function isLocalReceiptReference(value: string): value is LocalReceiptReference 
 }
 
 function hasLocalReceiptAttachment(command: CommandEnvelope): boolean {
-  const references = command.kind === 'expense.edit' ? command.draft.attachmentRefs : command.kind === 'expense.add' ? command.attachmentRefs : []
+  const references = command.kind === 'expense.edit'
+    ? command.draft.attachmentRefs
+    : command.kind === 'expense.add' || command.kind === 'comment.add'
+      ? command.attachmentRefs
+      : []
   return references.some(isLocalReceiptReference)
 }
 

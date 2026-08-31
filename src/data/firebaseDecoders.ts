@@ -1,7 +1,7 @@
 import { assertCurrencyCode } from '../domain/money'
 import { computeAllocations } from '../domain/splits'
 import type { Allocation, Recurrence, SplitMethod } from '../domain/model'
-import type { ActivityItem, ExpenseComment, ExpenseRow, Group, Member, RecurringExpense } from './repositories'
+import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseRevision, ExpenseRow, Group, Member, NotificationItem, RecurringExpense } from './repositories'
 
 export class DocumentDecodeError extends Error {
   constructor(document: string, message: string) { super(`${document}: ${message}`); this.name = 'DocumentDecodeError' }
@@ -29,7 +29,9 @@ export function decodeMember(id: string, value: unknown, isCurrentUser: boolean)
   const data = record(value, `member ${id}`)
   return {
     id, displayName: requiredString(data.displayName, `member ${id}.displayName`), initials: requiredString(data.initials, `member ${id}.initials`),
-    ...(data.avatarUrl === undefined ? {} : { avatarUrl: requiredString(data.avatarUrl, `member ${id}.avatarUrl`) }), isCurrentUser,
+    ...(data.avatarUrl === undefined ? {} : { avatarUrl: requiredString(data.avatarUrl, `member ${id}.avatarUrl`) }),
+    ...(data.canManage === undefined ? {} : { canManage: requiredBoolean(data.canManage, `member ${id}.canManage`) }),
+    isCurrentUser,
   }
 }
 
@@ -57,21 +59,82 @@ export function decodeExpense(groupId: string, id: string, value: unknown): Expe
     ...(data.occurrenceEditScope === undefined ? {} : { occurrenceEditScope: occurrenceScope(data.occurrenceEditScope, `expense ${id}.occurrenceEditScope`) }),
     ...(data.recurringTemplateId === undefined ? {} : { recurringTemplateId: requiredString(data.recurringTemplateId, `expense ${id}.recurringTemplateId`) }),
     ...(data.deletedAt === undefined ? {} : { deletedAt: isoTimestamp(data.deletedAt, `expense ${id}.deletedAt`) }),
+    ...(data.createdBy === undefined ? {} : { createdBy: actorSnapshot(data.createdBy, `expense ${id}.createdBy`) }),
+    ...(data.updatedBy === undefined ? {} : { updatedBy: actorSnapshot(data.updatedBy, `expense ${id}.updatedBy`) }),
   }
 }
 
-export function decodeComment(expenseId: string, id: string, value: unknown): ExpenseComment {
+export function decodeExpenseRevision(groupId: string, expenseId: string, id: string, value: unknown): ExpenseRevision {
+  const data = record(value, `expense revision ${id}`)
+  if (requiredString(data.groupId, `expense revision ${id}.groupId`) !== groupId) throw new DocumentDecodeError(`expense revision ${id}`, 'groupId does not match its parent')
+  if (requiredString(data.expenseId, `expense revision ${id}.expenseId`) !== expenseId) throw new DocumentDecodeError(`expense revision ${id}`, 'expenseId does not match its parent')
+  const revision = positiveInteger(data.revision, `expense revision ${id}.revision`)
+  const action = data.action
+  if (action !== 'created' && action !== 'updated' && action !== 'deleted') throw new DocumentDecodeError(`expense revision ${id}.action`, 'must be created, updated, or deleted')
+  const expense = decodeExpense(groupId, expenseId, data.expense)
+  if (expense.revision !== revision) throw new DocumentDecodeError(`expense revision ${id}`, 'snapshot revision does not match revision')
+  if (action === 'deleted' && expense.deletedAt === undefined) throw new DocumentDecodeError(`expense revision ${id}`, 'deleted revision requires a tombstone snapshot')
+  if (action !== 'deleted' && expense.deletedAt !== undefined) throw new DocumentDecodeError(`expense revision ${id}`, 'live revision cannot contain a tombstone snapshot')
+  return {
+    id, groupId, expenseId, revision,
+    operationId: requiredString(data.operationId, `expense revision ${id}.operationId`),
+    action,
+    actor: actorSnapshot(data.actor, `expense revision ${id}.actor`),
+    createdAt: isoTimestamp(data.createdAt, `expense revision ${id}.createdAt`),
+    expense,
+  }
+}
+
+export function decodeComment(groupId: string, expenseId: string, id: string, value: unknown): ExpenseComment {
   const data = record(value, `comment ${id}`)
-  return { id, expenseId, authorId: requiredString(data.authorId, `comment ${id}.authorId`), body: requiredString(data.body, `comment ${id}.body`), createdAt: requiredString(data.createdAt, `comment ${id}.createdAt`), syncState: 'fresh' }
+  if (requiredString(data.expenseId, `comment ${id}.expenseId`) !== expenseId) throw new DocumentDecodeError(`comment ${id}`, 'expenseId does not match query')
+  return {
+    commentId: id,
+    groupId,
+    expenseId,
+    operationId: requiredString(data.operationId, `comment ${id}.operationId`),
+    author: actorSnapshot(data.author, `comment ${id}.author`),
+    body: requiredString(data.body, `comment ${id}.body`),
+    attachmentRefs: requiredStringArray(data.attachmentRefs, `comment ${id}.attachmentRefs`),
+    createdAt: isoTimestamp(data.createdAt, `comment ${id}.createdAt`),
+    ...(data.deletedAt === undefined ? {} : { deletedAt: isoTimestamp(data.deletedAt, `comment ${id}.deletedAt`) }),
+    syncState: 'fresh',
+  }
 }
 
 export function decodeActivity(groupId: string, id: string, value: unknown): ActivityItem {
   const data = record(value, `activity ${id}`)
-  const type = data.type
-  if (type !== 'comment-added' && type !== 'expense-created' && type !== 'expense-updated') throw new DocumentDecodeError(`activity ${id}`, 'activity type is invalid')
+  const kind = activityKind(data.kind, `activity ${id}.kind`)
   return {
-    id, groupId, ...(data.expenseId === undefined ? {} : { expenseId: requiredString(data.expenseId, `activity ${id}.expenseId`) }),
-    actorId: requiredString(data.actorId, `activity ${id}.actorId`), type, createdAt: requiredString(data.createdAt, `activity ${id}.createdAt`), summary: requiredString(data.summary, `activity ${id}.summary`), syncState: 'fresh',
+    id,
+    groupId,
+    operationId: requiredString(data.operationId, `activity ${id}.operationId`),
+    kind,
+    subject: activitySubject(data.subject, `activity ${id}.subject`),
+    actor: actorSnapshot(data.actor, `activity ${id}.actor`),
+    ...(data.expenseId === undefined ? {} : { expenseId: requiredString(data.expenseId, `activity ${id}.expenseId`) }),
+    ...(data.revision === undefined ? {} : { revision: positiveInteger(data.revision, `activity ${id}.revision`) }),
+    ...(data.commentId === undefined ? {} : { commentId: requiredString(data.commentId, `activity ${id}.commentId`) }),
+    ...(data.settlementId === undefined ? {} : { settlementId: requiredString(data.settlementId, `activity ${id}.settlementId`) }),
+    createdAt: isoTimestamp(data.createdAt, `activity ${id}.createdAt`),
+    syncState: 'fresh',
+  }
+}
+
+export function decodeNotification(principalId: string, id: string, value: unknown): NotificationItem {
+  const data = record(value, `notification ${id}`)
+  if (requiredString(data.principalId, `notification ${id}.principalId`) !== principalId) throw new DocumentDecodeError(`notification ${id}`, 'principalId does not match repository principal')
+  return {
+    notificationId: id,
+    principalId,
+    groupId: requiredString(data.groupId, `notification ${id}.groupId`),
+    activityId: requiredString(data.activityId, `notification ${id}.activityId`),
+    kind: activityKind(data.kind, `notification ${id}.kind`),
+    subject: activitySubject(data.subject, `notification ${id}.subject`),
+    actor: actorSnapshot(data.actor, `notification ${id}.actor`),
+    createdAt: isoTimestamp(data.createdAt, `notification ${id}.createdAt`),
+    ...(data.readAt === undefined ? {} : { readAt: isoTimestamp(data.readAt, `notification ${id}.readAt`) }),
+    syncState: 'fresh',
   }
 }
 
@@ -98,6 +161,28 @@ function recurrenceValue(value: unknown, path: string): Recurrence {
   try { new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date(0)) } catch { throw new DocumentDecodeError(path, 'timeZone is not an IANA time zone') }
   if (month > 12 || day > new Date(Date.UTC(2024, month, 0)).getUTCDate()) throw new DocumentDecodeError(path, 'anchor is not a calendar date')
   return { frequency, anchor: { month, day }, timeZone }
+}
+
+function actorSnapshot(value: unknown, path: string): ActorSnapshot {
+  const data = record(value, path)
+  return { id: requiredString(data.id, `${path}.id`), displayName: requiredString(data.displayName, `${path}.displayName`) }
+}
+
+function activityKind(value: unknown, path: string): ActivityKind {
+  const kinds: readonly ActivityKind[] = ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'group.event', 'membership.changed', 'settlement.created', 'settlement.voided']
+  if (typeof value !== 'string' || !kinds.includes(value as ActivityKind)) throw new DocumentDecodeError(path, 'activity type is invalid')
+  return value as ActivityKind
+}
+
+function activitySubject(value: unknown, path: string): ActivitySubject {
+  const data = record(value, path)
+  const kind = data.kind
+  if (kind !== 'comment' && kind !== 'expense' && kind !== 'group' && kind !== 'membership' && kind !== 'settlement') throw new DocumentDecodeError(`${path}.kind`, 'subject kind is invalid')
+  return {
+    kind,
+    id: requiredString(data.id, `${path}.id`),
+    ...(data.label === undefined ? {} : { label: requiredString(data.label, `${path}.label`) }),
+  }
 }
 
 function allocationArray(value: unknown, path: string, currency: ExpenseRow['total']['currency']): readonly Allocation[] {
@@ -167,6 +252,7 @@ function record(value: unknown, path: string): Record<string, unknown> { if (val
 function requiredArray(value: unknown, path: string): readonly unknown[] { if (!Array.isArray(value)) throw new DocumentDecodeError(path, 'must be an array'); return value }
 function requiredStringArray(value: unknown, path: string): readonly string[] { return requiredArray(value, path).map((item, index) => requiredString(item, `${path}[${index}]`)) }
 function requiredString(value: unknown, path: string): string { if (typeof value !== 'string' || !value.trim()) throw new DocumentDecodeError(path, 'must be a non-empty string'); return value }
+function requiredBoolean(value: unknown, path: string): boolean { if (typeof value !== 'boolean') throw new DocumentDecodeError(path, 'must be a boolean'); return value }
 function nonNegativeSafeInteger(value: unknown, path: string): number { if (!Number.isSafeInteger(value) || (value as number) < 0) throw new DocumentDecodeError(path, 'must be a non-negative safe integer'); return value as number }
 function positiveInteger(value: unknown, path: string): number { if (!Number.isInteger(value) || (value as number) < 1) throw new DocumentDecodeError(path, 'must be a positive integer'); return value as number }
 function isoDate(value: unknown, path: string): string {

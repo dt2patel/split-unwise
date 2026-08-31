@@ -23,6 +23,7 @@ import ExpenseRow from '../../components/ExpenseRow.vue'
 import ActionRail from './components/ActionRail.vue'
 import GroupHero from './components/GroupHero.vue'
 import { useGroupStore } from './groupStore'
+import { activityDestination, activityText } from '../activity/activityStore'
 
 type GroupView = 'expenses' | 'activity'
 
@@ -55,6 +56,10 @@ function onScroll(event: CustomEvent<{ scrollTop?: number }>): void {
 }
 function retryExpense(operationId: string | undefined): void { if (operationId) void store.retryOperation(operationId).result().catch(() => undefined) }
 function discardExpense(operationId: string | undefined): void { if (operationId) store.discardFailedOperation(operationId) }
+function expenseDetailDestination(expenseId: string): string | undefined {
+  if (expenseId.startsWith('pending:') || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(groupId.value) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(expenseId)) return undefined
+  return `/tabs/groups/expenses/${encodeURIComponent(expenseId)}?groupId=${encodeURIComponent(groupId.value)}`
+}
 async function reloadRemoteExpense(operationId: string | undefined): Promise<void> {
   if (!operationId) return
   await store.reloadRemoteConflict(operationId).catch(() => false)
@@ -113,6 +118,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
                 :balance-label="store.positionFor(expense).label"
                 :payer-name="store.payerName(expense)"
                 :participant-count="expense.allocations.length"
+                :detail-to="expenseDetailDestination(expense.id)"
                 :retryable="expense.retryable === true"
                 :conflict-remote="expense.conflictRemote"
                 :conflict-intent="expense.conflictIntent"
@@ -126,7 +132,8 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
             </div>
             <ol v-else key="activity" class="activity-list" data-testid="group-activity">
               <li v-for="item in recentActivity" :key="item.id">
-                <span>{{ item.summary }}</span>
+                <router-link v-if="activityDestination(item, 'groups')" :to="activityDestination(item, 'groups')!">{{ activityText(item) }}</router-link>
+                <span v-else>{{ activityText(item) }}</span>
                 <time :datetime="item.createdAt">{{ new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(item.createdAt)) }}</time>
               </li>
             </ol>

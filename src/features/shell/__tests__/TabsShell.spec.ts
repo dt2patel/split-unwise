@@ -44,12 +44,12 @@ describe('TabsShell', () => {
 
   it('renders the real FAB as a direct IonTabs child above the active stack route', async () => {
     const router = createAppRouter()
-    await router.push('/tabs/activity')
+    await router.push('/tabs/account')
     await router.isReady()
     const wrapper = mount(TabsShell, { global: { plugins: [router] } })
 
     expect(wrapper.get('ion-tabs > ion-fab').attributes('slot')).toBeUndefined()
-    expect(wrapper.getComponent(IonFabButton).props('routerLink')).toBe('/tabs/activity/expenses/new')
+    expect(wrapper.getComponent(IonFabButton).props('routerLink')).toBe('/tabs/account/expenses/new')
     expect(wrapper.find('ion-tabs > ion-tab-bar').exists()).toBe(true)
   })
 

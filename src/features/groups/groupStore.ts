@@ -5,6 +5,7 @@ import { buildCurrencyTotals } from '../../data/aggregates'
 import type { CommandFailure, CommandHandle, CommandOperation } from '../../data/commandQueue'
 import type { ActivityItem, ExpenseDeleteCommand, ExpenseEditCommand, ExpenseRow, Group, Member } from '../../data'
 import type { Money } from '../../domain/model'
+import { newestActivityFirst } from '../activity/activityStore'
 
 export interface UserExpensePosition {
   readonly money: Money
@@ -51,7 +52,7 @@ export const useGroupStore = defineStore('groups', () => {
     const reconciledRows = journalExpenses.value.map((row) => row.conflictRemote ?? row)
     return netsByCurrency(reconciledRows, currentUser.value.id, activeGroup.value.currency)
   })
-  const recentActivity = computed(() => [...activity.value].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)))
+  const recentActivity = computed(() => [...activity.value].sort(newestActivityFirst))
 
   async function loadOverview(): Promise<void> {
     isLoading.value = true
