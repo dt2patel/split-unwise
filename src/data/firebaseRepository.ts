@@ -1,4 +1,5 @@
 import type { FirebaseConfiguration } from './firebase'
+import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
@@ -219,7 +220,6 @@ function activityFilterConstraints(firestore: FirestoreModule, filter: ActivityF
 }
 
 async function connect(configuration: FirebaseConfiguration): Promise<FirebaseClient> {
-  const [appModule, authModule, firestore] = await Promise.all([import('firebase/app'), import('firebase/auth'), import('firebase/firestore')])
-  const app = appModule.getApps().find((candidate) => candidate.options.projectId === configuration.projectId) ?? appModule.initializeApp(configuration, `split-unwise-${configuration.projectId}`)
+  const [app, authModule, firestore] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth'), import('firebase/firestore')])
   return { auth: authModule.getAuth(app), db: firestore.getFirestore(app), firestore }
 }

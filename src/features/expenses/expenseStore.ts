@@ -4,6 +4,7 @@ import { getAppSession } from '../../data/session'
 import type { ExpenseDraft, ExpenseRow, Group, Member } from '../../data/repositories'
 import type { LocalReceiptReference, ReceiptAsset, ReceiptDurability, ReceiptSuggestion } from '../../data/receipts'
 import { assertCurrencyCode, fromMinorUnits, toMinorUnits, type CurrencyCode } from '../../domain/money'
+import { currencyPickerOrder, loadCurrencyPreferences, SUPPORTED_CURRENCIES } from '../account/currencyPreferences'
 import { computeAllocations } from '../../domain/splits'
 import type { ItemizedSplitItem, Recurrence, SplitMethod } from '../../domain/model'
 
@@ -128,6 +129,7 @@ export function validateExpenseInput(input: ExpenseEditorInput, members: readonl
 export const useExpenseStore = defineStore('expense-editor', () => {
   const session = getAppSession()
   const editor = reactive<ExpenseEditorInput>(emptyEditor())
+  const currencyOptions = ref<readonly CurrencyCode[]>(SUPPORTED_CURRENCIES)
   const members = ref<readonly Member[]>([])
   const availableGroups = ref<readonly Group[]>([])
   const contextName = ref('')
@@ -180,10 +182,14 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     try {
       const ready = (session as typeof session & { readonly ready?: Promise<void> }).ready
       if (ready) await ready
-      const [loadedCurrentUser, groups] = await Promise.all([
+      const [loadedCurrentUser, groups, principal] = await Promise.all([
         session.repository.app.getCurrentUser(),
         session.repository.groups.list(),
+        session.principal,
       ])
+      const currencyPreferences = loadCurrencyPreferences(principal)
+      currencyOptions.value = currencyPickerOrder(currencyPreferences)
+      if (!options.groupId && !options.expenseId) nextEditor.currency = currencyPreferences.defaultCurrency
       let loadedMembers: readonly Member[] = [loadedCurrentUser]
       let loadedContextName = ''
       let loadedExpense: ExpenseRow | undefined
@@ -491,7 +497,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   return {
     editor, members, availableGroups, contextName, mode, origin, expenseId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview, receiptDurability,
     activeSheet, focusTarget, lastOperationId, saveState, isLoading, hasInitialized, loadError, isDirty, returnPath, canSubmit,
-    initialize, selectContext, changeCurrency, changeDate, submit, attachReceipt, removeReceipt, confirmReceipt, openSheet, closeSheet, leaveEditor,
+    initialize, selectContext, changeCurrency, changeDate, submit, attachReceipt, removeReceipt, confirmReceipt, openSheet, closeSheet, leaveEditor, currencyOptions,
   }
 
   function reset(): void {

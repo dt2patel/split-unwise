@@ -6,20 +6,17 @@ const theme = readFileSync(resolve(process.cwd(), 'src/app/theme.css'), 'utf8')
 
 const paletteConditions = [
   ['light', undefined],
-  ['dark', '(prefers-color-scheme: dark)'],
-  ['high-contrast light', '(prefers-contrast: more) and (prefers-color-scheme: light)'],
-  ['high-contrast dark', '(prefers-contrast: more) and (prefers-color-scheme: dark)'],
+  ['dark', ':root.su-theme-dark'],
+  ['high-contrast light', ':root.su-contrast-more:not(.su-theme-dark)'],
+  ['high-contrast dark', ':root.su-contrast-more.su-theme-dark'],
 ] as const
 
-function parsedPalette(condition?: string): Readonly<Record<string, string>> {
+function parsedPalette(selector?: string): Readonly<Record<string, string>> {
   const style = document.createElement('style')
   style.textContent = theme.split('\n').filter((line) => !line.startsWith('@import ')).join('\n')
   document.head.append(style)
   const topLevel = Array.from(style.sheet?.cssRules ?? [])
-  const rules = condition === undefined
-    ? topLevel
-    : Array.from((topLevel.find((rule) => 'conditionText' in rule && (rule as CSSMediaRule).conditionText === condition) as CSSMediaRule | undefined)?.cssRules ?? [])
-  const root = rules.find((rule): rule is CSSStyleRule => 'selectorText' in rule && (rule as CSSStyleRule).selectorText === ':root')
+  const root = topLevel.find((rule): rule is CSSStyleRule => 'selectorText' in rule && (rule as CSSStyleRule).selectorText === (selector ?? ':root'))
   const tokens = Object.fromEntries(Array.from(root?.style ?? []).map((name) => [name, root?.style.getPropertyValue(name).trim() ?? '']))
   style.remove()
   return tokens
@@ -36,17 +33,17 @@ function contrastRatio(foreground: string, background: string): number {
 }
 
 describe('Split Unwise theme', () => {
-  it('imports Ionic system dark and high-contrast palettes before defining brand cases', () => {
-    expect(theme).toContain("@import '@ionic/vue/css/palettes/dark.system.css';")
-    expect(theme).toContain("@import '@ionic/vue/css/palettes/high-contrast.system.css';")
-    expect(theme).toContain("@import '@ionic/vue/css/palettes/high-contrast-dark.system.css';")
+  it('imports controller-owned Ionic class palettes before defining brand cases', () => {
+    expect(theme).toContain("@import '@ionic/vue/css/palettes/dark.class.css';")
+    expect(theme).toContain("@import '@ionic/vue/css/palettes/high-contrast.class.css';")
+    expect(theme).toContain("@import '@ionic/vue/css/palettes/high-contrast-dark.class.css';")
   })
 
   it('defines separate light, dark, high-contrast-light, and high-contrast-dark brand tokens', () => {
     expect(theme).toContain('--su-surface: #FFFFFF;')
-    expect(theme).toMatch(/@media \(prefers-color-scheme: dark\)[\s\S]*--su-surface: #17152A;/)
-    expect(theme).toMatch(/@media \(prefers-contrast: more\) and \(prefers-color-scheme: light\)[\s\S]*--su-surface: #FFFFFF;/)
-    expect(theme).toMatch(/@media \(prefers-contrast: more\) and \(prefers-color-scheme: dark\)[\s\S]*--su-surface: #000000;/)
+    expect(theme).toMatch(/:root\.su-theme-dark[\s\S]*--su-surface: #17152A;/)
+    expect(theme).toMatch(/:root\.su-contrast-more:not\(\.su-theme-dark\)[\s\S]*--su-surface: #FFFFFF;/)
+    expect(theme).toMatch(/:root\.su-contrast-more\.su-theme-dark[\s\S]*--su-surface: #000000;/)
   })
 
   it('declares a complete Ionic primary tuple in every palette mode', () => {
@@ -60,7 +57,10 @@ describe('Split Unwise theme', () => {
   })
 
   it('scopes branded Ionic surfaces to iOS and preserves their RGB companions in every mode', () => {
-    expect((theme.match(/:root\.ios \{/g) ?? []).length).toBeGreaterThanOrEqual(4)
+    expect(theme).toContain(':root.ios {')
+    expect(theme).toContain(':root.su-theme-dark.ios {')
+    expect(theme).toContain(':root.su-contrast-more:not(.su-theme-dark).ios {')
+    expect(theme).toContain(':root.su-contrast-more.su-theme-dark.ios {')
     expect((theme.match(/--ion-background-color-rgb:/g) ?? []).length).toBeGreaterThanOrEqual(4)
     expect((theme.match(/--ion-text-color-rgb:/g) ?? []).length).toBeGreaterThanOrEqual(4)
     expect(theme).toContain('--su-surface-rgb: 23, 21, 42;')
@@ -86,7 +86,8 @@ describe('Split Unwise theme', () => {
 
   it('keeps standard feedback motion within 140 to 180ms and eliminates it for reduced motion', () => {
     const standardDuration = Number.parseInt(parsedPalette()['--su-motion-fast'], 10)
-    const reducedDuration = Number.parseInt(parsedPalette('(prefers-reduced-motion: reduce)')['--su-motion-fast'], 10)
+    const reduced = /@media \(prefers-reduced-motion: reduce\) \{\s*:root \{[^}]*--su-motion-fast: (\d+)ms/.exec(theme)
+    const reducedDuration = Number.parseInt(reduced?.[1] ?? '', 10)
 
     expect(standardDuration).toBeGreaterThanOrEqual(140)
     expect(standardDuration).toBeLessThanOrEqual(180)

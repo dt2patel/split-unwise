@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createAppRouter } from '../router'
+import type { AuthService, AuthState } from '../../features/auth/authService'
 
 describe('application routes', () => {
   it.each([
@@ -27,12 +28,42 @@ describe('application routes', () => {
     ['/tabs/groups/lake-house-weekend/export', 'group-export'],
     ['/tabs/groups/lake-house-weekend/settings', 'group-settings'],
     ['/tabs/account/export', 'account-export'],
+    ['/tabs/account/appearance', 'account-appearance'],
+    ['/tabs/account/currencies', 'account-currencies'],
+    ['/tabs/groups/lake-house-weekend/invite', 'group-invite'],
   ])('resolves %s through the tabs shell to %s', (path, routeName) => {
     const router = createAppRouter()
     const resolvedRoute = router.resolve(path)
 
     expect(resolvedRoute.name).toBe(routeName)
     expect(resolvedRoute.matched.map((route) => route.name)).toEqual(['tabs', routeName])
+  })
+
+  it('guards Firebase tabs after hydration and consumes the safe return route once', async () => {
+    let state: AuthState = { status: 'signed-out', mode: 'firebase' }
+    const listeners = new Set<(state: AuthState) => void>()
+    const auth = {
+      mode: 'firebase', getState: () => state,
+      subscribe(listener: (state: AuthState) => void) { listeners.add(listener); listener(state); return () => listeners.delete(listener) },
+      capabilities: {},
+    } as unknown as AuthService
+    const router = createAppRouter({ auth })
+    await router.push('/tabs/groups')
+    await router.isReady()
+    expect(router.currentRoute.value.path).toBe('/auth')
+
+    state = { status: 'signed-in', mode: 'firebase', identity: { uid: 'maya', displayName: 'Maya', emailVerified: true, providerIds: ['password'] } }
+    listeners.forEach((listener) => listener(state))
+    await router.push('/auth?complete=1')
+    expect(router.currentRoute.value.fullPath).toBe('/tabs/groups')
+    await router.push('/auth')
+    expect(router.currentRoute.value.fullPath).toBe('/tabs/home')
+  })
+
+  it('resolves Auth and invitation landing outside the tabs shell', () => {
+    const router = createAppRouter()
+    expect(router.resolve('/auth').matched.map(({ name }) => name)).toEqual(['auth'])
+    expect(router.resolve('/invite/invitation-1').matched.map(({ name }) => name)).toEqual(['invitation-landing'])
   })
 
   it.each(['home', 'groups', 'activity', 'account'])('marks the %s composer routes as the sole hidden-chrome authority', (origin) => {

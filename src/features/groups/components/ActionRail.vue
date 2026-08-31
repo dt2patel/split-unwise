@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { IonButton, IonIcon } from '@ionic/vue'
-import { analyticsOutline, cashOutline, peopleOutline, searchOutline, shareOutline, statsChartOutline } from 'ionicons/icons'
+import { analyticsOutline, cashOutline, peopleOutline, personAddOutline, searchOutline, shareOutline, statsChartOutline } from 'ionicons/icons'
 
 const props = defineProps<{ groupId: string }>()
 
 const actions = [
   { id: 'settle-up', label: 'Settle up', icon: cashOutline, suffix: 'settle-up', primary: true },
   { id: 'balances', label: 'Balances', icon: peopleOutline, suffix: 'balances', primary: false },
+  { id: 'invite', label: 'Invite', icon: personAddOutline, suffix: 'invite', primary: false },
   { id: 'search', label: 'Search', icon: searchOutline, suffix: 'search', primary: false },
   { id: 'totals', label: 'Totals', icon: analyticsOutline, suffix: 'totals', primary: false },
   { id: 'charts', label: 'Charts', icon: statsChartOutline, suffix: 'charts', primary: false },

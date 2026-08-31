@@ -579,6 +579,23 @@ describe('app data session', () => {
     await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.toHaveLength(6)
     setAppSessionForTesting(undefined)
   })
+
+  it('quiesces reversibly and clears only non-pending local queue and receipt state', async () => {
+    const receipts = createMemoryReceiptStore({ id: () => 'clear-local' })
+    const receipt = await receipts.put(new Blob(['image'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
+    const session = createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts })
+    await session.ready
+    await session.queue.submit({ kind: 'profile.update', operationId: 'saved-local', displayName: 'Maya P.' }).result()
+
+    expect(session.quiesce()).toEqual({ pending: 0, failed: 0, conflicted: 0, total: 0 })
+    expect(() => session.queue.submit({ kind: 'profile.update', operationId: 'blocked-local', displayName: 'Blocked' })).toThrow('paused')
+    await session.clearLocalData()
+    expect(session.queue.snapshot()).toEqual([])
+    await expect(receipts.get(receipt)).resolves.toBeUndefined()
+
+    session.resumeWork()
+    await expect(session.queue.submit({ kind: 'profile.update', operationId: 'after-resume', displayName: 'Maya P.' }).result()).resolves.toMatchObject({ status: 'saved' })
+  })
 })
 
 type PrincipalFixture = { readonly mode: 'demo' | 'firebase'; readonly projectId: string; readonly uid: string }

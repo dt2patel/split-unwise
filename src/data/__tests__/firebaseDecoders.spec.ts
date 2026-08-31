@@ -52,20 +52,17 @@ describe('Firebase boundary decoders', () => {
     expect(() => decodeExpense('lake-house-weekend', 'cabin', { ...raw, occurrenceEditScope: 'single' })).toThrow('must be occurrence or future')
   })
 
-  it('accepts Firebase configuration only when every value is non-blank after trimming', () => {
-    expect(readFirebaseConfiguration({ VITE_FIREBASE_API_KEY: 'key' })).toBeUndefined()
+  it('accepts valid Firebase core configuration and rejects partial intent', () => {
+    expect(() => readFirebaseConfiguration({ VITE_FIREBASE_API_KEY: 'key' })).toThrow('incomplete')
     expect(readFirebaseConfiguration({
-      VITE_FIREBASE_API_KEY: ' ', VITE_FIREBASE_AUTH_DOMAIN: 'a', VITE_FIREBASE_PROJECT_ID: 'p', VITE_FIREBASE_STORAGE_BUCKET: 's', VITE_FIREBASE_MESSAGING_SENDER_ID: 'm', VITE_FIREBASE_APP_ID: 'i',
-    })).toBeUndefined()
-    expect(readFirebaseConfiguration({
-      VITE_FIREBASE_API_KEY: ' key ', VITE_FIREBASE_AUTH_DOMAIN: ' auth ', VITE_FIREBASE_PROJECT_ID: ' project ', VITE_FIREBASE_STORAGE_BUCKET: ' bucket ', VITE_FIREBASE_MESSAGING_SENDER_ID: ' sender ', VITE_FIREBASE_APP_ID: ' app ',
-    })).toEqual({ apiKey: 'key', authDomain: 'auth', projectId: 'project', storageBucket: 'bucket', messagingSenderId: 'sender', appId: 'app' })
+      VITE_FIREBASE_API_KEY: ' AIzaSyExampleKey ', VITE_FIREBASE_AUTH_DOMAIN: ' split-unwise.firebaseapp.com ', VITE_FIREBASE_PROJECT_ID: ' split-unwise ', VITE_FIREBASE_APP_ID: ' 1:123456:web:abcdef ',
+    })).toEqual({ apiKey: 'AIzaSyExampleKey', authDomain: 'split-unwise.firebaseapp.com', projectId: 'split-unwise', appId: '1:123456:web:abcdef' })
   })
 
-  it('selects demo for partial configuration and constructs Firebase lazily without a read', () => {
-    expect(createRepository({ VITE_FIREBASE_API_KEY: 'key' }).mode).toBe('demo')
+  it('never silently selects demo for partial Firebase configuration', () => {
+    expect(() => createRepository({ VITE_FIREBASE_API_KEY: 'key' })).toThrow('incomplete')
     expect(createRepository({
-      VITE_FIREBASE_API_KEY: 'key', VITE_FIREBASE_AUTH_DOMAIN: 'auth', VITE_FIREBASE_PROJECT_ID: 'project', VITE_FIREBASE_STORAGE_BUCKET: 'bucket', VITE_FIREBASE_MESSAGING_SENDER_ID: 'sender', VITE_FIREBASE_APP_ID: 'app',
+      VITE_FIREBASE_API_KEY: 'AIzaSyExampleKey', VITE_FIREBASE_AUTH_DOMAIN: 'split-unwise.firebaseapp.com', VITE_FIREBASE_PROJECT_ID: 'split-unwise', VITE_FIREBASE_APP_ID: '1:123456:web:abcdef',
     }).mode).toBe('firebase')
   })
 })

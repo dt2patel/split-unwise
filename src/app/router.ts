@@ -1,7 +1,8 @@
 import { createRouter, createWebHistory } from '@ionic/vue-router'
 import type { Router, RouteRecordRaw } from 'vue-router'
+import type { AuthService, AuthState } from '../features/auth/authService'
+import { consumeReturnPath, sanitizeInternalReturnPath, storeReturnPath } from '../features/auth/returnPath'
 import TabsShell from '../features/shell/TabsShell.vue'
-import RoutePlaceholderPage from '../features/shell/RoutePlaceholderPage.vue'
 import HomePage from '../features/home/HomePage.vue'
 import GroupsPage from '../features/groups/GroupsPage.vue'
 import GroupDetailPage from '../features/groups/GroupDetailPage.vue'
@@ -17,8 +18,16 @@ const ChartsPage = () => import('../features/analytics/ChartsPage.vue')
 const SearchPage = () => import('../features/search/SearchPage.vue')
 const GroupSettingsPage = () => import('../features/groups/GroupSettingsPage.vue')
 const ExportPage = () => import('../features/exports/ExportPage.vue')
+const AuthPage = () => import('../features/auth/AuthPage.vue')
+const AccountPage = () => import('../features/account/AccountPage.vue')
+const AppearancePage = () => import('../features/account/AppearancePage.vue')
+const CurrencyPreferencesPage = () => import('../features/account/CurrencyPreferencesPage.vue')
+const InviteSheet = () => import('../features/invitations/InviteSheet.vue')
+const InvitationLandingPage = () => import('../features/invitations/InvitationLandingPage.vue')
 
 const routes: RouteRecordRaw[] = [
+  { path: '/auth', name: 'auth', component: AuthPage, meta: { public: true } },
+  { path: '/invite/:invitationId', name: 'invitation-landing', component: InvitationLandingPage, meta: { public: true } },
   { path: '/', redirect: '/tabs/home' },
   {
     path: '/tabs',
@@ -42,18 +51,52 @@ const routes: RouteRecordRaw[] = [
       { path: 'groups/:groupId/totals', name: 'group-totals', component: TotalsPage, meta: { pageTitle: 'Totals', pageDescription: 'Review paid, shared, and net totals.', hideAppChrome: true } },
       { path: 'groups/:groupId/charts', name: 'group-charts', component: ChartsPage, meta: { pageTitle: 'Charts', pageDescription: 'Explore spending over time and by category.', hideAppChrome: true } },
       { path: 'groups/:groupId/export', name: 'group-export', component: ExportPage, meta: { pageTitle: 'Export', pageDescription: 'Download this group as CSV or JSON.', hideAppChrome: true } },
+      { path: 'groups/:groupId/invite', name: 'group-invite', component: InviteSheet, meta: { pageTitle: 'Invite people', hideAppChrome: true } },
       { path: 'groups/:groupId/settings', name: 'group-settings', component: GroupSettingsPage, meta: { pageTitle: 'Group settings', pageDescription: 'Manage members, currency, and group defaults.', hideAppChrome: true } },
       { path: 'groups/:groupId', name: 'group-detail', component: GroupDetailPage, meta: { hideAppChrome: true } },
       { path: 'activity', name: 'activity', component: ActivityPage, meta: { pageTitle: 'Activity', pageDescription: 'Review expense changes, comments, and settlements.' } },
-      { path: 'account', name: 'account', component: RoutePlaceholderPage, meta: { pageTitle: 'Account', pageDescription: 'Manage your profile, appearance, currencies, and data.' } },
+      { path: 'account', name: 'account', component: AccountPage, meta: { pageTitle: 'Account', pageDescription: 'Manage your profile, appearance, currencies, and data.' } },
+      { path: 'account/appearance', name: 'account-appearance', component: AppearancePage, meta: { pageTitle: 'Appearance', hideAppChrome: true } },
+      { path: 'account/currencies', name: 'account-currencies', component: CurrencyPreferencesPage, meta: { pageTitle: 'Currencies', hideAppChrome: true } },
       { path: 'account/export', name: 'account-export', component: ExportPage, meta: { pageTitle: 'Export', pageDescription: 'Download your account data as CSV or JSON.', hideAppChrome: true } },
     ],
   },
 ]
 
-export function createAppRouter(): Router {
-  return createRouter({
+export function createAppRouter(options: { readonly auth?: AuthService } = {}): Router {
+  const router = createRouter({
     history: createWebHistory(import.meta.env.BASE_URL),
     routes,
+  })
+  if (options.auth) installAuthGuards(router, options.auth)
+  return router
+}
+
+export function installAuthGuards(router: Router, auth: AuthService): void {
+  router.beforeEach(async (to) => {
+    const state = await resolvedAuthState(auth)
+    if (to.name === 'auth' && state.status === 'signed-in') {
+      const stored = consumeReturnPath()
+      return sanitizeInternalReturnPath(stored, (path) => router.resolve(path)) ?? '/tabs/home'
+    }
+    if (to.path.startsWith('/tabs') && auth.mode === 'firebase' && state.status !== 'signed-in') {
+      const returnTo = sanitizeInternalReturnPath(to.fullPath, (path) => router.resolve(path))
+      if (returnTo) storeReturnPath(returnTo)
+      return '/auth'
+    }
+    return true
+  })
+}
+
+async function resolvedAuthState(auth: AuthService): Promise<AuthState> {
+  const current = auth.getState()
+  if (current.status !== 'loading') return current
+  return new Promise((resolve) => {
+    let unsubscribe: () => void = () => undefined
+    unsubscribe = auth.subscribe((state) => {
+      if (state.status === 'loading') return
+      unsubscribe()
+      resolve(state)
+    })
   })
 }

@@ -8,8 +8,15 @@ export { appPrincipalKey } from './principal'
 export type { AppPrincipal } from './principal'
 
 export type AppCommandQueue = Pick<CommandQueue,
-  'acknowledge' | 'discard' | 'get' | 'markFresh' | 'markStale' | 'resume' | 'retry' | 'snapshot' | 'submit' | 'subscribe'
+  'acknowledge' | 'clearLocalRecords' | 'discard' | 'get' | 'markFresh' | 'markStale' | 'resume' | 'retry' | 'snapshot' | 'submit' | 'subscribe'
 >
+
+export interface UnresolvedWorkSummary {
+  readonly pending: number
+  readonly failed: number
+  readonly conflicted: number
+  readonly total: number
+}
 
 export class StaleAppSessionError extends Error {
   constructor() {
@@ -25,8 +32,16 @@ export interface AppDataSession {
   readonly receiptProvider: ReceiptProvider
   readonly principal: Promise<AppPrincipal>
   readonly isActive: boolean
+  readonly isQuiesced: boolean
   /** Resolves only after repository identity has scoped and resumed the durable queue. */
   readonly ready: Promise<void>
+  /** Reversibly pauses new queue submissions while sign-out is being decided. */
+  quiesce(): UnresolvedWorkSummary
+  resumeWork(): void
+  /** Discards only terminal failed/conflicted records; pending work is preserved. */
+  discardTerminalWork(): Promise<UnresolvedWorkSummary>
+  /** Clears queue and receipt data after quiescing, but never while a write is pending. */
+  clearLocalData(): Promise<void>
   /** Permanently prevents repository calls and invalidates unfinished initialization. */
   freeze(): void
 }
@@ -67,6 +82,7 @@ let activeSession: AppDataSession | undefined
 export function createAppSession(options: AppSessionOptions = {}): AppDataSession {
   const sourceRepository = options.repository ?? createRepository()
   let active = true
+  let quiesced = false
   let rejectFrozen!: (reason: StaleAppSessionError) => void
   const frozen = new Promise<never>((_resolve, reject) => { rejectFrozen = reject })
   const assertActive = () => { if (!active) throw new StaleAppSessionError() }
@@ -151,7 +167,36 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
     receiptProvider,
     principal: Promise.race([resolvedPrincipal, frozen]),
     get isActive() { return active },
+    get isQuiesced() { return quiesced },
     ready,
+    quiesce() {
+      assertActive()
+      quiesced = true
+      deferredQueue.pause()
+      return unresolvedSummary(deferredQueue.snapshot())
+    },
+    resumeWork() {
+      assertActive()
+      quiesced = false
+      deferredQueue.continue()
+    },
+    async discardTerminalWork() {
+      assertActive()
+      const summary = unresolvedSummary(deferredQueue.snapshot())
+      if (summary.pending > 0) return summary
+      for (const operation of deferredQueue.snapshot()) {
+        if (operation.status === 'failed') await deferredQueue.discard(operation.envelope.operationId)
+        if (operation.status === 'conflicted') await deferredQueue.acknowledge(operation.envelope.operationId)
+      }
+      return unresolvedSummary(deferredQueue.snapshot())
+    },
+    async clearLocalData() {
+      assertActive()
+      if (!quiesced) throw new Error('Pause local work before clearing it')
+      if (unresolvedSummary(deferredQueue.snapshot()).pending > 0) throw new Error('Pending operations cannot be cleared while their result is unknown')
+      await deferredQueue.clearLocalRecords()
+      await receipts.clear?.()
+    },
     freeze() {
       if (!active) return
       active = false
@@ -165,6 +210,9 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
 export function getAppSession(): AppDataSession {
   return activeSession ??= createAppSession()
 }
+
+/** Read-only boot seam: unlike getAppSession, this never constructs an unowned session. */
+export function peekActiveAppSession(): AppDataSession | undefined { return activeSession }
 
 export function setActiveAppSession(session: AppDataSession | undefined): void {
   activeSession = session
@@ -274,6 +322,7 @@ class DeferredCommandQueue implements AppCommandQueue {
   private target: CommandQueue | undefined
   private readonly listeners = new Map<(operation: CommandOperation) => void, () => void>()
   private frozen = false
+  private paused = false
 
   attach(queue: CommandQueue): void {
     if (this.frozen) throw new StaleAppSessionError()
@@ -288,10 +337,13 @@ class DeferredCommandQueue implements AppCommandQueue {
     for (const unsubscribe of this.listeners.values()) unsubscribe()
     this.listeners.clear()
   }
-  submit(command: Parameters<CommandQueue['submit']>[0]): ReturnType<CommandQueue['submit']> { return this.requireQueue().submit(command) }
-  retry(operationId: string): ReturnType<CommandQueue['retry']> { return this.requireQueue().retry(operationId) }
+  pause(): void { if (this.frozen) throw new StaleAppSessionError(); this.paused = true }
+  continue(): void { if (this.frozen) throw new StaleAppSessionError(); this.paused = false }
+  submit(command: Parameters<CommandQueue['submit']>[0]): ReturnType<CommandQueue['submit']> { this.assertWritable(); return this.requireQueue().submit(command) }
+  retry(operationId: string): ReturnType<CommandQueue['retry']> { this.assertWritable(); return this.requireQueue().retry(operationId) }
   get(operationId: string): ReturnType<CommandQueue['get']> { return this.target?.get(operationId) }
   snapshot(): ReturnType<CommandQueue['snapshot']> { return this.target?.snapshot() ?? [] }
+  clearLocalRecords(): ReturnType<CommandQueue['clearLocalRecords']> { this.assertWritableForClear(); return this.requireQueue().clearLocalRecords() }
   discard(operationId: string): ReturnType<CommandQueue['discard']> { return this.requireQueue().discard(operationId) }
   acknowledge(operationId: string): ReturnType<CommandQueue['acknowledge']> { return this.requireQueue().acknowledge(operationId) }
   markStale(operationId: string): ReturnType<CommandQueue['markStale']> { return this.requireQueue().markStale(operationId) }
@@ -311,6 +363,15 @@ class DeferredCommandQueue implements AppCommandQueue {
     if (!this.target) throw new Error('Command queue requires an authenticated owner before use')
     return this.target
   }
+  private assertWritable(): void { if (this.paused) throw new Error('Local work is paused while sign-out is being decided') }
+  private assertWritableForClear(): void { if (!this.paused) throw new Error('Local work must be paused before clearing') }
+}
+
+function unresolvedSummary(operations: readonly CommandOperation[]): UnresolvedWorkSummary {
+  const pending = operations.filter(({ status }) => status === 'pending').length
+  const failed = operations.filter(({ status }) => status === 'failed').length
+  const conflicted = operations.filter(({ status }) => status === 'conflicted').length
+  return { pending, failed, conflicted, total: pending + failed + conflicted }
 }
 
 function deferredReceiptStore(
@@ -331,6 +392,7 @@ function deferredReceiptStore(
     async setDurability(reference, durability) { await (await resolved()).setDurability(reference, durability) },
     async claim(reference, operationId) { return (await resolved()).claim(reference, operationId) },
     async delete(reference) { await (await resolved()).delete(reference) },
+    async clear() { await (await resolved()).clear?.() },
   }
 }
 

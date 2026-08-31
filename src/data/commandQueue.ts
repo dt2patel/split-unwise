@@ -154,6 +154,16 @@ export class CommandQueue {
   get(operationId: string): CommandOperation | undefined { return cloneOptional(this.operations.get(operationId)) }
   snapshot(): readonly CommandOperation[] { return clone([...this.operations.values()]) }
 
+  /** Clears this principal's terminal local journal only when no result is indeterminate. */
+  async clearLocalRecords(): Promise<void> {
+    this.requireOwner()
+    if ([...this.operations.values()].some(({ status }) => status === 'pending')) throw new Error('Pending operations cannot be cleared while their result is unknown')
+    const removed = [...this.operations.values()]
+    await this.persistProjection(() => [])
+    this.operations.clear()
+    removed.forEach((operation) => this.notify(operation))
+  }
+
   async discard(operationId: string): Promise<boolean> {
     this.requireOwner()
     const operation = this.operations.get(operationId)

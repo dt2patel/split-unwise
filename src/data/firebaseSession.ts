@@ -1,4 +1,5 @@
 import type { FirebaseConfiguration } from './firebase'
+import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import type { AppPrincipal } from './principal'
 
 export interface HydratableFirebaseAuth {
@@ -50,9 +51,7 @@ export function createFirebasePrincipalSource(options: FirebasePrincipalSourceOp
 
 /** Real Firebase connection used by the app composition root. */
 export async function connectFirebasePrincipalSource(configuration: FirebaseConfiguration): Promise<FirebasePrincipalSource> {
-  const [appModule, authModule] = await Promise.all([import('firebase/app'), import('firebase/auth')])
-  const app = appModule.getApps().find((candidate) => candidate.options.projectId === configuration.projectId)
-    ?? appModule.initializeApp(configuration, `split-unwise-${configuration.projectId}`)
+  const [app, authModule] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth')])
   const auth = authModule.getAuth(app)
   return createFirebasePrincipalSource({
     auth,

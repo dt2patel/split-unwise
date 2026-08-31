@@ -1,11 +1,15 @@
 import { createBrowserDemoRepositoryStateStorage, createDemoRepository } from './demoRepository'
-import { readFirebaseConfiguration, type PublicEnvironment } from './firebase'
+import { readFirebaseConfiguration, readRuntimeConfiguration, type PublicEnvironment, type RuntimeConfiguration } from './firebase'
 import { createFirebaseRepository } from './firebaseRepository'
 import { connectFirebasePrincipalSource } from './firebaseSession'
 import { appPrincipalKey, type AppPrincipal, type AppPrincipalSource } from './principal'
 import type { AppRepository } from './repositories'
+import { createConfigurationErrorAuthService, createDemoAuthService, type AuthService } from '../features/auth/authService'
+import { createFirebaseAuthService } from '../features/auth/firebaseAuthService'
 
 export interface AppRepositorySessionRuntime {
+  readonly configuration: RuntimeConfiguration
+  readonly auth: AuthService
   readonly principals: AppPrincipalSource
   createRepository(principal: AppPrincipal): AppRepository
 }
@@ -18,14 +22,28 @@ export function createRepository(environment?: PublicEnvironment): AppRepository
 
 /** Principal-first composition used by the mounted app and auth lifecycle. */
 export async function createRepositorySessionRuntime(environment?: PublicEnvironment): Promise<AppRepositorySessionRuntime> {
-  const configuration = readFirebaseConfiguration(environment)
-  if (configuration) {
-    const principals = await connectFirebasePrincipalSource(configuration)
+  const runtime = readRuntimeConfiguration(environment)
+  if (runtime.kind === 'error') {
+    const auth = createConfigurationErrorAuthService(runtime.message, {
+      auth: 'available', firestore: 'available', storage: 'unavailable', functions: 'unavailable', appCheck: 'unavailable', push: 'unavailable', google: 'unavailable', apple: 'unavailable',
+    })
     return {
+      configuration: runtime, auth,
+      principals: { async listen(listener) { await listener(undefined); return () => undefined } },
+      createRepository() { throw new Error(runtime.message) },
+    }
+  }
+  if (runtime.kind === 'firebase') {
+    const [principals, auth] = await Promise.all([
+      connectFirebasePrincipalSource(runtime.firebase),
+      createFirebaseAuthService(runtime.firebase, runtime.capabilities),
+    ])
+    return {
+      configuration: runtime, auth,
       principals,
       createRepository(principal) {
-        assertRuntimePrincipal(principal, 'firebase', configuration.projectId)
-        return createFirebaseRepository(configuration, principal.uid)
+        assertRuntimePrincipal(principal, 'firebase', runtime.firebase.projectId)
+        return createFirebaseRepository(runtime.firebase, principal.uid)
       },
     }
   }
@@ -33,14 +51,19 @@ export async function createRepositorySessionRuntime(environment?: PublicEnviron
   const stateStorage = createBrowserDemoRepositoryStateStorage()
   const identityRepository = createDemoRepository({ stateStorage })
   const projectId = identityRepository.projectId
+  const currentUser = await identityRepository.app.getCurrentUser()
+  const auth = createDemoAuthService({
+    uid: currentUser.id, displayName: currentUser.displayName, emailVerified: false,
+    ...(currentUser.avatarUrl ? { photoURL: currentUser.avatarUrl } : {}), providerIds: ['demo'],
+  }, runtime.capabilities)
   const principals: AppPrincipalSource = {
     async listen(listener) {
-      const currentUser = await identityRepository.app.getCurrentUser()
       await listener({ mode: 'demo', projectId, uid: currentUser.id })
       return () => undefined
     },
   }
   return {
+    configuration: runtime, auth,
     principals,
     createRepository(principal) {
       assertRuntimePrincipal(principal, 'demo', projectId)

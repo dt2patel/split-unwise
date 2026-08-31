@@ -22,7 +22,6 @@ const errorSummary = ref<HTMLElement>()
 const receiptPreviewUrl = ref<string>()
 const sheetDirty = ref(false)
 const categories = ['Food', 'Transport', 'Lodging', 'Supplies', 'Entertainment', 'Utilities', 'Other']
-const currencies: readonly CurrencyCode[] = ['USD', 'EUR', 'GBP', 'JPY', 'BHD', 'CLF']
 const pageTitle = computed(() => store.mode === 'edit' ? 'Edit expense' : 'Add expense')
 const totalMinorAmount = computed(() => {
   try { return Math.max(0, toMinorUnits(store.editor.amountText || '0', store.editor.currency)) } catch { return 0 }
@@ -159,7 +158,7 @@ async function selectReceipt(event: Event): Promise<void> {
           <section class="editor-list" aria-label="More expense options">
             <label class="editor-row" for="expense-category"><ion-icon :icon="pricetagOutline" aria-hidden="true" /><span>Category</span><select id="expense-category" v-model="store.editor.category" :aria-invalid="store.errors.category ? 'true' : undefined" :aria-describedby="store.errors.category ? 'expense-category-error' : undefined"><option value="" disabled>Choose</option><option v-for="category in categories" :key="category">{{ category }}</option></select></label>
             <p v-if="store.errors.category" id="expense-category-error" class="field-error">{{ store.errors.category }}</p>
-            <label class="editor-row" for="expense-currency"><ion-icon :icon="cashOutline" aria-hidden="true" /><span>Currency</span><select id="expense-currency" :value="store.editor.currency" @change="changeCurrency"><option v-for="currency in currencies" :key="currency">{{ currency }}</option></select></label>
+            <label class="editor-row" for="expense-currency"><ion-icon :icon="cashOutline" aria-hidden="true" /><span>Currency</span><select id="expense-currency" :value="store.editor.currency" @change="changeCurrency"><option v-for="currency in store.currencyOptions" :key="currency">{{ currency }}</option></select></label>
             <label class="editor-row" for="expense-date"><ion-icon :icon="calendarOutline" aria-hidden="true" /><span>Date</span><input id="expense-date" :value="store.editor.date" type="date" :aria-invalid="store.errors.date ? 'true' : undefined" :aria-describedby="store.errors.date ? 'expense-date-error' : undefined" @input="changeDate"></label>
             <p v-if="store.errors.date" id="expense-date-error" class="field-error">{{ store.errors.date }}</p>
             <button id="participant-sheet-trigger" type="button" class="editor-row" :aria-invalid="store.errors.participants ? 'true' : undefined" :aria-describedby="store.errors.participants ? 'expense-participants-error' : undefined" @click="openSheet('participants', 'participant-sheet-trigger')"><ion-icon :icon="peopleOutline" aria-hidden="true" /><span>Split with</span><small>{{ store.editor.participants.length }} participant{{ store.editor.participants.length === 1 ? '' : 's' }}</small></button>

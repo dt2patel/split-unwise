@@ -23,6 +23,8 @@ export interface ReceiptBlobStore {
   /** Prevents stale editor cleanup from deleting a local asset captured by a durable command. */
   claim(reference: LocalReceiptReference, operationId: string): Promise<boolean>
   delete(reference: LocalReceiptReference): Promise<void>
+  /** Clears every receipt in this already principal-scoped store. */
+  clear?(): Promise<void>
 }
 
 export interface ReceiptSuggestion {
@@ -82,6 +84,7 @@ export function createMemoryReceiptStore(options: ReceiptStoreOptions = {}): Rec
       if (assets.get(reference)?.commandOperationIds.length) return
       assets.delete(reference)
     },
+    async clear() { assets.clear() },
   }
 }
 
@@ -131,6 +134,7 @@ export function createIndexedDbReceiptStore(options: ReceiptStoreOptions & { rea
         read.onerror = () => fail(read.error ?? new Error('Receipt cleanup could not be read'))
       })
     },
+    async clear() { await requestFrom(getDatabase(), 'readwrite', (store) => store.clear()) },
   }
 }
 
