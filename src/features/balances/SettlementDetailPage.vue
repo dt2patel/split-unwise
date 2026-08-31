@@ -35,10 +35,11 @@ const groupId = computed(() => typeof route.params.groupId === 'string' && isStr
 const settlementId = computed(() => typeof route.params.settlementId === 'string' && isStrictId(route.params.settlementId) ? route.params.settlementId : '')
 const settlement = computed(() => settlements.value.find((record) => record.settlementId === settlementId.value))
 const canVoid = computed(() => Boolean(settlement.value && store.canVoid(settlement.value)))
-const voidOperations = computed(() => pendingSettlements.value.filter((operation) => operation.kind === 'void'
-  && operation.settlementId === settlementId.value
-  && (operation.status === 'pending' || operation.status === 'failed' || operation.status === 'conflicted')))
-const operationAnnouncement = useSettlementOperationAnnouncement(voidOperations)
+const matchingVoidOperations = computed(() => pendingSettlements.value.filter((operation) => operation.kind === 'void'
+  && operation.settlementId === settlementId.value))
+const voidOperations = computed(() => matchingVoidOperations.value.filter((operation) => operation.status === 'pending'
+  || operation.status === 'failed' || operation.status === 'conflicted'))
+const operationAnnouncement = useSettlementOperationAnnouncement(matchingVoidOperations)
 
 watch(() => route.fullPath, () => { void load() }, { immediate: true })
 

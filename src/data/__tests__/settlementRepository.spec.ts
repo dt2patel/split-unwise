@@ -423,6 +423,25 @@ describe('demo settlement repository', () => {
     expect(JSON.parse(browser.getItem(quarantineKey) ?? 'null')).toEqual({ version: 2, scope, records: [malformed] })
     await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
   })
+
+  it('moves malformed browser JSON into a recoverable quarantine before falling back', async () => {
+    const browser = createWebStorage()
+    const scope = 'split-unwise-demo:v2:maya-p'
+    const activeKey = `split-unwise:demo-repository:v2:${encodeURIComponent(scope)}`
+    const quarantineKey = `split-unwise:demo-repository:quarantine:v2:${encodeURIComponent(scope)}`
+    const malformed = '{"version":2,"settlements":['
+    browser.setItem(activeKey, malformed)
+
+    const repository = createDemoRepository({ stateStorage: createBrowserDemoRepositoryStateStorage(browser) })
+
+    expect(browser.getItem(activeKey)).toBeNull()
+    expect(JSON.parse(browser.getItem(quarantineKey) ?? 'null')).toEqual({
+      version: 2,
+      scope,
+      records: [{ reason: 'invalid-json', raw: malformed }],
+    })
+    await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
+  })
 })
 
 interface MutableDemoSettlement {

@@ -459,6 +459,43 @@ describe('settlement detail page', () => {
     expect(session.queue.get('failed-void-retained')).toBeUndefined()
   })
 
+  it('announces Saved when a retained void succeeds on retry before the queue row is acknowledged', async () => {
+    const repository = createDemoRepository()
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+    const recorded = await repository.settlements.record({
+      kind: 'settlement.record', operationId: 'saved-retry-void-record', groupId, expectedBalanceRevision: before.balanceRevision,
+      basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
+      money: { currency: 'USD', minorAmount: 500 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+    })
+    if (recorded.status !== 'saved') throw new Error('Expected settlement')
+    let attempts = 0
+    const failingOnce: AppRepository = {
+      ...repository,
+      commands: {
+        async execute(command) {
+          if (command.kind === 'settlement.void' && attempts++ === 0) throw Object.assign(new Error('Connection lost'), { code: 'unavailable' })
+          return repository.commands.execute(command)
+        },
+      },
+    }
+    const session = createAppSession({ repository: failingOnce, commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    await session.ready
+    await session.queue.submit({
+      kind: 'settlement.void', operationId: 'saved-retry-void', groupId, settlementId: recorded.settlement.settlementId,
+      expectedRevision: recorded.settlement.revision, expectedBalanceRevision: recorded.balanceSnapshot.balanceRevision, reason: 'Duplicate record',
+    }).result().catch(() => undefined)
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settlements/${recorded.settlement.settlementId}`, SettlementDetailPage)
+    const announcement = wrapper.get('[data-testid="void-operation-announcement"]')
+    expect(announcement.text()).toBe('')
+
+    await wrapper.get('[data-operation-id="saved-retry-void"] [data-action="retry-operation"]').trigger('click')
+
+    await vi.waitFor(() => expect(announcement.text()).toBe('Void update: Saved. Saving this void request.'))
+    await vi.waitFor(() => expect(wrapper.find('[data-operation-id="saved-retry-void"]').exists()).toBe(false))
+    await expect(repository.settlements.getById(groupId, recorded.settlement.settlementId)).resolves.toHaveProperty('void')
+  })
+
   it('restores only the matching conflicted void after remount and keeps Reload and Dismiss targeted', async () => {
     const repository = createDemoRepository()
     const before = await repository.groups.getBalanceSnapshot(groupId)

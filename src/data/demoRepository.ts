@@ -795,23 +795,27 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
 export function createBrowserDemoRepositoryStateStorage(storage: Storage | undefined = browserStorage()): DemoRepositoryStateStorage {
   const key = (scope: string) => `split-unwise:demo-repository:v2:${encodeURIComponent(scope)}`
   const quarantineKey = (scope: string) => `split-unwise:demo-repository:quarantine:v2:${encodeURIComponent(scope)}`
+  const quarantine = (scope: string, records: readonly unknown[]): void => {
+    if (!storage) return
+    const previous = parseDemoQuarantine(storage.getItem(quarantineKey(scope)), scope)
+    storage.setItem(quarantineKey(scope), JSON.stringify({ version: 2, scope, records: [...previous, ...records] }))
+    storage.removeItem(key(scope))
+  }
   return {
     load(scope) {
       if (!storage) return undefined
       const value = storage.getItem(key(scope))
       if (value === null) return undefined
-      try { return JSON.parse(value) as unknown } catch { throw new Error('Persisted demo repository state is invalid JSON') }
+      try { return JSON.parse(value) as unknown } catch {
+        quarantine(scope, [{ reason: 'invalid-json', raw: value }])
+        return undefined
+      }
     },
     save(scope, document) {
       if (!storage) throw new Error('Browser demo repository storage is unavailable')
       storage.setItem(key(scope), JSON.stringify(document))
     },
-    quarantine(scope, records) {
-      if (!storage) return
-      const previous = parseDemoQuarantine(storage.getItem(quarantineKey(scope)), scope)
-      storage.setItem(quarantineKey(scope), JSON.stringify({ version: 2, scope, records: [...previous, ...records] }))
-      storage.removeItem(key(scope))
-    },
+    quarantine,
   }
 }
 

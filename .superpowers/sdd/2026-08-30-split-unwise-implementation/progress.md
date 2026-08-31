@@ -261,3 +261,7 @@ Task 8: fix round 1/5 addressed all 2 Critical and 12 Important findings. Full v
 Task 8: fix round 1 re-review found 8 Important gaps across principal-owned settlement operation proofs, exact void replay parity, recoverable browser quarantine, queue creator invariants, safe single-transition void decoding, focused live announcements, and conflicted-void remount coverage. Fix round 2 proceeded RED-first.
 
 Task 8: fix round 2/5 addressed all 8 Important findings. Focused verification is 4 files/64 tests; full verification is 43 files/532 tests, typecheck, production build with 330 modules transformed, and diff check passing. Browser/device visual proof remains assigned to Task 12.
+
+Task 8: final data and mobile-UX re-review found 2 Important recovery gaps: malformed browser JSON threw before quarantine, and a successful retained void retry disappeared before its `Saved` announcement. Fix round 3 proceeded RED-first.
+
+Task 8: fix round 3/5 addressed both final Important findings. Focused verification is 2 files/46 tests; full verification is 43 files/534 tests, typecheck, production build with 330 modules transformed, and diff check passing. Final scoped re-review is in progress; browser/device visual proof remains assigned to Task 12.
