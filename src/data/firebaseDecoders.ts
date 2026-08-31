@@ -59,9 +59,11 @@ export function decodeSettlement(groupId: string, id: string, value: unknown): S
   if (basis.senderId !== senderId || basis.recipientId !== recipientId) throw new DocumentDecodeError(`settlement ${id}`, 'basis participants must match the settlement')
   if (basis.currency !== money.currency) throw new DocumentDecodeError(`settlement ${id}`, 'basis currency must match settlement money')
   if (money.minorAmount > basis.debtMinor) throw new DocumentDecodeError(`settlement ${id}`, 'amount cannot exceed basis debt')
-  const revision = positiveInteger(data.revision, `settlement ${id}.revision`)
+  const revision = positiveSafeInteger(data.revision, `settlement ${id}.revision`)
   const voided = data.void === undefined ? undefined : settlementVoid(data.void, `settlement ${id}.void`)
-  if ((revision === 1) !== (voided === undefined) || (voided && voided.revision !== revision)) throw new DocumentDecodeError(`settlement ${id}`, 'void revision must match the settlement revision')
+  if ((voided === undefined && revision !== 1) || (voided !== undefined && (revision !== 2 || voided.revision !== 2))) {
+    throw new DocumentDecodeError(`settlement ${id}`, 'void revision must be the single revision 2 transition')
+  }
   const createdBy = actorSnapshot(data.createdBy, `settlement ${id}.createdBy`)
   if (createdBy.id !== senderId && createdBy.id !== recipientId) throw new DocumentDecodeError(`settlement ${id}`, 'creator must be the sender or recipient')
   return {
@@ -368,7 +370,7 @@ function settlementVoid(value: unknown, path: string): SettlementVoid {
     reason: normalizedSettlementText(data.reason, `${path}.reason`, true),
     actor: actorSnapshot(data.actor, `${path}.actor`),
     createdAt: isoTimestamp(data.createdAt, `${path}.createdAt`),
-    revision: positiveInteger(data.revision, `${path}.revision`),
+    revision: positiveSafeInteger(data.revision, `${path}.revision`),
   }
 }
 function normalizedSettlementText(value: unknown, path: string, required: boolean): string {

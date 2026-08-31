@@ -26,6 +26,13 @@ describe('Task 8 Firebase decoders', () => {
     })).toMatchObject({ revision: 2, void: { revision: 2, reason: 'Duplicate' } })
     expect(() => decodeSettlement('lake-house-weekend', 'settlement-a', { ...raw, revision: 2 })).toThrow('void revision')
     expect(() => decodeSettlement('lake-house-weekend', 'settlement-a', { ...raw, money: { currency: 'EUR', minorAmount: 500 } })).toThrow('basis currency')
+    for (const invalidRevision of [3, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => decodeSettlement('lake-house-weekend', 'settlement-a', {
+        ...raw,
+        revision: invalidRevision,
+        void: { operationId: 'void-a', reason: 'Duplicate', actor: { id: 'maya-p', displayName: 'Maya P.' }, createdAt: '2026-08-31T21:00:00.000Z', revision: invalidRevision },
+      })).toThrow(DocumentDecodeError)
+    }
   })
 
   it('rejects a settlement creator who is neither the sender nor the recipient', () => {

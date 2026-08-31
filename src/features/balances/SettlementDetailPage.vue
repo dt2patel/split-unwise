@@ -17,6 +17,7 @@ import { createClientOperationId } from '../../data/clientOperationId'
 import { isStrictId } from '../../data/identifiers'
 import { useMotion } from '../../composables/useMotion'
 import { useSettlementStore } from './settlementStore'
+import { useSettlementOperationAnnouncement } from './useSettlementOperationAnnouncement'
 
 const route = useRoute()
 const store = useSettlementStore()
@@ -37,6 +38,7 @@ const canVoid = computed(() => Boolean(settlement.value && store.canVoid(settlem
 const voidOperations = computed(() => pendingSettlements.value.filter((operation) => operation.kind === 'void'
   && operation.settlementId === settlementId.value
   && (operation.status === 'pending' || operation.status === 'failed' || operation.status === 'conflicted')))
+const operationAnnouncement = useSettlementOperationAnnouncement(voidOperations)
 
 watch(() => route.fullPath, () => { void load() }, { immediate: true })
 
@@ -151,6 +153,7 @@ async function dismissOperation(operationId: string): Promise<void> {
 
     <ion-content :fullscreen="true">
       <main class="settlement-detail__main">
+        <p class="su-visually-hidden" role="status" aria-live="polite" aria-atomic="true" data-testid="void-operation-announcement">{{ operationAnnouncement }}</p>
         <p v-if="isLoading && !group" role="status" class="settlement-detail__status">Loading payment…</p>
         <p v-else-if="pageError" role="alert" class="settlement-detail__status settlement-detail__error">{{ pageError }}</p>
 

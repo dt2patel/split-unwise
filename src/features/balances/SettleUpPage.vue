@@ -29,6 +29,7 @@ import {
   type PaymentProviderConfiguration,
 } from './paymentProviders'
 import { useSettlementStore } from './settlementStore'
+import { useSettlementOperationAnnouncement } from './useSettlementOperationAnnouncement'
 
 type BalancePlan = SettlementBasis['kind']
 
@@ -63,6 +64,7 @@ const outsidePaymentConfirmed = ref(false)
 const validationError = ref('')
 const isSubmitting = ref(false)
 const amountInput = ref<HTMLInputElement>()
+const operationAnnouncement = useSettlementOperationAnnouncement(pendingSettlements)
 
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
 const allCandidateDebts = computed(() => {
@@ -298,6 +300,7 @@ function operationStatus(status: string): string {
 
     <ion-content :fullscreen="true">
       <main class="settle-page__main">
+        <p class="su-visually-hidden" role="status" aria-live="polite" aria-atomic="true" data-testid="settlement-operation-announcement">{{ operationAnnouncement }}</p>
         <header class="settle-page__heading">
           <p>Manual payment</p>
           <h1>Settle up</h1>
@@ -392,7 +395,7 @@ function operationStatus(status: string): string {
           </ion-button>
         </form>
 
-        <section v-if="pendingSettlements.length" class="operations" aria-labelledby="operations-heading" role="status" aria-live="polite">
+        <section v-if="pendingSettlements.length" class="operations" aria-labelledby="operations-heading">
           <h2 id="operations-heading">Payment updates</h2>
           <article v-for="operation in pendingSettlements" :key="operation.operationId" :data-operation-id="operation.operationId" :data-status="operation.status">
             <div><strong>{{ operationStatus(operation.status) }}</strong><small>{{ operation.error ?? 'Saving this ledger update.' }}</small></div>

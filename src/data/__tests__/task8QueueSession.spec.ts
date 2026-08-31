@@ -293,6 +293,58 @@ describe('Task 8 strict command protocol', () => {
     await expect(queue.submit(envelope).result()).rejects.toMatchObject({ code: 'validation' })
   })
 
+  it('rejects a saved settlement whose creator and activity actor are consistently forged outside the participants', async () => {
+    const repository = createDemoRepository()
+    const snapshot = await repository.groups.getBalanceSnapshot('lake-house-weekend')
+    const envelope = recordCommand('forged-settlement-participant', snapshot.balanceRevision, 500)
+    const real = await repository.settlements.record(envelope)
+    if (real.status !== 'saved') throw new Error('Expected demo settlement save')
+    const forgedActor = { id: 'forged-actor', displayName: 'Forged Actor' }
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'settlement.record': async () => ({
+          ...real,
+          settlement: { ...real.settlement, createdBy: forgedActor },
+          activity: { ...real.activity, actor: forgedActor },
+        }),
+      },
+    })
+
+    await expect(queue.submit(envelope).result()).rejects.toMatchObject({ code: 'validation' })
+  })
+
+  it('scrubs a void conflict whose matched remote settlement has an unrelated creator', async () => {
+    const repository = createDemoRepository()
+    const before = await repository.groups.getBalanceSnapshot('lake-house-weekend')
+    const recorded = await repository.settlements.record(recordCommand('record-for-forged-creator-conflict', before.balanceRevision, 500))
+    if (recorded.status !== 'saved') throw new Error('Expected settlement')
+    const envelope = {
+      kind: 'settlement.void' as const,
+      operationId: 'forged-creator-void-conflict',
+      groupId: 'lake-house-weekend',
+      settlementId: recorded.settlement.settlementId,
+      expectedRevision: recorded.settlement.revision,
+      expectedBalanceRevision: recorded.balanceSnapshot.balanceRevision,
+      reason: 'Duplicate record',
+    }
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'settlement.void': async () => {
+          throw new CommandConflictError('remote changed', {
+            remote: { ...recorded.settlement, createdBy: { id: 'forged-actor', displayName: 'Forged Actor' } },
+            balanceSnapshot: recorded.balanceSnapshot,
+          })
+        },
+      },
+    })
+
+    await expect(queue.submit(envelope).result()).rejects.toMatchObject({ conflict: { reason: 'invalid-conflict' } })
+  })
+
   it('validates and persists a settlement void result against both exact revisions', async () => {
     const repository = createDemoRepository()
     const before = await repository.groups.getBalanceSnapshot('lake-house-weekend')

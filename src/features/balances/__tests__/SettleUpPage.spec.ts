@@ -280,8 +280,9 @@ describe('settle up page', () => {
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Failed')
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Retry')
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Discard')
-    expect(wrapper.get('.operations').attributes('role')).toBe('status')
-    expect(wrapper.get('.operations').attributes('aria-live')).toBe('polite')
+    expect(wrapper.get('[data-testid="settlement-operation-announcement"]').attributes('role')).toBe('status')
+    expect(wrapper.get('[data-testid="settlement-operation-announcement"]').attributes('aria-live')).toBe('polite')
+    expect(wrapper.get('[data-testid="settlement-operation-announcement"]').text()).toBe('')
 
     await wrapper.get('[data-testid="amount-input"]').setValue('')
     await wrapper.get('[data-testid="outside-payment-confirmation"]').setValue(true)
@@ -289,6 +290,50 @@ describe('settle up page', () => {
     await flushPromises()
     expect(document.activeElement).toBe(wrapper.get('[data-testid="amount-input"]').element)
     expect(wrapper.get('[role="alert"]').text()).toContain('valid amount')
+  })
+
+  it('announces only the retained payment operation whose status changes', async () => {
+    const repository = createDemoRepository()
+    const snapshot = await repository.groups.getBalanceSnapshot(groupId)
+    let calls = 0
+    let releaseRetry!: () => void
+    const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve })
+    const failing: AppRepository = {
+      ...repository,
+      commands: {
+        async execute(command) {
+          if (command.kind === 'settlement.record') {
+            calls += 1
+            if (calls > 2) await retryGate
+            throw Object.assign(new Error('Connection lost'), { code: 'unavailable' })
+          }
+          return repository.commands.execute(command)
+        },
+      },
+    }
+    const session = createAppSession({ repository: failing, commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    await session.ready
+    for (const operationId of ['failed-payment-a', 'failed-payment-b']) {
+      await session.queue.submit({
+        kind: 'settlement.record', operationId, groupId, expectedBalanceRevision: snapshot.balanceRevision,
+        basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
+        money: { currency: 'USD', minorAmount: 500 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+      }).result().catch(() => undefined)
+    }
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
+    const announcement = wrapper.get('[data-testid="settlement-operation-announcement"]')
+    expect(wrapper.findAll('.operations article')).toHaveLength(2)
+    expect(announcement.text()).toBe('')
+
+    await wrapper.get('[data-operation-id="failed-payment-a"] [data-action="retry-operation"]').trigger('click')
+    await vi.waitFor(() => expect(announcement.text()).toBe('Payment update: Pending. Saving this ledger update.'))
+    expect(announcement.text()).not.toContain('Payment updates')
+    expect(announcement.text()).not.toContain('Retry')
+    expect(announcement.text()).not.toContain('failed-payment-b')
+
+    releaseRetry()
+    await vi.waitFor(() => expect(announcement.text()).toBe('Payment update: Failed. Connection lost'))
   })
 })
 
@@ -366,12 +411,15 @@ describe('settlement detail page', () => {
     })
     if (recorded.status !== 'saved') throw new Error('Expected settlement')
     let voidCalls = 0
+    let releaseRetry!: () => void
+    const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve })
     const failing: AppRepository = {
       ...repository,
       commands: {
         async execute(command) {
           if (command.kind === 'settlement.void') {
             voidCalls += 1
+            if (voidCalls > 1) await retryGate
             throw Object.assign(new Error('Connection lost'), { code: 'unavailable' })
           }
           return repository.commands.execute(command)
@@ -395,13 +443,69 @@ describe('settlement detail page', () => {
     expect(retained.text()).toContain('Failed')
     expect(retained.get('[data-action="retry-operation"]').text()).toBe('Retry')
     expect(retained.get('[data-action="discard-operation"]').text()).toBe('Discard')
+    const announcement = secondPage.get('[data-testid="void-operation-announcement"]')
+    expect(announcement.attributes('role')).toBe('status')
+    expect(announcement.attributes('aria-live')).toBe('polite')
+    expect(announcement.text()).toBe('')
 
     await retained.get('[data-action="retry-operation"]').trigger('click')
     await vi.waitFor(() => expect(voidCalls).toBe(2))
+    await vi.waitFor(() => expect(announcement.text()).toBe('Void update: Pending. Saving this void request.'))
+    releaseRetry()
     await vi.waitFor(() => expect(secondPage.get('[data-operation-id="failed-void-retained"]').text()).toContain('Failed'))
+    await vi.waitFor(() => expect(announcement.text()).toBe('Void update: Failed. Connection lost'))
     await secondPage.get('[data-operation-id="failed-void-retained"] [data-action="discard-operation"]').trigger('click')
     await vi.waitFor(() => expect(secondPage.find('[data-operation-id="failed-void-retained"]').exists()).toBe(false))
     expect(session.queue.get('failed-void-retained')).toBeUndefined()
+  })
+
+  it('restores only the matching conflicted void after remount and keeps Reload and Dismiss targeted', async () => {
+    const repository = createDemoRepository()
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+    const first = await repository.settlements.record({
+      kind: 'settlement.record', operationId: 'conflicted-void-first-record', groupId, expectedBalanceRevision: before.balanceRevision,
+      basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
+      money: { currency: 'USD', minorAmount: 500 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+    })
+    if (first.status !== 'saved') throw new Error('Expected first settlement')
+    const second = await repository.settlements.record({
+      kind: 'settlement.record', operationId: 'conflicted-void-second-record', groupId, expectedBalanceRevision: first.balanceSnapshot.balanceRevision,
+      basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3125 },
+      money: { currency: 'USD', minorAmount: 400 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+    })
+    if (second.status !== 'saved') throw new Error('Expected second settlement')
+    await repository.expenses.add({
+      kind: 'expense.add', operationId: 'conflicted-void-revision-bump', groupId, description: 'Revision bump', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 100 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 100 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 100 } }], category: 'Other',
+      splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [],
+    })
+    const session = createAppSession({ repository, commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    await session.ready
+    await session.queue.submit({
+      kind: 'settlement.void', operationId: 'conflicted-void-first', groupId, settlementId: first.settlement.settlementId,
+      expectedRevision: first.settlement.revision, expectedBalanceRevision: first.balanceSnapshot.balanceRevision, reason: 'First duplicate',
+    }).result().catch(() => undefined)
+    await session.queue.submit({
+      kind: 'settlement.void', operationId: 'conflicted-void-second', groupId, settlementId: second.settlement.settlementId,
+      expectedRevision: second.settlement.revision, expectedBalanceRevision: second.balanceSnapshot.balanceRevision, reason: 'Second duplicate',
+    }).result().catch(() => undefined)
+    const router = createAppRouter()
+    const firstMount = await mountRoute(`/tabs/groups/${groupId}/settlements/${first.settlement.settlementId}`, SettlementDetailPage, router)
+    firstMount.unmount()
+
+    const remount = await mountRoute(`/tabs/groups/${groupId}/settlements/${first.settlement.settlementId}`, SettlementDetailPage, router)
+    expect(remount.get('[data-operation-id="conflicted-void-first"]').text()).toContain('Conflict')
+    expect(remount.find('[data-operation-id="conflicted-void-second"]').exists()).toBe(false)
+
+    await remount.get('[data-operation-id="conflicted-void-first"] [data-action="reload-operation"]').trigger('click')
+    await flushPromises()
+    expect(remount.find('[data-operation-id="conflicted-void-first"]').exists()).toBe(true)
+    await remount.get('[data-operation-id="conflicted-void-first"] [data-action="dismiss-operation"]').trigger('click')
+    await vi.waitFor(() => expect(remount.find('[data-operation-id="conflicted-void-first"]').exists()).toBe(false))
+    expect(session.queue.get('conflicted-void-first')).toBeUndefined()
+    expect(session.queue.get('conflicted-void-second')?.status).toBe('conflicted')
   })
 
   it('distinguishes a missing settlement from an inaccessible group', async () => {

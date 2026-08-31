@@ -667,6 +667,7 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
   const activities = value.activity.map(decodeDemoActivity)
   assertSettlementActivityLinks(settlements, activities)
   value.operationLedger.forEach((entry) => assertDemoOperationLedgerEntry(entry, principalId, value.balanceRevision as number, settlements, activities))
+  assertSettlementOperationProofs(settlements, value.operationLedger, principalId)
   return clone(value) as unknown as DemoRepositoryStateDocument
 }
 
@@ -743,8 +744,20 @@ function assertDemoOperationLedgerEntry(
     if (resultSettlement.operationId !== operationId || resultSettlement.revision !== 1 || resultSettlement.void !== undefined || resultActivity.kind !== 'settlement.created') {
       throw new Error('Persisted demo settlement record result is invalid')
     }
-  } else if (!resultSettlement.void || resultSettlement.void.operationId !== operationId || resultActivity.kind !== 'settlement.voided') {
+  } else if (!resultSettlement.void || resultSettlement.void.operationId !== operationId || resultActivity.kind !== 'settlement.voided'
+    || !sameSettlementAudit(resultSettlement, current)) {
     throw new Error('Persisted demo settlement void result is invalid')
+  }
+}
+
+function assertSettlementOperationProofs(settlements: readonly SettlementRecord[], entries: readonly unknown[], principalId: string): void {
+  const hasProof = (operationId: string, kind: 'settlement.record' | 'settlement.void') => entries.some((entry) => Array.isArray(entry)
+    && entry[0] === operationId && isRecord(entry[1]) && isRecord(entry[1].identity) && entry[1].identity.kind === kind)
+  for (const settlement of settlements) {
+    if ((settlement.createdBy.id === principalId && !hasProof(settlement.operationId, 'settlement.record'))
+      || (settlement.void?.actor.id === principalId && !hasProof(settlement.void.operationId, 'settlement.void'))) {
+      throw new Error('Persisted demo settlement is missing its operation proof')
+    }
   }
 }
 
@@ -755,6 +768,13 @@ function sameImmutableSettlement(left: SettlementRecord, right: SettlementRecord
     && left.basis.currency === right.basis.currency && left.basis.debtMinor === right.basis.debtMinor
     && left.method === right.method && left.occurredOn === right.occurredOn && left.note === right.note
     && sameActor(left.createdBy, right.createdBy) && left.createdAt === right.createdAt
+}
+
+function sameSettlementAudit(left: SettlementRecord, right: SettlementRecord): boolean {
+  if (left.revision !== right.revision || left.syncState !== right.syncState) return false
+  if (!left.void || !right.void) return left.void === right.void
+  return left.void.operationId === right.void.operationId && left.void.reason === right.void.reason
+    && sameActor(left.void.actor, right.void.actor) && left.void.createdAt === right.void.createdAt && left.void.revision === right.void.revision
 }
 
 function sameActivity(left: ActivityItem, right: ActivityItem): boolean {
@@ -774,6 +794,7 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
 
 export function createBrowserDemoRepositoryStateStorage(storage: Storage | undefined = browserStorage()): DemoRepositoryStateStorage {
   const key = (scope: string) => `split-unwise:demo-repository:v2:${encodeURIComponent(scope)}`
+  const quarantineKey = (scope: string) => `split-unwise:demo-repository:quarantine:v2:${encodeURIComponent(scope)}`
   return {
     load(scope) {
       if (!storage) return undefined
@@ -785,6 +806,22 @@ export function createBrowserDemoRepositoryStateStorage(storage: Storage | undef
       if (!storage) throw new Error('Browser demo repository storage is unavailable')
       storage.setItem(key(scope), JSON.stringify(document))
     },
+    quarantine(scope, records) {
+      if (!storage) return
+      const previous = parseDemoQuarantine(storage.getItem(quarantineKey(scope)), scope)
+      storage.setItem(quarantineKey(scope), JSON.stringify({ version: 2, scope, records: [...previous, ...records] }))
+      storage.removeItem(key(scope))
+    },
+  }
+}
+
+function parseDemoQuarantine(value: string | null, scope: string): readonly unknown[] {
+  if (value === null) return []
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return isRecord(parsed) && parsed.version === 2 && parsed.scope === scope && Array.isArray(parsed.records) ? parsed.records : []
+  } catch {
+    return []
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CommandConflictError } from '../commandQueue'
-import { createDemoRepository, type DemoRepositoryStateStorage } from '../demoRepository'
+import { createBrowserDemoRepositoryStateStorage, createDemoRepository, type DemoRepositoryStateStorage } from '../demoRepository'
 
 const groupId = 'lake-house-weekend'
 
@@ -373,6 +373,56 @@ describe('demo settlement repository', () => {
     await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
     await expect(repository.groups.getBalanceSnapshot(groupId)).resolves.toMatchObject({ balanceRevision: 5 })
   })
+
+  it.each(['settlement.record', 'settlement.void'])('quarantines a restored settlement missing its %s operation-ledger proof', async (kind) => {
+    const malformed = structuredClone(await persistedVoidedSettlementState())
+    malformed.operationLedger = malformed.operationLedger.filter(([, value]) => value.identity.kind !== kind)
+    const quarantined: unknown[] = []
+    const repository = createDemoRepository({
+      stateStorage: {
+        load: () => malformed,
+        save: () => undefined,
+        quarantine: (_scope, records) => { quarantined.push(...records) },
+      },
+    })
+
+    expect(quarantined).toEqual([malformed])
+    await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
+  })
+
+  it('quarantines a restored void whose replay result diverges from the current audit record', async () => {
+    const malformed = structuredClone(await persistedVoidedSettlementState())
+    const voidEntry = malformed.operationLedger.find(([, value]) => value.identity.kind === 'settlement.void')
+    if (!voidEntry?.[1].result.settlement?.void) throw new Error('Expected persisted void result')
+    voidEntry[1].result.settlement.void.reason = 'Tampered replay reason'
+    const quarantined: unknown[] = []
+    const repository = createDemoRepository({
+      stateStorage: {
+        load: () => malformed,
+        save: () => undefined,
+        quarantine: (_scope, records) => { quarantined.push(...records) },
+      },
+    })
+
+    expect(quarantined).toEqual([malformed])
+    await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
+  })
+
+  it('moves corrupt browser-backed state into a recoverable quarantine before falling back', async () => {
+    const malformed = structuredClone(await persistedVoidedSettlementState())
+    malformed.settlements[0]!.money.minorAmount = 0
+    const browser = createWebStorage()
+    const scope = 'split-unwise-demo:v2:maya-p'
+    const activeKey = `split-unwise:demo-repository:v2:${encodeURIComponent(scope)}`
+    const quarantineKey = `split-unwise:demo-repository:quarantine:v2:${encodeURIComponent(scope)}`
+    browser.setItem(activeKey, JSON.stringify(malformed))
+
+    const repository = createDemoRepository({ stateStorage: createBrowserDemoRepositoryStateStorage(browser) })
+
+    expect(browser.getItem(activeKey)).toBeNull()
+    expect(JSON.parse(browser.getItem(quarantineKey) ?? 'null')).toEqual({ version: 2, scope, records: [malformed] })
+    await expect(repository.settlements.listForGroup(groupId)).resolves.toEqual([])
+  })
 })
 
 interface MutableDemoSettlement {
@@ -386,7 +436,10 @@ interface MutableDemoState {
   balanceRevision: number
   settlements: MutableDemoSettlement[]
   activity: Array<{ kind: string; subject: { id: string } }>
-  operationLedger: Array<[string, { identity: { kind: string }; result: { settlement?: { money: { minorAmount: number } } } }]>
+  operationLedger: Array<[string, {
+    identity: { kind: string }
+    result: { settlement?: { money: { minorAmount: number }; void?: { reason: string } } }
+  }]>
 }
 
 async function persistedBaselineState(): Promise<MutableDemoState> {
@@ -439,6 +492,18 @@ function recordCommand(operationId: string, expectedBalanceRevision: number, amo
 
 function debt(fromParticipantId: string, toParticipantId: string, currency: 'EUR' | 'USD', minorAmount: number) {
   return { fromParticipantId, toParticipantId, money: { currency, minorAmount } }
+}
+
+function createWebStorage(): Storage {
+  const values = new Map<string, string>()
+  return {
+    get length() { return values.size },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => { values.delete(key) },
+    setItem: (key, value) => { values.set(key, value) },
+  }
 }
 
 function repositoryReboundTo(state: unknown, id: string, displayName: string, canManage: boolean) {

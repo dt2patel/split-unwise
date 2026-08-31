@@ -606,9 +606,10 @@ function isSettlementRecord(value: unknown): value is import('./repositories').S
     || !isPositiveMoney(value.money) || !isSettlementBasis(value.basis) || !isSettlementMethod(value.method) || !isIsoDate(value.occurredOn)
     || !isActorSnapshot(value.createdBy) || !isIsoTimestamp(value.createdAt) || !isPositiveInteger(value.revision) || value.syncState !== 'fresh'
     || (value.note !== undefined && (!isSettlementText(value.note, false) || value.note !== value.note.normalize('NFC').replace(/\r\n?/g, '\n').trim()))) return false
-  if (value.senderId !== value.basis.senderId || value.recipientId !== value.basis.recipientId || value.money.currency !== value.basis.currency || value.money.minorAmount > value.basis.debtMinor) return false
+  if (value.senderId !== value.basis.senderId || value.recipientId !== value.basis.recipientId || value.money.currency !== value.basis.currency
+    || value.money.minorAmount > value.basis.debtMinor || (value.createdBy.id !== value.senderId && value.createdBy.id !== value.recipientId)) return false
   if (value.void === undefined) return value.revision === 1
-  return value.revision > 1 && isSettlementVoid(value.void) && value.void.revision === value.revision
+  return value.revision === 2 && isSettlementVoid(value.void) && value.void.revision === value.revision
 }
 
 function isSettlementVoid(value: unknown): value is import('./repositories').SettlementVoid {
