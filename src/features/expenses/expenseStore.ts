@@ -188,9 +188,10 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       let loadedContextName = ''
       let loadedExpense: ExpenseRow | undefined
       if (options.groupId) {
-        const [group, groupMembers] = await Promise.all([
+        const [group, groupMembers, settings] = await Promise.all([
           session.repository.groups.getById(options.groupId),
           session.repository.groups.listMembers(options.groupId),
+          session.repository.groups.getSettings(options.groupId),
         ])
         if (!group || group.id !== options.groupId) throw new Error('This group is not available.')
         if (!groupMembers.some(({ id }) => id === loadedCurrentUser.id)) throw new Error('You are not an active member of this group.')
@@ -198,8 +199,11 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         loadedContextName = group.name
         nextEditor.groupId = group.id
         nextEditor.currency = group.currency
-        nextEditor.participants = groupMembers.map(({ id }) => id)
+        const defaultSplit = settings.defaultSplit
+        if (defaultSplit && defaultSplit.participantIds.some((id) => !groupMembers.some((member) => member.id === id))) throw new Error('The shared default split references an inactive member and must be cleared.')
+        nextEditor.participants = [...(defaultSplit?.participantIds ?? groupMembers.map(({ id }) => id))]
         nextEditor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
+        nextEditor.split = defaultSplit ? splitInputFromMethod(defaultSplit, group.currency) : { type: 'equal' }
       } else {
         nextEditor.participants = [loadedCurrentUser.id]
         nextEditor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
@@ -246,8 +250,11 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       return false
     }
     try {
-      const loadedMembers = await session.repository.groups.listMembers(group.id)
-      const user = currentUser.value ?? await session.repository.app.getCurrentUser()
+      const [loadedMembers, settings, user] = await Promise.all([
+        session.repository.groups.listMembers(group.id),
+        session.repository.groups.getSettings(group.id),
+        currentUser.value ? Promise.resolve(currentUser.value) : session.repository.app.getCurrentUser(),
+      ])
       if (!isCurrentContextSelection(editorRequest, request, group.id)) return false
       if (!loadedMembers.some(({ id }) => id === user.id)) throw new Error('You are not an active member of this group.')
       const currencyChanged = editor.currency !== group.currency
@@ -255,9 +262,11 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       contextName.value = group.name
       editor.groupId = group.id
       editor.currency = group.currency
-      editor.participants = loadedMembers.map(({ id }) => id)
+      const defaultSplit = settings.defaultSplit
+      if (defaultSplit && defaultSplit.participantIds.some((id) => !loadedMembers.some((member) => member.id === id))) throw new Error('The shared default split references an inactive member and must be cleared.')
+      editor.participants = [...(defaultSplit?.participantIds ?? loadedMembers.map(({ id }) => id))]
       editor.payments = [{ participantId: user.id, amountText: '' }]
-      editor.split = { type: 'equal' }
+      editor.split = defaultSplit ? splitInputFromMethod(defaultSplit, group.currency) : { type: 'equal' }
       if (currencyChanged) editor.amountText = ''
       const { context: _context, participants: _participants, payments: _payments, split: _split, ...remainingErrors } = errors.value
       errors.value = remainingErrors

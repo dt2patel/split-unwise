@@ -439,6 +439,7 @@ describe('CommandQueue', () => {
     }
     const defaultSplit: CommandEnvelope = {
       kind: 'group.default-split', operationId: 'persisted-bad-default-split', groupId: 'lake-house-weekend',
+      expectedRevision: 1,
       defaultSplit: { type: 'equal', participantIds: ['maya-p', 'jordan-k'] },
     }
     const invalidDefaultSplit = {
@@ -458,6 +459,32 @@ describe('CommandQueue', () => {
     const queue = createBoundQueue({ storage, handlers: {} }, principalKey)
 
     expect(queue.snapshot()).toEqual([valid])
+    expect(quarantined).toEqual(invalid)
+  })
+
+  it('quarantines persisted shared defaults with extra fields or ratio keys that do not match participants', () => {
+    const principalKey = 'demo:local:invalid-defaults'
+    const makeOperation = (operationId: string, defaultSplit: unknown) => ({
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'pending',
+      envelope: { kind: 'group.default-split', operationId, groupId: 'lake-house-weekend', expectedRevision: 1, defaultSplit },
+    })
+    const invalid = [
+      makeOperation('default-extra-field', { type: 'equal', participantIds: ['maya-p'], privateDraft: true }),
+      makeOperation('default-extra-ratio', { type: 'percentage', participantIds: ['maya-p'], percentages: { 'maya-p': 100, 'alex-r': 0 } }),
+    ]
+    const quarantined: unknown[] = []
+    const queue = createBoundQueue({
+      storage: {
+        load: () => ({ version: 6, principalKey, operations: invalid }),
+        save: async () => undefined,
+        quarantine: async (_scopeKey, records) => { quarantined.push(...records) },
+      },
+      handlers: {},
+    }, principalKey)
+
+    expect(queue.snapshot()).toEqual([])
     expect(quarantined).toEqual(invalid)
   })
 
@@ -645,6 +672,7 @@ describe('CommandQueue', () => {
   it('binds a saved default-split result to the command group', async () => {
     const command: CommandEnvelope = {
       kind: 'group.default-split', operationId: 'wrong-default-split-group', groupId: 'lake-house-weekend',
+      expectedRevision: 1,
       defaultSplit: { type: 'equal', participantIds: ['maya-p', 'jordan-k'] },
     }
     const queue = createBoundQueue({

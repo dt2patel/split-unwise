@@ -3,6 +3,7 @@ import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
 import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseDeleteResult, ExpenseEditResult, ExpenseRow, Member, NotificationItem, TimelineCursor } from './repositories'
+import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 
 type FirestoreModule = typeof import('firebase/firestore')
 type AuthModule = typeof import('firebase/auth')
@@ -66,6 +67,11 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'balance', 'current'))
         if (!snapshot.exists()) throw new Error('Authoritative group balance snapshot is unavailable')
         return decodeBalanceSnapshot(groupId, snapshot.data())
+      },
+      async getSettings(groupId) {
+        const { db, firestore } = await context()
+        const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'settings', 'defaults'))
+        return snapshot.exists() ? decodeGroupSettings(groupId, snapshot.data()) : { schemaVersion: 1, groupId, revision: 1 }
       },
       async getTotals(groupId) { const readyContext = context(); return buildCurrencyTotals(await listExpenses(groupId, readyContext), (await readyContext).userId) },
       async getCharts(groupId) { const readyContext = context(); return buildGroupCharts(await listExpenses(groupId, readyContext)) },
@@ -181,6 +187,15 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     commands: { execute },
   }
 }
+
+function decodeGroupSettings(groupId: string, value: unknown): GroupSettings {
+  if (!isRecord(value) || value.schemaVersion !== 1 || value.groupId !== groupId || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1) throw new Error('Group settings document is invalid')
+  const defaultSplit = value.defaultSplit
+  if (defaultSplit === undefined) return { schemaVersion: 1, groupId, revision: value.revision as number }
+  try { return { schemaVersion: 1, groupId, revision: value.revision as number, defaultSplit: decodeDefaultSplit(defaultSplit) } } catch { throw new Error('Group default split is invalid') }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 
 function serverPage<T extends ActivityItem | NotificationItem>(values: readonly T[], limit: number, id: (value: T) => string): { items: readonly T[]; nextCursor?: TimelineCursor } {
   const items = values.slice(0, limit)

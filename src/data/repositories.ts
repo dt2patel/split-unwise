@@ -1,4 +1,5 @@
 import type { Allocation, Debt, Expense, Money, ParticipantId, Recurrence, SplitMethod } from '../domain/model'
+import type { DefaultSplit, GroupSettings } from '../domain/groupSettings'
 
 /** A persisted command or document synchronization state. */
 export type SyncState = 'fresh' | 'stale' | 'pending' | 'failed' | 'conflicted'
@@ -245,7 +246,13 @@ export interface SettlementVoidCommand extends OperationRequest {
   readonly reason: string
 }
 
-export interface GroupDefaultSplitCommand extends OperationRequest { readonly kind: 'group.default-split'; readonly groupId: string; readonly defaultSplit: SplitMethod }
+export interface GroupDefaultSplitCommand extends OperationRequest {
+  readonly kind: 'group.default-split'
+  readonly groupId: string
+  readonly expectedRevision: number
+  /** `null` is an explicit versioned clear. */
+  readonly defaultSplit: DefaultSplit | null
+}
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
 export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | SettlementRecordCommand | SettlementVoidCommand
@@ -297,6 +304,7 @@ export interface GroupRepository {
   getById(groupId: string): Promise<Group | undefined>
   listMembers(groupId: string): Promise<readonly Member[]>
   getBalanceSnapshot(groupId: string): Promise<GroupBalanceSnapshot>
+  getSettings(groupId: string): Promise<GroupSettings>
   getTotals(groupId: string): Promise<readonly CurrencyTotals[]>
   getCharts(groupId: string): Promise<GroupCharts>
   listRecurring(groupId: string): Promise<readonly RecurringExpense[]>

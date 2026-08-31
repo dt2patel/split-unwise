@@ -1,5 +1,6 @@
 import { computeBalancePlans, computeBalances } from '../domain/balances'
 import { computeAllocations } from '../domain/splits'
+import { updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
 import { CommandConflictError } from './commandQueue'
 import {
   LAKE_HOUSE_GROUP_ID,
@@ -66,6 +67,7 @@ interface DemoRepositoryStateDocument {
   readonly notifications: readonly NotificationItem[]
   readonly revisions: readonly ExpenseRevision[]
   readonly operationLedger: readonly (readonly [string, { readonly identity: OperationIdentity; readonly result: CommandResult }])[]
+  readonly groupSettings?: GroupSettings
 }
 
 /** A fresh deterministic in-memory repository; its operation ledger prevents duplicate same-ID effects. */
@@ -91,6 +93,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   let notificationPreferences: NotificationPreferences = restored?.notificationPreferences ? { ...restored.notificationPreferences } : { emailEnabled: true, pushEnabled: true }
   let nextExpenseNumber = restored?.nextExpenseNumber ?? 6
   let balanceRevision = restored?.balanceRevision ?? lakeHouseExpenses.length
+  let groupSettings: GroupSettings = restored?.groupSettings ? clone(restored.groupSettings) : { schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }
   let executionTail: Promise<void> = Promise.resolve()
   const now = options.now ?? (() => '2026-08-30T12:00:00.000Z')
 
@@ -160,6 +163,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     notifications: notifications.map(clone),
     revisions: revisions.map(clone),
     operationLedger: [...operationLedger.entries()].map(([id, value]) => [id, clone(value)] as const),
+    groupSettings: clone(groupSettings),
   })
 
   const restoreState = (state: DemoRepositoryStateDocument): void => {
@@ -175,6 +179,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     revisions.splice(0, revisions.length, ...state.revisions.map(clone))
     operationLedger.clear()
     state.operationLedger.forEach(([id, value]) => operationLedger.set(id, clone(value)))
+    groupSettings = state.groupSettings ? clone(state.groupSettings) : { schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }
   }
 
   const executeNew = (command: CommandEnvelope): CommandResult => {
@@ -411,9 +416,18 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
           activity: clone(event),
         }
       }
-      case 'group.default-split':
+      case 'group.default-split': {
         assertLakeHouseGroup(command.groupId)
+        if (command.expectedRevision !== groupSettings.revision) throw new CommandConflictError('Group settings changed remotely.', { remote: clone(groupSettings) })
+        groupSettings = updateGroupSettings(groupSettings, { expectedRevision: command.expectedRevision, ...(command.defaultSplit ? { defaultSplit: command.defaultSplit } : {}) }, lakeHouseMembers, currentUser.id)
+        const createdAt = checkedNow(now)
+        activity.push({
+          id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'group.event',
+          subject: { kind: 'group', id: command.groupId, label: command.defaultSplit ? 'Default split updated' : 'Default split cleared' },
+          actor: actorSnapshot(currentUser), createdAt, syncState: 'fresh',
+        })
         return saved(command, command.groupId)
+      }
       case 'profile.update':
         currentUser = { ...currentUser, displayName: command.displayName, initials: command.initials ?? initials(command.displayName) }
         return saved(command, currentUser.id)
@@ -457,6 +471,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         return lakeHouseMembers.map((member) => ({ ...member, isCurrentUser: member.id === currentUser.id, ...(member.id === currentUser.id ? { displayName: currentUser.displayName, initials: currentUser.initials } : {}) }))
       },
       async getBalanceSnapshot(groupId) { return clone(groupBalanceSnapshot(groupId)) },
+      async getSettings(groupId) { assertLakeHouseGroup(groupId); return clone(groupSettings) },
       async getTotals(groupId) { return buildCurrencyTotals(groupExpenses(groupId), currentUser.id) },
       async getCharts(groupId) { return buildGroupCharts(groupExpenses(groupId)) },
       async listRecurring(groupId) { assertLakeHouseGroup(groupId); return lakeHouseRecurring.map(clone) },
@@ -660,7 +675,8 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
     || !Number.isSafeInteger(value.nextExpenseNumber) || (value.nextExpenseNumber as number) < 1
     || !Number.isSafeInteger(value.balanceRevision) || (value.balanceRevision as number) < 0
     || !Array.isArray(value.expenses) || !Array.isArray(value.settlements) || !Array.isArray(value.activity) || !Array.isArray(value.comments) || !Array.isArray(value.notifications)
-    || !Array.isArray(value.revisions) || !Array.isArray(value.operationLedger)) {
+    || !Array.isArray(value.revisions) || !Array.isArray(value.operationLedger)
+    || (value.groupSettings !== undefined && !isDemoGroupSettings(value.groupSettings))) {
     throw new Error('Persisted demo repository state is invalid')
   }
   const settlements = value.settlements.map(decodeDemoSettlement)
@@ -669,6 +685,12 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
   value.operationLedger.forEach((entry) => assertDemoOperationLedgerEntry(entry, principalId, value.balanceRevision as number, settlements, activities))
   assertSettlementOperationProofs(settlements, value.operationLedger, principalId)
   return clone(value) as unknown as DemoRepositoryStateDocument
+}
+
+function isDemoGroupSettings(value: unknown): value is GroupSettings {
+  if (!isRecord(value) || value.schemaVersion !== 1 || value.groupId !== LAKE_HOUSE_GROUP_ID || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1) return false
+  if (value.defaultSplit === undefined) return true
+  try { updateGroupSettings({ schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }, { expectedRevision: 1, defaultSplit: value.defaultSplit as never }, lakeHouseMembers, lakeHouseCurrentUser.id); return true } catch { return false }
 }
 
 function decodeDemoSettlement(value: unknown): SettlementRecord {

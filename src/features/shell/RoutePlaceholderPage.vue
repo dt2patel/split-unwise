@@ -24,7 +24,8 @@ const backPath = computed(() => route.params.groupId ? `/tabs/groups/${String(ro
         <p class="route-page__eyebrow">Split Unwise</p>
         <h1>{{ title }}</h1>
         <p>{{ description }}</p>
-        <span class="route-page__status">Coming next</span>
+        <router-link v-if="route.name === 'account'" class="route-page__link" to="/tabs/account/export">Export your data</router-link>
+        <span v-else class="route-page__status">Coming next</span>
       </main>
     </ion-content>
   </ion-page>
@@ -36,4 +37,5 @@ const backPath = computed(() => route.params.groupId ? `/tabs/groups/${String(ro
 .route-page h1 { margin: 0; font-size: 2rem; letter-spacing: -0.035em; }
 .route-page > p:not(.route-page__eyebrow) { max-width: 30rem; margin: 10px 0 18px; color: var(--ion-color-medium); line-height: 1.5; }
 .route-page__status { display: inline-flex; min-height: 32px; align-items: center; padding: 0 12px; border-radius: 16px; background: var(--su-lilac); color: var(--su-indigo); font-size: 0.82rem; font-weight: 650; }
+.route-page__link { display: inline-flex; min-height: 44px; align-items: center; color: var(--ion-color-primary); font-weight: 650; }
 </style>

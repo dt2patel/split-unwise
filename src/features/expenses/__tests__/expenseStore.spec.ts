@@ -67,6 +67,21 @@ describe('expense input validation', () => {
 })
 
 describe('expense store lifecycle', () => {
+  it('seeds a new group draft from the versioned shared default without changing payers', async () => {
+    const repository = createDemoRepository()
+    await repository.groups.setDefaultSplit({
+      kind: 'group.default-split', operationId: 'editor-default', groupId: 'lake-house-weekend', expectedRevision: 1,
+      defaultSplit: { type: 'percentage', participantIds: ['maya-p', 'alex-r'], percentages: { 'maya-p': 40, 'alex-r': 60 } },
+    })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useExpenseStore()
+
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', today: '2026-08-31' })
+
+    expect(store.editor.participants).toEqual(['maya-p', 'alex-r'])
+    expect(store.editor.split).toEqual({ type: 'percentage', values: { 'maya-p': '40', 'alex-r': '60' } })
+    expect(store.editor.payments).toEqual([{ participantId: 'maya-p', amountText: '' }])
+  })
   it('ignores a stale initialization that resolves after a newer route context', async () => {
     const base = createDemoRepository()
     const slow = deferred<Group | undefined>()
@@ -80,6 +95,7 @@ describe('expense store lifecycle', () => {
         async list() { return [slowGroup, fastGroup] },
         async getById(groupId) { return groupId === slowGroup.id ? slow.promise : groupId === fastGroup.id ? fastGroup : undefined },
         async listMembers() { return [currentUser] },
+        async getSettings(groupId) { return { schemaVersion: 1, groupId, revision: 1 } },
       },
     }
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
@@ -108,6 +124,7 @@ describe('expense store lifecycle', () => {
         ...base.groups,
         async list() { return [...await base.groups.list(), slowGroup] },
         async listMembers(groupId) { return groupId === slowGroup.id ? slowMembers.promise : base.groups.listMembers(groupId) },
+        async getSettings(groupId) { return groupId === slowGroup.id ? { schemaVersion: 1, groupId, revision: 1 } : base.groups.getSettings(groupId) },
       },
     }
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
@@ -142,6 +159,7 @@ describe('expense store lifecycle', () => {
           if (groupId === secondGroup.id) return secondMembers.promise
           return base.groups.listMembers(groupId)
         },
+        async getSettings(groupId) { return groupId === firstGroup.id || groupId === secondGroup.id ? { schemaVersion: 1, groupId, revision: 1 } : base.groups.getSettings(groupId) },
       },
     }
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))

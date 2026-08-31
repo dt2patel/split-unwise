@@ -359,6 +359,7 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       getById: (groupId) => call(() => source.groups.getById(groupId)),
       listMembers: (groupId) => call(() => source.groups.listMembers(groupId)),
       getBalanceSnapshot: (groupId) => call(() => source.groups.getBalanceSnapshot(groupId)),
+      getSettings: (groupId) => call(() => source.groups.getSettings(groupId)),
       getTotals: (groupId) => call(() => source.groups.getTotals(groupId)),
       getCharts: (groupId) => call(() => source.groups.getCharts(groupId)),
       listRecurring: (groupId) => call(() => source.groups.listRecurring(groupId)),

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { IonContent, IonHeader, IonIcon, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
-import { chevronForward } from 'ionicons/icons'
+import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
+import { chevronForward, searchOutline } from 'ionicons/icons'
 import { useGroupStore } from '../groups/groupStore'
 
 const store = useGroupStore()
@@ -16,6 +16,7 @@ onMounted(() => store.loadOverview())
     <ion-header translucent>
       <ion-toolbar>
         <ion-title>Split Unwise</ion-title>
+        <ion-buttons slot="end"><ion-button class="home-search-button" router-link="/tabs/home/search" aria-label="Search expenses"><ion-icon :icon="searchOutline" aria-hidden="true" /></ion-button></ion-buttons>
       </ion-toolbar>
     </ion-header>
     <ion-content :fullscreen="true">
@@ -56,4 +57,5 @@ onMounted(() => store.loadOverview())
 .group-link span:not(.group-link__chevron) { display: grid; gap: 3px; }
 .group-link small { color: var(--ion-color-medium); }
 .group-link__chevron { color: var(--su-accent); font-size: 1.7rem; text-align: end; }
+.home-search-button { min-width: 44px; min-height: 44px; }
 </style>

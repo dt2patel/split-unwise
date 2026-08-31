@@ -7,6 +7,7 @@ describe('application routes', () => {
     ['/tabs/groups', 'groups'],
     ['/tabs/activity', 'activity'],
     ['/tabs/account', 'account'],
+    ['/tabs/home/search', 'home-search'],
     ['/tabs/groups/lake-house-weekend', 'group-detail'],
     ['/tabs/home/expenses/new', 'home-expense-create'],
     ['/tabs/groups/expenses/new', 'groups-expense-create'],
@@ -20,10 +21,12 @@ describe('application routes', () => {
     ['/tabs/groups/lake-house-weekend/settle-up', 'group-settle-up'],
     ['/tabs/groups/lake-house-weekend/balances', 'group-balances'],
     ['/tabs/groups/lake-house-weekend/settlements/settlement-a', 'group-settlement-detail'],
+    ['/tabs/groups/lake-house-weekend/search', 'group-search'],
     ['/tabs/groups/lake-house-weekend/totals', 'group-totals'],
     ['/tabs/groups/lake-house-weekend/charts', 'group-charts'],
     ['/tabs/groups/lake-house-weekend/export', 'group-export'],
     ['/tabs/groups/lake-house-weekend/settings', 'group-settings'],
+    ['/tabs/account/export', 'account-export'],
   ])('resolves %s through the tabs shell to %s', (path, routeName) => {
     const router = createAppRouter()
     const resolvedRoute = router.resolve(path)
@@ -57,6 +60,18 @@ describe('application routes', () => {
     '/tabs/groups/lake-house-weekend/settle-up',
     '/tabs/groups/lake-house-weekend/settlements/settlement-a',
   ])('hides global app chrome for the durable settlement route %s', (path) => {
+    expect(createAppRouter().resolve(path).meta.hideAppChrome).toBe(true)
+  })
+
+  it.each([
+    '/tabs/home/search',
+    '/tabs/groups/lake-house-weekend/search',
+    '/tabs/groups/lake-house-weekend/totals',
+    '/tabs/groups/lake-house-weekend/charts',
+    '/tabs/groups/lake-house-weekend/settings',
+    '/tabs/groups/lake-house-weekend/export',
+    '/tabs/account/export',
+  ])('hides global app chrome for the premium tool route %s', (path) => {
     expect(createAppRouter().resolve(path).meta.hideAppChrome).toBe(true)
   })
 })

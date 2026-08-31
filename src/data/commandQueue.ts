@@ -1,6 +1,7 @@
 import type { Allocation, Money, Recurrence, SplitMethod } from '../domain/model'
 import { assertCurrencyCode } from '../domain/money'
 import { computeAllocations } from '../domain/splits'
+import { decodeDefaultSplit } from '../domain/groupSettings'
 import type { CommandEnvelope, CommandKind, CommandResult, ExpenseDraft, ExpenseRow, SyncState } from './repositories'
 import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
 
@@ -494,7 +495,9 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
     case 'settlement.void': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'settlementId', 'expectedRevision', 'expectedBalanceRevision', 'reason'])
       && isNonEmptyString(value.groupId) && isNonEmptyString(value.settlementId) && isPositiveInteger(value.expectedRevision)
       && isNonNegativeInteger(value.expectedBalanceRevision) && isSettlementText(value.reason, true)
-    case 'group.default-split': return isNonEmptyString(value.groupId) && isSplitMethod(value.defaultSplit)
+    case 'group.default-split': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'defaultSplit'])
+      && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision)
+      && (value.defaultSplit === null || isDefaultSplit(value.defaultSplit))
     case 'profile.update': return isNonEmptyString(value.displayName) && (value.initials === undefined || isNonEmptyString(value.initials))
     default: return false
   }
@@ -690,6 +693,10 @@ function isSplitMethod(value: unknown, currency?: Money['currency']): value is S
     case 'itemized': return Array.isArray(value.items) && value.items.every((item) => isRecord(item) && isNonEmptyString(item.description) && isMoney(item.money) && (currency === undefined || item.money.currency === currency) && isStringArray(item.participantIds))
     default: return false
   }
+}
+
+function isDefaultSplit(value: unknown): value is import('../domain/groupSettings').DefaultSplit {
+  try { decodeDefaultSplit(value); return true } catch { return false }
 }
 
 function isRecurrence(value: unknown): value is Recurrence {
