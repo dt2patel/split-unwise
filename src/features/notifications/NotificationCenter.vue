@@ -19,6 +19,7 @@ const inFlight = ref(new Set<string>())
 const queueRevision = ref(0)
 let request = 0
 let pageRequest = 0
+let loadedRootRequest = 0
 let unsubscribe: (() => void) | undefined
 
 const rows = computed(() => {
@@ -77,6 +78,8 @@ onBeforeUnmount(() => { ++request; ++pageRequest; unsubscribe?.() })
 async function load(): Promise<void> {
   const active = ++request
   ++pageRequest
+  loadedRootRequest = 0
+  nextCursor.value = undefined
   isLoadingMore.value = false
   isLoading.value = true
   loadError.value = ''
@@ -90,6 +93,7 @@ async function load(): Promise<void> {
     if (active !== request) return
     notifications.value = page.items
     nextCursor.value = page.nextCursor
+    loadedRootRequest = active
     preferences.value = savedPreferences
     authoritativeUnreadCount.value = savedUnreadCount
   } catch (reason) {
@@ -104,14 +108,14 @@ async function load(): Promise<void> {
 
 async function loadMore(): Promise<void> {
   const cursor = nextCursor.value
-  if (!cursor || isLoadingMore.value) return
-  const activeRoot = request
+  const activeRoot = loadedRootRequest
+  if (!cursor || isLoading.value || isLoadingMore.value || activeRoot === 0 || activeRoot !== request) return
   const activePage = ++pageRequest
   isLoadingMore.value = true
   loadError.value = ''
   try {
     const page = await session.repository.notifications.list({ limit: 100, cursor })
-    if (activeRoot !== request || activePage !== pageRequest) return
+    if (activeRoot !== request || activeRoot !== loadedRootRequest || activePage !== pageRequest || !sameCursor(nextCursor.value, cursor)) return
     const merged = new Map(notifications.value.map((notification) => [notification.notificationId, notification]))
     for (const notification of page.items) merged.set(notification.notificationId, notification)
     notifications.value = [...merged.values()].sort(newestFirst)
@@ -213,6 +217,7 @@ async function discardFailed(): Promise<void> {
 function relevantOperations() {
   return session.queue.snapshot().filter(({ envelope }) => envelope.kind === 'notification.read' || envelope.kind === 'notification.read-all' || envelope.kind === 'notification.preferences')
 }
+function sameCursor(left: TimelineCursor | undefined, right: TimelineCursor): boolean { return left?.createdAt === right.createdAt && left.id === right.id }
 function formatTime(timestamp: string): string { return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp)) }
 function notificationText(notification: NotificationItem): string {
   const label = notification.subject.label ?? notification.subject.id
@@ -257,7 +262,7 @@ function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
         >Mark read</ion-button>
       </li>
     </ol>
-    <ion-button v-if="nextCursor" fill="clear" :disabled="isLoadingMore" data-action="load-more-notifications" @click="loadMore">
+    <ion-button v-if="nextCursor" fill="clear" :disabled="isLoading || isLoadingMore" data-action="load-more-notifications" @click="loadMore">
       {{ isLoadingMore ? 'Loading…' : 'Load more' }}
     </ion-button>
 

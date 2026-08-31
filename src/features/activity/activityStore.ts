@@ -18,6 +18,7 @@ export const useActivityStore = defineStore('activity', () => {
   const currentUser = ref<Member>()
   const queueRevision = ref(0)
   let request = 0
+  let pageRequest = 0
   const unsubscribe = session.queue.subscribe(() => { queueRevision.value += 1 })
   onScopeDispose(unsubscribe)
 
@@ -29,6 +30,9 @@ export const useActivityStore = defineStore('activity', () => {
 
   async function load(selectedFilter: ActivityFilter = filter.value): Promise<void> {
     const active = ++request
+    ++pageRequest
+    nextCursor.value = undefined
+    isLoadingMore.value = false
     const blocking = canonical.value.length === 0
     isLoading.value = blocking
     isFiltering.value = !blocking
@@ -55,22 +59,23 @@ export const useActivityStore = defineStore('activity', () => {
 
   async function loadMore(): Promise<void> {
     const cursor = nextCursor.value
-    if (!cursor || isLoadingMore.value) return
-    const active = request
+    if (!cursor || isLoading.value || isFiltering.value || isLoadingMore.value) return
+    const activeRoot = request
+    const activePage = ++pageRequest
     const selectedFilter = filter.value
     isLoadingMore.value = true
     error.value = ''
     try {
       const page = await session.repository.activity.listForAccount({ filter: selectedFilter, limit: 100, cursor })
-      if (active !== request || filter.value !== selectedFilter) return
+      if (activeRoot !== request || activePage !== pageRequest || filter.value !== selectedFilter || !sameCursor(nextCursor.value, cursor)) return
       const byId = new Map(canonical.value.map((item) => [item.id, item]))
       page.items.forEach((item) => byId.set(item.id, item))
       canonical.value = [...byId.values()].sort(newestActivityFirst)
       nextCursor.value = page.nextCursor
     } catch (reason) {
-      if (active === request) error.value = reason instanceof Error ? reason.message : 'More activity could not be loaded.'
+      if (activeRoot === request && activePage === pageRequest) error.value = reason instanceof Error ? reason.message : 'More activity could not be loaded.'
     } finally {
-      if (active === request) isLoadingMore.value = false
+      if (activeRoot === request && activePage === pageRequest) isLoadingMore.value = false
     }
   }
 
@@ -82,6 +87,10 @@ export const useActivityStore = defineStore('activity', () => {
 
   return { items, allItems, filter, isLoading, isFiltering, isLoadingMore, error, nextCursor, load, loadMore, setFilter }
 })
+
+function sameCursor(left: TimelineCursor | undefined, right: TimelineCursor): boolean {
+  return left?.createdAt === right.createdAt && left.id === right.id
+}
 
 export function projectActivityTimeline(
   base: readonly ActivityItem[],

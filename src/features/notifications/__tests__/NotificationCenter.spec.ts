@@ -166,6 +166,60 @@ describe('NotificationCenter', () => {
     expect(wrapper.findAll('[data-notification-id]').map((row) => row.attributes('data-notification-id'))).toEqual([all[2].notificationId])
   })
 
+  it('does not start load-more from the old cursor while an authoritative refresh is in flight', async () => {
+    const source = createDemoRepository()
+    const all = (await source.notifications.list({ limit: 100 })).items
+    let releaseRefresh!: () => void
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve })
+    let releaseOldPage!: () => void
+    const oldPageGate = new Promise<void>((resolve) => { releaseOldPage = resolve })
+    let rootCalls = 0
+    const cursorCalls: string[] = []
+    const repository = {
+      ...source,
+      notifications: {
+        ...source.notifications,
+        async list(query: { readonly cursor?: { readonly createdAt: string; readonly id: string } }) {
+          if (query.cursor) {
+            cursorCalls.push(query.cursor.id)
+            if (query.cursor.id === all[0].notificationId) await oldPageGate
+            return { items: [all[1]] }
+          }
+          rootCalls += 1
+          if (rootCalls > 1) await refreshGate
+          const item = rootCalls === 1 ? all[0] : all[2]
+          return { items: [item], nextCursor: { createdAt: item.createdAt, id: item.notificationId } }
+        },
+      },
+    }
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'notification.preferences': async (command) => {
+        if (command.kind !== 'notification.preferences') throw new Error('Wrong command')
+        return source.notifications.updatePreferences(command)
+      } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const wrapper = await mountCenter()
+    await queue.submit({ kind: 'notification.preferences', operationId: 'refresh-before-more', preferences: { emailEnabled: false, pushEnabled: true } }).result()
+    await vi.waitFor(() => expect(rootCalls).toBe(2))
+
+    const continuation = wrapper.find('[data-action="load-more-notifications"]')
+    if (continuation.exists()) await continuation.trigger('click')
+    await flushPromises()
+    expect(continuation.exists() && continuation.attributes('disabled') === undefined).toBe(false)
+    expect(cursorCalls).toEqual([])
+
+    releaseRefresh()
+    await vi.waitFor(() => expect(wrapper.findAll('[data-notification-id]').map((row) => row.attributes('data-notification-id'))).toEqual([all[2].notificationId]))
+    releaseOldPage()
+    await flushPromises()
+    await wrapper.get('[data-action="load-more-notifications"]').trigger('click')
+    await flushPromises()
+    expect(cursorCalls).toEqual([all[2].notificationId])
+  })
+
   it('restores Retry and Discard for a persisted failed notification operation after recreation', async () => {
     const repository = createDemoRepository()
     const queue = new CommandQueue({

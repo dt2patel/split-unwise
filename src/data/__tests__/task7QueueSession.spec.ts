@@ -385,6 +385,43 @@ describe('Task 7 session races', () => {
 
     expect(storage.load(principalKey)).toMatchObject({ operations: [expect.objectContaining({ status: 'fresh', envelope: expect.objectContaining({ operationId: 'shared-storage-race' }) })] })
   })
+
+  it('does not let a frozen old queue persist a late network failure over a newer same-principal completion', async () => {
+    let releaseOld!: () => void
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve })
+    let announceOldStarted!: () => void
+    const oldStarted = new Promise<void>((resolve) => { announceOldStarted = resolve })
+    const pending = {
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'pending' as const,
+      envelope: commentAdd('shared-storage-network-race'),
+    }
+    const storage = createMemoryCommandStorage({ [principalKey]: { version: 5, principalKey, operations: [pending] } })
+    const source = createDemoRepository()
+    const rejectingRepository: AppRepository = {
+      ...source,
+      commands: {
+        async execute() {
+          announceOldStarted()
+          await oldGate
+          throw Object.assign(new Error('Old server rejected after replacement'), { code: 'unavailable' })
+        },
+      },
+    }
+    const oldSession = createAppSession({ repository: rejectingRepository, principal, commandStorage: storage })
+    await oldSession.ready
+    await oldStarted
+    const newSession = createAppSession({ repository: source, principal, commandStorage: storage })
+    await newSession.ready
+    await expect(newSession.queue.submit(commentAdd('shared-storage-network-race')).result()).resolves.toMatchObject({ status: 'saved' })
+
+    oldSession.freeze()
+    releaseOld()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(storage.load(principalKey)).toMatchObject({ operations: [expect.objectContaining({ status: 'fresh', envelope: expect.objectContaining({ operationId: 'shared-storage-network-race' }) })] })
+  })
 })
 
 function commentAdd(operationId: string) {

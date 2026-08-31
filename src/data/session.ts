@@ -330,7 +330,13 @@ function deferredReceiptStore(
 function guardRepository(source: AppRepository, assertActive: () => void): AppRepository {
   const call = async <T>(operation: () => Promise<T>): Promise<T> => {
     assertActive()
-    const result = await operation()
+    let result: T
+    try {
+      result = await operation()
+    } catch (reason) {
+      assertActive()
+      throw reason
+    }
     assertActive()
     return result
   }

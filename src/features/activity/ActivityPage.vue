@@ -69,7 +69,7 @@ function formatDate(value: string): string {
             </div>
           </li>
         </ol>
-        <ion-button v-if="nextCursor" expand="block" fill="outline" data-action="load-more-activity" :disabled="isLoadingMore" @click="store.loadMore">
+        <ion-button v-if="nextCursor" expand="block" fill="outline" data-action="load-more-activity" :disabled="isLoading || isFiltering || isLoadingMore" @click="store.loadMore">
           {{ isLoadingMore ? 'Loading…' : 'Load more activity' }}
         </ion-button>
         <notification-center />

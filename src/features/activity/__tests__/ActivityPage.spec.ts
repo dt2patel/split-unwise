@@ -175,6 +175,60 @@ describe('Activity durable projection', () => {
     ])
   })
 
+  it('invalidates a deferred old-filter page and its cursor synchronously when the filter changes', async () => {
+    const source = createDemoRepository()
+    const all = (await source.activity.listForAccount({ filter: 'all', limit: 100 })).items
+    const expense = all.find(({ kind }) => kind.startsWith('expense.'))!
+    const comment = all.find(({ kind }) => kind === 'comment.added')!
+    let releaseOldPage!: () => void
+    const oldPageGate = new Promise<void>((resolve) => { releaseOldPage = resolve })
+    let releaseComments!: () => void
+    const commentsGate = new Promise<void>((resolve) => { releaseComments = resolve })
+    const calls: Array<{ readonly filter: string; readonly cursor?: string }> = []
+    const repository = {
+      ...source,
+      activity: {
+        ...source.activity,
+        async listForAccount(query: { readonly filter: string; readonly cursor?: { readonly createdAt: string; readonly id: string } }) {
+          calls.push({ filter: query.filter, cursor: query.cursor?.id })
+          if (query.filter === 'all' && query.cursor) {
+            await oldPageGate
+            return { items: [all[1]] }
+          }
+          if (query.filter === 'comments') {
+            await commentsGate
+            return { items: [comment], nextCursor: { createdAt: comment.createdAt, id: comment.id } }
+          }
+          return { items: [expense], nextCursor: { createdAt: expense.createdAt, id: expense.id } }
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useActivityStore()
+    await store.load()
+    const oldPage = store.loadMore()
+    await flushPromises()
+
+    store.setFilter('comments')
+    expect(store.nextCursor).toBeUndefined()
+    expect(store.isLoadingMore).toBe(false)
+    expect(store.isFiltering).toBe(true)
+    await store.loadMore()
+    expect(calls).toEqual([
+      { filter: 'all', cursor: undefined },
+      { filter: 'all', cursor: expense.id },
+      { filter: 'comments', cursor: undefined },
+    ])
+
+    releaseOldPage()
+    await oldPage
+    expect(store.allItems.some(({ id }) => id === all[1].id)).toBe(false)
+    releaseComments()
+    await flushPromises()
+    expect(store.items.map(({ id }) => id)).toEqual([comment.id])
+    expect(store.nextCursor?.id).toBe(comment.id)
+  })
+
   it('projects one pending event across store recreation and leaves an ID-less add noninteractive', async () => {
     let release!: () => void
     const blocked = new Promise<void>((resolve) => { release = resolve })

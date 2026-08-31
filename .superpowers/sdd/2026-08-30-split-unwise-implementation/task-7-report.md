@@ -8,6 +8,8 @@ Fix round 1 review baseline: `e0531ea`
 
 Fix round 2 review baseline: `969e3fe`
 
+Fix round 3 review baseline: `ca44a68`
+
 Scope: Expense detail, immutable audit/revisions, comments, global Activity, and principal-owned notifications.
 
 ## Outcome
@@ -230,6 +232,35 @@ Production breaks named: an older load-more request could merge after a newer au
 - RED: 2/2 new regressions failed.
 - GREEN: 9/9 passed. Root refresh/unmount invalidates page generations, and durable failed operations independently restore their message plus Retry/Discard actions.
 
+## Fix round 3 RED-first evidence
+
+This interleaving pass closed all three independent findings without deferral.
+
+- Focused command: `pnpm vitest run src/data/__tests__/task7QueueSession.spec.ts src/features/activity/__tests__/ActivityPage.spec.ts src/features/notifications/__tests__/NotificationCenter.spec.ts -t "late network failure|deferred old-filter page|old cursor while"`
+- RED: 3 failed / 38 skipped, with one intended failure in each affected file.
+- GREEN: 3 passed / 38 skipped after the scoped guards.
+
+### Frozen-session rejection normalization
+
+Production break named: when an old session froze while its repository call was in flight, a later ordinary network/server rejection bypassed the post-call active check and persisted `failed` over a newer same-principal `fresh` result.
+
+- RED: the shared-storage record changed from the replacement session's `fresh` completion to the frozen session's late `network` failure.
+- GREEN: the regression passed after guarded repository calls began checking session activity on both fulfillment and rejection. A post-freeze rejection is normalized to `StaleAppSessionError`, so the queue leaves the durable record untouched and adoptable.
+
+### Activity filter/page generations
+
+Production break named: changing filters while an old page was deferred retained the old cursor and loading-more state, so continuation was not synchronously bound to the new filter root.
+
+- RED: `nextCursor` still referenced the old all-activity page and `isLoadingMore` remained set during the comments transition.
+- GREEN: the regression passed after every root/filter load invalidated the page generation, synchronously cleared its cursor/loading-more state, and blocked continuation until the exact root/filter generation completed. Deferred old-filter pages cannot merge.
+
+### Notification refresh/page generations
+
+Production break named: an authoritative refresh left the old cursor enabled until completion, allowing a page request started during that refresh to use and later merge the old cursor.
+
+- RED: the in-flight refresh started a cursor request for `notification-c`, the prior root's cursor.
+- GREEN: the regression passed after refresh synchronously invalidated/cleared continuation and pagination required a completed root generation plus the exact cursor snapshot. The next accepted page used only the refreshed root cursor.
+
 ## Final GREEN verification
 
 ### Focused Task 7 matrix
@@ -246,10 +277,16 @@ Fix-round-2 affected-suite command:
 
 Fix-round-2 affected-suite result: 5 files passed, 68 tests passed.
 
+Fix-round-3 affected-suite command:
+
+`pnpm vitest run src/data/__tests__/task7QueueSession.spec.ts src/features/activity/__tests__/ActivityPage.spec.ts src/features/notifications/__tests__/NotificationCenter.spec.ts`
+
+Fix-round-3 affected-suite result: 3 files passed, 41 tests passed.
+
 ### Full suite
 
 - Command: `pnpm test`
-- Result: 36 files passed, 447 tests passed.
+- Result: 36 files passed, 450 tests passed.
 
 ### Static/build checks
 
@@ -257,9 +294,9 @@ Fix-round-2 affected-suite result: 5 files passed, 68 tests passed.
 - Result: passed (`vue-tsc --noEmit`).
 - Command: `pnpm build`
 - Result: passed; 316 modules transformed. Vite emitted only its existing large-chunk advisory.
-- Command before fix-round-2 commit: `git diff --check 969e3fe`
+- Command before fix-round-3 commit: `git diff --check ca44a68`
 - Result: passed with no whitespace errors.
-- Command after fix-round-2 implementation commit: `git diff --check 969e3fe..HEAD`
+- Command after fix-round-3 implementation commit: `git diff --check ca44a68..HEAD`
 - Result: passed with no whitespace errors.
 
 No browser or Playwright validation was run because the Task 7 brief explicitly prohibited it.
