@@ -265,3 +265,5 @@ Task 8: fix round 2/5 addressed all 8 Important findings. Focused verification i
 Task 8: final data and mobile-UX re-review found 2 Important recovery gaps: malformed browser JSON threw before quarantine, and a successful retained void retry disappeared before its `Saved` announcement. Fix round 3 proceeded RED-first.
 
 Task 8: fix round 3/5 addressed both final Important findings. Focused verification is 2 files/46 tests; full verification is 43 files/534 tests, typecheck, production build with 330 modules transformed, and diff check passing. Final scoped re-review is in progress; browser/device visual proof remains assigned to Task 12.
+
+Task 8: complete (commits `a1cc7a2..da56505`; 2 Critical and 22 Important findings addressed across 3 fix rounds; final data and mobile-UX closure reviews are clean. Firebase callable mutation proof remains assigned to Task 11 and browser/device visual proof to Task 12).
