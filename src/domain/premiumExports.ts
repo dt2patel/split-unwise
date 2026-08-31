@@ -29,10 +29,11 @@ export interface AccountBackupSource extends ExportSource {
 export interface BuiltExport { readonly content: string; readonly rowCount: number }
 
 export function buildTransactionCsv(source: ExportSource): BuiltExport {
-  const memberIds = [...new Set([...source.membersByGroup.values()].flatMap((members) => members.map(({ id }) => id)))].sort(compare)
+  const groupIds = new Set(source.groups.filter(({ syncState }) => syncState === 'fresh').map(({ id }) => id))
+  const memberIds = [...new Set([...groupIds].flatMap((groupId) => (source.membersByGroup.get(groupId) ?? []).map(({ id }) => id)))].sort(compare)
   const impactColumns = memberIds.map((id) => `${id}_impact_minor`)
   const rows: CsvRow[] = []
-  for (const expense of confirmedExpenses(source.expenses)) {
+  for (const expense of confirmedExpenses(source.expenses).filter(({ groupId }) => groupIds.has(groupId))) {
     const impacts = Object.fromEntries(memberIds.map((id) => [`${id}_impact_minor`, expenseImpact(expense, id)]))
     rows.push({
       type: 'expense', id: safeText(expense.id), group_id: safeText(expense.groupId), date: expense.date,
@@ -40,7 +41,7 @@ export function buildTransactionCsv(source: ExportSource): BuiltExport {
       currency: expense.total.currency, amount_minor: expense.total.minorAmount, ...impacts,
     })
   }
-  for (const settlement of confirmedSettlements(source.settlements)) {
+  for (const settlement of confirmedSettlements(source.settlements).filter(({ groupId }) => groupIds.has(groupId))) {
     const impacts = Object.fromEntries(memberIds.map((id) => [`${id}_impact_minor`, settlementImpact(settlement, id)]))
     rows.push({
       type: 'settlement', id: safeText(settlement.settlementId), group_id: safeText(settlement.groupId), date: settlement.occurredOn,
@@ -87,7 +88,9 @@ export function buildAccountBackup(source: AccountBackupSource): BuiltExport {
   const comments = (source.comments ?? []).filter((item) => groupIds.has(item.groupId) && item.syncState === 'fresh').sort((left, right) => compare(left.createdAt, right.createdAt) || compare(left.commentId, right.commentId)).map((item) => ({
     commentId: item.commentId, groupId: item.groupId, expenseId: item.expenseId, operationId: item.operationId, author: { ...item.author }, body: item.body, createdAt: item.createdAt, ...(item.deletedAt ? { deletedAt: item.deletedAt } : {}),
   }))
-  const revisions = (source.revisions ?? []).filter((item) => groupIds.has(item.groupId)).sort((left, right) => compare(left.groupId, right.groupId) || compare(left.expenseId, right.expenseId) || left.revision - right.revision || compare(left.id, right.id)).map((item) => ({
+  const revisionSource = (source.revisions ?? []).filter((item) => groupIds.has(item.groupId))
+  for (const item of revisionSource) if (item.expense.groupId !== item.groupId || item.expense.id !== item.expenseId || item.expense.revision !== item.revision) throw new Error('Backup revision identity is invalid')
+  const revisions = revisionSource.sort((left, right) => compare(left.groupId, right.groupId) || compare(left.expenseId, right.expenseId) || left.revision - right.revision || compare(left.id, right.id)).map((item) => ({
     id: item.id, groupId: item.groupId, expenseId: item.expenseId, revision: item.revision, operationId: item.operationId, action: item.action, actor: { ...item.actor }, createdAt: item.createdAt, expense: backupExpense(item.expense, []),
   }))
   const recurring = (source.recurring ?? []).filter((item) => groupIds.has(item.groupId) && item.syncState === 'fresh').sort((left, right) => compare(left.groupId, right.groupId) || compare(left.id, right.id)).map((item) => ({
@@ -142,5 +145,9 @@ function validatedDescriptors(values: readonly DurableReceiptDescriptor[]): read
     return { ...value }
   }).sort((left, right) => compare(left.assetId, right.assetId))
 }
-function isIsoTimestamp(value: string): boolean { return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && !Number.isNaN(Date.parse(value)) }
+function isIsoTimestamp(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false
+  const parsed = new Date(value)
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value
+}
 function compare(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0 }

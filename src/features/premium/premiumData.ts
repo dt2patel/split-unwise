@@ -1,6 +1,6 @@
 import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
-import type { ActivityItem, ExpenseComment, ExpenseRevision, ExpenseRow, Group, Member, RecurringExpense, SettlementRecord } from '../../data/repositories'
+import type { ActivityItem, AppRepository, ExpenseComment, ExpenseRevision, ExpenseRow, Group, Member, RecurringExpense, SettlementRecord } from '../../data/repositories'
 import { buildReport, selectReportInput, type ReportCoverage, type ReportModel } from '../../domain/reports'
 import { searchExpenses, type ExpenseSearchFilters, type ExpenseSearchResult } from '../../domain/search'
 import type { GroupSettings } from '../../domain/groupSettings'
@@ -51,7 +51,7 @@ export async function loadPremiumExportSnapshot(groupId?: string): Promise<Premi
   const session = getAppSession()
   await session.ready
   const currentUser = await session.repository.app.getCurrentUser()
-  const groups = groupId ? [await requireGroup(groupId)] : [...await session.repository.groups.list()].slice(0, 100)
+  const groups = groupId ? [await requireGroup(groupId, session.repository)] : [...await session.repository.groups.list()].slice(0, 100)
   const loaded = await Promise.all(groups.map(async (group) => {
     const members = await session.repository.groups.listMembers(group.id)
     if (!members.some(({ id }) => id === currentUser.id)) throw new Error('You are not an active member of this group.')
@@ -90,7 +90,7 @@ async function loadSearchSource(groupId?: string): Promise<{ groups: readonly Gr
   await session.ready
   const [currentUser, listedGroups] = await Promise.all([
     session.repository.app.getCurrentUser(),
-    groupId ? requireGroup(groupId) : session.repository.groups.list(),
+    groupId ? requireGroup(groupId, session.repository) : session.repository.groups.list(),
   ])
   const sourceGroups = Array.isArray(listedGroups) ? listedGroups : [listedGroups]
   const groups = [...sourceGroups].slice(0, 100)
@@ -109,9 +109,9 @@ async function loadSearchSource(groupId?: string): Promise<{ groups: readonly Gr
   }
 }
 
-async function requireGroup(groupId: string): Promise<Group> {
+async function requireGroup(groupId: string, repository: AppRepository): Promise<Group> {
   if (!isStrictId(groupId)) throw new Error('Open this feature from a valid group link.')
-  const group = await getAppSession().repository.groups.getById(groupId)
+  const group = await repository.groups.getById(groupId)
   if (!group || group.id !== groupId) throw new Error('This group is not available.')
   return group
 }

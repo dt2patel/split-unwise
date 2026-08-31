@@ -3,12 +3,14 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { IonBackButton, IonButtons, IonContent, IonHeader, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
 import { formatMoney } from '../../components/MoneyAmount.vue'
+import { isStrictId } from '../../data/identifiers'
 import type { CurrencyCode } from '../../domain/money'
 import type { GroupPremiumSnapshot } from '../premium/premiumData'
 import { loadGroupPremiumSnapshot } from '../premium/premiumData'
 
 const route = useRoute(); const snapshot = ref<GroupPremiumSnapshot>(); const error = ref(''); const loading = ref(false); let request = 0
-const groupId = computed(() => typeof route.params.groupId === 'string' ? route.params.groupId : '')
+const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
+const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups')
 const currencies = computed(() => [...new Set(snapshot.value?.report.totals.map(({ currency }) => currency) ?? [])])
 watch(groupId, (id) => { void load(id) }, { immediate: true })
 async function load(id: string): Promise<void> { const current = ++request; loading.value = true; error.value = ''; snapshot.value = undefined; try { const loaded = await loadGroupPremiumSnapshot(id); if (current === request) snapshot.value = loaded } catch (reason) { if (current === request) error.value = reason instanceof Error ? reason.message : String(reason) } finally { if (current === request) loading.value = false } }
@@ -32,7 +34,7 @@ function coverage(): string { return snapshot.value?.report.coverage.status === 
 </script>
 
 <template>
-  <ion-page><ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="`/tabs/groups/${encodeURIComponent(groupId)}`" text="Group" /></ion-buttons><ion-title>Charts</ion-title></ion-toolbar></ion-header>
+  <ion-page><ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="backPath" text="Group" /></ion-buttons><ion-title>Charts</ion-title></ion-toolbar></ion-header>
     <ion-content :fullscreen="true"><main class="charts-main"><p class="eyebrow">{{ snapshot?.group.name ?? 'Group report' }}</p><h1>Charts</h1><p class="intro">Every plotted value is also available in an exact table.</p>
       <p v-if="loading" role="status">Loading confirmed charts…</p><p v-else-if="error" role="alert" class="error">{{ error }}</p>
       <template v-else-if="snapshot"><p data-testid="coverage" class="coverage">{{ coverage() }}</p>

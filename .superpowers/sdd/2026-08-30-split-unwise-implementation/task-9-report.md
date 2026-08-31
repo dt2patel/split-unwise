@@ -39,7 +39,7 @@ All routes are registered before the generic group route, hide global app chrome
 
 ## Final GREEN verification
 
-- `pnpm test`: 55 files passed, 588 tests passed.
+- `pnpm test`: 55 files passed, 596 tests passed.
 - `pnpm typecheck`: passed (`vue-tsc --noEmit`).
 - `pnpm build`: passed; 353 modules transformed. Premium routes emitted separate lazy chunks. Vite emitted only its existing large-session-chunk advisory.
 - `git diff --check`: passed with no whitespace errors.
@@ -51,8 +51,10 @@ No browser or Playwright validation was run because the user has not approved br
 - Confirmed reports, search, CSV, and JSON never include stale/pending/failed/conflicted projections in authoritative results.
 - Confirmed currencies never combine or convert without an explicit verified FX rate authority and timestamp.
 - Confirmed direct group exports fail closed for non-members before audit history is read.
+- Confirmed malformed group search/export routes cannot widen into account scope, CSV rows cannot escape the fresh authorized group set, and embedded revision snapshots must match their audit identity.
 - Confirmed JSON export uses explicit field construction rather than dumping repository objects, and excludes comment/revision attachment references unless represented by validated durable descriptors.
 - Confirmed settings command persistence rejects extra fields, duplicate participants, mismatched ratio keys, and invalid percentages before replay.
+- Confirmed concurrent settings conflicts reload the authoritative revision and that invalid defaults cannot block or overwrite existing expense edits.
 - Confirmed every premium screen has one page heading, 44-point controls, safe-area padding, Dynamic Type wrapping/reflow, textual chart values, and global reduced-motion handling.
 
 ## Residual boundaries

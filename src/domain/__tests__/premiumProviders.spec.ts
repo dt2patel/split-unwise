@@ -26,4 +26,11 @@ describe('premium provider boundaries', () => {
       authority: 'Example Central Bank', observedAt: '2026-08-31T12:00:00.000Z', kind: 'preview',
     })
   })
+
+  it('rejects normalized-looking but impossible FX timestamps', () => {
+    expect(() => createFxPreview({ currency: 'USD', minorAmount: 100 }, {
+      baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 1, denominator: 1,
+      authority: 'Example Central Bank', observedAt: '2026-02-30T12:00:00.000Z',
+    })).toThrow('timestamp')
+  })
 })

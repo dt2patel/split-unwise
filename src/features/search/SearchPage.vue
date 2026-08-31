@@ -10,9 +10,9 @@ import { runPremiumSearch } from '../premium/premiumData'
 
 const route = useRoute(); const query = ref(''); const selectedGroups = ref<string[]>([]); const selectedParticipants = ref<string[]>([]); const selectedCategories = ref<string[]>([]); const currency = ref(''); const dateFrom = ref(''); const dateTo = ref(''); const minimum = ref(''); const maximum = ref('')
 const result = ref<ExpenseSearchResult>(); const loading = ref(false); const error = ref(''); let request = 0
-const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : undefined)
 const isGroupSearch = computed(() => route.name === 'group-search')
-const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/home')
+const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : undefined)
+const backPath = computed(() => isGroupSearch.value ? groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups' : '/tabs/home')
 const groups = computed(() => result.value?.facets.groups ?? [])
 const participants = computed(() => result.value?.facets.participants ?? [])
 const categories = computed(() => result.value?.facets.categories ?? [])
@@ -25,6 +25,7 @@ function reset(): void { selectedGroups.value = []; selectedParticipants.value =
 async function search(): Promise<void> {
   const current = ++request; loading.value = true; error.value = ''
   try {
+    if (isGroupSearch.value && !groupId.value) throw new Error('Open search from a valid group link.')
     if ((minimum.value || maximum.value) && !currency.value) throw new Error('Choose a currency before filtering by amount.')
     const loaded = await runPremiumSearch({
       query: query.value, groupIds: selectedGroups.value, participantIds: selectedParticipants.value, categories: selectedCategories.value,

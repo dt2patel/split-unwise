@@ -30,4 +30,13 @@ describe('premium export page', () => {
     expect(wrapper.findAll('.provider-card span').every((row) => row.text() === 'Unavailable')).toBe(true)
     expect(wrapper.text()).not.toMatch(/upgrade|subscribe|premium plan/i)
   })
+
+  it('fails closed instead of widening an invalid group route into an account export', async () => {
+    const router = createAppRouter(); await router.push('/tabs/groups/%21/export'); await router.isReady()
+    const wrapper = mount(ExportPage, { global: { plugins: [createPinia(), router], stubs } }); await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('valid group')
+    expect(wrapper.find('[data-testid="coverage"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="back"]').attributes('href')).toBe('/tabs/groups')
+  })
 })

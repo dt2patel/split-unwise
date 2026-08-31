@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
+import { isStrictId } from '../../data/identifiers'
 import { buildAccountBackup, buildTransactionCsv } from '../../domain/premiumExports'
 import { getPremiumProviderStates } from '../../domain/premiumProviders'
 import type { PremiumExportSnapshot } from '../premium/premiumData'
@@ -9,13 +10,14 @@ import { loadPremiumExportSnapshot } from '../premium/premiumData'
 import { createClientDownloadManager } from './clientDownload'
 
 const route = useRoute(); const snapshot = ref<PremiumExportSnapshot>(); const loading = ref(false); const error = ref(''); const status = ref(''); const manager = createClientDownloadManager(); const providerStates = getPremiumProviderStates(); let request = 0
-const groupId = computed(() => typeof route.params.groupId === 'string' ? route.params.groupId : undefined)
 const accountScope = computed(() => route.name === 'account-export')
-const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/account')
+const groupScope = computed(() => route.name === 'group-export')
+const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : undefined)
+const backPath = computed(() => groupScope.value ? groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups' : '/tabs/account')
 watch(() => route.fullPath, () => { manager.dispose(); void load() }, { immediate: true })
 onBeforeUnmount(() => manager.dispose())
 
-async function load(): Promise<void> { const current = ++request; loading.value = true; error.value = ''; status.value = ''; snapshot.value = undefined; try { const loaded = await loadPremiumExportSnapshot(groupId.value); if (current === request) snapshot.value = loaded } catch (reason) { if (current === request) error.value = message(reason) } finally { if (current === request) loading.value = false } }
+async function load(): Promise<void> { const current = ++request; loading.value = true; error.value = ''; status.value = ''; snapshot.value = undefined; try { if (groupScope.value && !groupId.value) throw new Error('Open export from a valid group link.'); const loaded = await loadPremiumExportSnapshot(groupScope.value ? groupId.value : undefined); if (current === request) snapshot.value = loaded } catch (reason) { if (current === request) error.value = message(reason) } finally { if (current === request) loading.value = false } }
 function downloadCsv(): void { if (!snapshot.value) return; download(buildTransactionCsv(snapshot.value), `${fileStem()}-transactions.csv`, 'text/csv;charset=utf-8') }
 function downloadJson(): void { if (!snapshot.value) return; download(buildAccountBackup({ ...snapshot.value, exportedAt: new Date().toISOString() }), `${fileStem()}-backup.json`, 'application/json;charset=utf-8') }
 function download(exported: { content: string; rowCount: number }, fileName: string, mimeType: string): void { error.value = ''; status.value = ''; try { const result = manager.download(exported.content, exported.rowCount, fileName, mimeType); status.value = result.status === 'ready' ? `Downloaded ${fileName}.` : 'This export is too large for a safe mobile download. Secure server export is not configured yet.' } catch (reason) { error.value = message(reason) } }

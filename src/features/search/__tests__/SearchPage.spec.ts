@@ -42,6 +42,13 @@ describe('premium search page', () => {
     await flushPromises()
     expect(wrapper.get('[data-testid="empty-results"]').text()).toContain('No expenses match')
   })
+
+  it('fails closed instead of widening an invalid group route into account search', async () => {
+    const wrapper = await mountSearch('/tabs/groups/%21/search')
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('valid group')
+    expect(wrapper.find('[data-expense-id="groceries"]').exists()).toBe(false)
+  })
 })
 
 async function mountSearch(path: string) {

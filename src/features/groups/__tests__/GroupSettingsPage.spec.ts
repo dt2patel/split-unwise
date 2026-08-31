@@ -51,4 +51,21 @@ describe('group default settings page', () => {
 
     expect(wrapper.findAll<HTMLInputElement>('.ratio-input').map((input) => Number(input.element.value))).toEqual([25, 25, 25, 25])
   })
+
+  it('reloads the authoritative revision after a concurrent settings conflict', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter(); await router.push('/tabs/groups/lake-house-weekend/settings'); await router.isReady()
+    const wrapper = mount(GroupSettingsPage, { global: { plugins: [createPinia(), router], stubs } }); await flushPromises()
+    await repository.groups.setDefaultSplit({
+      kind: 'group.default-split', operationId: 'remote-default', groupId: 'lake-house-weekend', expectedRevision: 1,
+      defaultSplit: { type: 'shares', participantIds: ['maya-p', 'jordan-k', 'alex-r', 'taylor-s'], shares: { 'maya-p': 1, 'jordan-k': 1, 'alex-r': 1, 'taylor-s': 1 } },
+    })
+
+    await wrapper.findAll('.actions button')[0]!.trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Settings revision 2'))
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('changed')
+    expect(wrapper.get('[role="alert"]').text()).toContain('latest')
+  })
 })

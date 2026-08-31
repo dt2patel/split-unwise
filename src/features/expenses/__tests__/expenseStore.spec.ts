@@ -82,6 +82,28 @@ describe('expense store lifecycle', () => {
     expect(store.editor.split).toEqual({ type: 'percentage', values: { 'maya-p': '40', 'alex-r': '60' } })
     expect(store.editor.payments).toEqual([{ participantId: 'maya-p', amountText: '' }])
   })
+
+  it('never lets an invalid shared default block or overwrite an existing expense edit', async () => {
+    const base = createDemoRepository()
+    const repository: AppRepository = {
+      ...base,
+      groups: {
+        ...base.groups,
+        async getSettings(groupId) {
+          return { schemaVersion: 1, groupId, revision: 2, defaultSplit: { type: 'equal', participantIds: ['retired-member'] } }
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useExpenseStore()
+
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
+
+    expect(store.loadError).toBe('')
+    expect(store.mode).toBe('edit')
+    expect(store.editor.description).toBe('Cabin deposit')
+    expect(store.editor.participants).toEqual(['maya-p', 'jordan-k', 'alex-r', 'taylor-s'])
+  })
   it('ignores a stale initialization that resolves after a newer route context', async () => {
     const base = createDemoRepository()
     const slow = deferred<Group | undefined>()

@@ -21,6 +21,7 @@ describe('premium expense search', () => {
 
   it('rejects malformed filters instead of silently widening a query', () => {
     expect(() => searchExpenses({ groups: [group('lake', 'Lake')], expenses: [], filters: { dateFrom: '08/01/2026' }, coverageStatus: 'complete' })).toThrow('date')
+    expect(() => searchExpenses({ groups: [group('lake', 'Lake')], expenses: [], filters: { dateFrom: '2026-02-30' }, coverageStatus: 'complete' })).toThrow('date')
     expect(() => searchExpenses({ groups: [group('lake', 'Lake')], expenses: [], filters: { minMinor: -1, currency: 'USD' }, coverageStatus: 'complete' })).toThrow('amount')
     expect(() => searchExpenses({ groups: [group('lake', 'Lake')], expenses: [], filters: { minMinor: 1 }, coverageStatus: 'complete' })).toThrow('currency')
   })

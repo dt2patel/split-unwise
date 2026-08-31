@@ -4,13 +4,15 @@ import { useRoute } from 'vue-router'
 import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { getAppSession } from '../../data'
+import { isStrictId } from '../../data/identifiers'
 import type { DefaultSplit } from '../../domain/groupSettings'
 import type { GroupPremiumSnapshot } from '../premium/premiumData'
 import { loadGroupPremiumSnapshot } from '../premium/premiumData'
 
 type DefaultKind = DefaultSplit['type']
 const route = useRoute(); const snapshot = ref<GroupPremiumSnapshot>(); const error = ref(''); const status = ref(''); const loading = ref(false); const saving = ref(false); const kind = ref<DefaultKind>('equal'); const selectedIds = ref<string[]>([]); const ratios = ref<Record<string, string>>({}); let request = 0
-const groupId = computed(() => typeof route.params.groupId === 'string' ? route.params.groupId : '')
+const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
+const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups')
 const canManage = computed(() => snapshot.value?.currentUser.canManage === true)
 watch(groupId, (id) => { void load(id) }, { immediate: true })
 
@@ -56,13 +58,23 @@ async function submit(defaultSplit: DefaultSplit | null, confirmation: string): 
     const result = await getAppSession().queue.submit({ kind: 'group.default-split', operationId: createClientOperationId('group-default'), groupId: snapshot.value.group.id, expectedRevision: snapshot.value.settings.revision, defaultSplit }).result()
     if (result.status !== 'saved') throw new Error(result.reason)
     await load(snapshot.value.group.id); status.value = confirmation; await nextTick()
-  } catch (reason) { error.value = message(reason) } finally { saving.value = false }
+  } catch (reason) {
+    const failure = message(reason)
+    if (isConflict(reason, failure)) {
+      const id = snapshot.value?.group.id ?? groupId.value
+      await load(id)
+      error.value = `${failure} Review the latest settings and save again.`
+    } else error.value = failure
+  } finally { saving.value = false }
 }
 function message(reason: unknown): string { if (reason && typeof reason === 'object' && 'message' in reason) return String(reason.message); return String(reason) }
+function isConflict(reason: unknown, failure: string): boolean {
+  return /changed remotely/i.test(failure) || Boolean(reason && typeof reason === 'object' && 'code' in reason && reason.code === 'conflict')
+}
 </script>
 
 <template>
-  <ion-page><ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="`/tabs/groups/${encodeURIComponent(groupId)}`" text="Group" /></ion-buttons><ion-title>Group settings</ion-title></ion-toolbar></ion-header>
+  <ion-page><ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="backPath" text="Group" /></ion-buttons><ion-title>Group settings</ion-title></ion-toolbar></ion-header>
     <ion-content :fullscreen="true"><main class="settings-main"><p class="eyebrow">{{ snapshot?.group.name ?? 'Group' }}</p><h1>Group settings</h1><p class="intro">Choose how new expenses start. Existing expenses, payers, recurrence, and receipt itemization never change.</p>
       <p v-if="loading" role="status">Loading group settings…</p><p v-else-if="error && !snapshot" role="alert" class="error">{{ error }}</p>
       <template v-else-if="snapshot"><section class="settings-card" aria-labelledby="default-heading"><header><div><h2 id="default-heading">Default split</h2><p>Settings revision {{ snapshot.settings.revision }}</p></div><span class="unlocked">Included</span></header>

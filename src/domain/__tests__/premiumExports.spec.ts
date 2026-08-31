@@ -9,6 +9,10 @@ const members: readonly Member[] = [
 ]
 
 describe('typed premium exports', () => {
+  it('rejects a normalized-looking export timestamp that is not a real calendar instant', () => {
+    expect(() => buildAccountBackup({ exportedAt: '2026-02-30T12:00:00.000Z', groups: [], membersByGroup: new Map(), expenses: [], settlements: [] })).toThrow('timestamp')
+  })
+
   it('emits deterministic expense and settlement rows with currency and signed member impacts', () => {
     const csv = buildTransactionCsv({ groups: [group], membersByGroup: new Map([[group.id, members]]), expenses: [expense()], settlements: [settlement()] })
     expect(csv.rowCount).toBe(2)
@@ -26,6 +30,23 @@ describe('typed premium exports', () => {
     expect(content).toContain("' =SUM(A1:A2)")
     expect(content).toContain("'-cmd")
     expect(content).toContain("'\t@payload")
+  })
+
+  it('limits CSV rows and member columns to the fresh authorized group set', () => {
+    const rogue = { ...expense(), id: 'rogue-expense', groupId: 'rogue', description: 'Do not export' }
+    const content = buildTransactionCsv({
+      groups: [group],
+      membersByGroup: new Map([
+        [group.id, members],
+        ['rogue', [{ id: 'outsider', displayName: 'Outsider', initials: 'OS', isCurrentUser: false }]],
+      ]),
+      expenses: [expense(), rogue],
+      settlements: [{ ...settlement(), settlementId: 'rogue-settlement', groupId: 'rogue' }],
+    }).content
+
+    expect(content).not.toContain('rogue')
+    expect(content).not.toContain('outsider_impact_minor')
+    expect(content).not.toContain('Do not export')
   })
 
   it('builds a versioned allowlisted JSON backup and includes only validated durable receipt descriptors', () => {
@@ -83,6 +104,18 @@ describe('typed premium exports', () => {
     })
     expect(backup.content).not.toContain('local-receipt:private')
     expect(backup.content).not.toContain('attachmentRefs')
+  })
+
+  it('rejects a revision whose embedded snapshot crosses the authorized group or expense identity', () => {
+    const row = expense()
+    const revision: ExpenseRevision = {
+      id: 'revision-crossed', groupId: group.id, expenseId: row.id, revision: 1, operationId: 'operation-a', action: 'created',
+      actor: { id: 'maya', displayName: 'Maya' }, createdAt: row.createdAt, expense: { ...row, groupId: 'rogue' },
+    }
+
+    expect(() => buildAccountBackup({
+      exportedAt: '2026-08-31T20:00:00.000Z', groups: [group], membersByGroup: new Map([[group.id, members]]), expenses: [row], settlements: [], revisions: [revision],
+    })).toThrow('revision identity')
   })
 })
 

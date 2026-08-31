@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
 import { formatMoney } from '../../components/MoneyAmount.vue'
+import { isStrictId } from '../../data/identifiers'
 import type { GroupPremiumSnapshot } from '../premium/premiumData'
 import { loadGroupPremiumSnapshot } from '../premium/premiumData'
 
@@ -11,7 +12,8 @@ const snapshot = ref<GroupPremiumSnapshot>()
 const error = ref('')
 const loading = ref(false)
 let request = 0
-const groupId = computed(() => typeof route.params.groupId === 'string' ? route.params.groupId : '')
+const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
+const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups')
 watch(groupId, (id) => { void load(id) }, { immediate: true })
 
 async function load(id: string): Promise<void> {
@@ -26,7 +28,7 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
 
 <template>
   <ion-page class="premium-page">
-    <ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="`/tabs/groups/${encodeURIComponent(groupId)}`" text="Group" /></ion-buttons><ion-title>Totals</ion-title></ion-toolbar></ion-header>
+    <ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="backPath" text="Group" /></ion-buttons><ion-title>Totals</ion-title></ion-toolbar></ion-header>
     <ion-content :fullscreen="true">
       <main class="premium-main">
         <p class="premium-eyebrow">{{ snapshot?.group.name ?? 'Group report' }}</p>

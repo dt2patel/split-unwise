@@ -200,10 +200,10 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         nextEditor.groupId = group.id
         nextEditor.currency = group.currency
         const defaultSplit = settings.defaultSplit
-        if (defaultSplit && defaultSplit.participantIds.some((id) => !groupMembers.some((member) => member.id === id))) throw new Error('The shared default split references an inactive member and must be cleared.')
-        nextEditor.participants = [...(defaultSplit?.participantIds ?? groupMembers.map(({ id }) => id))]
+        if (!options.expenseId && defaultSplit && defaultSplit.participantIds.some((id) => !groupMembers.some((member) => member.id === id))) throw new Error('The shared default split references an inactive member and must be cleared.')
+        nextEditor.participants = [...(!options.expenseId && defaultSplit ? defaultSplit.participantIds : groupMembers.map(({ id }) => id))]
         nextEditor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
-        nextEditor.split = defaultSplit ? splitInputFromMethod(defaultSplit, group.currency) : { type: 'equal' }
+        nextEditor.split = !options.expenseId && defaultSplit ? splitInputFromMethod(defaultSplit, group.currency) : { type: 'equal' }
       } else {
         nextEditor.participants = [loadedCurrentUser.id]
         nextEditor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
