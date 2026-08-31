@@ -81,6 +81,28 @@ describe('expense sheet keyboard avoidance', () => {
     wrapper.unmount()
   })
 
+  it('uses sheet bounds and its sticky header to reveal a focused field hidden under the header', () => {
+    const viewport = new TestVisualViewport()
+    viewport.height = 500
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
+    const wrapper = mount(ReceiptReview, { attachTo: document.body, props: {
+      modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
+    } })
+    const sheet = wrapper.get<HTMLElement>('[data-sheet-scroll]').element
+    const header = wrapper.get<HTMLElement>('header').element
+    const tip = wrapper.get<HTMLInputElement>('[data-testid="receipt-tip"]').element
+    let scrollDelta = 0
+    Object.defineProperty(sheet, 'scrollBy', { configurable: true, value: (options: ScrollToOptions) => { scrollDelta += options.top ?? 0 } })
+    vi.spyOn(sheet, 'getBoundingClientRect').mockReturnValue(rect({ top: 300, bottom: 800 }))
+    vi.spyOn(header, 'getBoundingClientRect').mockReturnValue(rect({ top: 300, bottom: 354 }))
+    vi.spyOn(tip, 'getBoundingClientRect').mockReturnValue(rect({ top: 332, bottom: 376 }))
+
+    tip.focus()
+
+    expect(scrollDelta).toBeLessThan(0)
+    wrapper.unmount()
+  })
+
   it('uses window resize as a safe fallback when VisualViewport is unavailable', () => {
     Reflect.deleteProperty(window, 'visualViewport')
     const wrapper = mount(ReceiptReview, { attachTo: document.body, props: {

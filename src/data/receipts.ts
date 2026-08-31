@@ -13,12 +13,15 @@ export interface ReceiptAsset {
   readonly size: number
   readonly createdAt: string
   readonly durability: ReceiptDurability
+  readonly commandOperationIds: readonly string[]
 }
 
 export interface ReceiptBlobStore {
   put(blob: Blob, metadata: { readonly fileName: string }): Promise<LocalReceiptReference>
   get(reference: LocalReceiptReference): Promise<ReceiptAsset | undefined>
   setDurability(reference: LocalReceiptReference, durability: ReceiptDurability): Promise<void>
+  /** Prevents stale editor cleanup from deleting a local asset captured by a durable command. */
+  claim(reference: LocalReceiptReference, operationId: string): Promise<void>
   delete(reference: LocalReceiptReference): Promise<void>
 }
 
@@ -60,7 +63,7 @@ export function createMemoryReceiptStore(options: ReceiptStoreOptions = {}): Rec
     async put(blob, metadata) {
       const fileName = validateReceipt(blob, metadata.fileName)
       const reference = referenceFor(id())
-      assets.set(reference, { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now(), durability: LOCAL_ONLY_DURABILITY })
+      assets.set(reference, { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now(), durability: LOCAL_ONLY_DURABILITY, commandOperationIds: [] })
       return reference
     },
     async get(reference) { return assets.get(reference) },
@@ -68,7 +71,16 @@ export function createMemoryReceiptStore(options: ReceiptStoreOptions = {}): Rec
       const asset = assets.get(reference)
       if (asset) assets.set(reference, { ...asset, durability })
     },
-    async delete(reference) { assets.delete(reference) },
+    async claim(reference, operationId) {
+      const asset = assets.get(reference)
+      if (!asset) return
+      const commandOperationIds = [...new Set([...asset.commandOperationIds, operationId])]
+      assets.set(reference, { ...asset, commandOperationIds })
+    },
+    async delete(reference) {
+      if (assets.get(reference)?.commandOperationIds.length) return
+      assets.delete(reference)
+    },
   }
 }
 
@@ -82,7 +94,7 @@ export function createIndexedDbReceiptStore(options: ReceiptStoreOptions & { rea
     async put(blob, metadata) {
       const fileName = validateReceipt(blob, metadata.fileName)
       const reference = referenceFor(id())
-      const asset: ReceiptAsset = { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now(), durability: LOCAL_ONLY_DURABILITY }
+      const asset: ReceiptAsset = { reference, blob, fileName, mimeType: blob.type.toLowerCase(), size: blob.size, createdAt: now(), durability: LOCAL_ONLY_DURABILITY, commandOperationIds: [] }
       await requestFrom(getDatabase(), 'readwrite', (store) => store.put(asset))
       return reference
     },
@@ -91,7 +103,17 @@ export function createIndexedDbReceiptStore(options: ReceiptStoreOptions & { rea
       const asset = await requestFrom(getDatabase(), 'readonly', (store) => store.get(reference)) as ReceiptAsset | undefined
       if (asset) await requestFrom(getDatabase(), 'readwrite', (store) => store.put({ ...asset, durability }))
     },
-    async delete(reference) { await requestFrom(getDatabase(), 'readwrite', (store) => store.delete(reference)) },
+    async claim(reference, operationId) {
+      const asset = await requestFrom(getDatabase(), 'readonly', (store) => store.get(reference)) as ReceiptAsset | undefined
+      if (!asset) return
+      const commandOperationIds = [...new Set([...(asset.commandOperationIds ?? []), operationId])]
+      await requestFrom(getDatabase(), 'readwrite', (store) => store.put({ ...asset, commandOperationIds }))
+    },
+    async delete(reference) {
+      const asset = await requestFrom(getDatabase(), 'readonly', (store) => store.get(reference)) as ReceiptAsset | undefined
+      if (!asset || asset.commandOperationIds?.length) return
+      await requestFrom(getDatabase(), 'readwrite', (store) => store.delete(reference))
+    },
   }
 }
 

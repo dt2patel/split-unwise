@@ -365,6 +365,36 @@ describe('expense store lifecycle', () => {
     expect(store.receiptMessage).toBe('')
   })
 
+  it('keeps a queued receipt when slow recognition completes after the composer leaves', async () => {
+    const recognition = deferred<ReceiptRecognitionResult>()
+    const recognitionStarted = deferred<void>()
+    const receipts = createMemoryReceiptStore({ id: () => 'command-owned-receipt' })
+    const session = createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts,
+      receiptProvider: {
+        async upload() { return { status: 'unavailable', reason: 'Upload unavailable.' } },
+        recognize() { recognitionStarted.resolve(); return recognition.promise },
+        async delete() { /* no remote asset exists */ },
+      },
+    })
+    setAppSessionForTesting(session)
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    const attachment = store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
+    await recognitionStarted.promise
+    completeValidEditor(store)
+    expect(store.submit('receipt-owned-by-command')).toBe(true)
+    store.leaveEditor()
+    recognition.resolve({ status: 'unavailable', reason: 'Recognition unavailable.' })
+
+    await expect(attachment).resolves.toBe(false)
+    await expect(session.queue.submit(session.queue.get('receipt-owned-by-command')!.envelope).result()).resolves.toMatchObject({ status: 'saved' })
+    await expect(receipts.get('local-receipt:command-owned-receipt')).resolves.toMatchObject({
+      durability: { status: 'upload-unavailable', reason: 'Upload unavailable.' },
+    })
+  })
+
   it('lets only the latest receipt attachment commit when local writes resolve out of order', async () => {
     const firstWrite = deferred<LocalReceiptReference>()
     const deleted: LocalReceiptReference[] = []
@@ -383,6 +413,7 @@ describe('expense store lifecycle', () => {
         const asset = assets.get(reference)
         if (asset) assets.set(reference, { ...asset, durability })
       },
+      async claim() { /* ownership is not involved in this out-of-order write seam */ },
     }
     setAppSessionForTesting(createAppSession({
       repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts,
@@ -513,7 +544,7 @@ function receiptAsset(reference: LocalReceiptReference, blob: Blob, fileName: st
     status: 'local-only',
     reason: 'Receipt is stored only on this device until upload succeeds.',
   }
-  return { reference, blob, fileName, mimeType: blob.type, size: blob.size, createdAt: '2026-08-30T12:00:00.000Z', durability }
+  return { reference, blob, fileName, mimeType: blob.type, size: blob.size, createdAt: '2026-08-30T12:00:00.000Z', durability, commandOperationIds: [] }
 }
 
 async function eventually(condition: () => boolean): Promise<void> {

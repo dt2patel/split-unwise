@@ -64,6 +64,34 @@ describe('Firebase session boundary', () => {
     unsubscribe()
     expect(unsubscribed).toBe(true)
   })
+
+  it('contains a rejected later observer delivery and continues with the next auth state', async () => {
+    let emitAuth!: (user: { readonly uid: string } | null) => void
+    const source = firebaseSessionModule.createFirebasePrincipalSource({
+      auth: { async authStateReady() {}, currentUser: { uid: 'maya-p' } },
+      projectId: 'trip-project',
+      subscribe(listener) { emitAuth = listener; return () => undefined },
+    })
+    const observed: string[] = []
+    let calls = 0
+    const listening = source.listen(async (principal) => {
+      calls += 1
+      if (calls === 2) throw new Error('activation failed')
+      observed.push(principal?.uid ?? 'signed-out')
+    })
+
+    await Promise.resolve()
+    emitAuth({ uid: 'maya-p' })
+    const unsubscribe = await listening
+
+    emitAuth({ uid: 'jordan-k' })
+    emitAuth(null)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(observed).toEqual(['maya-p', 'signed-out'])
+    unsubscribe()
+  })
 })
 
 type FirebasePrincipalFixture = { readonly mode: 'firebase'; readonly projectId: string; readonly uid: string }

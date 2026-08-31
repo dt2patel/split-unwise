@@ -21,11 +21,28 @@ function bindSheetKeyboardAvoidance(sheet: HTMLElement, host: Window = window): 
     return { height, top, bottom: top + height }
   }
 
+  function visibleBounds(): { readonly top: number; readonly bottom: number; readonly sheetBottom: number } {
+    const viewportMetrics = metrics()
+    const sheetBounds = sheet.getBoundingClientRect()
+    // jsdom and detached host fallbacks expose an empty rectangle; window metrics
+    // remain the truthful available surface in that case.
+    if (sheetBounds.height <= 0 || sheetBounds.bottom <= sheetBounds.top) {
+      return { top: viewportMetrics.top, bottom: viewportMetrics.bottom, sheetBottom: host.innerHeight }
+    }
+    const header = sheet.querySelector<HTMLElement>('.expense-sheet__header, header')
+    const headerBottom = header?.getBoundingClientRect().bottom ?? sheetBounds.top
+    return {
+      top: Math.max(viewportMetrics.top, sheetBounds.top, headerBottom) + FIELD_MARGIN,
+      bottom: Math.min(viewportMetrics.bottom, sheetBounds.bottom) - FIELD_MARGIN,
+      sheetBottom: sheetBounds.bottom,
+    }
+  }
+
   function ensureVisible(target: HTMLElement): void {
-    const { top: visibleTop, bottom: visibleBottom } = metrics()
+    const { top: visibleTop, bottom: visibleBottom } = visibleBounds()
     const field = target.getBoundingClientRect()
-    const below = field.bottom - (visibleBottom - FIELD_MARGIN)
-    const above = (visibleTop + FIELD_MARGIN) - field.top
+    const below = field.bottom - visibleBottom
+    const above = visibleTop - field.top
     const delta = below > 0 ? below : (above > 0 ? -above : 0)
     if (!delta) return
 
@@ -42,8 +59,8 @@ function bindSheetKeyboardAvoidance(sheet: HTMLElement, host: Window = window): 
   }
 
   function updateViewport(): void {
-    const { bottom } = metrics()
-    const keyboardInset = Math.max(0, host.innerHeight - bottom)
+    const { bottom, sheetBottom } = visibleBounds()
+    const keyboardInset = Math.max(0, sheetBottom - bottom)
     sheet.style.setProperty('--su-keyboard-inset', `${Math.round(keyboardInset)}px`)
     scheduleVisibilityCheck(host.document.activeElement instanceof HTMLElement ? host.document.activeElement : null)
   }

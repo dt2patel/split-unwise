@@ -95,6 +95,21 @@ describe('app data session', () => {
     expect(await storage.load('maya-p')).toBeUndefined()
   })
 
+  it('fails closed before local stores construct when an explicit principal UID differs from the repository user', async () => {
+    const repository = createDemoRepository()
+    const constructions: string[] = []
+    const session = createAppSession({
+      repository,
+      principal: { mode: 'demo', projectId: repository.projectId, uid: 'jordan-k' },
+      commandStorageFactory: () => { constructions.push('commands'); return createMemoryCommandStorage() },
+      receiptStoreFactory: () => { constructions.push('receipts'); return createMemoryReceiptStore() },
+    })
+    void session.principal.catch(() => undefined)
+
+    await expect(session.ready).rejects.toThrow('authenticated user')
+    expect(constructions).toEqual([])
+  })
+
   it('keeps the same UID isolated across Firebase projects and repository modes', () => {
     const principalKey = (sessionModule as unknown as {
       appPrincipalKey?: (principal: { mode: 'demo' | 'firebase'; projectId: string; uid: string }) => string
@@ -129,8 +144,8 @@ describe('app data session', () => {
     const secondBase = createDemoRepository()
     let releaseOldRead!: (groups: Awaited<ReturnType<typeof firstBase.groups.list>>) => void
     const oldRead = new Promise<Awaited<ReturnType<typeof firstBase.groups.list>>>((resolve) => { releaseOldRead = resolve })
-    const firstRepository = { ...firstBase, projectId: firstPrincipal.projectId, groups: { ...firstBase.groups, list: () => oldRead } }
-    const secondRepository = { ...secondBase, projectId: secondPrincipal.projectId }
+    const firstRepository = { ...firstBase, projectId: firstPrincipal.projectId, app: { ...firstBase.app, async getCurrentUser() { return { ...await firstBase.app.getCurrentUser(), id: firstPrincipal.uid } } }, groups: { ...firstBase.groups, list: () => oldRead } }
+    const secondRepository = { ...secondBase, projectId: secondPrincipal.projectId, app: { ...secondBase.app, async getCurrentUser() { return { ...await secondBase.app.getCurrentUser(), id: secondPrincipal.uid } } } }
     const events: string[] = []
     const sessions = new Map<string, ReturnType<typeof createAppSession>>()
     let featureState = 'empty'
@@ -171,6 +186,34 @@ describe('app data session', () => {
     releaseOldRead(await firstBase.groups.list())
     await staleCompletion
     expect(featureState).toBe('jordan-k')
+  })
+
+  it('rebuilds a same-principal session after its prior activation failed', async () => {
+    const principal: PrincipalFixture = { mode: 'demo', projectId: 'split-unwise-demo', uid: 'maya-p' }
+    const created: ReturnType<typeof createAppSession>[] = []
+    let resetCount = 0
+    const coordinator = sessionModule.createAppSessionCoordinator({
+      createSession() {
+        const session = created.length === 0
+          ? createAppSession({
+              repository: { ...createDemoRepository(), app: { ...createDemoRepository().app, getCurrentUser: async () => { throw new Error('first activation failed') } } },
+              commandStorage: createMemoryCommandStorage(), receipts: createMemoryReceiptStore(),
+            })
+          : createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts: createMemoryReceiptStore() })
+        void session.principal.catch(() => undefined)
+        created.push(session)
+        return session
+      },
+      resetFeatureStores() { resetCount += 1 },
+      activateSession() { /* activation is the observable success boundary below */ },
+    })
+
+    await expect(coordinator.transition(principal)).rejects.toThrow('first activation failed')
+    await expect(coordinator.transition(principal)).resolves.toBeUndefined()
+
+    expect(created).toHaveLength(2)
+    expect(created[1].isActive).toBe(true)
+    expect(resetCount).toBe(0)
   })
 
   it('clears the active session and disposes the mounted feature tree during a production host reset', async () => {
@@ -249,6 +292,40 @@ describe('app data session', () => {
     expect(featureNotifications).toBe(1)
   })
 
+  it('keeps a post-commit stale-session outcome pending for same-principal adoption', async () => {
+    const repository = createDemoRepository()
+    const storage = createMemoryCommandStorage()
+    const receipts = createMemoryReceiptStore()
+    let firstSession!: ReturnType<typeof createAppSession>
+    let backendExecutions = 0
+    const committingRepository = {
+      ...repository,
+      commands: {
+        async execute(command: CommandEnvelope) {
+          backendExecutions += 1
+          const result = await repository.commands.execute(command)
+          firstSession.freeze()
+          return result
+        },
+      },
+    }
+    firstSession = createAppSession({ repository: committingRepository, commandStorage: storage, receipts })
+    await firstSession.ready
+    const command = expenseAdd('adopt-stale-commit', [])
+
+    await expect(firstSession.queue.submit(command).result()).rejects.toBeInstanceOf(sessionModule.StaleAppSessionError)
+    expect(firstSession.queue.get(command.operationId)).toMatchObject({ status: 'pending' })
+    expect(await storage.load(appPrincipalKey({ mode: repository.mode, projectId: repository.projectId, uid: 'maya-p' }))).toMatchObject({
+      operations: [{ status: 'pending', envelope: { operationId: command.operationId } }],
+    })
+
+    const resumed = createAppSession({ repository, commandStorage: storage, receipts })
+    await resumed.ready
+    await expect(resumed.queue.submit(command).result()).resolves.toMatchObject({ status: 'saved' })
+    await expect(repository.expenses.listForGroup(command.groupId)).resolves.toHaveLength(6)
+    expect(backendExecutions).toBe(1)
+  })
+
   it('promotes local add-expense receipts before repository execution without rewriting the durable command', async () => {
     const demo = createDemoRepository()
     const storage = createMemoryCommandStorage()
@@ -292,6 +369,56 @@ describe('app data session', () => {
     await expect(receipts.get('local-receipt:receipt-001')).resolves.toMatchObject({
       durability: { status: 'uploaded', attachmentRef: 'remote-receipt:receipt-001' },
     })
+  })
+
+  it('replays the receipt execution mapping frozen before a terminal persistence crash', async () => {
+    const repository = createDemoRepository()
+    const receipts = createMemoryReceiptStore({ id: () => 'frozen-receipt' })
+    await receipts.put(new Blob(['receipt'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
+    let persisted: unknown
+    let terminalFailures = 1
+    const storage = {
+      load: () => persisted,
+      async save(_scopeKey: string, document: { readonly operations: readonly { readonly status: string }[] }) {
+        if (terminalFailures > 0 && document.operations.some((operation) => operation.status === 'fresh')) { terminalFailures -= 1; throw new Error('terminal write failed') }
+        persisted = JSON.parse(JSON.stringify(document))
+      },
+    }
+    const uploads: string[] = []
+    const executed: CommandEnvelope[] = []
+    let attempt = 0
+    const provider: ReceiptProvider = {
+      async upload(_groupId, reference) {
+        uploads.push(reference)
+        attempt += 1
+        return attempt === 1
+          ? { status: 'unavailable', reason: 'Offline during first execution.' }
+          : { status: 'uploaded', attachmentRef: 'remote-receipt:frozen-receipt' }
+      },
+      async recognize() { return { status: 'unavailable', reason: 'Not used.' } },
+      async delete() { /* no remote asset exists */ },
+    }
+    const recordingRepository = { ...repository, commands: { execute: async (command: CommandEnvelope) => {
+      executed.push(JSON.parse(JSON.stringify(command)) as CommandEnvelope)
+      return repository.commands.execute(command)
+    } } }
+    const command = expenseAdd('frozen-execution-map', ['local-receipt:frozen-receipt'])
+    const first = createAppSession({ repository: recordingRepository, commandStorage: storage, receipts, receiptProvider: provider })
+    await first.ready
+
+    await expect(first.queue.submit(command).result()).rejects.toMatchObject({ code: 'persistence', executed: true })
+    expect(persisted).toMatchObject({
+      operations: [{ status: 'pending', executionEnvelope: { attachmentRefs: ['local-receipt:frozen-receipt'] } }],
+    })
+
+    const second = createAppSession({ repository: recordingRepository, commandStorage: storage, receipts, receiptProvider: provider })
+    await second.ready
+    await expect(second.queue.submit(command).result()).resolves.toMatchObject({
+      status: 'saved', expense: { attachmentRefs: ['local-receipt:frozen-receipt'] },
+    })
+    expect(uploads).toEqual(['local-receipt:frozen-receipt'])
+    expect(executed).toHaveLength(2)
+    expect(executed.every((entry) => entry.kind === 'expense.add' && entry.attachmentRefs[0] === 'local-receipt:frozen-receipt')).toBe(true)
   })
 
   it('keeps an unavailable local receipt fallback honest when editing an expense', async () => {

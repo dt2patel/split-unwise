@@ -720,6 +720,37 @@ describe('CommandQueue', () => {
     await expect(result).resolves.toMatchObject({ status: 'saved' })
   })
 
+  it('does not publish or expose fresh state while the terminal save is blocked', async () => {
+    let releaseTerminalSave!: () => void
+    const terminalSave = new Promise<void>((resolve) => { releaseTerminalSave = resolve })
+    let writes = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 2) await terminalSave
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: { 'expense.add': async (command) => savedExpense(command.operationId) },
+    })
+    const observed: string[] = []
+    queue.subscribe((operation) => observed.push(operation.status))
+
+    const result = queue.submit(addExpense('terminal-state-hidden')).result()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(writes).toBe(2)
+    expect(queue.get('terminal-state-hidden')).toMatchObject({ status: 'pending' })
+    expect(observed).toEqual(['pending'])
+
+    releaseTerminalSave()
+    await expect(result).resolves.toMatchObject({ status: 'saved' })
+    expect(queue.get('terminal-state-hidden')).toMatchObject({ status: 'fresh' })
+    expect(observed).toEqual(['pending', 'fresh'])
+  })
+
   it('returns a typed executed persistence failure when the terminal save rejects', async () => {
     let writes = 0
     let handlerCalls = 0
@@ -748,6 +779,30 @@ describe('CommandQueue', () => {
     expect(queue.get('terminal-save-failed')).toMatchObject({
       status: 'failed', error: { code: 'persistence', retryable: true, executed: true },
     })
+  })
+
+  it('never publishes a saved state when terminal persistence rejects', async () => {
+    let writes = 0
+    const storage: CommandStorage = {
+      load: () => undefined,
+      save: async () => {
+        writes += 1
+        if (writes === 2) throw new Error('terminal storage unavailable')
+      },
+    }
+    const queue = createBoundQueue({
+      storage,
+      handlers: { 'expense.add': async (command) => savedExpense(command.operationId) },
+    })
+    const observed: string[] = []
+    queue.subscribe((operation) => observed.push(operation.status))
+
+    await expect(queue.submit(addExpense('terminal-rejection-hidden')).result()).rejects.toMatchObject({
+      code: 'persistence', executed: true,
+    })
+
+    expect(observed).toEqual(['pending', 'failed'])
+    expect(queue.get('terminal-rejection-hidden')).toMatchObject({ status: 'failed' })
   })
 
   it('retries only failed operations and publishes each retry transition', async () => {

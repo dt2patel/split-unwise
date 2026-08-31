@@ -38,6 +38,8 @@ export function createFirebasePrincipalSource(options: FirebasePrincipalSourceOp
         if (!delivered) {
           delivered = true
           resolveFirst(delivery)
+        } else {
+          void delivery.catch(() => undefined)
         }
       })
       await first

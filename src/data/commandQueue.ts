@@ -31,7 +31,13 @@ export class CommandFailedError extends Error {
   }
 }
 
-interface OwnedOperation { readonly originPrincipalKey: string; readonly envelope: CommandEnvelope }
+interface OwnedOperation {
+  readonly originPrincipalKey: string
+  /** The original, user-authored command remains the replay identity. */
+  readonly envelope: CommandEnvelope
+  /** A persisted, operation-specific execution copy for one-way local preparation such as receipt promotion. */
+  readonly executionEnvelope?: CommandEnvelope
+}
 export type CommandOperation =
   | (OwnedOperation & { readonly status: 'pending' })
   | (OwnedOperation & { readonly status: 'fresh' | 'stale'; readonly result: CommandResult })
@@ -56,6 +62,10 @@ export type CommandHandler = (command: CommandEnvelope) => Promise<CommandResult
 export type CommandHandlers = Partial<Record<CommandKind, CommandHandler>>
 export interface CommandQueueOptions {
   readonly handlers: CommandHandlers
+  /** Runs once per durable operation. Its returned execution copy is persisted before a handler receives it. */
+  readonly prepare?: (command: CommandEnvelope) => Promise<CommandEnvelope>
+  /** Retains an unchanged prepared envelope when a one-way local decision must survive replay. */
+  readonly shouldPersistExecution?: (original: CommandEnvelope, prepared: CommandEnvelope) => boolean
   readonly storage?: CommandStorage
   /** Useful for deterministic seams. App sessions bind only after hydrating repository identity. */
   readonly originPrincipalKey?: string
@@ -124,7 +134,7 @@ export class CommandQueue {
     const operation = this.operations.get(operationId)
     if (!operation || operation.status !== 'failed') return rejectedHandle(operationId, new Error('Only failed operations can be retried'))
     if (!operation.error.retryable) return rejectedHandle(operationId, new Error(`The ${operation.error.code} failure is not retryable`))
-    this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, status: 'pending', envelope: operation.envelope })
+    this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, status: 'pending', envelope: operation.envelope, executionEnvelope: operation.executionEnvelope })
     const pendingWrite = this.binding.then(() => this.persist())
       .catch((error: unknown) => { throw new CommandFailedError('persistence', errorMessage(error), false) })
     this.start(operationId, pendingWrite)
@@ -204,32 +214,47 @@ export class CommandQueue {
     const operation = this.operations.get(operationId)
     if (!operation || operation.status !== 'pending') return Promise.resolve()
     const running = pendingWrite
-      .then(() => {
-        const handler = this.options.handlers[operation.envelope.kind]
+      .then(async () => {
+        const current = this.operations.get(operationId)
+        if (!current || current.status !== 'pending' || canonicalEnvelopeFingerprint(current.envelope) !== canonicalEnvelopeFingerprint(operation.envelope)) return undefined
+        let execution = current.executionEnvelope ?? current.envelope
+        if (!current.executionEnvelope && this.options.prepare) {
+          const prepared = await this.options.prepare(current.envelope)
+          if (!isExecutionEnvelopeFor(prepared, current.envelope)) throw new CommandFailedError('validation', 'Command preparation returned an invalid or mismatched execution envelope')
+          if (canonicalEnvelopeFingerprint(prepared) !== canonicalEnvelopeFingerprint(current.envelope)
+            || this.options.shouldPersistExecution?.(current.envelope, prepared)) {
+            const mapped: CommandOperation = { ...current, executionEnvelope: clone(prepared) }
+            await this.replace(mapped)
+          }
+          execution = prepared
+        }
+        const handler = this.options.handlers[execution.kind]
         if (!handler) throw new CommandFailedError('handler-missing', `No handler is registered for ${operation.envelope.kind}`, false)
-        return handler(operation.envelope)
+        return handler(execution)
       })
       .then(async (result) => {
+        if (!result) return
         if (result.status === 'not-supported') throw new CommandFailedError('not-supported', result.reason)
         if (!isCommandResultFor(result, operation.envelope)) throw new CommandFailedError('validation', 'Command handler returned an invalid or mismatched result')
         const current = this.operations.get(operationId)
         if (current?.status === 'pending' && canonicalEnvelopeFingerprint(current.envelope) === canonicalEnvelopeFingerprint(operation.envelope)) {
-          await this.replace({ originPrincipalKey: operation.originPrincipalKey, status: 'fresh', envelope: operation.envelope, result: clone(result) })
+          await this.replace({ originPrincipalKey: operation.originPrincipalKey, status: 'fresh', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, result: clone(result) })
             .catch((error: unknown) => { throw new CommandFailedError('persistence', errorMessage(error), true) })
         }
       })
       .catch(async (error: unknown) => {
         const current = this.operations.get(operationId)
         if (!current || canonicalEnvelopeFingerprint(current.envelope) !== canonicalEnvelopeFingerprint(operation.envelope)) return
+        if (isIndeterminateExecutionError(error)) throw error
         const mapped = toFailure(error)
         if (mapped.code === 'persistence') {
-          this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, status: 'failed', envelope: operation.envelope, error: mapped })
+          this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, status: 'failed', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped })
         } else if (current.status !== 'pending') {
           return
         } else {
           const terminal: CommandOperation = mapped.code === 'conflict'
-            ? { originPrincipalKey: operation.originPrincipalKey, status: 'conflicted', envelope: operation.envelope, error: mapped, conflict: conflictDetails(error, operation.envelope) }
-            : { originPrincipalKey: operation.originPrincipalKey, status: 'failed', envelope: operation.envelope, error: mapped }
+            ? { originPrincipalKey: operation.originPrincipalKey, status: 'conflicted', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped, conflict: conflictDetails(error, operation.envelope) }
+            : { originPrincipalKey: operation.originPrincipalKey, status: 'failed', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped }
           try {
             await this.replace(terminal)
           } catch (storageError: unknown) {
@@ -237,6 +262,7 @@ export class CommandQueue {
               originPrincipalKey: operation.originPrincipalKey,
               status: 'failed',
               envelope: operation.envelope,
+              executionEnvelope: current.executionEnvelope,
               error: failure('persistence', errorMessage(storageError), true),
             })
           }
@@ -261,9 +287,14 @@ export class CommandQueue {
     return clone(updated)
   }
 
-  private replace(operation: CommandOperation): Promise<void> {
+  private async replace(operation: CommandOperation): Promise<void> {
+    const owner = this.requireOwner()
+    if (operation.originPrincipalKey !== owner) throw new Error('Command operation principal does not match the authenticated queue principal')
+    await this.persistProjection((next) => {
+      next.set(operation.envelope.operationId, operation)
+      return next.values()
+    })
     this.replaceInMemory(operation)
-    return this.persist()
   }
 
   private replaceInMemory(operation: CommandOperation): void {
@@ -366,11 +397,27 @@ function decodePersistedQueue(value: unknown, principalKey: string): { operation
 
 function isCommandOperation(value: unknown, principalKey: string): value is CommandOperation {
   if (!isRecord(value) || value.originPrincipalKey !== principalKey || !isCommandEnvelope(value.envelope)) return false
-  if (value.status === 'pending') return onlyOperationFields(value, ['originPrincipalKey', 'status', 'envelope'])
-  if (value.status === 'fresh' || value.status === 'stale') return onlyOperationFields(value, ['originPrincipalKey', 'status', 'envelope', 'result']) && isCommandResultFor(value.result, value.envelope)
-  if (value.status === 'failed') return onlyOperationFields(value, ['originPrincipalKey', 'status', 'envelope', 'error']) && isCommandFailure(value.error) && value.error.code !== 'conflict'
-  if (value.status === 'conflicted') return onlyOperationFields(value, ['originPrincipalKey', 'status', 'envelope', 'error', 'conflict']) && isCommandFailure(value.error) && value.error.code === 'conflict' && isConflictForEnvelope(value.conflict, value.envelope)
+  if (value.executionEnvelope !== undefined && (!isCommandEnvelope(value.executionEnvelope) || !isExecutionEnvelopeFor(value.executionEnvelope, value.envelope))) return false
+  if (value.status === 'pending') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'status', 'envelope'], value))
+  if (value.status === 'fresh' || value.status === 'stale') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'status', 'envelope', 'result'], value)) && isCommandResultFor(value.result, value.envelope)
+  if (value.status === 'failed') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'status', 'envelope', 'error'], value)) && isCommandFailure(value.error) && value.error.code !== 'conflict'
+  if (value.status === 'conflicted') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'status', 'envelope', 'error', 'conflict'], value)) && isCommandFailure(value.error) && value.error.code === 'conflict' && isConflictForEnvelope(value.conflict, value.envelope)
   return false
+}
+
+function operationFields(base: readonly string[], value: Record<string, unknown>): readonly string[] {
+  return value.executionEnvelope === undefined ? base : [...base, 'executionEnvelope']
+}
+
+function isExecutionEnvelopeFor(execution: CommandEnvelope, original: CommandEnvelope): boolean {
+  if (execution.kind !== original.kind || execution.operationId !== original.operationId) return false
+  if (execution.kind === 'expense.add' && original.kind === 'expense.add') return execution.groupId === original.groupId
+  if (execution.kind === 'expense.edit' && original.kind === 'expense.edit') return execution.groupId === original.groupId && execution.expenseId === original.expenseId && execution.expectedRevision === original.expectedRevision
+  return canonicalEnvelopeFingerprint(execution) === canonicalEnvelopeFingerprint(original)
+}
+
+function isIndeterminateExecutionError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'StaleAppSessionError'
 }
 
 function isCommandFailure(value: unknown): value is CommandFailure {

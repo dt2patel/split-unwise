@@ -75,13 +75,15 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
   let receiptStore: ReceiptBlobStore | undefined = options.receipts
   const receiptProvider = options.receiptProvider ?? createDemoReceiptProvider()
 
-  const resolvedPrincipal = Promise.resolve(options.principal ?? sourceRepository.app.getCurrentUser().then((user) => ({
-    mode: sourceRepository.mode,
-    projectId: sourceRepository.projectId,
-    uid: user.id,
-  }))).then((principal) => {
+  const resolvedPrincipal = sourceRepository.app.getCurrentUser().then((user) => {
+    const principal = options.principal ?? {
+      mode: sourceRepository.mode,
+      projectId: sourceRepository.projectId,
+      uid: user.id,
+    }
     assertActive()
     assertRepositoryPrincipal(sourceRepository, principal)
+    if (user.id !== principal.uid) throw new Error('App principal does not match the authenticated user')
     appPrincipalKey(principal)
     return principal
   })
@@ -96,11 +98,7 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
 
     const execute = async (command: CommandEnvelope) => {
       assertActive()
-      const receipts = receiptStore
-      if (!receipts) throw new Error('Receipt store is unavailable')
-      const prepared = await prepareCommandReceipts(command, receiptProvider, receipts)
-      assertActive()
-      const result = await repository.commands.execute(prepared)
+      const result = await repository.commands.execute(command)
       assertActive()
       return result
     }
@@ -114,7 +112,19 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
       'settlement.record',
     ]
     const handlers = Object.fromEntries(kinds.map((kind) => [kind, execute]))
-    const queue = new CommandQueue({ handlers, storage })
+    const queue = new CommandQueue({
+      handlers,
+      storage,
+      prepare: async (command) => {
+        assertActive()
+        const receipts = receiptStore
+        if (!receipts) throw new Error('Receipt store is unavailable')
+        const prepared = await prepareCommandReceipts(command, receiptProvider, receipts)
+        assertActive()
+        return prepared
+      },
+      shouldPersistExecution: (original) => hasLocalReceiptAttachment(original),
+    })
     await queue.bind(namespace)
     await queue.resume()
     assertActive()
@@ -192,6 +202,9 @@ export function createAppSessionCoordinator(options: AppSessionCoordinatorOption
       current = next
       await options.activateSession(next)
       if (transitionGeneration !== generation || !next.isActive) current = undefined
+    }).catch((error: unknown) => {
+      if (transitionGeneration === generation && announcedKey === nextKey) announcedKey = undefined
+      throw error
     })
     serial = run
     return run
@@ -305,6 +318,7 @@ function deferredReceiptStore(
     async put(blob, metadata) { return (await resolved()).put(blob, metadata) },
     async get(reference) { return (await resolved()).get(reference) },
     async setDurability(reference, durability) { await (await resolved()).setDurability(reference, durability) },
+    async claim(reference, operationId) { await (await resolved()).claim(reference, operationId) },
     async delete(reference) { await (await resolved()).delete(reference) },
   }
 }
@@ -397,6 +411,11 @@ async function promoteAttachmentRefs(groupId: string, references: readonly strin
 
 function isLocalReceiptReference(value: string): value is LocalReceiptReference {
   return /^local-receipt:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)
+}
+
+function hasLocalReceiptAttachment(command: CommandEnvelope): boolean {
+  const references = command.kind === 'expense.edit' ? command.draft.attachmentRefs : command.kind === 'expense.add' ? command.attachmentRefs : []
+  return references.some(isLocalReceiptReference)
 }
 
 function receiptUploadFailureReason(reason: unknown): string {

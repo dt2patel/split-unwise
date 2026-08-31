@@ -320,6 +320,9 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       errorSummary.value = messageFor(reason, 'The expense could not be queued.')
       return false
     }
+    for (const reference of validation.draft.attachmentRefs) {
+      if (reference.startsWith('local-receipt:')) void session.receipts.claim(reference as LocalReceiptReference, operationId)
+    }
     void handle.result().then(async (result) => {
       if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
       if (result.status !== 'saved') return

@@ -183,3 +183,51 @@ Every listed correction was introduced by a failing regression before implementa
 - Production receipt upload/OCR and Firebase financial mutations remain explicit provider/server boundaries; local-only and upload-unavailable states are preserved and shown honestly.
 - Upstream Ionic sourcemap and Node localStorage experimental warnings remain non-blocking test-environment notices.
 - `public/assets/images/app-icon-1024.png` remains untouched, untracked, and unstaged.
+
+## Fix Round 3 — 2026-08-31
+
+### RED
+
+The focused RED run before the Round 3 production changes exposed all seven requested breaks:
+
+- terminal queue persistence regressions are covered by blocked and rejected terminal-save tests;
+- a post-commit `StaleAppSessionError` was converted to ordinary `unknown` failure instead of remaining pending for same-principal adoption;
+- an explicit principal UID mismatch allowed storage construction;
+- a slow recognition completion deleted a receipt already captured by a queued command;
+- replay had no persisted operation-specific receipt execution mapping;
+- a failed same-principal activation left its announcement memoized, and a rejected later Firebase observer delivery escaped;
+- keyboard scrolling did not account for the sheet bounds and sticky-header bottom.
+
+Initial command: `pnpm vitest run src/data/__tests__/session.spec.ts src/data/__tests__/firebaseSession.spec.ts src/features/expenses/__tests__/expenseStore.spec.ts src/features/expenses/__tests__/sheetKeyboardAvoidance.spec.ts`
+
+Result: 6 expected failures (plus the pre-existing unhandled observer rejection), covering stale adoption, explicit-UID validation, same-principal retry, Firebase delivery containment, command-owned receipts, and sheet/header intersection. The existing terminal-save tests were green only because the handoff's partial queue projection change was already present.
+
+### GREEN
+
+- Terminal projections are now persisted before in-memory mutation or subscriber notification. The blocked-save regression keeps the old pending state visible until the saved projection is durable, while a rejected terminal write never publishes a saved state.
+- A stale session after the guarded repository has committed is treated as indeterminate: the operation remains pending under the same principal and its original stale-session error is returned, so the next same-principal session can adopt the exact operation without an ordinary `unknown` failure.
+- Session construction reads the repository user even when given an explicit principal and fails before either local store factory runs unless the complete repository identity and UID match.
+- Queue submission claims local receipt references captured by its durable command. Stale recognition/navigation cleanup therefore cannot delete the command-owned image; unavailable upload preserves the manual local fallback.
+- Receipt preparation now produces a persisted per-operation execution envelope before the repository handler runs. A replay after a terminal persistence failure reuses that frozen mapping, so an initially unavailable local receipt cannot become a remote attachment under the same operation ID when connectivity returns.
+- Failed activation clears the coordinator's same-principal announcement and candidate state, allowing the next auth event to rebuild. Later Firebase observer delivery rejections are explicitly caught, while the initial delivery remains awaitable during startup.
+- Keyboard avoidance intersects the VisualViewport, concrete sheet bounds, and sticky-header bottom before scrolling. Existing bottom-field, fallback, listener cleanup, and reduced-motion behavior remain covered.
+
+Focused GREEN command:
+
+`pnpm vitest run src/data/__tests__/commandQueue.spec.ts src/data/__tests__/session.spec.ts src/data/__tests__/firebaseSession.spec.ts src/features/expenses/__tests__/expenseStore.spec.ts src/features/expenses/__tests__/sheetKeyboardAvoidance.spec.ts`
+
+Result: 5 files passed, 110 tests passed.
+
+Final verification:
+
+- `pnpm test` — 28 files passed, 335 tests passed. Node localStorage experimental and upstream Ionic sourcemap notices remain test-environment warnings.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed; Vite emitted its existing large-chunk advisory.
+- `git diff --check` — passed for the Round 3 working tree; the requested committed-baseline range check follows the single fix commit.
+
+### Round 3 residual QA
+
+- No browser/device claim is made. Real iOS keyboard motion, safe areas, IndexedDB interruption windows, and 390 × 844 visual checks remain device/browser QA.
+- Production upload/OCR and Firebase financial mutations remain explicit provider/server boundaries.
+- The deferred `removeReceipt` cleanup sequencing before an authoritative edit commit was not expanded in this round.
+- `public/assets/images/app-icon-1024.png` remains untouched, untracked, and unstaged.
