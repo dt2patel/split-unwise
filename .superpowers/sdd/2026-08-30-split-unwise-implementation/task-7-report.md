@@ -170,7 +170,8 @@ Result: 11 files passed, 144 tests passed.
 - Result: passed; 314 modules transformed. Vite emitted only its existing large-chunk advisory.
 - Command before commit: `git diff --check`
 - Result: passed with no whitespace errors.
-- Required baseline-range command after commit: `git diff --check a7bbf24..HEAD` (recorded below after the commit).
+- Command after implementation commit: `git diff --check a7bbf24..HEAD`
+- Result: passed with no whitespace errors.
 
 No browser or Playwright validation was run because the Task 7 brief explicitly prohibited it.
 
