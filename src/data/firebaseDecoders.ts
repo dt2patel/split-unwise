@@ -1,7 +1,7 @@
 import { assertCurrencyCode } from '../domain/money'
 import { computeAllocations } from '../domain/splits'
 import type { Allocation, Recurrence, SplitMethod } from '../domain/model'
-import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseRevision, ExpenseRow, Group, Member, NotificationItem, RecurringExpense } from './repositories'
+import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseRevision, ExpenseRow, Group, GroupBalanceSnapshot, Member, NotificationItem, RecurringExpense, SettlementBasis, SettlementMethod, SettlementRecord, SettlementVoid } from './repositories'
 import { isStrictId } from './identifiers'
 
 export class DocumentDecodeError extends Error {
@@ -33,6 +33,51 @@ export function decodeMember(id: string, value: unknown, isCurrentUser: boolean)
     ...(data.avatarUrl === undefined ? {} : { avatarUrl: requiredString(data.avatarUrl, `member ${id}.avatarUrl`) }),
     ...(data.canManage === undefined ? {} : { canManage: requiredBoolean(data.canManage, `member ${id}.canManage`) }),
     isCurrentUser,
+  }
+}
+
+export function decodeBalanceSnapshot(groupId: string, value: unknown): GroupBalanceSnapshot {
+  const data = record(value, `balance snapshot ${groupId}`)
+  if (requiredString(data.groupId, `balance snapshot ${groupId}.groupId`) !== groupId) throw new DocumentDecodeError(`balance snapshot ${groupId}`, 'groupId does not match its parent')
+  return {
+    groupId,
+    balanceRevision: nonNegativeSafeInteger(data.balanceRevision, `balance snapshot ${groupId}.balanceRevision`),
+    simplifyDebtsEnabled: requiredBoolean(data.simplifyDebtsEnabled, `balance snapshot ${groupId}.simplifyDebtsEnabled`),
+    pairwise: debtArray(data.pairwise, `balance snapshot ${groupId}.pairwise`),
+    simplified: debtArray(data.simplified, `balance snapshot ${groupId}.simplified`),
+  }
+}
+
+export function decodeSettlement(groupId: string, id: string, value: unknown): SettlementRecord {
+  const data = record(value, `settlement ${id}`)
+  if (requiredString(data.groupId, `settlement ${id}.groupId`) !== groupId) throw new DocumentDecodeError(`settlement ${id}`, 'groupId does not match its parent')
+  const senderId = requiredString(data.senderId, `settlement ${id}.senderId`)
+  const recipientId = requiredString(data.recipientId, `settlement ${id}.recipientId`)
+  if (senderId === recipientId) throw new DocumentDecodeError(`settlement ${id}`, 'sender and recipient must be distinct')
+  const money = positiveMoneyValue(data.money, `settlement ${id}.money`)
+  const basis = settlementBasis(data.basis, `settlement ${id}.basis`)
+  if (basis.senderId !== senderId || basis.recipientId !== recipientId) throw new DocumentDecodeError(`settlement ${id}`, 'basis participants must match the settlement')
+  if (basis.currency !== money.currency) throw new DocumentDecodeError(`settlement ${id}`, 'basis currency must match settlement money')
+  if (money.minorAmount > basis.debtMinor) throw new DocumentDecodeError(`settlement ${id}`, 'amount cannot exceed basis debt')
+  const revision = positiveInteger(data.revision, `settlement ${id}.revision`)
+  const voided = data.void === undefined ? undefined : settlementVoid(data.void, `settlement ${id}.void`)
+  if ((revision === 1) !== (voided === undefined) || (voided && voided.revision !== revision)) throw new DocumentDecodeError(`settlement ${id}`, 'void revision must match the settlement revision')
+  return {
+    settlementId: id,
+    groupId,
+    operationId: requiredString(data.operationId, `settlement ${id}.operationId`),
+    senderId,
+    recipientId,
+    money,
+    basis,
+    method: settlementMethod(data.method, `settlement ${id}.method`),
+    occurredOn: isoDate(data.occurredOn, `settlement ${id}.occurredOn`),
+    ...(data.note === undefined ? {} : { note: normalizedSettlementText(data.note, `settlement ${id}.note`, false) }),
+    createdBy: actorSnapshot(data.createdBy, `settlement ${id}.createdBy`),
+    createdAt: isoTimestamp(data.createdAt, `settlement ${id}.createdAt`),
+    revision,
+    syncState: 'fresh',
+    ...(voided ? { void: voided } : {}),
   }
 }
 
@@ -286,11 +331,62 @@ function sameAllocations(left: readonly Allocation[], right: readonly Allocation
   return first.length === second.length && first.every((value, index) => value === second[index])
 }
 function occurrenceScope(value: unknown, path: string): 'future' | 'occurrence' { if (value !== 'future' && value !== 'occurrence') throw new DocumentDecodeError(path, 'must be occurrence or future'); return value }
+function debtArray(value: unknown, path: string): GroupBalanceSnapshot['pairwise'] {
+  return requiredArray(value, path).map((item, index) => {
+    const data = record(item, `${path}[${index}]`)
+    const fromParticipantId = requiredString(data.fromParticipantId, `${path}[${index}].fromParticipantId`)
+    const toParticipantId = requiredString(data.toParticipantId, `${path}[${index}].toParticipantId`)
+    if (fromParticipantId === toParticipantId) throw new DocumentDecodeError(`${path}[${index}]`, 'debt participants must be distinct')
+    return { fromParticipantId, toParticipantId, money: positiveMoneyValue(data.money, `${path}[${index}].money`) }
+  })
+}
+function settlementBasis(value: unknown, path: string): SettlementBasis {
+  const data = record(value, path)
+  const kind = data.kind
+  if (kind !== 'pairwise' && kind !== 'simplified') throw new DocumentDecodeError(`${path}.kind`, 'must be pairwise or simplified')
+  const senderId = requiredString(data.senderId, `${path}.senderId`)
+  const recipientId = requiredString(data.recipientId, `${path}.recipientId`)
+  if (senderId === recipientId) throw new DocumentDecodeError(path, 'basis participants must be distinct')
+  return {
+    kind,
+    senderId,
+    recipientId,
+    currency: currencyValue(data.currency, `${path}.currency`),
+    debtMinor: positiveSafeInteger(data.debtMinor, `${path}.debtMinor`),
+  }
+}
+function settlementMethod(value: unknown, path: string): SettlementMethod {
+  if (value !== 'cash' && value !== 'bank-transfer' && value !== 'payment-app' && value !== 'other') throw new DocumentDecodeError(path, 'settlement method is invalid')
+  return value
+}
+function settlementVoid(value: unknown, path: string): SettlementVoid {
+  const data = record(value, path)
+  return {
+    operationId: requiredString(data.operationId, `${path}.operationId`),
+    reason: normalizedSettlementText(data.reason, `${path}.reason`, true),
+    actor: actorSnapshot(data.actor, `${path}.actor`),
+    createdAt: isoTimestamp(data.createdAt, `${path}.createdAt`),
+    revision: positiveInteger(data.revision, `${path}.revision`),
+  }
+}
+function normalizedSettlementText(value: unknown, path: string, required: boolean): string {
+  const text = typeof value === 'string' ? value : (() => { throw new DocumentDecodeError(path, 'must be plain text') })()
+  const normalized = text.normalize('NFC').replace(/\r\n?/g, '\n').trim()
+  if ((required && !normalized) || normalized !== text || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(normalized)) throw new DocumentDecodeError(path, 'must be normalized plain text')
+  if ([...normalized].length > 500) throw new DocumentDecodeError(path, 'must be at most 500 Unicode code points')
+  return normalized
+}
 function moneyValue(value: unknown, path: string): ExpenseRow['total'] {
   const data = record(value, path)
   const currency = currencyValue(data.currency, `${path}.currency`)
   const minorAmount = nonNegativeSafeInteger(data.minorAmount, `${path}.minorAmount`)
   return { currency, minorAmount }
+}
+function positiveMoneyValue(value: unknown, path: string): ExpenseRow['total'] {
+  const data = record(value, path)
+  const currency = currencyValue(data.currency, `${path}.currency`)
+  if (!Number.isSafeInteger(data.minorAmount) || (data.minorAmount as number) <= 0) throw new DocumentDecodeError(path, 'money must be positive')
+  return { currency, minorAmount: data.minorAmount as number }
 }
 function currencyValue(value: unknown, path: string): ExpenseRow['total']['currency'] {
   const currency = requiredString(value, path)
@@ -303,6 +399,7 @@ function requiredStringArray(value: unknown, path: string): readonly string[] { 
 function requiredString(value: unknown, path: string): string { if (typeof value !== 'string' || !value.trim()) throw new DocumentDecodeError(path, 'must be a non-empty string'); return value }
 function requiredBoolean(value: unknown, path: string): boolean { if (typeof value !== 'boolean') throw new DocumentDecodeError(path, 'must be a boolean'); return value }
 function nonNegativeSafeInteger(value: unknown, path: string): number { if (!Number.isSafeInteger(value) || (value as number) < 0) throw new DocumentDecodeError(path, 'must be a non-negative safe integer'); return value as number }
+function positiveSafeInteger(value: unknown, path: string): number { if (!Number.isSafeInteger(value) || (value as number) < 1) throw new DocumentDecodeError(path, 'must be a positive safe integer'); return value as number }
 function positiveInteger(value: unknown, path: string): number { if (!Number.isInteger(value) || (value as number) < 1) throw new DocumentDecodeError(path, 'must be a positive integer'); return value as number }
 function isoDate(value: unknown, path: string): string {
   const date = requiredString(value, path)

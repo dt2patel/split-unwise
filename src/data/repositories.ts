@@ -167,6 +167,50 @@ export interface RecurringExpense {
   readonly syncState: SyncState
 }
 
+export interface GroupBalanceSnapshot {
+  readonly groupId: string
+  readonly balanceRevision: number
+  readonly simplifyDebtsEnabled: boolean
+  readonly pairwise: readonly Debt[]
+  readonly simplified: readonly Debt[]
+}
+
+export type SettlementMethod = 'cash' | 'bank-transfer' | 'payment-app' | 'other'
+
+export interface SettlementBasis {
+  readonly kind: 'pairwise' | 'simplified'
+  readonly senderId: ParticipantId
+  readonly recipientId: ParticipantId
+  readonly currency: Money['currency']
+  readonly debtMinor: number
+}
+
+export interface SettlementVoid {
+  readonly operationId: string
+  readonly reason: string
+  readonly actor: ActorSnapshot
+  readonly createdAt: string
+  readonly revision: number
+}
+
+export interface SettlementRecord {
+  readonly settlementId: string
+  readonly groupId: string
+  readonly operationId: string
+  readonly senderId: ParticipantId
+  readonly recipientId: ParticipantId
+  readonly money: Money
+  readonly basis: SettlementBasis
+  readonly method: SettlementMethod
+  readonly occurredOn: string
+  readonly note?: string
+  readonly createdBy: ActorSnapshot
+  readonly createdAt: string
+  readonly revision: number
+  readonly syncState: SyncState
+  readonly void?: SettlementVoid
+}
+
 /** Every mutable operation owns a stable, caller-created client operation ID. */
 export interface OperationRequest { readonly operationId: string }
 
@@ -183,16 +227,28 @@ export interface NotificationPreferencesCommand extends OperationRequest { reado
 export interface SettlementRecordCommand extends OperationRequest {
   readonly kind: 'settlement.record'
   readonly groupId: string
-  readonly fromParticipantId: ParticipantId
-  readonly toParticipantId: ParticipantId
+  readonly expectedBalanceRevision: number
+  readonly basis: SettlementBasis
   readonly money: Money
-  readonly confirmation: { readonly kind: 'manual'; readonly confirmedAt: string }
+  readonly method: SettlementMethod
+  readonly occurredOn: string
+  readonly note?: string
+  readonly outsidePaymentConfirmed: boolean
+}
+
+export interface SettlementVoidCommand extends OperationRequest {
+  readonly kind: 'settlement.void'
+  readonly groupId: string
+  readonly settlementId: string
+  readonly expectedRevision: number
+  readonly expectedBalanceRevision: number
+  readonly reason: string
 }
 
 export interface GroupDefaultSplitCommand extends OperationRequest { readonly kind: 'group.default-split'; readonly groupId: string; readonly defaultSplit: SplitMethod }
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
-export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | SettlementRecordCommand
+export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | SettlementRecordCommand | SettlementVoidCommand
 export type CommandKind = CommandEnvelope['kind']
 
 export interface SavedExpenseAddResult { readonly kind: 'expense.add'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
@@ -204,6 +260,8 @@ export interface SavedCommentDeleteResult { readonly kind: 'comment.delete'; rea
 export interface SavedNotificationReadResult { readonly kind: 'notification.read'; readonly operationId: string; readonly status: 'saved'; readonly notification: NotificationItem }
 export interface SavedNotificationReadAllResult { readonly kind: 'notification.read-all'; readonly operationId: string; readonly status: 'saved'; readonly cutoff: TimelineCursor; readonly readNotificationIds: readonly string[] }
 export interface SavedNotificationPreferencesResult { readonly kind: 'notification.preferences'; readonly operationId: string; readonly status: 'saved'; readonly preferences: NotificationPreferences }
+export interface SavedSettlementRecordResult { readonly kind: 'settlement.record'; readonly operationId: string; readonly status: 'saved'; readonly settlement: SettlementRecord; readonly balanceSnapshot: GroupBalanceSnapshot; readonly activity: ActivityItem }
+export interface SavedSettlementVoidResult { readonly kind: 'settlement.void'; readonly operationId: string; readonly status: 'saved'; readonly settlement: SettlementRecord; readonly balanceSnapshot: GroupBalanceSnapshot; readonly activity: ActivityItem }
 export interface SavedCommandResult<K extends Exclude<CommandKind, 'expense.add' | 'expense.delete' | 'expense.edit'>> { readonly kind: K; readonly operationId: string; readonly status: 'saved'; readonly resourceId: string }
 export interface NotSupportedCommandResult<K extends CommandKind = CommandKind> { readonly kind: K; readonly operationId: string; readonly status: 'not-supported'; readonly reason: string }
 
@@ -215,7 +273,9 @@ export type CommentDeleteResult = SavedCommentDeleteResult | NotSupportedCommand
 export type NotificationReadResult = SavedNotificationReadResult | NotSupportedCommandResult<'notification.read'>
 export type NotificationReadAllResult = SavedNotificationReadAllResult | NotSupportedCommandResult<'notification.read-all'>
 export type NotificationPreferencesResult = SavedNotificationPreferencesResult | NotSupportedCommandResult<'notification.preferences'>
-export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'profile.update'> | SavedCommandResult<'settlement.record'> | NotSupportedCommandResult<'group.default-split' | 'profile.update' | 'settlement.record'>
+export type SettlementRecordResult = SavedSettlementRecordResult | NotSupportedCommandResult<'settlement.record'>
+export type SettlementVoidResult = SavedSettlementVoidResult | NotSupportedCommandResult<'settlement.void'>
+export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'profile.update'>
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'
@@ -236,7 +296,7 @@ export interface GroupRepository {
   list(): Promise<readonly Group[]>
   getById(groupId: string): Promise<Group | undefined>
   listMembers(groupId: string): Promise<readonly Member[]>
-  getBalances(groupId: string): Promise<readonly Debt[]>
+  getBalanceSnapshot(groupId: string): Promise<GroupBalanceSnapshot>
   getTotals(groupId: string): Promise<readonly CurrencyTotals[]>
   getCharts(groupId: string): Promise<GroupCharts>
   listRecurring(groupId: string): Promise<readonly RecurringExpense[]>
@@ -255,7 +315,12 @@ export interface CommentRepository {
   add(command: CommentAddCommand): Promise<CommentAddResult>
   delete(command: CommentDeleteCommand): Promise<CommentDeleteResult>
 }
-export interface SettlementRepository { record(command: SettlementRecordCommand): Promise<CommandResult> }
+export interface SettlementRepository {
+  listForGroup(groupId: string): Promise<readonly SettlementRecord[]>
+  getById(groupId: string, settlementId: string): Promise<SettlementRecord | undefined>
+  record(command: SettlementRecordCommand): Promise<SettlementRecordResult>
+  void(command: SettlementVoidCommand): Promise<SettlementVoidResult>
+}
 /** Durable command boundary for offline feature stores. */
 export interface CommandRepository { execute(command: CommandEnvelope): Promise<CommandResult> }
 export interface ActivityRepository {

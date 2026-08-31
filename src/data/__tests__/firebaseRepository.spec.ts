@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const firebase = vi.hoisted(() => ({
   queries: [] as Array<{ base: { path: string }; constraints: readonly Record<string, unknown>[] }>,
   expenseDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
+  settlementDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
+  balanceDocument: undefined as { data: () => Record<string, unknown> } | undefined,
   activityDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   notificationDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
 }))
@@ -25,6 +27,7 @@ vi.mock('firebase/firestore', () => {
   const startAfter = (...values: unknown[]) => ({ type: 'startAfter', values })
   const query = (base: { path: string }, ...constraints: readonly Record<string, unknown>[]) => ({ base, constraints })
   const dataFor = (path: string) => path.endsWith('/expenses') ? firebase.expenseDocuments
+    : path.endsWith('/settlements') ? firebase.settlementDocuments
     : path.endsWith('/activity') ? firebase.activityDocuments
       : path.endsWith('/notifications') ? firebase.notificationDocuments : []
   const getDocs = async (reference: { path?: string; base?: { path: string }; constraints?: readonly Record<string, unknown>[] }) => {
@@ -51,7 +54,9 @@ vi.mock('firebase/firestore', () => {
     return { docs, size: docs.length }
   }
   const getDoc = async (reference: { path: string; id: string }) => {
-    const found = reference.path.includes('/expenses/') ? firebase.expenseDocuments.find(({ id }) => id === reference.id) : undefined
+    const found = reference.path.endsWith('/balance/current') ? firebase.balanceDocument
+      : reference.path.includes('/expenses/') ? firebase.expenseDocuments.find(({ id }) => id === reference.id)
+        : reference.path.includes('/settlements/') ? firebase.settlementDocuments.find(({ id }) => id === reference.id) : undefined
     return { id: reference.id, exists: () => found !== undefined, data: () => found?.data() }
   }
   return { collection, doc, documentId: () => '__name__', getDoc, getDocs, getFirestore: () => ({}), limit, orderBy, query, startAfter, where }
@@ -67,6 +72,8 @@ describe('Task 7 Firebase repository query boundaries', () => {
   beforeEach(() => {
     firebase.queries.length = 0
     firebase.expenseDocuments = [document('live-expense', expenseData()), document('deleted-expense', { ...expenseData(), deletedAt: '2026-08-31T12:00:00.000Z' })]
+    firebase.settlementDocuments = [document('settlement-a', settlementData())]
+    firebase.balanceDocument = document('current', balanceData())
     firebase.activityDocuments = [
       document('activity_a', activityData('expense.updated', '2026-08-31T12:00:00.000Z', 'expense-a')),
       document('activity.Z', activityData('expense.created', '2026-08-31T12:00:00.000Z', 'expense-z')),
@@ -127,6 +134,25 @@ describe('Task 7 Firebase repository query boundaries', () => {
     expect(listed.items.filter(({ readAt }) => readAt === undefined)).toHaveLength(2)
     await expect(repository.notifications.unreadCount()).resolves.toBe(2)
   })
+
+  it('reads the server-maintained balance snapshot and immutable settlements without client recomputation', async () => {
+    const repository = createFirebaseRepository(configuration)
+
+    await expect(repository.groups.getBalanceSnapshot('lake-house-weekend')).resolves.toEqual(balanceData())
+    await expect(repository.settlements.listForGroup('lake-house-weekend')).resolves.toEqual([
+      expect.objectContaining({ settlementId: 'settlement-a', operationId: 'record-a', revision: 1 }),
+    ])
+    await expect(repository.settlements.getById('lake-house-weekend', 'settlement-a')).resolves.toMatchObject({
+      settlementId: 'settlement-a', groupId: 'lake-house-weekend', basis: { kind: 'simplified' },
+    })
+    expect(firebase.queries).toContainEqual({
+      base: { path: 'groups/lake-house-weekend/settlements' },
+      constraints: [
+        { type: 'orderBy', field: 'occurredOn', direction: 'asc' },
+        { type: 'orderBy', field: '__name__', direction: 'asc' },
+      ],
+    })
+  })
 })
 
 function document(id: string, value: Record<string, unknown>) { return { id, data: () => structuredClone(value) } }
@@ -155,5 +181,22 @@ function notificationData(readAt: string | null, createdAt: string) {
   return {
     principalId: 'maya-p', groupId: 'lake-house-weekend', activityId: 'activity-a', kind: 'expense.updated',
     subject: { kind: 'expense', id: 'expense-a' }, actor: { id: 'maya-p', displayName: 'Maya P.' }, createdAt, readAt,
+  }
+}
+
+function balanceData() {
+  return {
+    groupId: 'lake-house-weekend', balanceRevision: 9, simplifyDebtsEnabled: true,
+    pairwise: [{ fromParticipantId: 'taylor-s', toParticipantId: 'maya-p', money: { currency: 'USD', minorAmount: 3825 } }],
+    simplified: [{ fromParticipantId: 'taylor-s', toParticipantId: 'maya-p', money: { currency: 'USD', minorAmount: 3625 } }],
+  }
+}
+
+function settlementData() {
+  return {
+    groupId: 'lake-house-weekend', operationId: 'record-a', senderId: 'taylor-s', recipientId: 'maya-p',
+    money: { currency: 'USD', minorAmount: 500 }, basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
+    method: 'cash', occurredOn: '2026-08-31', note: 'Paid', createdBy: { id: 'maya-p', displayName: 'Maya P.' },
+    createdAt: '2026-08-31T20:00:00.000Z', revision: 1,
   }
 }

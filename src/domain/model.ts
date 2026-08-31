@@ -86,6 +86,20 @@ export interface Debt {
   readonly money: Money
 }
 
+/** A saved outside payment applied to the ledger. Voided transfers remain audit data but do not affect balances. */
+export interface SettlementTransfer {
+  readonly id: string
+  readonly senderId: ParticipantId
+  readonly recipientId: ParticipantId
+  readonly money: Money
+  readonly voided?: boolean
+}
+
+export interface BalancePlans {
+  readonly pairwise: readonly Debt[]
+  readonly simplified: readonly Debt[]
+}
+
 /** Original calendar position retained by a recurring template across clamped occurrences. */
 export interface RecurrenceAnchor {
   readonly month: number

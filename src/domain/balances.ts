@@ -1,4 +1,4 @@
-import type { Debt, Expense, PairwiseBalance, ParticipantId } from './model'
+import type { BalancePlans, Debt, Expense, PairwiseBalance, ParticipantId, SettlementTransfer } from './model'
 import { assertCurrencyCode } from './money'
 
 /**
@@ -98,6 +98,51 @@ export function simplifyDebts(balances: readonly PairwiseBalance[]): readonly De
   }
 
   return debts
+}
+
+/**
+ * Applies saved, non-void settlement payments as inverse ledger obligations.
+ * The raw pairwise plan intentionally retains cycles created by a simplified-plan
+ * payment; only the separately derived simplified plan nets those positions.
+ */
+export function computeBalancePlans(
+  expenses: readonly Expense[],
+  settlements: readonly SettlementTransfer[] = [],
+): BalancePlans {
+  const paymentExpenses: Expense[] = settlements
+    .filter(({ voided }) => voided !== true)
+    .map((settlement) => {
+      assertCurrencyCode(settlement.money.currency)
+      if (!Number.isSafeInteger(settlement.money.minorAmount) || settlement.money.minorAmount <= 0) {
+        throw new Error('Settlement amount must be a positive safe integer')
+      }
+      if (!settlement.senderId.trim() || !settlement.recipientId.trim() || settlement.senderId === settlement.recipientId) {
+        throw new Error('Settlement participants must be distinct')
+      }
+      return {
+        id: `settlement:${settlement.id}`,
+        description: 'Settlement payment',
+        date: '1970-01-01',
+        total: { ...settlement.money },
+        payments: [{ participantId: settlement.senderId, money: { ...settlement.money } }],
+        allocations: [{ participantId: settlement.recipientId, money: { ...settlement.money } }],
+      }
+    })
+  const signedPairwise = computeBalances([...expenses, ...paymentExpenses])
+  return {
+    pairwise: signedPairwise.map((balance) => balance.money.minorAmount > 0
+      ? {
+          fromParticipantId: balance.fromParticipantId,
+          toParticipantId: balance.toParticipantId,
+          money: { ...balance.money },
+        }
+      : {
+          fromParticipantId: balance.toParticipantId,
+          toParticipantId: balance.fromParticipantId,
+          money: { ...balance.money, minorAmount: -balance.money.minorAmount },
+        }),
+    simplified: simplifyDebts(signedPairwise),
+  }
 }
 
 function validateExpense(expense: Expense): void {

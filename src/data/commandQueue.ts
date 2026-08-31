@@ -4,7 +4,7 @@ import { computeAllocations } from '../domain/splits'
 import type { CommandEnvelope, CommandKind, CommandResult, ExpenseDraft, ExpenseRow, SyncState } from './repositories'
 import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
 
-export const COMMAND_QUEUE_STORAGE_VERSION = 5 as const
+export const COMMAND_QUEUE_STORAGE_VERSION = 6 as const
 const COMMAND_QUEUE_STORAGE_PREFIX = `split-unwise:command-queue:v${COMMAND_QUEUE_STORAGE_VERSION}`
 const COMMAND_QUEUE_QUARANTINE_PREFIX = `split-unwise:command-queue:quarantine:v${COMMAND_QUEUE_STORAGE_VERSION}`
 
@@ -475,7 +475,16 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
     case 'notification.read': return isNonEmptyString(value.notificationId)
     case 'notification.read-all': return isTimelineCursor(value.cutoff)
     case 'notification.preferences': return isNotificationPreferences(value.preferences)
-    case 'settlement.record': return isNonEmptyString(value.groupId) && isNonEmptyString(value.fromParticipantId) && isNonEmptyString(value.toParticipantId) && isMoney(value.money) && isRecord(value.confirmation) && value.confirmation.kind === 'manual' && isIsoTimestamp(value.confirmation.confirmedAt)
+    case 'settlement.record': {
+      const fields = ['kind', 'operationId', 'groupId', 'expectedBalanceRevision', 'basis', 'money', 'method', 'occurredOn', 'outsidePaymentConfirmed', ...(value.note === undefined ? [] : ['note'])]
+      return onlyOperationFields(value, fields) && isNonEmptyString(value.groupId) && isNonNegativeInteger(value.expectedBalanceRevision)
+        && isSettlementBasis(value.basis) && isPositiveMoney(value.money) && value.money.currency === value.basis.currency
+        && isSettlementMethod(value.method) && isIsoDate(value.occurredOn) && (value.note === undefined || isSettlementText(value.note, false))
+        && typeof value.outsidePaymentConfirmed === 'boolean'
+    }
+    case 'settlement.void': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'settlementId', 'expectedRevision', 'expectedBalanceRevision', 'reason'])
+      && isNonEmptyString(value.groupId) && isNonEmptyString(value.settlementId) && isPositiveInteger(value.expectedRevision)
+      && isNonNegativeInteger(value.expectedBalanceRevision) && isSettlementText(value.reason, true)
     case 'group.default-split': return isNonEmptyString(value.groupId) && isSplitMethod(value.defaultSplit)
     case 'profile.update': return isNonEmptyString(value.displayName) && (value.initials === undefined || isNonEmptyString(value.initials))
     default: return false
@@ -494,8 +503,9 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
     case 'notification.read': return isSavedNotificationRead(value, envelope)
     case 'notification.read-all': return isTimelineCursor(value.cutoff) && sameTimelineCursor(value.cutoff, envelope.cutoff) && isStringArray(value.readNotificationIds)
     case 'notification.preferences': return isNotificationPreferences(value.preferences) && samePreferences(value.preferences, envelope.preferences)
-    case 'profile.update':
-    case 'settlement.record': return isNonEmptyString(value.resourceId)
+    case 'settlement.record': return isSavedSettlementRecord(value, envelope)
+    case 'settlement.void': return isSavedSettlementVoid(value, envelope)
+    case 'profile.update': return isNonEmptyString(value.resourceId)
     case 'group.default-split': return value.resourceId === envelope.groupId
   }
 }
@@ -546,6 +556,90 @@ function isSavedNotificationRead(value: Record<string, unknown>, envelope: Extra
   return isNotificationItem(value.notification) && value.notification.notificationId === envelope.notificationId && value.notification.readAt !== undefined
 }
 
+function isSavedSettlementRecord(value: Record<string, unknown>, envelope: Extract<CommandEnvelope, { kind: 'settlement.record' }>): boolean {
+  if (!onlyOperationFields(value, ['kind', 'operationId', 'status', 'settlement', 'balanceSnapshot', 'activity'])
+    || !isSettlementRecord(value.settlement) || !isGroupBalanceSnapshot(value.balanceSnapshot) || !isActivityItem(value.activity)) return false
+  const settlement = value.settlement
+  const snapshot = value.balanceSnapshot
+  const activity = value.activity
+  const normalizedNote = envelope.note?.normalize('NFC').replace(/\r\n?/g, '\n').trim()
+  return settlement.groupId === envelope.groupId && settlement.operationId === envelope.operationId
+    && settlement.senderId === envelope.basis.senderId && settlement.recipientId === envelope.basis.recipientId
+    && sameSettlementBasis(settlement.basis, envelope.basis) && sameMoney(settlement.money, envelope.money)
+    && settlement.method === envelope.method && settlement.occurredOn === envelope.occurredOn
+    && settlement.note === (normalizedNote || undefined) && settlement.revision === 1 && settlement.void === undefined && settlement.syncState === 'fresh'
+    && snapshot.groupId === envelope.groupId && snapshot.balanceRevision === envelope.expectedBalanceRevision + 1
+    && activity.groupId === envelope.groupId && activity.operationId === envelope.operationId && activity.kind === 'settlement.created'
+    && activity.settlementId === settlement.settlementId && activity.subject.kind === 'settlement' && activity.subject.id === settlement.settlementId
+    && sameActorSnapshot(activity.actor, settlement.createdBy) && activity.createdAt === settlement.createdAt
+}
+
+function isSavedSettlementVoid(value: Record<string, unknown>, envelope: Extract<CommandEnvelope, { kind: 'settlement.void' }>): boolean {
+  if (!onlyOperationFields(value, ['kind', 'operationId', 'status', 'settlement', 'balanceSnapshot', 'activity'])
+    || !isSettlementRecord(value.settlement) || !isGroupBalanceSnapshot(value.balanceSnapshot) || !isActivityItem(value.activity)) return false
+  const settlement = value.settlement
+  const snapshot = value.balanceSnapshot
+  const activity = value.activity
+  return settlement.groupId === envelope.groupId && settlement.settlementId === envelope.settlementId
+    && settlement.revision === envelope.expectedRevision + 1 && settlement.void?.operationId === envelope.operationId
+    && settlement.void.revision === settlement.revision && settlement.void.reason === envelope.reason.normalize('NFC').replace(/\r\n?/g, '\n').trim()
+    && snapshot.groupId === envelope.groupId && snapshot.balanceRevision === envelope.expectedBalanceRevision + 1
+    && activity.groupId === envelope.groupId && activity.operationId === envelope.operationId && activity.kind === 'settlement.voided'
+    && activity.settlementId === envelope.settlementId && activity.subject.kind === 'settlement' && activity.subject.id === envelope.settlementId
+    && sameActorSnapshot(activity.actor, settlement.void.actor) && activity.createdAt === settlement.void.createdAt
+}
+
+function isSettlementRecord(value: unknown): value is import('./repositories').SettlementRecord {
+  if (!isRecord(value)) return false
+  const fields = ['settlementId', 'groupId', 'operationId', 'senderId', 'recipientId', 'money', 'basis', 'method', 'occurredOn', 'createdBy', 'createdAt', 'revision', 'syncState', ...(value.note === undefined ? [] : ['note']), ...(value.void === undefined ? [] : ['void'])]
+  if (!onlyOperationFields(value, fields) || !isNonEmptyString(value.settlementId) || !isNonEmptyString(value.groupId) || !isOperationId(value.operationId)
+    || !isNonEmptyString(value.senderId) || !isNonEmptyString(value.recipientId) || value.senderId === value.recipientId
+    || !isPositiveMoney(value.money) || !isSettlementBasis(value.basis) || !isSettlementMethod(value.method) || !isIsoDate(value.occurredOn)
+    || !isActorSnapshot(value.createdBy) || !isIsoTimestamp(value.createdAt) || !isPositiveInteger(value.revision) || value.syncState !== 'fresh'
+    || (value.note !== undefined && (!isSettlementText(value.note, false) || value.note !== value.note.normalize('NFC').replace(/\r\n?/g, '\n').trim()))) return false
+  if (value.senderId !== value.basis.senderId || value.recipientId !== value.basis.recipientId || value.money.currency !== value.basis.currency || value.money.minorAmount > value.basis.debtMinor) return false
+  if (value.void === undefined) return value.revision === 1
+  return value.revision > 1 && isSettlementVoid(value.void) && value.void.revision === value.revision
+}
+
+function isSettlementVoid(value: unknown): value is import('./repositories').SettlementVoid {
+  return isRecord(value) && onlyOperationFields(value, ['operationId', 'reason', 'actor', 'createdAt', 'revision'])
+    && isOperationId(value.operationId) && isSettlementText(value.reason, true)
+    && value.reason === value.reason.normalize('NFC').replace(/\r\n?/g, '\n').trim()
+    && isActorSnapshot(value.actor) && isIsoTimestamp(value.createdAt) && isPositiveInteger(value.revision)
+}
+
+function isGroupBalanceSnapshot(value: unknown): value is import('./repositories').GroupBalanceSnapshot {
+  return isRecord(value) && onlyOperationFields(value, ['groupId', 'balanceRevision', 'simplifyDebtsEnabled', 'pairwise', 'simplified'])
+    && isNonEmptyString(value.groupId) && isNonNegativeInteger(value.balanceRevision) && typeof value.simplifyDebtsEnabled === 'boolean'
+    && isDebtList(value.pairwise) && isDebtList(value.simplified)
+}
+
+function isDebtList(value: unknown): value is readonly import('../domain/model').Debt[] {
+  return Array.isArray(value) && value.every((debt) => isRecord(debt) && onlyOperationFields(debt, ['fromParticipantId', 'toParticipantId', 'money'])
+    && isNonEmptyString(debt.fromParticipantId) && isNonEmptyString(debt.toParticipantId) && debt.fromParticipantId !== debt.toParticipantId && isPositiveMoney(debt.money))
+}
+
+function isSettlementBasis(value: unknown): value is import('./repositories').SettlementBasis {
+  return isRecord(value) && onlyOperationFields(value, ['kind', 'senderId', 'recipientId', 'currency', 'debtMinor'])
+    && (value.kind === 'pairwise' || value.kind === 'simplified') && isNonEmptyString(value.senderId) && isNonEmptyString(value.recipientId)
+    && value.senderId !== value.recipientId && typeof value.currency === 'string' && isPositiveInteger(value.debtMinor)
+    && (() => { try { assertCurrencyCode(value.currency as string); return true } catch { return false } })()
+}
+
+function sameSettlementBasis(left: import('./repositories').SettlementBasis, right: import('./repositories').SettlementBasis): boolean {
+  return left.kind === right.kind && left.senderId === right.senderId && left.recipientId === right.recipientId
+    && left.currency === right.currency && left.debtMinor === right.debtMinor
+}
+
+function sameMoney(left: Money, right: Money): boolean { return left.currency === right.currency && left.minorAmount === right.minorAmount }
+function sameActorSnapshot(left: import('./repositories').ActorSnapshot, right: import('./repositories').ActorSnapshot): boolean { return left.id === right.id && left.displayName === right.displayName }
+function isSettlementMethod(value: unknown): value is import('./repositories').SettlementMethod { return value === 'cash' || value === 'bank-transfer' || value === 'payment-app' || value === 'other' }
+function isSettlementText(value: unknown, required: boolean): value is string {
+  if (typeof value !== 'string' || (required && !value.trim()) || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value)) return false
+  return [...value.normalize('NFC').replace(/\r\n?/g, '\n').trim()].length <= 500
+}
+
 function isNotificationItem(value: unknown): value is import('./repositories').NotificationItem {
   return isRecord(value) && isNonEmptyString(value.notificationId) && isNonEmptyString(value.principalId) && isNonEmptyString(value.groupId)
     && isNonEmptyString(value.activityId) && isActivityKind(value.kind) && isActivitySubject(value.subject) && isActorSnapshot(value.actor)
@@ -568,6 +662,8 @@ function isMoney(value: unknown): value is Money {
   if (!isRecord(value) || !Number.isSafeInteger(value.minorAmount) || (value.minorAmount as number) < 0 || typeof value.currency !== 'string') return false
   try { assertCurrencyCode(value.currency); return true } catch { return false }
 }
+
+function isPositiveMoney(value: unknown): value is Money { return isMoney(value) && value.minorAmount > 0 }
 
 function isAllocations(value: unknown, currency: Money['currency']): value is readonly Allocation[] {
   return Array.isArray(value) && value.every((allocation) => isRecord(allocation) && isNonEmptyString(allocation.participantId) && isMoney(allocation.money) && allocation.money.currency === currency)

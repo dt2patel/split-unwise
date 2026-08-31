@@ -29,11 +29,14 @@ describe('demo repository', () => {
       { id: 'kayak-rental', date: '2026-08-29', description: 'Kayak rental', total: { currency: 'USD', minorAmount: 6000 } },
       { id: 'groceries', date: '2026-08-30', description: 'Groceries', total: { currency: 'USD', minorAmount: 17000 } },
     ])
-    await expect(repository.groups.getBalances('lake-house-weekend')).resolves.toEqual([
-      { fromParticipantId: 'jordan-k', toParticipantId: 'alex-r', money: { currency: 'USD', minorAmount: 12975 } },
-      { fromParticipantId: 'taylor-s', toParticipantId: 'alex-r', money: { currency: 'USD', minorAmount: 8050 } },
-      { fromParticipantId: 'taylor-s', toParticipantId: 'maya-p', money: { currency: 'USD', minorAmount: 3625 } },
-    ])
+    await expect(repository.groups.getBalanceSnapshot('lake-house-weekend')).resolves.toMatchObject({
+      balanceRevision: 5,
+      simplified: [
+        { fromParticipantId: 'jordan-k', toParticipantId: 'alex-r', money: { currency: 'USD', minorAmount: 12975 } },
+        { fromParticipantId: 'taylor-s', toParticipantId: 'alex-r', money: { currency: 'USD', minorAmount: 8050 } },
+        { fromParticipantId: 'taylor-s', toParticipantId: 'maya-p', money: { currency: 'USD', minorAmount: 3625 } },
+      ],
+    })
     await expect(repository.comments.listForExpense('lake-house-weekend', 'cabin-deposit')).resolves.toEqual([
       expect.objectContaining({ author: expect.objectContaining({ id: 'alex-r' }), body: 'Booked the refundable rate for us.' }),
       expect.objectContaining({ author: expect.objectContaining({ id: 'maya-p' }), body: 'Perfect, thank you!' }),

@@ -1,7 +1,6 @@
-import { computeBalances, simplifyDebts } from '../domain/balances'
 import type { FirebaseConfiguration } from './firebase'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
-import { decodeActivity, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense } from './firebaseDecoders'
+import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
 import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseDeleteResult, ExpenseEditResult, ExpenseRow, Member, NotificationItem, TimelineCursor } from './repositories'
 
@@ -62,7 +61,12 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         const snapshot = await firestore.getDocs(firestore.collection(db, 'groups', groupId, 'members'))
         return snapshot.docs.map((document) => decodeMember(document.id, document.data(), document.id === userId)).sort((left, right) => left.displayName.localeCompare(right.displayName))
       },
-      async getBalances(groupId) { const readyContext = context(); return simplifyDebts(computeBalances(await listExpenses(groupId, readyContext))) },
+      async getBalanceSnapshot(groupId) {
+        const { db, firestore } = await context()
+        const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'balance', 'current'))
+        if (!snapshot.exists()) throw new Error('Authoritative group balance snapshot is unavailable')
+        return decodeBalanceSnapshot(groupId, snapshot.data())
+      },
       async getTotals(groupId) { const readyContext = context(); return buildCurrencyTotals(await listExpenses(groupId, readyContext), (await readyContext).userId) },
       async getCharts(groupId) { const readyContext = context(); return buildGroupCharts(await listExpenses(groupId, readyContext)) },
       async listRecurring(groupId) {
@@ -97,7 +101,32 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async add(command) { const result = await execute(command); if (result.kind !== 'comment.add') throw new Error('Unexpected comment result'); return result },
       async delete(command) { const result = await execute(command); if (result.kind !== 'comment.delete') throw new Error('Unexpected comment delete result'); return result },
     },
-    settlements: { record: execute },
+    settlements: {
+      async listForGroup(groupId) {
+        const { db, firestore } = await context()
+        const snapshot = await firestore.getDocs(firestore.query(
+          firestore.collection(db, 'groups', groupId, 'settlements'),
+          firestore.orderBy('occurredOn', 'asc'),
+          firestore.orderBy(firestore.documentId(), 'asc'),
+        ))
+        return snapshot.docs.map((document) => decodeSettlement(groupId, document.id, document.data()))
+      },
+      async getById(groupId, settlementId) {
+        const { db, firestore } = await context()
+        const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'settlements', settlementId))
+        return snapshot.exists() ? decodeSettlement(groupId, settlementId, snapshot.data()) : undefined
+      },
+      async record(command) {
+        const result = await execute(command)
+        if (result.kind !== 'settlement.record') throw new Error('Unexpected settlement result')
+        return result
+      },
+      async void(command) {
+        const result = await execute(command)
+        if (result.kind !== 'settlement.void') throw new Error('Unexpected settlement void result')
+        return result
+      },
+    },
     activity: {
       async listForGroup(groupId) {
         const { db, firestore } = await context()

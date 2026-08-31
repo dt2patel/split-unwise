@@ -106,8 +106,8 @@ describe('CommandQueue', () => {
     expect(queue.snapshot()).toEqual([])
     await queue.submit(addExpense('namespaced-write')).result()
 
-    expect(JSON.parse(browser.getItem('split-unwise:command-queue:v5:maya-p') ?? 'null')).toMatchObject({
-      version: 5,
+    expect(JSON.parse(browser.getItem('split-unwise:command-queue:v6:maya-p') ?? 'null')).toMatchObject({
+      version: 6,
       principalKey: DEMO_UID,
       operations: [{ originPrincipalKey: DEMO_UID, envelope: { operationId: 'namespaced-write' } }],
     })
@@ -256,7 +256,7 @@ describe('CommandQueue', () => {
     const valid = { originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending', envelope: addExpense('valid-owned') }
     const storage = {
       load: () => ({
-        version: 5,
+        version: 6,
         principalKey: DEMO_UID,
         operations: [
           valid,
@@ -275,7 +275,7 @@ describe('CommandQueue', () => {
     expect(quarantined).toHaveLength(3)
   })
 
-  it('uses an opaque principal key in strict version-5 browser persistence', async () => {
+  it('uses an opaque principal key in strict version-6 browser persistence', async () => {
     const principalKey = 'firebase:split-unwise-prod:user/maya@example.com'
     const browser = createWebStorage()
     const queue = createBoundQueue({
@@ -285,9 +285,9 @@ describe('CommandQueue', () => {
 
     await queue.submit(addExpense('principal-scoped-write')).result()
 
-    const document = JSON.parse(browser.getItem(`split-unwise:command-queue:v5:${encodeURIComponent(principalKey)}`) ?? 'null')
+    const document = JSON.parse(browser.getItem(`split-unwise:command-queue:v6:${encodeURIComponent(principalKey)}`) ?? 'null')
     expect(document).toMatchObject({
-      version: 5,
+      version: 6,
       principalKey,
       operations: [{ originPrincipalKey: principalKey, envelope: { operationId: 'principal-scoped-write' } }],
     })
@@ -301,7 +301,7 @@ describe('CommandQueue', () => {
     const operation = { originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending' as const, envelope: addExpense('browser-write-failure') }
 
     await expect(storage.save(principalKey, {
-      version: 5,
+      version: 6,
       principalKey,
       operations: [operation],
     })).rejects.toThrow('quota exceeded')
@@ -335,7 +335,7 @@ describe('CommandQueue', () => {
     const saveGate = new Promise<void>((resolve) => { releaseSave = resolve })
     const events: string[] = []
     const storage: CommandStorage = {
-      load: () => ({ version: 5, principalKey, operations: [invalid] }),
+      load: () => ({ version: 6, principalKey, operations: [invalid] }),
       quarantine: async () => {
         events.push('quarantine-start')
         await quarantineGate
@@ -375,7 +375,7 @@ describe('CommandQueue', () => {
     let handlerCalls = 0
     const storage: CommandStorage = {
       load: () => ({
-        version: 5,
+        version: 6,
         principalKey,
         operations: [{ originPrincipalKey: 'cross-principal', submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending', envelope: addExpense('quarantined-before-submit') }],
       }),
@@ -450,7 +450,7 @@ describe('CommandQueue', () => {
     const invalid = [invalidAdd, invalidEdit, invalidDelete, invalidDefaultSplit]
     const quarantined: unknown[] = []
     const storage = {
-      load: () => ({ version: 5, principalKey, operations: [valid, ...invalid] }),
+      load: () => ({ version: 6, principalKey, operations: [valid, ...invalid] }),
       save: async () => undefined,
       quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as CommandStorage
@@ -471,7 +471,7 @@ describe('CommandQueue', () => {
     }
     const quarantined: unknown[] = []
     const storage: CommandStorage = {
-      load: () => ({ version: 5, principalKey, operations: [operation] }),
+      load: () => ({ version: 6, principalKey, operations: [operation] }),
       save: async () => undefined,
       quarantine: async (_scopeKey, records) => { quarantined.push(...records) },
     }
@@ -495,7 +495,7 @@ describe('CommandQueue', () => {
       envelope: { ...addExpense('obsolete-single-scope'), occurrenceEditScope: 'single' },
     }
     const storage = {
-      load: () => ({ version: 5, principalKey: DEMO_UID, operations: [occurrence, obsolete] }),
+      load: () => ({ version: 6, principalKey: DEMO_UID, operations: [occurrence, obsolete] }),
       save: async () => undefined,
       quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as unknown as CommandStorage
@@ -903,7 +903,7 @@ describe('CommandQueue', () => {
     }
     const quarantined: unknown[] = []
     const storage = {
-      load: () => ({ version: 5, principalKey: DEMO_UID, operations: [operation] }),
+      load: () => ({ version: 6, principalKey: DEMO_UID, operations: [operation] }),
       save: async () => undefined,
       quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as unknown as CommandStorage
@@ -935,7 +935,7 @@ describe('CommandQueue', () => {
   it('persists a pending envelope and resumes it after re-instantiation without repeating the operation ID', async () => {
     const pending = { originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending' as const, envelope: addExpense('reload-safe') }
     const storage = createMemoryCommandStorage({
-      [DEMO_UID]: { version: 5, principalKey: DEMO_UID, operations: [pending] },
+      [DEMO_UID]: { version: 6, principalKey: DEMO_UID, operations: [pending] },
     })
     let calls = 0
     const handler = async (command: { readonly operationId: string }): Promise<ExpenseAddResult> => {
@@ -949,7 +949,7 @@ describe('CommandQueue', () => {
 
     expect(calls).toBe(1)
     expect(storage.load(DEMO_UID)).toMatchObject({
-      version: 5,
+      version: 6,
       principalKey: DEMO_UID,
       operations: [expect.objectContaining({ originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z', status: 'fresh', envelope: expect.objectContaining({ operationId: 'reload-safe' }) })],
     })

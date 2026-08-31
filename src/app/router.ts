@@ -7,8 +7,11 @@ import GroupsPage from '../features/groups/GroupsPage.vue'
 import GroupDetailPage from '../features/groups/GroupDetailPage.vue'
 import ExpenseEditorPage from '../features/expenses/ExpenseEditorPage.vue'
 import ActivityPage from '../features/activity/ActivityPage.vue'
+import BalancesPage from '../features/balances/BalancesPage.vue'
+import SettleUpPage from '../features/balances/SettleUpPage.vue'
 
 const ExpenseDetailPage = () => import('../features/expenses/ExpenseDetailPage.vue')
+const SettlementDetailPage = () => import('../features/balances/SettlementDetailPage.vue')
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/tabs/home' },
@@ -26,8 +29,9 @@ const routes: RouteRecordRaw[] = [
         { path: `${origin}/expenses/:expenseId`, name: `${origin}-expense-detail`, component: ExpenseDetailPage, meta: { pageTitle: 'Expense detail', pageDescription: `Review an expense from the ${origin} stack.`, hideAppChrome: true } },
       ] satisfies RouteRecordRaw[]),
       { path: 'groups/:groupId/expenses/new', redirect: (to) => ({ name: 'groups-expense-create', query: { groupId: String(to.params.groupId ?? '') } }) },
-      { path: 'groups/:groupId/settle-up', name: 'group-settle-up', component: RoutePlaceholderPage, meta: { pageTitle: 'Settle up', pageDescription: 'Record a payment for this group.', hideAppChrome: true } },
-      { path: 'groups/:groupId/balances', name: 'group-balances', component: RoutePlaceholderPage, meta: { pageTitle: 'Balances', pageDescription: 'Review who owes whom in this group.', hideAppChrome: true } },
+      { path: 'groups/:groupId/settle-up', name: 'group-settle-up', component: SettleUpPage, meta: { pageTitle: 'Settle up', pageDescription: 'Record a payment for this group.', hideAppChrome: true } },
+      { path: 'groups/:groupId/balances', name: 'group-balances', component: BalancesPage, meta: { pageTitle: 'Balances', pageDescription: 'Review who owes whom in this group.', hideAppChrome: true } },
+      { path: 'groups/:groupId/settlements/:settlementId', name: 'group-settlement-detail', component: SettlementDetailPage, meta: { pageTitle: 'Payment', pageDescription: 'Review or void an audited settlement record.', hideAppChrome: true } },
       { path: 'groups/:groupId/totals', name: 'group-totals', component: RoutePlaceholderPage, meta: { pageTitle: 'Totals', pageDescription: 'Review paid, shared, and net totals.', hideAppChrome: true } },
       { path: 'groups/:groupId/charts', name: 'group-charts', component: RoutePlaceholderPage, meta: { pageTitle: 'Charts', pageDescription: 'Explore spending over time and by category.', hideAppChrome: true } },
       { path: 'groups/:groupId/export', name: 'group-export', component: RoutePlaceholderPage, meta: { pageTitle: 'Export', pageDescription: 'Download this group as CSV or JSON.', hideAppChrome: true } },

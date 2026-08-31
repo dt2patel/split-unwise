@@ -19,6 +19,7 @@ describe('application routes', () => {
     ['/tabs/account/expenses/groceries?groupId=lake-house-weekend', 'account-expense-detail'],
     ['/tabs/groups/lake-house-weekend/settle-up', 'group-settle-up'],
     ['/tabs/groups/lake-house-weekend/balances', 'group-balances'],
+    ['/tabs/groups/lake-house-weekend/settlements/settlement-a', 'group-settlement-detail'],
     ['/tabs/groups/lake-house-weekend/totals', 'group-totals'],
     ['/tabs/groups/lake-house-weekend/charts', 'group-charts'],
     ['/tabs/groups/lake-house-weekend/export', 'group-export'],
@@ -49,5 +50,13 @@ describe('application routes', () => {
 
     expect(router.currentRoute.value.name).toBe('groups-expense-create')
     expect(router.currentRoute.value.query.groupId).toBe('lake-house-weekend')
+  })
+
+  it.each([
+    '/tabs/groups/lake-house-weekend/balances',
+    '/tabs/groups/lake-house-weekend/settle-up',
+    '/tabs/groups/lake-house-weekend/settlements/settlement-a',
+  ])('hides global app chrome for the durable settlement route %s', (path) => {
+    expect(createAppRouter().resolve(path).meta.hideAppChrome).toBe(true)
   })
 })

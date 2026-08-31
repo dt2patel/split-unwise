@@ -114,6 +114,7 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
       'notification.read-all',
       'profile.update',
       'settlement.record',
+      'settlement.void',
     ]
     const handlers = Object.fromEntries(kinds.map((kind) => [kind, execute]))
     const queue = new CommandQueue({
@@ -357,7 +358,7 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       list: () => call(() => source.groups.list()),
       getById: (groupId) => call(() => source.groups.getById(groupId)),
       listMembers: (groupId) => call(() => source.groups.listMembers(groupId)),
-      getBalances: (groupId) => call(() => source.groups.getBalances(groupId)),
+      getBalanceSnapshot: (groupId) => call(() => source.groups.getBalanceSnapshot(groupId)),
       getTotals: (groupId) => call(() => source.groups.getTotals(groupId)),
       getCharts: (groupId) => call(() => source.groups.getCharts(groupId)),
       listRecurring: (groupId) => call(() => source.groups.listRecurring(groupId)),
@@ -376,7 +377,12 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       add: (command) => call(() => source.comments.add(command)),
       delete: (command) => call(() => source.comments.delete(command)),
     },
-    settlements: { record: (command) => call(() => source.settlements.record(command)) },
+    settlements: {
+      listForGroup: (groupId) => call(() => source.settlements.listForGroup(groupId)),
+      getById: (groupId, settlementId) => call(() => source.settlements.getById(groupId, settlementId)),
+      record: (command) => call(() => source.settlements.record(command)),
+      void: (command) => call(() => source.settlements.void(command)),
+    },
     activity: {
       listForGroup: (groupId) => call(() => source.activity.listForGroup(groupId)),
       listForAccount: (query) => call(() => source.activity.listForAccount(query)),

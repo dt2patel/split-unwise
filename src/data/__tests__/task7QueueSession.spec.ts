@@ -9,8 +9,8 @@ const principal = { mode: 'demo' as const, projectId: 'split-unwise-demo', uid: 
 const principalKey = appPrincipalKey(principal)
 
 describe('Task 7 queue schema and identity', () => {
-  it('deliberately migrates to schema v5 and quarantines a complete v4 document without submission timestamps', () => {
-    const legacy = { version: 4, principalKey, operations: [] }
+  it('keeps the Task 7 protocol valid under schema v6 and quarantines a complete v5 document', () => {
+    const legacy = { version: 5, principalKey, operations: [] }
     const quarantined: unknown[] = []
     const queue = new CommandQueue({
       handlers: {},
@@ -23,7 +23,7 @@ describe('Task 7 queue schema and identity', () => {
 
     void queue.bind(principalKey)
 
-    expect(COMMAND_QUEUE_STORAGE_VERSION).toBe(5)
+    expect(COMMAND_QUEUE_STORAGE_VERSION).toBe(6)
     expect(queue.snapshot()).toEqual([])
     expect(quarantined).toEqual([legacy])
   })
@@ -42,7 +42,7 @@ describe('Task 7 queue schema and identity', () => {
 
     expect(queue.get('timestamped-submission')).toMatchObject({ submittedAt: '2026-08-31T20:15:30.000Z' })
     expect(storage.load(principalKey)).toMatchObject({
-      version: 5,
+      version: 6,
       operations: [expect.objectContaining({ submittedAt: '2026-08-31T20:15:30.000Z' })],
     })
   })
@@ -131,7 +131,7 @@ describe('Task 7 queue schema and identity', () => {
     const queue = new CommandQueue({
       originPrincipalKey: principalKey,
       storage: {
-        load: () => ({ version: 5, principalKey, operations: [operation] }),
+        load: () => ({ version: 6, principalKey, operations: [operation] }),
         save: async () => undefined,
         quarantine: async (_scope, records) => { quarantined.push(...records) },
       },
@@ -288,7 +288,7 @@ describe('Task 7 session races', () => {
     const gate = new Promise<void>((resolve) => { release = resolve })
     const pending = { originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending' as const, envelope: commentAdd('resumed-comment') }
     const storage: CommandStorage = {
-      load: () => ({ version: 5, principalKey, operations: [pending] }),
+      load: () => ({ version: 6, principalKey, operations: [pending] }),
       save: async () => undefined,
     }
     const source = createDemoRepository()
@@ -323,7 +323,7 @@ describe('Task 7 session races', () => {
       status: 'pending' as const,
       envelope: commentAdd('resumed-stale-comment'),
     }
-    const storage = createMemoryCommandStorage({ [principalKey]: { version: 5, principalKey, operations: [pending] } })
+    const storage = createMemoryCommandStorage({ [principalKey]: { version: 6, principalKey, operations: [pending] } })
     const source = createDemoRepository()
     const repository: AppRepository = {
       ...source,
@@ -357,7 +357,7 @@ describe('Task 7 session races', () => {
       status: 'pending' as const,
       envelope: commentAdd('shared-storage-race'),
     }
-    const storage = createMemoryCommandStorage({ [principalKey]: { version: 5, principalKey, operations: [pending] } })
+    const storage = createMemoryCommandStorage({ [principalKey]: { version: 6, principalKey, operations: [pending] } })
     const source = createDemoRepository()
     const delayedRepository: AppRepository = {
       ...source,
@@ -397,7 +397,7 @@ describe('Task 7 session races', () => {
       status: 'pending' as const,
       envelope: commentAdd('shared-storage-network-race'),
     }
-    const storage = createMemoryCommandStorage({ [principalKey]: { version: 5, principalKey, operations: [pending] } })
+    const storage = createMemoryCommandStorage({ [principalKey]: { version: 6, principalKey, operations: [pending] } })
     const source = createDemoRepository()
     const rejectingRepository: AppRepository = {
       ...source,
@@ -440,7 +440,7 @@ describe('Task 7 session races', () => {
       status: 'pending' as const,
       envelope,
     }
-    const storage = createMemoryCommandStorage({ [principalKey]: { version: 5, principalKey, operations: [pending] } })
+    const storage = createMemoryCommandStorage({ [principalKey]: { version: 6, principalKey, operations: [pending] } })
     const oldProvider: ReceiptProvider = {
       async upload() {
         announceOldUpload()
