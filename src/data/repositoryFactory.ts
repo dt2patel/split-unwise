@@ -1,4 +1,4 @@
-import { createDemoRepository } from './demoRepository'
+import { createBrowserDemoRepositoryStateStorage, createDemoRepository } from './demoRepository'
 import { readFirebaseConfiguration, type PublicEnvironment } from './firebase'
 import { createFirebaseRepository } from './firebaseRepository'
 import { connectFirebasePrincipalSource } from './firebaseSession'
@@ -13,7 +13,7 @@ export interface AppRepositorySessionRuntime {
 /** Composition root: Firebase is selected only for a complete public configuration. */
 export function createRepository(environment?: PublicEnvironment): AppRepository {
   const configuration = readFirebaseConfiguration(environment)
-  return configuration ? createFirebaseRepository(configuration) : createDemoRepository()
+  return configuration ? createFirebaseRepository(configuration) : createDemoRepository({ stateStorage: createBrowserDemoRepositoryStateStorage() })
 }
 
 /** Principal-first composition used by the mounted app and auth lifecycle. */
@@ -30,7 +30,8 @@ export async function createRepositorySessionRuntime(environment?: PublicEnviron
     }
   }
 
-  const identityRepository = createDemoRepository()
+  const stateStorage = createBrowserDemoRepositoryStateStorage()
+  const identityRepository = createDemoRepository({ stateStorage })
   const projectId = identityRepository.projectId
   const principals: AppPrincipalSource = {
     async listen(listener) {
@@ -43,7 +44,7 @@ export async function createRepositorySessionRuntime(environment?: PublicEnviron
     principals,
     createRepository(principal) {
       assertRuntimePrincipal(principal, 'demo', projectId)
-      return createDemoRepository()
+      return createDemoRepository({ currentUserId: principal.uid, stateStorage })
     },
   }
 }

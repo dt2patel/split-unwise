@@ -5,7 +5,8 @@ import { buildCurrencyTotals } from '../../data/aggregates'
 import type { CommandFailure, CommandHandle, CommandOperation } from '../../data/commandQueue'
 import type { ActivityItem, ExpenseDeleteCommand, ExpenseEditCommand, ExpenseRow, Group, Member } from '../../data'
 import type { Money } from '../../domain/model'
-import { newestActivityFirst } from '../activity/activityStore'
+import { projectActivityTimeline } from '../activity/activityStore'
+import { compareFirestoreStrings } from '../../data/timeline'
 
 export interface UserExpensePosition {
   readonly money: Money
@@ -52,7 +53,10 @@ export const useGroupStore = defineStore('groups', () => {
     const reconciledRows = journalExpenses.value.map((row) => row.conflictRemote ?? row)
     return netsByCurrency(reconciledRows, currentUser.value.id, activeGroup.value.currency)
   })
-  const recentActivity = computed(() => [...activity.value].sort(newestActivityFirst))
+  const recentActivity = computed(() => {
+    queueRevision.value
+    return projectActivityTimeline(activity.value, queue.snapshot(), currentUser.value, activeGroup.value?.id)
+  })
 
   async function loadOverview(): Promise<void> {
     isLoading.value = true
@@ -299,7 +303,7 @@ function signedPosition(expense: ExpenseRow, participantId: string): number {
 }
 
 function newestFirst(left: ExpenseRow, right: ExpenseRow): number {
-  return right.date.localeCompare(left.date) || right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)
+  return compareFirestoreStrings(right.date, left.date) || compareFirestoreStrings(right.createdAt, left.createdAt) || compareFirestoreStrings(right.id, left.id)
 }
 
 interface ConfirmedExpenseVersion {
@@ -433,7 +437,7 @@ function compareConfirmed(left: ConfirmedExpenseVersion, right: ConfirmedExpense
   if (left.revision !== right.revision) return left.revision - right.revision
   if (left.deleted !== right.deleted) return left.deleted ? 1 : -1
   if (left.sourcePriority !== right.sourcePriority) return left.sourcePriority - right.sourcePriority
-  return left.tieBreaker.localeCompare(right.tieBreaker)
+  return compareFirestoreStrings(left.tieBreaker, right.tieBreaker)
 }
 
 function isRetryable(error: CommandFailure): boolean {

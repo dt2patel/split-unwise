@@ -2,6 +2,7 @@ import { assertCurrencyCode } from '../domain/money'
 import { computeAllocations } from '../domain/splits'
 import type { Allocation, Recurrence, SplitMethod } from '../domain/model'
 import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseRevision, ExpenseRow, Group, Member, NotificationItem, RecurringExpense } from './repositories'
+import { isStrictId } from './identifiers'
 
 export class DocumentDecodeError extends Error {
   constructor(document: string, message: string) { super(`${document}: ${message}`); this.name = 'DocumentDecodeError' }
@@ -73,14 +74,22 @@ export function decodeExpenseRevision(groupId: string, expenseId: string, id: st
   if (action !== 'created' && action !== 'updated' && action !== 'deleted') throw new DocumentDecodeError(`expense revision ${id}.action`, 'must be created, updated, or deleted')
   const expense = decodeExpense(groupId, expenseId, data.expense)
   if (expense.revision !== revision) throw new DocumentDecodeError(`expense revision ${id}`, 'snapshot revision does not match revision')
+  if (action === 'created' && revision !== 1) throw new DocumentDecodeError(`expense revision ${id}`, 'created revision must be revision 1')
+  if (action !== 'created' && revision < 2) throw new DocumentDecodeError(`expense revision ${id}`, `${action} revision must follow creation`)
   if (action === 'deleted' && expense.deletedAt === undefined) throw new DocumentDecodeError(`expense revision ${id}`, 'deleted revision requires a tombstone snapshot')
   if (action !== 'deleted' && expense.deletedAt !== undefined) throw new DocumentDecodeError(`expense revision ${id}`, 'live revision cannot contain a tombstone snapshot')
+  const actor = actorSnapshot(data.actor, `expense revision ${id}.actor`)
+  const commitActor = action === 'created' ? expense.createdBy : expense.updatedBy
+  if (!commitActor || !sameActor(actor, commitActor)) throw new DocumentDecodeError(`expense revision ${id}`, 'actor does not match the committed expense snapshot')
+  const createdAt = isoTimestamp(data.createdAt, `expense revision ${id}.createdAt`)
+  const snapshotTimestamp = action === 'created' ? expense.createdAt : expense.updatedAt
+  if (createdAt !== snapshotTimestamp) throw new DocumentDecodeError(`expense revision ${id}`, 'commit timestamp does not match the expense snapshot')
   return {
     id, groupId, expenseId, revision,
     operationId: requiredString(data.operationId, `expense revision ${id}.operationId`),
     action,
-    actor: actorSnapshot(data.actor, `expense revision ${id}.actor`),
-    createdAt: isoTimestamp(data.createdAt, `expense revision ${id}.createdAt`),
+    actor,
+    createdAt,
     expense,
   }
 }
@@ -103,14 +112,16 @@ export function decodeComment(groupId: string, expenseId: string, id: string, va
 }
 
 export function decodeActivity(groupId: string, id: string, value: unknown): ActivityItem {
+  if (!isStrictId(groupId)) throw new DocumentDecodeError(`activity ${id}.groupId`, 'groupId must be a valid structured ID')
   const data = record(value, `activity ${id}`)
   const kind = activityKind(data.kind, `activity ${id}.kind`)
-  return {
+  const subject = activitySubject(data.subject, `activity ${id}.subject`)
+  const item: ActivityItem = {
     id,
     groupId,
     operationId: requiredString(data.operationId, `activity ${id}.operationId`),
     kind,
-    subject: activitySubject(data.subject, `activity ${id}.subject`),
+    subject,
     actor: actorSnapshot(data.actor, `activity ${id}.actor`),
     ...(data.expenseId === undefined ? {} : { expenseId: requiredString(data.expenseId, `activity ${id}.expenseId`) }),
     ...(data.revision === undefined ? {} : { revision: positiveInteger(data.revision, `activity ${id}.revision`) }),
@@ -119,21 +130,27 @@ export function decodeActivity(groupId: string, id: string, value: unknown): Act
     createdAt: isoTimestamp(data.createdAt, `activity ${id}.createdAt`),
     syncState: 'fresh',
   }
+  assertActivityInvariants(item, `activity ${id}`)
+  return item
 }
 
 export function decodeNotification(principalId: string, id: string, value: unknown): NotificationItem {
   const data = record(value, `notification ${id}`)
   if (requiredString(data.principalId, `notification ${id}.principalId`) !== principalId) throw new DocumentDecodeError(`notification ${id}`, 'principalId does not match repository principal')
+  if (!Object.prototype.hasOwnProperty.call(data, 'readAt')) throw new DocumentDecodeError(`notification ${id}.readAt`, 'must be explicit null or an ISO timestamp')
+  const kind = activityKind(data.kind, `notification ${id}.kind`)
+  const subject = activitySubject(data.subject, `notification ${id}.subject`)
+  assertKindSubject(kind, subject, `notification ${id}`)
   return {
     notificationId: id,
     principalId,
     groupId: requiredString(data.groupId, `notification ${id}.groupId`),
     activityId: requiredString(data.activityId, `notification ${id}.activityId`),
-    kind: activityKind(data.kind, `notification ${id}.kind`),
-    subject: activitySubject(data.subject, `notification ${id}.subject`),
+    kind,
+    subject,
     actor: actorSnapshot(data.actor, `notification ${id}.actor`),
     createdAt: isoTimestamp(data.createdAt, `notification ${id}.createdAt`),
-    ...(data.readAt === undefined ? {} : { readAt: isoTimestamp(data.readAt, `notification ${id}.readAt`) }),
+    ...(data.readAt === null ? {} : { readAt: isoTimestamp(data.readAt, `notification ${id}.readAt`) }),
     syncState: 'fresh',
   }
 }
@@ -184,6 +201,38 @@ function activitySubject(value: unknown, path: string): ActivitySubject {
     ...(data.label === undefined ? {} : { label: requiredString(data.label, `${path}.label`) }),
   }
 }
+
+function assertActivityInvariants(item: ActivityItem, path: string): void {
+  assertKindSubject(item.kind, item.subject, path)
+  if (item.kind.startsWith('expense.')) {
+    if (!item.expenseId || item.subject.id !== item.expenseId) throw new DocumentDecodeError(path, 'expense subject ID must match expenseId')
+    if (item.revision === undefined || item.commentId !== undefined || item.settlementId !== undefined) throw new DocumentDecodeError(path, 'expense activity identifiers are inconsistent')
+    return
+  }
+  if (item.kind.startsWith('comment.')) {
+    if (!item.expenseId || !item.commentId || item.subject.id !== item.commentId) throw new DocumentDecodeError(path, 'comment subject must match commentId and include expenseId')
+    if (item.revision !== undefined || item.settlementId !== undefined) throw new DocumentDecodeError(path, 'comment activity identifiers are inconsistent')
+    return
+  }
+  if (item.kind.startsWith('settlement.')) {
+    if (!item.settlementId || item.subject.id !== item.settlementId) throw new DocumentDecodeError(path, 'settlement subject ID must match settlementId')
+    if (item.expenseId !== undefined || item.commentId !== undefined || item.revision !== undefined) throw new DocumentDecodeError(path, 'settlement activity identifiers are inconsistent')
+    return
+  }
+  if (item.expenseId !== undefined || item.commentId !== undefined || item.settlementId !== undefined || item.revision !== undefined) {
+    throw new DocumentDecodeError(path, 'group activity cannot carry financial subject identifiers')
+  }
+}
+
+function assertKindSubject(kind: ActivityKind, subject: ActivitySubject, path: string): void {
+  const expected = kind.startsWith('expense.') ? 'expense'
+    : kind.startsWith('comment.') ? 'comment'
+      : kind.startsWith('settlement.') ? 'settlement'
+        : kind === 'membership.changed' ? 'membership' : 'group'
+  if (subject.kind !== expected) throw new DocumentDecodeError(path, `${expected} activity requires a ${expected} subject`)
+}
+
+function sameActor(left: ActorSnapshot, right: ActorSnapshot): boolean { return left.id === right.id && left.displayName === right.displayName }
 
 function allocationArray(value: unknown, path: string, currency: ExpenseRow['total']['currency']): readonly Allocation[] {
   return requiredArray(value, path).map((item, index) => {

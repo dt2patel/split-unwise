@@ -1,8 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
+import { CommandConflictError, CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
+import { createMemoryReceiptStore, type LocalReceiptReference } from '../../../data/receipts'
+import { appPrincipalKey, createAppSession, getAppSession, setAppSessionForTesting } from '../../../data/session'
 import CommentThread from '../CommentThread.vue'
 
 const principalKey = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: 'maya-p' })
@@ -78,6 +79,39 @@ describe('comment thread', () => {
     expect(queue.snapshot()).toEqual([])
   })
 
+  it('recovers from a pre-queue attachment claim failure and lets the attachment be removed by filename', async () => {
+    const receipts = createMemoryReceiptStore({ id: () => 'comment-photo' })
+    let reference: LocalReceiptReference | undefined
+    const capture = {
+      ...receipts,
+      async put(blob: Blob, metadata: { readonly fileName: string }) {
+        reference = await receipts.put(blob, metadata)
+        return reference
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts: capture }))
+    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
+    await flushPromises()
+    const input = wrapper.get<HTMLInputElement>('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['photo'], 'groceries.jpg', { type: 'image/jpeg' })] })
+    await input.trigger('change')
+    await flushPromises()
+    if (!reference) throw new Error('Expected captured receipt reference')
+    await receipts.delete(reference)
+
+    await wrapper.get('textarea').setValue('Receipt attached')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="comment-error"]').text()).toContain('no longer available')
+    expect(wrapper.get<HTMLButtonElement>('button[type="submit"]').element.disabled).toBe(false)
+    expect(wrapper.text()).toContain('groceries.jpg')
+    expect(wrapper.text()).not.toContain(reference)
+    expect(getAppSession().queue.snapshot()).toEqual([])
+    await wrapper.get('[data-action="remove-comment-attachment"]').trigger('click')
+    expect(wrapper.text()).not.toContain('groceries.jpg')
+  })
+
   it('projects one durable pending comment and restores its draft after component recreation', async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
@@ -125,6 +159,57 @@ describe('comment thread', () => {
     await vi.waitFor(() => expect(wrapper.get(`[data-comment-id="${added.comment.commentId}"]`).text()).toContain('Comment deleted'))
 
     expect(wrapper.get(`[data-comment-id="${added.comment.commentId}"]`).text()).toContain('Comment deleted')
+  })
+
+  it('rehydrates an exact failed comment deletion and suppresses duplicate delete commands', async () => {
+    const repository = createDemoRepository({ now: () => '2026-08-31T20:00:00.000Z' })
+    const added = await repository.comments.add({ kind: 'comment.add', operationId: 'delete-recovery-source', groupId: 'lake-house-weekend', expenseId: 'groceries', body: 'Delete me once', attachmentRefs: [] })
+    if (added.status !== 'saved') throw new Error('Expected save')
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'comment.delete': async () => { throw Object.assign(new Error('offline'), { code: 'unavailable' }) } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const first = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
+    await flushPromises()
+    await first.get(`[data-comment-id="${added.comment.commentId}"] [data-action="delete-comment"]`).trigger('click')
+    await flushPromises()
+    first.unmount()
+
+    const recreated = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
+    await flushPromises()
+    const row = recreated.get(`[data-comment-id="${added.comment.commentId}"]`)
+    expect(row.attributes('data-sync-state')).toBe('failed')
+    expect(row.find('[data-action="delete-comment"]').exists()).toBe(false)
+    expect(row.get('[data-action="retry-comment-delete"]').text()).toBe('Retry delete')
+    expect(row.get('[data-action="discard-comment-delete"]').text()).toBe('Discard')
+    expect(queue.snapshot().filter(({ envelope }) => envelope.kind === 'comment.delete')).toHaveLength(1)
+  })
+
+  it('rehydrates a conflicted comment deletion and resolves it by reloading the durable remote comment', async () => {
+    const repository = createDemoRepository({ now: () => '2026-08-31T20:00:00.000Z' })
+    const added = await repository.comments.add({ kind: 'comment.add', operationId: 'conflict-source', groupId: 'lake-house-weekend', expenseId: 'groceries', body: 'Remote comment wins', attachmentRefs: [] })
+    if (added.status !== 'saved') throw new Error('Expected save')
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'comment.delete': async () => { throw new CommandConflictError('Comment changed remotely', { commentId: added.comment.commentId }) } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const first = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
+    await flushPromises()
+    await first.get(`[data-comment-id="${added.comment.commentId}"] [data-action="delete-comment"]`).trigger('click')
+    await flushPromises()
+    first.unmount()
+
+    const recreated = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
+    await flushPromises()
+    expect(recreated.get(`[data-comment-id="${added.comment.commentId}"]`).attributes('data-sync-state')).toBe('conflicted')
+    await recreated.get('[data-action="resolve-comment-delete-conflict"]').trigger('click')
+    await flushPromises()
+    expect(queue.snapshot()).toEqual([])
+    expect(recreated.find(`[data-comment-id="${added.comment.commentId}"] [data-action="delete-comment"]`).exists()).toBe(true)
   })
 
   it('keeps prior comments visible while closing the composer on a deleted expense', async () => {

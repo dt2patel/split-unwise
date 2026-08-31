@@ -7,7 +7,7 @@ import { createDemoRepository } from '../../../data/demoRepository'
 import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
 import type { ActivityItem } from '../../../data/repositories'
 import ActivityPage from '../ActivityPage.vue'
-import { activityDestination, useActivityStore } from '../activityStore'
+import { activityDestination, newestActivityFirst, useActivityStore } from '../activityStore'
 
 const principalKey = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: 'maya-p' })
 const ionicStubs = {
@@ -69,6 +69,16 @@ describe('global Activity page', () => {
     expect(wrapper.findAll('[data-activity-id]').slice(0, 2).map((row) => row.attributes('data-activity-id'))).toEqual(['activity-tie-edit', 'activity-tie-comment'])
   })
 
+  it('orders punctuation and case ties with locale-independent Firestore byte ordering', () => {
+    const base = {
+      groupId: 'lake-house-weekend', operationId: 'tie', kind: 'group.event' as const,
+      subject: { kind: 'group' as const, id: 'lake-house-weekend' }, actor: { id: 'maya-p', displayName: 'Maya P.' },
+      createdAt: '2026-08-31T12:00:00.000Z', syncState: 'fresh' as const,
+    }
+    const ids = ['activity_a', 'activity.Z', 'activity-A'].map((id) => ({ ...base, id })).sort(newestActivityFirst).map(({ id }) => id)
+    expect(ids).toEqual(['activity_a', 'activity.Z', 'activity-A'])
+  })
+
   it('never derives a destination from invalid structured IDs or arbitrary fields', () => {
     const event = {
       id: 'unsafe', groupId: 'https://evil.example', operationId: 'unsafe', kind: 'expense.updated',
@@ -81,6 +91,51 @@ describe('global Activity page', () => {
 })
 
 describe('Activity durable projection', () => {
+  it('uses the persisted queue submission timestamp for pending and failed activity', async () => {
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      now: () => '2026-08-31T22:34:56.000Z',
+      storage: createMemoryCommandStorage(),
+      handlers: { 'comment.add': async (command) => { if (command.kind !== 'comment.add') throw new Error('Wrong command'); await blocked; return repository.comments.add(command) } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    queue.submit({ kind: 'comment.add', operationId: 'pending-time', groupId: 'lake-house-weekend', expenseId: 'groceries', body: 'Queued now', attachmentRefs: [] })
+
+    const store = useActivityStore()
+    await store.load()
+    expect(store.items.find(({ operationId }) => operationId === 'pending-time')?.createdAt).toBe('2026-08-31T22:34:56.000Z')
+    release()
+  })
+
+  it('loads the next authoritative page without duplicating prior activity', async () => {
+    const source = createDemoRepository()
+    const all = (await source.activity.listForAccount({ filter: 'all', limit: 100 })).items
+    const calls: Array<string | undefined> = []
+    const repository = {
+      ...source,
+      activity: {
+        ...source.activity,
+        async listForAccount(query: { readonly cursor?: { readonly createdAt: string; readonly id: string } }) {
+          calls.push(query.cursor?.id)
+          if (!query.cursor) return { items: [all[0]], nextCursor: { createdAt: all[0].createdAt, id: all[0].id } }
+          return { items: [all[1]] }
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+
+    expect(wrapper.findAll('[data-activity-id]')).toHaveLength(1)
+    await wrapper.get('[data-action="load-more-activity"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-activity-id]')).toHaveLength(2)
+    expect(new Set(wrapper.findAll('[data-activity-id]').map((row) => row.attributes('data-activity-id'))).size).toBe(2)
+    expect(calls).toEqual([undefined, all[0].id])
+  })
+
   it('projects one pending event across store recreation and leaves an ID-less add noninteractive', async () => {
     let release!: () => void
     const blocked = new Promise<void>((resolve) => { release = resolve })

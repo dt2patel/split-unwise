@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   IonAlert,
@@ -16,6 +16,8 @@ import MoneyAmount from '../../components/MoneyAmount.vue'
 import CommentThread from '../comments/CommentThread.vue'
 import { getAppSession } from '../../data'
 import type { ExpenseRevision, ExpenseRow, Member } from '../../data/repositories'
+import type { ReceiptAsset } from '../../data/receipts'
+import { isStrictId, parseStrictScalarId } from '../../data/identifiers'
 
 type DetailOrigin = 'account' | 'activity' | 'groups' | 'home'
 type DeleteState = 'conflicted' | 'failed' | 'idle' | 'pending' | 'saved'
@@ -32,15 +34,18 @@ const isLoading = ref(true)
 const showDeleteConfirmation = ref(false)
 const deleteState = ref<DeleteState>('idle')
 const deleteOperationId = ref<string>()
+const attachmentAssets = ref(new Map<string, ReceiptAsset | null>())
 const deleteTrigger = ref<HTMLElement>()
 let loadRequest = 0
+const unsubscribe = session.queue.subscribe(() => syncDeleteOperation())
+onBeforeUnmount(unsubscribe)
 
 const origin = computed<DetailOrigin>(() => {
   const name = typeof route.name === 'string' ? route.name : ''
   const candidate = name.split('-')[0]
   return candidate === 'account' || candidate === 'activity' || candidate === 'groups' || candidate === 'home' ? candidate : 'home'
 })
-const groupId = computed(() => validScalarId(route.query.groupId))
+const groupId = computed(() => parseStrictScalarId(route.query.groupId))
 const expenseId = computed(() => typeof route.params.expenseId === 'string' ? route.params.expenseId : '')
 const returnPath = computed(() => origin.value === 'groups' && validatedGroupId.value ? `/tabs/groups/${encodeURIComponent(validatedGroupId.value)}` : `/tabs/${origin.value}`)
 const editPath = computed(() => groupId.value && expense.value
@@ -68,9 +73,11 @@ async function load(): Promise<void> {
   members.value = []
   currentUser.value = undefined
   validatedGroupId.value = undefined
+  deleteState.value = 'idle'
+  deleteOperationId.value = undefined
   const requestedGroup = groupId.value
   const requestedExpense = expenseId.value
-  if (!requestedGroup || !validId(requestedExpense)) {
+  if (!requestedGroup || !isStrictId(requestedExpense)) {
     error.value = 'Open this expense from a valid group link. No group was guessed or searched.'
     isLoading.value = false
     return
@@ -99,6 +106,8 @@ async function load(): Promise<void> {
     members.value = loadedMembers
     expense.value = loadedExpense
     revisions.value = history
+    await hydrateAttachmentMetadata([...loadedExpense.attachmentRefs, ...history.flatMap((revision) => revision.expense.attachmentRefs)])
+    syncDeleteOperation()
   } catch (reason) {
     if (request !== loadRequest) return
     error.value = message(reason, 'This expense is not available.')
@@ -123,7 +132,7 @@ async function restoreDeleteFocus(): Promise<void> {
 }
 
 async function deleteExpense(): Promise<boolean> {
-  if (!expense.value || !groupId.value || !canMutate.value || deleteState.value === 'pending') return false
+  if (!expense.value || !groupId.value || !canMutate.value || deleteState.value !== 'idle') return false
   const target = expense.value
   const operationId = deleteOperationId.value ?? createOperationId('expense-delete')
   deleteOperationId.value = operationId
@@ -169,6 +178,91 @@ async function discardDelete(): Promise<void> {
   } catch { /* the visible failure state remains retryable/discardable */ }
 }
 
+async function reloadDeleteConflict(): Promise<void> {
+  const operation = currentDeleteOperation()
+  if (!operation || operation.status !== 'conflicted' || operation.envelope.kind !== 'expense.delete') return
+  try {
+    const remote = await session.repository.expenses.getById(operation.envelope.groupId, operation.envelope.expenseId)
+    if (remote && (remote.groupId !== operation.envelope.groupId || remote.id !== operation.envelope.expenseId)) throw new Error('Remote expense did not match this deletion.')
+    await session.queue.acknowledge(operation.envelope.operationId)
+    if (remote) expense.value = remote
+    revisions.value = await session.repository.expenses.listRevisions(operation.envelope.groupId, operation.envelope.expenseId)
+    deleteOperationId.value = undefined
+    deleteState.value = remote?.deletedAt ? 'saved' : 'idle'
+  } catch (reason) {
+    error.value = message(reason, 'The current expense could not be reloaded.')
+  }
+}
+
+async function deleteLatestExpense(): Promise<void> {
+  const operation = currentDeleteOperation()
+  if (!operation || operation.status !== 'conflicted' || operation.envelope.kind !== 'expense.delete') return
+  try {
+    const remote = await session.repository.expenses.getById(operation.envelope.groupId, operation.envelope.expenseId)
+    if (!remote || remote.groupId !== operation.envelope.groupId || remote.id !== operation.envelope.expenseId) throw new Error('The latest expense is not available.')
+    await session.queue.acknowledge(operation.envelope.operationId)
+    expense.value = remote
+    if (remote.deletedAt) {
+      deleteOperationId.value = undefined
+      deleteState.value = 'saved'
+      return
+    }
+    const nextOperationId = `${operation.envelope.operationId}.latest.r${remote.revision}`
+    deleteOperationId.value = nextOperationId
+    deleteState.value = 'pending'
+    await session.queue.submit({ kind: 'expense.delete', operationId: nextOperationId, groupId: remote.groupId, expenseId: remote.id, expectedRevision: remote.revision }).result()
+    await load()
+    deleteState.value = 'saved'
+  } catch (reason) {
+    const current = deleteOperationId.value ? session.queue.get(deleteOperationId.value) : undefined
+    deleteState.value = current?.status === 'conflicted' ? 'conflicted' : 'failed'
+    error.value = message(reason, 'The latest expense could not be deleted.')
+  }
+}
+
+function currentDeleteOperation() {
+  const requestedGroup = groupId.value
+  const requestedExpense = expenseId.value
+  return [...session.queue.snapshot()].reverse().find((operation) => {
+    const envelope = operation.envelope
+    return envelope.kind === 'expense.delete' && envelope.groupId === requestedGroup && envelope.expenseId === requestedExpense
+      && (operation.status === 'pending' || operation.status === 'failed' || operation.status === 'conflicted')
+  })
+}
+
+function syncDeleteOperation(): void {
+  const operation = currentDeleteOperation()
+  if (!operation) return
+  deleteOperationId.value = operation.envelope.operationId
+  if (operation.status === 'pending' || operation.status === 'failed' || operation.status === 'conflicted') deleteState.value = operation.status
+}
+
+async function hydrateAttachmentMetadata(references: readonly string[]): Promise<void> {
+  const next = new Map(attachmentAssets.value)
+  await Promise.all(references.map(async (reference) => {
+    if (next.has(reference)) return
+    next.set(reference, reference.startsWith('local-receipt:') ? await session.receipts.get(reference as `local-receipt:${string}`) ?? null : null)
+  }))
+  attachmentAssets.value = next
+}
+
+function attachmentLabel(reference: string): string {
+  return attachmentAssets.value.get(reference)?.fileName ?? (reference.startsWith('local-receipt:') ? 'Attachment unavailable' : 'Receipt attachment')
+}
+function attachmentDurability(reference: string): string {
+  const asset = attachmentAssets.value.get(reference)
+  if (!asset) return 'Preview unavailable on this device.'
+  if (asset.durability.status === 'uploaded') return 'Uploaded and durable.'
+  return asset.durability.reason
+}
+function openAttachment(reference: string): void {
+  const asset = attachmentAssets.value.get(reference)
+  if (!asset || typeof URL.createObjectURL !== 'function') return
+  const url = URL.createObjectURL(asset.blob)
+  window.open(url, '_blank', 'noopener,noreferrer')
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 function payerName(memberId: string): string { return memberNames.value.get(memberId) ?? 'Unknown member' }
 function formatDate(date: string): string { return new Intl.DateTimeFormat(undefined, { dateStyle: 'long', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00.000Z`)) }
 function formatTimestamp(timestamp: string): string { return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp)) }
@@ -177,6 +271,28 @@ function revisionLabel(revision: ExpenseRevision): string {
   if (revision.action === 'updated') return `${revision.actor.displayName} updated this expense`
   return `${revision.actor.displayName} deleted this expense`
 }
+function revisionDiff(revision: ExpenseRevision, index: number): string {
+  if (revision.action === 'created') return 'Initial expense snapshot.'
+  if (revision.action === 'deleted') return 'Marked deleted; prior values are retained below.'
+  const previous = revisions.value[index - 1]?.expense
+  if (!previous) return 'Updated expense snapshot.'
+  const changed: string[] = []
+  if (previous.description !== revision.expense.description) changed.push('description')
+  if (JSON.stringify(previous.total) !== JSON.stringify(revision.expense.total)) changed.push('total')
+  if (previous.date !== revision.expense.date) changed.push('date')
+  if (previous.category !== revision.expense.category) changed.push('category')
+  if ((previous.notes ?? '') !== (revision.expense.notes ?? '')) changed.push('notes')
+  if (JSON.stringify(previous.payments) !== JSON.stringify(revision.expense.payments)) changed.push('payers')
+  if (JSON.stringify(previous.allocations) !== JSON.stringify(revision.expense.allocations) || JSON.stringify(previous.splitMethod) !== JSON.stringify(revision.expense.splitMethod)) changed.push('split')
+  if (JSON.stringify(previous.attachmentRefs) !== JSON.stringify(revision.expense.attachmentRefs)) changed.push('attachments')
+  if (JSON.stringify(previous.recurrence) !== JSON.stringify(revision.expense.recurrence)) changed.push('recurrence')
+  return changed.length ? `Changed ${changed.join(', ')}.` : 'Metadata-only update.'
+}
+function formatMoney(row: ExpenseRow): string { return new Intl.NumberFormat(undefined, { style: 'currency', currency: row.total.currency }).format(row.total.minorAmount / 100) }
+function allocationLabel(row: ExpenseRow, participantId: string, minorAmount: number): string {
+  return `${payerName(participantId)} ${new Intl.NumberFormat(undefined, { style: 'currency', currency: row.total.currency }).format(minorAmount / 100)}`
+}
+function splitLabel(row: ExpenseRow): string { return `${row.splitMethod.type} split` }
 function recurrenceLabel(row: ExpenseRow): string {
   if (!row.recurrence) return 'Not recurring'
   return `${row.recurrence.frequency[0].toUpperCase()}${row.recurrence.frequency.slice(1)} · ${row.recurrence.timeZone}`
@@ -185,8 +301,6 @@ function isDeleteRetryable(): boolean {
   const operation = deleteOperationId.value ? session.queue.get(deleteOperationId.value) : undefined
   return operation?.status === 'failed' && operation.error.retryable
 }
-function validScalarId(value: unknown): string | undefined { return typeof value === 'string' && validId(value) ? value : undefined }
-function validId(value: string): boolean { return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
 function createOperationId(prefix: string): string { return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now().toString(36)}` }
 function message(reason: unknown, fallback: string): string { return reason instanceof Error && reason.message.trim() ? reason.message : fallback }
 </script>
@@ -256,32 +370,57 @@ function message(reason: unknown, fallback: string): string { return reason inst
               <section aria-labelledby="attachments-title">
                 <h2 id="attachments-title">Attachments</h2>
                 <p v-if="expense.attachmentRefs.length === 0">No attachments</p>
-                <ul v-else aria-labelledby="attachments-title"><li v-for="attachment in expense.attachmentRefs" :key="attachment">{{ attachment }}</li></ul>
+                <ul v-else aria-labelledby="attachments-title">
+                  <li v-for="attachment in expense.attachmentRefs" :key="attachment" class="expense-detail__attachment">
+                    <span><strong>{{ attachmentLabel(attachment) }}</strong><small>{{ attachmentDurability(attachment) }}</small></span>
+                    <button v-if="attachmentAssets.get(attachment)" type="button" data-action="open-expense-attachment" @click="openAttachment(attachment)">Open preview</button>
+                  </li>
+                </ul>
               </section>
             </div>
 
             <aside class="expense-detail__audit" aria-labelledby="audit-title">
               <h2 id="audit-title">Audit history</h2>
               <ol aria-labelledby="audit-title">
-                <li v-for="revision in revisions" :key="revision.id">
+                <li v-for="(revision, index) in revisions" :key="revision.id">
                   <strong>{{ revisionLabel(revision) }}</strong>
                   <span>Revision {{ revision.revision }}</span>
                   <time :datetime="revision.createdAt">{{ formatTimestamp(revision.createdAt) }}</time>
+                  <p data-testid="revision-diff">{{ revisionDiff(revision, index) }}</p>
+                  <details data-testid="revision-snapshot">
+                    <summary>View revision snapshot</summary>
+                    <dl>
+                      <div><dt>Description</dt><dd>{{ revision.expense.description }}</dd></div>
+                      <div><dt>Total</dt><dd>{{ formatMoney(revision.expense) }}</dd></div>
+                      <div><dt>Date</dt><dd>{{ formatDate(revision.expense.date) }}</dd></div>
+                      <div><dt>Category</dt><dd>{{ revision.expense.category }}</dd></div>
+                      <div><dt>Notes</dt><dd>{{ revision.expense.notes || 'No notes' }}</dd></div>
+                      <div><dt>Paid by</dt><dd>{{ revision.expense.payments.map((payment) => allocationLabel(revision.expense, payment.participantId, payment.money.minorAmount)).join(', ') }}</dd></div>
+                      <div><dt>Allocated to</dt><dd>{{ revision.expense.allocations.map((allocation) => allocationLabel(revision.expense, allocation.participantId, allocation.money.minorAmount)).join(', ') }}</dd></div>
+                      <div><dt>Split</dt><dd>{{ splitLabel(revision.expense) }}</dd></div>
+                      <div><dt>Recurrence</dt><dd>{{ recurrenceLabel(revision.expense) }}</dd></div>
+                      <div><dt>Attachments</dt><dd>{{ revision.expense.attachmentRefs.length ? revision.expense.attachmentRefs.map(attachmentLabel).join(', ') : 'No attachments' }}</dd></div>
+                    </dl>
+                  </details>
                 </li>
               </ol>
             </aside>
           </div>
 
-          <section v-if="canMutate" class="expense-detail__danger" aria-labelledby="delete-title">
+          <section v-if="canMutate && deleteState === 'idle'" class="expense-detail__danger" aria-labelledby="delete-title">
             <h2 id="delete-title">Delete expense</h2>
-            <button ref="deleteTrigger" type="button" data-action="delete-expense" :disabled="deleteState === 'pending'" @click="requestDelete">Delete expense</button>
+            <button ref="deleteTrigger" type="button" data-action="delete-expense" @click="requestDelete">Delete expense</button>
           </section>
           <p v-if="deleteState !== 'idle'" data-testid="delete-state" role="status">
             {{ deleteState === 'pending' ? 'Saving deletion…' : deleteState === 'failed' ? 'Deletion failed.' : deleteState === 'conflicted' ? 'Deletion conflict: the remote revision and your delete intent are retained.' : 'Deleted.' }}
           </p>
           <div v-if="deleteState === 'failed'" class="expense-detail__delete-actions">
-            <button v-if="isDeleteRetryable()" type="button" @click="retryDelete">Retry</button>
-            <button type="button" @click="discardDelete">Discard</button>
+            <button v-if="isDeleteRetryable()" type="button" data-action="retry-expense-delete" @click="retryDelete">Retry</button>
+            <button type="button" data-action="discard-expense-delete" @click="discardDelete">Discard</button>
+          </div>
+          <div v-if="deleteState === 'conflicted'" class="expense-detail__delete-actions">
+            <button type="button" data-action="reload-expense-delete-conflict" @click="reloadDeleteConflict">Reload current expense</button>
+            <button type="button" data-action="delete-latest-expense" @click="deleteLatestExpense">Delete latest version</button>
           </div>
 
           <comment-thread :group-id="expense.groupId" :expense-id="expense.id" :closed="Boolean(expense.deletedAt)" />
@@ -318,8 +457,14 @@ function message(reason: unknown, fallback: string): string { return reason inst
 .expense-detail ul,
 .expense-detail ol { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
 .expense-detail__audit li { display: grid; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 35%, transparent); }
+.expense-detail__audit p { margin: 3px 0; }
+.expense-detail__audit details { margin-top: 3px; }
+.expense-detail__audit summary { min-height: 44px; cursor: pointer; color: var(--ion-color-primary); }
 .expense-detail__audit span,
 .expense-detail__audit time { color: var(--ion-color-medium); font-size: 0.82rem; }
+.expense-detail__attachment { align-items: center; }
+.expense-detail__attachment > span { display: grid; gap: 2px; }
+.expense-detail__attachment small { color: var(--ion-color-medium); }
 .expense-detail__danger { margin-top: 18px; }
 .expense-detail button,
 .expense-detail__error a { display: inline-grid; min-width: 44px; min-height: 44px; place-items: center; padding: 0 14px; border: 0; border-radius: 12px; background: var(--ion-color-primary); color: var(--ion-color-primary-contrast); font: inherit; font-weight: 650; text-decoration: none; }

@@ -1,8 +1,53 @@
 import { describe, expect, it } from 'vitest'
 import { CommandConflictError } from '../commandQueue'
-import { createDemoRepository } from '../demoRepository'
+import { createDemoRepository, type DemoRepositoryStateStorage } from '../demoRepository'
 
 describe('Task 7 immutable audit repository', () => {
+  it('materializes authoritative demo mutations for a completely new repository instance', async () => {
+    let saved: unknown
+    const storage: DemoRepositoryStateStorage = {
+      load: () => saved === undefined ? undefined : structuredClone(saved),
+      save: (_scope, document) => { saved = structuredClone(document) },
+    }
+    const first = createDemoRepository({ stateStorage: storage, now: () => '2026-08-31T19:00:00.000Z' })
+    const added = await first.expenses.add({ kind: 'expense.add', operationId: 'reload-add', ...expenseDraft('Reload firewood') })
+    if (added.status !== 'saved') throw new Error('Expected demo save')
+    const comment = await first.comments.add({
+      kind: 'comment.add', operationId: 'reload-comment-add', groupId: added.expense.groupId,
+      expenseId: added.expense.id, body: 'Survives repository replacement', attachmentRefs: [],
+    })
+    if (comment.status !== 'saved') throw new Error('Expected comment save')
+
+    const second = createDemoRepository({ stateStorage: storage, now: () => '2026-08-31T19:05:00.000Z' })
+    await expect(second.expenses.getById(added.expense.groupId, added.expense.id)).resolves.toMatchObject({ description: 'Reload firewood', revision: 1 })
+    await expect(second.comments.listForExpense(added.expense.groupId, added.expense.id)).resolves.toContainEqual(expect.objectContaining({ commentId: comment.comment.commentId }))
+    await expect(second.expenses.edit({
+      kind: 'expense.edit', operationId: 'reload-edit', groupId: added.expense.groupId, expenseId: added.expense.id,
+      expectedRevision: 1, draft: expenseDraft('Reload firewood edited'),
+    })).resolves.toMatchObject({ status: 'saved', expense: { revision: 2 } })
+    await expect(second.comments.delete({
+      kind: 'comment.delete', operationId: 'reload-comment-delete', groupId: added.expense.groupId,
+      expenseId: added.expense.id, commentId: comment.comment.commentId,
+    })).resolves.toMatchObject({ status: 'saved', comment: { deletedAt: '2026-08-31T19:05:00.000Z' } })
+
+    const third = createDemoRepository({ stateStorage: storage, now: () => '2026-08-31T19:10:00.000Z' })
+    await expect(third.expenses.delete({
+      kind: 'expense.delete', operationId: 'reload-delete', groupId: added.expense.groupId,
+      expenseId: added.expense.id, expectedRevision: 2,
+    })).resolves.toMatchObject({ status: 'saved', tombstone: { revision: 3 } })
+    await expect(third.comments.listForExpense(added.expense.groupId, added.expense.id)).resolves.toContainEqual(expect.objectContaining({
+      commentId: comment.comment.commentId, deletedAt: '2026-08-31T19:05:00.000Z',
+    }))
+    await expect(third.expenses.listRevisions(added.expense.groupId, added.expense.id)).resolves.toHaveLength(3)
+    await expect(third.activity.listForGroup(added.expense.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ operationId: 'reload-add' }),
+      expect.objectContaining({ operationId: 'reload-edit' }),
+      expect.objectContaining({ operationId: 'reload-delete' }),
+      expect.objectContaining({ operationId: 'reload-comment-add' }),
+      expect.objectContaining({ operationId: 'reload-comment-delete' }),
+    ]))
+  })
+
   it('commits one immutable revision and structured activity item for each expense create, edit, and delete', async () => {
     const timestamps = [
       '2026-08-31T14:00:00.000Z',

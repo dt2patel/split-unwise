@@ -9,8 +9,8 @@ const principalKey = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-de
 const ionicStubs = {
   IonButton: { props: ['disabled'], template: '<button type="button" :disabled="disabled"><slot /></button>' },
   IonToggle: {
-    props: ['modelValue'], emits: ['ionChange'],
-    template: '<input type="checkbox" :checked="modelValue" @change="$emit(\'ionChange\', { detail: { checked: $event.target.checked } })" />',
+    props: ['modelValue', 'disabled'], emits: ['ionChange'],
+    template: '<input type="checkbox" :checked="modelValue" :disabled="disabled" @change="$emit(\'ionChange\', { detail: { checked: $event.target.checked } })" />',
   },
 }
 
@@ -85,6 +85,78 @@ describe('NotificationCenter', () => {
     await flushPromises()
     expect(wrapper.find('[data-action="retry-notification"]').exists()).toBe(false)
     expect(attempts).toBe(2)
+  })
+
+  it('uses the authoritative unread count even when only one page is loaded', async () => {
+    const source = createDemoRepository()
+    const page = await source.notifications.list({ limit: 1 })
+    const repository = {
+      ...source,
+      notifications: {
+        ...source.notifications,
+        async list() { return page },
+        async unreadCount() { return 42 },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountCenter()
+    expect(wrapper.get('[data-testid="unread-count"]').text()).toBe('42 unread notifications')
+  })
+
+  it('loads more notifications with the server cursor and deduplicates rows', async () => {
+    const source = createDemoRepository()
+    const all = (await source.notifications.list({ limit: 100 })).items
+    const calls: Array<string | undefined> = []
+    const repository = {
+      ...source,
+      notifications: {
+        ...source.notifications,
+        async list(query: { readonly cursor?: { readonly createdAt: string; readonly id: string } }) {
+          calls.push(query.cursor?.id)
+          if (!query.cursor) return { items: [all[0]], nextCursor: { createdAt: all[0].createdAt, id: all[0].notificationId } }
+          return { items: [all[1]] }
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountCenter()
+
+    await wrapper.get('[data-action="load-more-notifications"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-notification-id]')).toHaveLength(2)
+    expect(calls).toEqual([undefined, all[0].notificationId])
+  })
+
+  it('keeps preferences unknown and disabled until loaded, then offers an explicit load retry', async () => {
+    const source = createDemoRepository()
+    let attempts = 0
+    let release!: () => void
+    const wait = new Promise<void>((resolve) => { release = resolve })
+    const repository = {
+      ...source,
+      notifications: {
+        ...source.notifications,
+        async getPreferences() {
+          attempts += 1
+          if (attempts === 1) { await wait; throw new Error('Preferences unavailable') }
+          return { emailEnabled: true, pushEnabled: false }
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = mount(NotificationCenter, { global: { stubs: ionicStubs } })
+    await Promise.resolve()
+    expect(wrapper.findAll('input[type="checkbox"]').every((input) => input.attributes('disabled') !== undefined)).toBe(true)
+
+    release()
+    await flushPromises()
+    expect(wrapper.get('[data-action="retry-notification-load"]').text()).toContain('Retry')
+    await wrapper.get('[data-action="retry-notification-load"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('input[type="checkbox"]').map((input) => ({ disabled: input.attributes('disabled'), checked: (input.element as HTMLInputElement).checked }))).toEqual([
+      { disabled: undefined, checked: true }, { disabled: undefined, checked: false },
+    ])
   })
 })
 

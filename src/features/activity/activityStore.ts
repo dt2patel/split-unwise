@@ -1,14 +1,17 @@
 import { computed, onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { getAppSession } from '../../data'
-import type { ActivityFilter, ActivityItem, ActivityKind, ActorSnapshot, CommandEnvelope, Member, TimelineCursor } from '../../data/repositories'
+import type { ActivityFilter, ActivityItem, ActivityKind, ActorSnapshot, Member, TimelineCursor } from '../../data/repositories'
 import type { CommandOperation } from '../../data/commandQueue'
+import { isStrictId } from '../../data/identifiers'
+import { compareTimelineDescending } from '../../data/timeline'
 
 export const useActivityStore = defineStore('activity', () => {
   const session = getAppSession()
   const canonical = ref<readonly ActivityItem[]>([])
   const filter = ref<ActivityFilter>('all')
   const isLoading = ref(false)
+  const isLoadingMore = ref(false)
   const error = ref('')
   const nextCursor = ref<TimelineCursor>()
   const currentUser = ref<Member>()
@@ -19,12 +22,7 @@ export const useActivityStore = defineStore('activity', () => {
 
   const allItems = computed(() => {
     queueRevision.value
-    const byOperation = new Map<string, ActivityItem>()
-    for (const item of canonical.value) byOperation.set(item.operationId, clone(item))
-    for (const projected of projectQueueActivity(session.queue.snapshot(), canonical.value, currentUser.value)) {
-      if (!byOperation.has(projected.operationId) || projected.syncState !== 'fresh') byOperation.set(projected.operationId, projected)
-    }
-    return [...byOperation.values()].sort(newestActivityFirst)
+    return projectActivityTimeline(canonical.value, session.queue.snapshot(), currentUser.value)
   })
   const items = computed(() => allItems.value.filter((item) => matchesFilter(item, filter.value)))
 
@@ -49,13 +47,48 @@ export const useActivityStore = defineStore('activity', () => {
     }
   }
 
+  async function loadMore(): Promise<void> {
+    const cursor = nextCursor.value
+    if (!cursor || isLoadingMore.value) return
+    const active = request
+    isLoadingMore.value = true
+    error.value = ''
+    try {
+      const page = await session.repository.activity.listForAccount({ filter: 'all', limit: 100, cursor })
+      if (active !== request) return
+      const byId = new Map(canonical.value.map((item) => [item.id, item]))
+      page.items.forEach((item) => byId.set(item.id, item))
+      canonical.value = [...byId.values()].sort(newestActivityFirst)
+      nextCursor.value = page.nextCursor
+    } catch (reason) {
+      if (active === request) error.value = reason instanceof Error ? reason.message : 'More activity could not be loaded.'
+    } finally {
+      if (active === request) isLoadingMore.value = false
+    }
+  }
+
   function setFilter(next: ActivityFilter): void { filter.value = next }
 
-  return { items, allItems, filter, isLoading, error, nextCursor, load, setFilter }
+  return { items, allItems, filter, isLoading, isLoadingMore, error, nextCursor, load, loadMore, setFilter }
 })
 
+export function projectActivityTimeline(
+  base: readonly ActivityItem[],
+  operations: readonly CommandOperation[],
+  user: Member | undefined,
+  groupId?: string,
+): readonly ActivityItem[] {
+  const byOperation = new Map<string, ActivityItem>()
+  for (const item of base) if (!groupId || item.groupId === groupId) byOperation.set(item.operationId, clone(item))
+  for (const projected of projectQueueActivity(operations, base, user)) {
+    if (groupId && projected.groupId !== groupId) continue
+    if (!byOperation.has(projected.operationId) || projected.syncState !== 'fresh') byOperation.set(projected.operationId, projected)
+  }
+  return [...byOperation.values()].sort(newestActivityFirst)
+}
+
 export function activityDestination(item: ActivityItem, origin: 'account' | 'activity' | 'groups' | 'home'): string | undefined {
-  if (!item.expenseId || !validId(item.groupId) || !validId(item.expenseId) || !['account', 'activity', 'groups', 'home'].includes(origin)) return undefined
+  if (!item.expenseId || !isStrictId(item.groupId) || !isStrictId(item.expenseId) || !['account', 'activity', 'groups', 'home'].includes(origin)) return undefined
   return `/tabs/${origin}/expenses/${encodeURIComponent(item.expenseId)}?groupId=${encodeURIComponent(item.groupId)}`
 }
 
@@ -83,7 +116,7 @@ function projectQueueActivity(operations: readonly CommandOperation[], base: rea
       return saved ? [saved] : []
     }
     if (operation.status !== 'pending' && operation.status !== 'failed') return []
-    const projected = pendingActivity(operation.envelope, actor, base, operation.status)
+    const projected = pendingActivity(operation, actor, base)
     return projected ? [projected] : []
   })
 }
@@ -103,21 +136,24 @@ function savedExpenseActivity(operation: Extract<CommandOperation, { status: 'fr
   return undefined
 }
 
-function pendingActivity(envelope: CommandEnvelope, actor: ActorSnapshot, base: readonly ActivityItem[], syncState: 'failed' | 'pending'): ActivityItem | undefined {
+function pendingActivity(operation: Extract<CommandOperation, { status: 'failed' | 'pending' }>, actor: ActorSnapshot, base: readonly ActivityItem[]): ActivityItem | undefined {
+  const envelope = operation.envelope
+  const syncState = operation.status
+  const submittedAt = operation.submittedAt
   if (envelope.kind === 'expense.add') {
-    return activity(envelope.operationId, envelope.groupId, 'expense.created', { kind: 'expense', id: envelope.operationId, label: envelope.description }, actor, `${envelope.date}T23:59:59.999Z`, syncState)
+    return activity(envelope.operationId, envelope.groupId, 'expense.created', { kind: 'expense', id: envelope.operationId, label: envelope.description }, actor, submittedAt, syncState)
   }
   if (envelope.kind === 'expense.edit') {
-    return activity(envelope.operationId, envelope.groupId, 'expense.updated', { kind: 'expense', id: envelope.expenseId, label: envelope.draft.description }, actor, `${envelope.draft.date}T23:59:59.999Z`, syncState, envelope.expenseId, envelope.expectedRevision + 1)
+    return activity(envelope.operationId, envelope.groupId, 'expense.updated', { kind: 'expense', id: envelope.expenseId, label: envelope.draft.description }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)
   }
   if (envelope.kind === 'expense.delete') {
-    return activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label: expenseLabel(base, envelope.expenseId) }, actor, relatedTimestamp(base, envelope.expenseId), syncState, envelope.expenseId, envelope.expectedRevision + 1)
+    return activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label: expenseLabel(base, envelope.expenseId) }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)
   }
   if (envelope.kind === 'comment.add') {
-    return activity(envelope.operationId, envelope.groupId, 'comment.added', { kind: 'comment', id: envelope.operationId, label: envelope.body.trim() }, actor, relatedTimestamp(base, envelope.expenseId), syncState, envelope.expenseId, undefined, envelope.operationId)
+    return activity(envelope.operationId, envelope.groupId, 'comment.added', { kind: 'comment', id: envelope.operationId, label: envelope.body.trim() }, actor, submittedAt, syncState, envelope.expenseId, undefined, envelope.operationId)
   }
   if (envelope.kind === 'comment.delete') {
-    return activity(envelope.operationId, envelope.groupId, 'comment.deleted', { kind: 'comment', id: envelope.commentId }, actor, relatedTimestamp(base, envelope.expenseId), syncState, envelope.expenseId, undefined, envelope.commentId)
+    return activity(envelope.operationId, envelope.groupId, 'comment.deleted', { kind: 'comment', id: envelope.commentId }, actor, submittedAt, syncState, envelope.expenseId, undefined, envelope.commentId)
   }
   return undefined
 }
@@ -140,12 +176,8 @@ function activity(
 function expenseLabel(base: readonly ActivityItem[], expenseId: string): string {
   return base.find((item) => item.expenseId === expenseId && item.subject.kind === 'expense')?.subject.label ?? 'expense'
 }
-function relatedTimestamp(base: readonly ActivityItem[], expenseId: string): string {
-  return base.filter((item) => item.expenseId === expenseId).sort(newestActivityFirst)[0]?.createdAt ?? '1970-01-01T00:00:00.000Z'
-}
 function matchesFilter(item: ActivityItem, filter: ActivityFilter): boolean {
   return filter === 'all' || (filter === 'expenses' && item.kind.startsWith('expense.')) || (filter === 'comments' && item.kind.startsWith('comment.')) || (filter === 'payments' && item.kind.startsWith('settlement.'))
 }
-export function newestActivityFirst(left: ActivityItem, right: ActivityItem): number { return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id) }
-function validId(value: string): boolean { return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
+export function newestActivityFirst(left: ActivityItem, right: ActivityItem): number { return compareTimelineDescending(left, right) }
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }

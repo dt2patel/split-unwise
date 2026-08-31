@@ -14,6 +14,7 @@ import {
 } from '../demo/lakeHouse'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { assertReplayIdentity, createOperationIdentity, type OperationIdentity } from './operationIdentity'
+import { compareFirestoreStrings, compareTimelineAscending, compareTimelineDescending, isAfterDescendingCursor } from './timeline'
 import type {
   ActivityFilter,
   ActivityItem,
@@ -37,21 +38,43 @@ import type {
 export interface DemoRepositoryOptions {
   readonly now?: () => string
   readonly currentUserId?: string
+  readonly stateStorage?: DemoRepositoryStateStorage
+}
+
+export interface DemoRepositoryStateStorage {
+  load(scope: string): unknown
+  save(scope: string, document: unknown): void | Promise<void>
+}
+
+interface DemoRepositoryStateDocument {
+  readonly version: 1
+  readonly principalId: string
+  readonly currentUser: Member
+  readonly notificationPreferences: NotificationPreferences
+  readonly nextExpenseNumber: number
+  readonly expenses: readonly ExpenseRow[]
+  readonly activity: readonly ActivityItem[]
+  readonly comments: readonly ExpenseComment[]
+  readonly notifications: readonly NotificationItem[]
+  readonly revisions: readonly ExpenseRevision[]
+  readonly operationLedger: readonly (readonly [string, { readonly identity: OperationIdentity; readonly result: CommandResult }])[]
 }
 
 /** A fresh deterministic in-memory repository; its operation ledger prevents duplicate same-ID effects. */
 export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRepository {
-  const expenses = lakeHouseExpenses.map(cloneExpense)
-  const activity = lakeHouseActivity.map(clone)
-  const comments = lakeHouseComments.map(clone)
-  const notifications = lakeHouseNotifications.map(clone)
-  const revisions = initialRevisions(expenses, activity)
-  const operationLedger = new Map<string, { readonly identity: OperationIdentity; readonly result: CommandResult }>()
   const selectedUser = lakeHouseMembers.find(({ id }) => id === (options.currentUserId ?? lakeHouseCurrentUser.id))
   if (!selectedUser) throw new Error(`Unknown demo user: ${options.currentUserId}`)
-  let currentUser = { ...selectedUser, isCurrentUser: true }
-  let notificationPreferences: NotificationPreferences = { emailEnabled: true, pushEnabled: true }
-  let nextExpenseNumber = 6
+  const stateScope = `split-unwise-demo:v1:${selectedUser.id}`
+  const restored = decodeDemoState(options.stateStorage?.load(stateScope), selectedUser.id)
+  const expenses = (restored?.expenses ?? lakeHouseExpenses).map(cloneExpense)
+  const activity = (restored?.activity ?? lakeHouseActivity).map(clone)
+  const comments = (restored?.comments ?? lakeHouseComments).map(clone)
+  const notifications = (restored?.notifications ?? lakeHouseNotifications).map(clone)
+  const revisions = (restored?.revisions ?? initialRevisions(expenses, activity)).map(clone)
+  const operationLedger = new Map<string, { readonly identity: OperationIdentity; readonly result: CommandResult }>((restored?.operationLedger ?? []).map(([id, value]) => [id, clone(value)]))
+  let currentUser = restored?.currentUser ? clone(restored.currentUser) : { ...selectedUser, isCurrentUser: true }
+  let notificationPreferences: NotificationPreferences = restored?.notificationPreferences ? { ...restored.notificationPreferences } : { emailEnabled: true, pushEnabled: true }
+  let nextExpenseNumber = restored?.nextExpenseNumber ?? 6
   const now = options.now ?? (() => '2026-08-30T12:00:00.000Z')
 
   const groupExpenses = (groupId: string): ExpenseRow[] => {
@@ -66,9 +89,43 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       await assertReplayIdentity(existing.identity, identity)
       return clone(existing.result)
     }
-    const result = executeNew(command)
-    operationLedger.set(command.operationId, { identity, result })
-    return clone(result)
+    const before = captureState()
+    try {
+      const result = executeNew(command)
+      operationLedger.set(command.operationId, { identity, result })
+      await options.stateStorage?.save(stateScope, captureState())
+      return clone(result)
+    } catch (error: unknown) {
+      restoreState(before)
+      throw error
+    }
+  }
+
+  const captureState = (): DemoRepositoryStateDocument => ({
+    version: 1,
+    principalId: currentUser.id,
+    currentUser: clone(currentUser),
+    notificationPreferences: { ...notificationPreferences },
+    nextExpenseNumber,
+    expenses: expenses.map(cloneExpense),
+    activity: activity.map(clone),
+    comments: comments.map(clone),
+    notifications: notifications.map(clone),
+    revisions: revisions.map(clone),
+    operationLedger: [...operationLedger.entries()].map(([id, value]) => [id, clone(value)] as const),
+  })
+
+  const restoreState = (state: DemoRepositoryStateDocument): void => {
+    currentUser = clone(state.currentUser)
+    notificationPreferences = { ...state.notificationPreferences }
+    nextExpenseNumber = state.nextExpenseNumber
+    expenses.splice(0, expenses.length, ...state.expenses.map(cloneExpense))
+    activity.splice(0, activity.length, ...state.activity.map(clone))
+    comments.splice(0, comments.length, ...state.comments.map(clone))
+    notifications.splice(0, notifications.length, ...state.notifications.map(clone))
+    revisions.splice(0, revisions.length, ...state.revisions.map(clone))
+    operationLedger.clear()
+    state.operationLedger.forEach(([id, value]) => operationLedger.set(id, clone(value)))
   }
 
   const executeNew = (command: CommandEnvelope): CommandResult => {
@@ -348,11 +405,11 @@ function activityMatches(item: ActivityItem, filter: ActivityFilter): boolean {
   return item.kind.startsWith('settlement.')
 }
 
-function page<T extends { readonly createdAt: string }>(values: readonly T[], limit: number, cursor?: TimelineCursor): { items: readonly T[]; nextCursor?: TimelineCursor } {
+function page<T extends { readonly createdAt: string; readonly id?: string; readonly notificationId?: string }>(values: readonly T[], limit: number, cursor?: TimelineCursor): { items: readonly T[]; nextCursor?: TimelineCursor } {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Timeline limit must be between 1 and 100')
   if (cursor) assertCursor(cursor)
   const sorted = [...values].sort(newestTimelineFirst)
-  const after = cursor ? sorted.filter((item) => compareTimeline(item, cursor) < 0) : sorted
+  const after = cursor ? sorted.filter((item) => isAfterDescendingCursor({ createdAt: item.createdAt, id: timelineId(item) }, cursor)) : sorted
   const items = after.slice(0, limit).map(clone)
   if (items.length < limit || after.length <= limit) return { items }
   const last = items.at(-1) as T & { readonly id?: string; readonly notificationId?: string }
@@ -366,11 +423,11 @@ function timelineId(value: { readonly id?: string; readonly notificationId?: str
 }
 
 function compareTimeline(left: { readonly createdAt: string; readonly id?: string; readonly notificationId?: string }, right: TimelineCursor): number {
-  return left.createdAt.localeCompare(right.createdAt) || timelineId(left).localeCompare(right.id)
+  return compareTimelineAscending({ createdAt: left.createdAt, id: timelineId(left) }, right)
 }
 
 function newestTimelineFirst(left: { readonly createdAt: string; readonly id?: string; readonly notificationId?: string }, right: { readonly createdAt: string; readonly id?: string; readonly notificationId?: string }): number {
-  return right.createdAt.localeCompare(left.createdAt) || timelineId(right).localeCompare(timelineId(left))
+  return compareTimelineDescending({ createdAt: left.createdAt, id: timelineId(left) }, { createdAt: right.createdAt, id: timelineId(right) })
 }
 
 function assertCursor(cursor: TimelineCursor): void {
@@ -389,12 +446,48 @@ function validateAttachmentRefs(references: readonly string[]): void { if (refer
 function assertLakeHouseGroup(groupId: string): void { if (groupId !== LAKE_HOUSE_GROUP_ID) throw new Error(`Unknown demo group: ${groupId}`) }
 function cloneAllocation(allocation: ExpenseRow['allocations'][number]): ExpenseRow['allocations'][number] { return { participantId: allocation.participantId, money: { ...allocation.money } } }
 function cloneExpense(expense: ExpenseRow): ExpenseRow { return clone(expense) }
-function byDateThenId(left: ExpenseRow, right: ExpenseRow): number { return left.date.localeCompare(right.date) || left.id.localeCompare(right.id) }
-function oldestActivityFirst(left: ActivityItem, right: ActivityItem): number { return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id) }
-function oldestCommentFirst(left: ExpenseComment, right: ExpenseComment): number { return left.createdAt.localeCompare(right.createdAt) || left.commentId.localeCompare(right.commentId) }
-function oldestRevisionFirst(left: ExpenseRevision, right: ExpenseRevision): number { return left.revision - right.revision || left.id.localeCompare(right.id) }
+function byDateThenId(left: ExpenseRow, right: ExpenseRow): number { return compareFirestoreStrings(left.date, right.date) || compareFirestoreStrings(left.id, right.id) }
+function oldestActivityFirst(left: ActivityItem, right: ActivityItem): number { return compareTimelineAscending(left, right) }
+function oldestCommentFirst(left: ExpenseComment, right: ExpenseComment): number { return compareTimelineAscending({ createdAt: left.createdAt, id: left.commentId }, { createdAt: right.createdAt, id: right.commentId }) }
+function oldestRevisionFirst(left: ExpenseRevision, right: ExpenseRevision): number { return left.revision - right.revision || compareFirestoreStrings(left.id, right.id) }
 function initials(displayName: string): string { return displayName.split(/\s+/).filter(Boolean).map((part) => part[0]).join('').slice(0, 2).toUpperCase() }
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
+
+function decodeDemoState(value: unknown, principalId: string): DemoRepositoryStateDocument | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!isRecord(value) || value.version !== 1 || value.principalId !== principalId || !isRecord(value.currentUser) || value.currentUser.id !== principalId
+    || !isRecord(value.notificationPreferences) || typeof value.notificationPreferences.emailEnabled !== 'boolean' || typeof value.notificationPreferences.pushEnabled !== 'boolean'
+    || !Number.isSafeInteger(value.nextExpenseNumber) || (value.nextExpenseNumber as number) < 1
+    || !Array.isArray(value.expenses) || !Array.isArray(value.activity) || !Array.isArray(value.comments) || !Array.isArray(value.notifications)
+    || !Array.isArray(value.revisions) || !Array.isArray(value.operationLedger)
+    || value.operationLedger.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || !isRecord(entry[1]))) {
+    throw new Error('Persisted demo repository state is invalid')
+  }
+  return clone(value) as unknown as DemoRepositoryStateDocument
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+
+export function createBrowserDemoRepositoryStateStorage(storage: Storage | undefined = browserStorage()): DemoRepositoryStateStorage {
+  const key = (scope: string) => `split-unwise:demo-repository:v1:${encodeURIComponent(scope)}`
+  return {
+    load(scope) {
+      if (!storage) return undefined
+      const value = storage.getItem(key(scope))
+      if (value === null) return undefined
+      try { return JSON.parse(value) as unknown } catch { throw new Error('Persisted demo repository state is invalid JSON') }
+    },
+    save(scope, document) {
+      if (!storage) throw new Error('Browser demo repository storage is unavailable')
+      storage.setItem(key(scope), JSON.stringify(document))
+    },
+  }
+}
+
+function browserStorage(): Storage | undefined {
+  if (typeof window === 'undefined') return undefined
+  try { return window.localStorage } catch { return undefined }
+}
 
 function validateDraft(draft: ExpenseDraft): readonly ExpenseRow['allocations'][number][] {
   const active = new Set(lakeHouseMembers.map(({ id }) => id))

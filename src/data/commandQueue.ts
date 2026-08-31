@@ -4,7 +4,7 @@ import { computeAllocations } from '../domain/splits'
 import type { CommandEnvelope, CommandKind, CommandResult, ExpenseDraft, ExpenseRow, SyncState } from './repositories'
 import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
 
-export const COMMAND_QUEUE_STORAGE_VERSION = 4 as const
+export const COMMAND_QUEUE_STORAGE_VERSION = 5 as const
 const COMMAND_QUEUE_STORAGE_PREFIX = `split-unwise:command-queue:v${COMMAND_QUEUE_STORAGE_VERSION}`
 const COMMAND_QUEUE_QUARANTINE_PREFIX = `split-unwise:command-queue:quarantine:v${COMMAND_QUEUE_STORAGE_VERSION}`
 
@@ -33,6 +33,8 @@ export class CommandFailedError extends Error {
 
 interface OwnedOperation {
   readonly originPrincipalKey: string
+  /** User-intent time, independent from an expense occurrence date or eventual commit time. */
+  readonly submittedAt: string
   /** The original, user-authored command remains the replay identity. */
   readonly envelope: CommandEnvelope
   /** A persisted, operation-specific execution copy for one-way local preparation such as receipt promotion. */
@@ -69,6 +71,7 @@ export interface CommandQueueOptions {
   readonly storage?: CommandStorage
   /** Useful for deterministic seams. App sessions bind only after hydrating repository identity. */
   readonly originPrincipalKey?: string
+  readonly now?: () => string
 }
 
 /** Serializable, timer-free queue. Commands are persisted before registered handlers run. */
@@ -127,7 +130,7 @@ export class CommandQueue {
       }
       return this.handle(command.operationId)
     }
-    this.replaceInMemory({ originPrincipalKey: principalKey, status: 'pending', envelope: clone(command) })
+    this.replaceInMemory({ originPrincipalKey: principalKey, submittedAt: checkedNow(this.options.now), status: 'pending', envelope: clone(command) })
     const pendingWrite = this.binding.then(() => this.persist())
       .catch((error: unknown) => { throw new CommandFailedError('persistence', errorMessage(error), false) })
     this.start(command.operationId, pendingWrite)
@@ -139,7 +142,7 @@ export class CommandQueue {
     const operation = this.operations.get(operationId)
     if (!operation || operation.status !== 'failed') return rejectedHandle(operationId, new Error('Only failed operations can be retried'))
     if (!operation.error.retryable) return rejectedHandle(operationId, new Error(`The ${operation.error.code} failure is not retryable`))
-    this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, status: 'pending', envelope: operation.envelope, executionEnvelope: operation.executionEnvelope })
+    this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, submittedAt: operation.submittedAt, status: 'pending', envelope: operation.envelope, executionEnvelope: operation.executionEnvelope })
     const pendingWrite = this.binding.then(() => this.persist())
       .catch((error: unknown) => { throw new CommandFailedError('persistence', errorMessage(error), false) })
     this.start(operationId, pendingWrite)
@@ -188,7 +191,7 @@ export class CommandQueue {
     this.requireOwner()
     await this.binding
     const pending = [...this.operations.values()].filter((operation): operation is Extract<CommandOperation, { status: 'pending' }> => operation.status === 'pending')
-    for (const operation of pending) this.start(operation.envelope.operationId)
+    for (const operation of pending) void this.start(operation.envelope.operationId).catch(() => undefined)
   }
 
   private requireOwner(): string {
@@ -243,28 +246,34 @@ export class CommandQueue {
         if (!isCommandResultFor(result, operation.envelope)) throw new CommandFailedError('validation', 'Command handler returned an invalid or mismatched result')
         const current = this.operations.get(operationId)
         if (current?.status === 'pending' && canonicalEnvelopeFingerprint(current.envelope) === canonicalEnvelopeFingerprint(operation.envelope)) {
-          await this.replace({ originPrincipalKey: operation.originPrincipalKey, status: 'fresh', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, result: clone(result) })
+          await this.replace({ originPrincipalKey: operation.originPrincipalKey, submittedAt: operation.submittedAt, status: 'fresh', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, result: clone(result) })
             .catch((error: unknown) => { throw new CommandFailedError('persistence', errorMessage(error), true) })
         }
       })
       .catch(async (error: unknown) => {
         const current = this.operations.get(operationId)
         if (!current || canonicalEnvelopeFingerprint(current.envelope) !== canonicalEnvelopeFingerprint(operation.envelope)) return
-        if (isIndeterminateExecutionError(error)) throw error
+        if (isIndeterminateExecutionError(error)) {
+          // A frozen session must not terminalize intent, but a background resume
+          // still reaffirms the pending record so the next matching principal can adopt it.
+          try { await this.persist() } catch { /* the already persisted pending record remains authoritative */ }
+          throw error
+        }
         const mapped = toFailure(error)
         if (mapped.code === 'persistence') {
-          this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, status: 'failed', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped })
+          this.replaceInMemory({ originPrincipalKey: operation.originPrincipalKey, submittedAt: operation.submittedAt, status: 'failed', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped })
         } else if (current.status !== 'pending') {
           return
         } else {
           const terminal: CommandOperation = mapped.code === 'conflict'
-            ? { originPrincipalKey: operation.originPrincipalKey, status: 'conflicted', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped, conflict: conflictDetails(error, operation.envelope) }
-            : { originPrincipalKey: operation.originPrincipalKey, status: 'failed', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped }
+            ? { originPrincipalKey: operation.originPrincipalKey, submittedAt: operation.submittedAt, status: 'conflicted', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped, conflict: conflictDetails(error, operation.envelope) }
+            : { originPrincipalKey: operation.originPrincipalKey, submittedAt: operation.submittedAt, status: 'failed', envelope: operation.envelope, executionEnvelope: current.executionEnvelope, error: mapped }
           try {
             await this.replace(terminal)
           } catch (storageError: unknown) {
             this.replaceInMemory({
               originPrincipalKey: operation.originPrincipalKey,
+              submittedAt: operation.submittedAt,
               status: 'failed',
               envelope: operation.envelope,
               executionEnvelope: current.executionEnvelope,
@@ -401,12 +410,12 @@ function decodePersistedQueue(value: unknown, principalKey: string): { operation
 }
 
 function isCommandOperation(value: unknown, principalKey: string): value is CommandOperation {
-  if (!isRecord(value) || value.originPrincipalKey !== principalKey || !isCommandEnvelope(value.envelope)) return false
+  if (!isRecord(value) || value.originPrincipalKey !== principalKey || !isIsoTimestamp(value.submittedAt) || !isCommandEnvelope(value.envelope)) return false
   if (value.executionEnvelope !== undefined && (!isCommandEnvelope(value.executionEnvelope) || !isExecutionEnvelopeFor(value.executionEnvelope, value.envelope))) return false
-  if (value.status === 'pending') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'status', 'envelope'], value))
-  if (value.status === 'fresh' || value.status === 'stale') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'status', 'envelope', 'result'], value)) && isCommandResultFor(value.result, value.envelope)
-  if (value.status === 'failed') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'status', 'envelope', 'error'], value)) && isCommandFailure(value.error) && value.error.code !== 'conflict'
-  if (value.status === 'conflicted') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'status', 'envelope', 'error', 'conflict'], value)) && isCommandFailure(value.error) && value.error.code === 'conflict' && isConflictForEnvelope(value.conflict, value.envelope)
+  if (value.status === 'pending') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'submittedAt', 'status', 'envelope'], value))
+  if (value.status === 'fresh' || value.status === 'stale') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'submittedAt', 'status', 'envelope', 'result'], value)) && isCommandResultFor(value.result, value.envelope)
+  if (value.status === 'failed') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'submittedAt', 'status', 'envelope', 'error'], value)) && isCommandFailure(value.error) && value.error.code !== 'conflict'
+  if (value.status === 'conflicted') return onlyOperationFields(value, operationFields(['originPrincipalKey', 'submittedAt', 'status', 'envelope', 'error', 'conflict'], value)) && isCommandFailure(value.error) && value.error.code === 'conflict' && isConflictForEnvelope(value.conflict, value.envelope)
   return false
 }
 
@@ -416,10 +425,32 @@ function operationFields(base: readonly string[], value: Record<string, unknown>
 
 function isExecutionEnvelopeFor(execution: CommandEnvelope, original: CommandEnvelope): boolean {
   if (execution.kind !== original.kind || execution.operationId !== original.operationId) return false
-  if (execution.kind === 'expense.add' && original.kind === 'expense.add') return execution.groupId === original.groupId
-  if (execution.kind === 'expense.edit' && original.kind === 'expense.edit') return execution.groupId === original.groupId && execution.expenseId === original.expenseId && execution.expectedRevision === original.expectedRevision
-  if (execution.kind === 'comment.add' && original.kind === 'comment.add') return execution.groupId === original.groupId && execution.expenseId === original.expenseId && execution.body === original.body
+  if (execution.kind === 'expense.add' && original.kind === 'expense.add') return equivalentWithPromotedAttachments(execution, original, 'attachmentRefs')
+  if (execution.kind === 'expense.edit' && original.kind === 'expense.edit') {
+    if (execution.groupId !== original.groupId || execution.expenseId !== original.expenseId || execution.expectedRevision !== original.expectedRevision) return false
+    if (execution.draft.groupId !== execution.groupId || original.draft.groupId !== original.groupId) return false
+    return equivalentWithPromotedAttachments(execution.draft, original.draft, 'attachmentRefs')
+  }
+  if (execution.kind === 'comment.add' && original.kind === 'comment.add') return equivalentWithPromotedAttachments(execution, original, 'attachmentRefs')
   return canonicalEnvelopeFingerprint(execution) === canonicalEnvelopeFingerprint(original)
+}
+
+function equivalentWithPromotedAttachments<T extends object & { readonly attachmentRefs: readonly string[] }>(
+  execution: T,
+  original: T,
+  attachmentField: 'attachmentRefs',
+): boolean {
+  if (!isAllowedAttachmentPromotion(original[attachmentField], execution[attachmentField])) return false
+  const { [attachmentField]: _executionAttachments, ...executionSemantics } = execution
+  const { [attachmentField]: _originalAttachments, ...originalSemantics } = original
+  return canonicalJson(executionSemantics) === canonicalJson(originalSemantics)
+}
+
+function isAllowedAttachmentPromotion(original: readonly string[], execution: readonly string[]): boolean {
+  return original.length === execution.length && original.every((reference, index) => {
+    const prepared = execution[index]
+    return prepared === reference || (/^local-receipt:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(reference) && /^remote-receipt:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(prepared))
+  })
 }
 
 function isIndeterminateExecutionError(error: unknown): boolean {
@@ -437,7 +468,7 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
   if (!isRecord(value) || !isOperationId(value.operationId) || typeof value.kind !== 'string') return false
   switch (value.kind) {
     case 'expense.add': return isExpenseDraft(value)
-    case 'expense.edit': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision) && isExpenseDraft(value.draft)
+    case 'expense.edit': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision) && isExpenseDraft(value.draft) && value.draft.groupId === value.groupId
     case 'expense.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision)
     case 'comment.add': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.body) && isStringArray(value.attachmentRefs)
     case 'comment.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.commentId)
@@ -627,6 +658,11 @@ function isNumberRecord(value: unknown): value is Readonly<Record<string, number
 function isSyncState(value: unknown): value is SyncState { return typeof value === 'string' && ['fresh', 'stale', 'pending', 'failed', 'conflicted'].includes(value) }
 function isIsoDate(value: unknown): value is string { if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false; const parsed = new Date(`${value}T00:00:00.000Z`); return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value }
 function isIsoTimestamp(value: unknown): value is string { if (typeof value !== 'string') return false; const parsed = new Date(value); return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value }
+function checkedNow(now: (() => string) | undefined): string {
+  const value = (now ?? (() => new Date().toISOString()))()
+  if (!isIsoTimestamp(value)) throw new CommandFailedError('validation', 'Queue submission time must be a strict ISO timestamp', false)
+  return value
+}
 function hasDuplicateParticipants(values: readonly Allocation[]): boolean { return new Set(values.map(({ participantId }) => participantId)).size !== values.length }
 function sumAllocations(values: readonly Allocation[]): bigint { return values.reduce((sum, { money }) => sum + BigInt(money.minorAmount), 0n) }
 function sameAllocations(left: readonly Allocation[], right: readonly Allocation[]): boolean { const key = (value: Allocation) => `${value.participantId}\u0000${value.money.currency}\u0000${value.money.minorAmount}`; const first = [...left].map(key).sort(); const second = [...right].map(key).sort(); return first.length === second.length && first.every((value, index) => value === second[index]) }
@@ -641,3 +677,8 @@ function cloneJsonValue(value: unknown): unknown | undefined { try { return JSON
 function rejectedHandle(operationId: string, error: Error): CommandHandle { return { operationId, result: () => Promise.reject(error) } }
 function cloneOptional<T>(value: T | undefined): T | undefined { return value === undefined ? undefined : clone(value) }
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (isRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  return JSON.stringify(value)
+}

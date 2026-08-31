@@ -43,7 +43,7 @@ describe('app data session', () => {
     await session.queue.submit({ kind: 'profile.update', operationId: 'demo-owned', displayName: 'Maya Patel' }).result()
 
     expect(await storage.load(principalKey)).toMatchObject({
-      version: 4,
+      version: 5,
       principalKey,
       operations: [{ originPrincipalKey: principalKey, envelope: { operationId: 'demo-owned' } }],
     })

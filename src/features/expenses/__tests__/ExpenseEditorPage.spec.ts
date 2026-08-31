@@ -71,6 +71,14 @@ describe('ExpenseEditorPage', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe(detail))
   })
 
+  it.each(['home', 'groups', 'activity', 'account'] as const)('fails closed for repeated group context on the %s edit route', async (origin) => {
+    const { wrapper, store } = await mountRoute(`/tabs/${origin}/expenses/groceries/edit?groupId=lake-house-weekend&groupId=another-group`)
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('valid group context')
+    expect(store.hasInitialized).toBe(false)
+    expect(wrapper.get('[data-action="save-expense"]').attributes('disabled')).toBeDefined()
+  })
+
   it('fails closed when a direct edit route is opened by neither the author nor a manager', async () => {
     setAppSessionForTesting(createAppSession({
       repository: createDemoRepository({ currentUserId: 'jordan-k' }), commandStorage: createMemoryCommandStorage(),

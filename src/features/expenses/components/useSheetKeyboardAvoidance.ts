@@ -2,16 +2,32 @@ import { onBeforeUnmount, onMounted, type Ref } from 'vue'
 
 const FIELD_MARGIN = 20
 
-export function useSheetKeyboardAvoidance(sheet: Ref<HTMLElement | undefined>): void {
-  let release: (() => void) | undefined
-
-  onMounted(() => {
-    if (sheet.value) release = bindSheetKeyboardAvoidance(sheet.value)
-  })
-  onBeforeUnmount(() => release?.())
+export interface SheetKeyboardAvoidanceOptions {
+  readonly resolveScrollHost?: (sheet: HTMLElement) => HTMLElement | Promise<HTMLElement>
 }
 
-function bindSheetKeyboardAvoidance(sheet: HTMLElement, host: Window = window): () => void {
+export function useSheetKeyboardAvoidance(sheet: Ref<HTMLElement | undefined>, options: SheetKeyboardAvoidanceOptions = {}): void {
+  let release: (() => void) | undefined
+  let stopped = false
+
+  onMounted(() => {
+    const element = sheet.value
+    if (!element) return
+    const resolved = options.resolveScrollHost?.(element)
+    if (!resolved) {
+      release = bindSheetKeyboardAvoidance(element)
+      return
+    }
+    if (resolved instanceof Promise) {
+      void resolved.then((scrollHost) => { if (!stopped) release = bindSheetKeyboardAvoidance(element, window, scrollHost) })
+      return
+    }
+    release = bindSheetKeyboardAvoidance(element, window, resolved)
+  })
+  onBeforeUnmount(() => { stopped = true; release?.() })
+}
+
+export function bindSheetKeyboardAvoidance(sheet: HTMLElement, host: Window = window, scrollHost: HTMLElement = sheet): () => void {
   const viewport = host.visualViewport
   let stopped = false
 
@@ -23,7 +39,7 @@ function bindSheetKeyboardAvoidance(sheet: HTMLElement, host: Window = window): 
 
   function visibleBounds(): { readonly top: number; readonly bottom: number; readonly sheetBottom: number } {
     const viewportMetrics = metrics()
-    const sheetBounds = sheet.getBoundingClientRect()
+    const sheetBounds = scrollHost.getBoundingClientRect()
     // jsdom and detached host fallbacks expose an empty rectangle; window metrics
     // remain the truthful available surface in that case.
     if (sheetBounds.height <= 0 || sheetBounds.bottom <= sheetBounds.top) {
@@ -47,8 +63,8 @@ function bindSheetKeyboardAvoidance(sheet: HTMLElement, host: Window = window): 
     if (!delta) return
 
     const behavior: ScrollBehavior = typeof host.matchMedia === 'function' && host.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-    if (typeof sheet.scrollBy === 'function') sheet.scrollBy({ top: Math.ceil(delta), behavior })
-    else sheet.scrollTop += Math.ceil(delta)
+    if (typeof scrollHost.scrollBy === 'function') scrollHost.scrollBy({ top: Math.ceil(delta), behavior })
+    else scrollHost.scrollTop += Math.ceil(delta)
   }
 
   function scheduleVisibilityCheck(target: HTMLElement | null): void {

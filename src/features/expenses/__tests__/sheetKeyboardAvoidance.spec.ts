@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ReceiptReview from '../components/ReceiptReview.vue'
+import { bindSheetKeyboardAvoidance } from '../components/useSheetKeyboardAvoidance'
 
 const members = [
   { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true },
@@ -32,6 +33,32 @@ afterEach(() => {
 })
 
 describe('expense sheet keyboard avoidance', () => {
+  it('uses a distinct Ionic scroll host with non-zero layout bounds under VisualViewport', () => {
+    const viewport = new TestVisualViewport()
+    viewport.height = 500
+    viewport.offsetTop = 50
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
+    const sheet = document.createElement('section')
+    const scrollHost = document.createElement('div')
+    const field = document.createElement('textarea')
+    scrollHost.append(field)
+    sheet.append(scrollHost)
+    document.body.append(sheet)
+    vi.spyOn(sheet, 'getBoundingClientRect').mockReturnValue(rect({ top: 100, bottom: 900 }))
+    vi.spyOn(scrollHost, 'getBoundingClientRect').mockReturnValue(rect({ top: 120, bottom: 760 }))
+    vi.spyOn(field, 'getBoundingClientRect').mockReturnValue(rect({ top: 690, bottom: 734 }))
+    const scrollBy = vi.fn()
+    Object.defineProperty(scrollHost, 'scrollBy', { configurable: true, value: scrollBy })
+
+    const release = bindSheetKeyboardAvoidance(sheet, window, scrollHost)
+    field.focus()
+
+    expect(sheet.style.getPropertyValue('--su-keyboard-inset')).toBe('230px')
+    expect(scrollBy).toHaveBeenCalledWith({ top: 204, behavior: 'smooth' })
+    release()
+    sheet.remove()
+  })
+
   it('updates the real keyboard inset and scrolls a focused bottom field into the visual viewport', () => {
     const viewport = new TestVisualViewport()
     Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })

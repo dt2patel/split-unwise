@@ -9,8 +9,8 @@ const principal = { mode: 'demo' as const, projectId: 'split-unwise-demo', uid: 
 const principalKey = appPrincipalKey(principal)
 
 describe('Task 7 queue schema and identity', () => {
-  it('deliberately migrates to schema v4 and quarantines a complete v3 document', () => {
-    const legacy = { version: 3, principalKey, operations: [] }
+  it('deliberately migrates to schema v5 and quarantines a complete v4 document without submission timestamps', () => {
+    const legacy = { version: 4, principalKey, operations: [] }
     const quarantined: unknown[] = []
     const queue = new CommandQueue({
       handlers: {},
@@ -23,9 +23,104 @@ describe('Task 7 queue schema and identity', () => {
 
     void queue.bind(principalKey)
 
-    expect(COMMAND_QUEUE_STORAGE_VERSION).toBe(4)
+    expect(COMMAND_QUEUE_STORAGE_VERSION).toBe(5)
     expect(queue.snapshot()).toEqual([])
     expect(quarantined).toEqual([legacy])
+  })
+
+  it('persists the queue submission timestamp independently of an expense date', async () => {
+    const storage = createMemoryCommandStorage()
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage,
+      now: () => '2026-08-31T20:15:30.000Z',
+      handlers: { 'comment.add': (command) => repository.comments.add(command as Extract<CommandEnvelope, { kind: 'comment.add' }>) },
+    })
+
+    await queue.submit(commentAdd('timestamped-submission')).result()
+
+    expect(queue.get('timestamped-submission')).toMatchObject({ submittedAt: '2026-08-31T20:15:30.000Z' })
+    expect(storage.load(principalKey)).toMatchObject({
+      version: 5,
+      operations: [expect.objectContaining({ submittedAt: '2026-08-31T20:15:30.000Z' })],
+    })
+  })
+
+  it('rejects any prepared financial mutation beyond declared local attachment promotion', async () => {
+    const repository = createDemoRepository()
+    const original = expenseAdd('financial-intent')
+    let calls = 0
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      prepare: async (command) => command.kind === 'expense.add'
+        ? { ...command, total: { ...command.total, minorAmount: command.total.minorAmount + 100 } }
+        : command,
+      handlers: { 'expense.add': async (command) => { calls += 1; return repository.expenses.add(command as Extract<CommandEnvelope, { kind: 'expense.add' }>) } },
+    })
+
+    await expect(queue.submit(original).result()).rejects.toMatchObject({ code: 'validation' })
+    expect(calls).toBe(0)
+    expect(queue.get(original.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation' } })
+  })
+
+  it('permits only local-to-remote substitutions at the same attachment positions', async () => {
+    const repository = createDemoRepository()
+    const original = { ...expenseAdd('attachment-promotion'), attachmentRefs: ['local-receipt:one', 'remote-receipt:kept'] }
+    let received: CommandEnvelope | undefined
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      prepare: async (command) => command.kind === 'expense.add'
+        ? { ...command, attachmentRefs: ['remote-receipt:one', 'remote-receipt:changed'] }
+        : command,
+      handlers: { 'expense.add': async (command) => { received = command; return repository.expenses.add(command as Extract<CommandEnvelope, { kind: 'expense.add' }>) } },
+    })
+
+    await expect(queue.submit(original).result()).rejects.toMatchObject({ code: 'validation' })
+    expect(received).toBeUndefined()
+  })
+
+  it('rejects an edit whose nested draft crosses the declared group boundary before persistence', async () => {
+    let writes = 0
+    let calls = 0
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: { load: () => undefined, save: async () => { writes += 1 } },
+      handlers: { 'expense.edit': async () => { calls += 1; throw new Error('must not run') } },
+    })
+    const draft = expenseAdd('draft-source')
+
+    await expect(queue.submit({
+      kind: 'expense.edit', operationId: 'cross-group-draft', groupId: 'lake-house-weekend', expenseId: 'groceries', expectedRevision: 1,
+      draft: { ...draft, groupId: 'another-group' },
+    }).result()).rejects.toMatchObject({ code: 'validation' })
+    expect({ writes, calls }).toEqual({ writes: 0, calls: 0 })
+  })
+
+  it('quarantines a hydrated execution envelope that changes immutable comment semantics', async () => {
+    const envelope = commentAdd('corrupt-execution')
+    const operation = {
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'pending' as const,
+      envelope,
+      executionEnvelope: { ...envelope, body: 'Changed after submission' },
+    }
+    const quarantined: unknown[] = []
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: {
+        load: () => ({ version: 5, principalKey, operations: [operation] }),
+        save: async () => undefined,
+        quarantine: async (_scope, records) => { quarantined.push(...records) },
+      },
+      handlers: {},
+    })
+
+    expect(queue.snapshot()).toEqual([])
+    expect(quarantined).toEqual([operation])
   })
 
   it.each([
@@ -172,9 +267,9 @@ describe('Task 7 session races', () => {
   it('activates cached repository reads without waiting for a resumed network mutation', async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
-    const pending = { originPrincipalKey: principalKey, status: 'pending' as const, envelope: commentAdd('resumed-comment') }
+    const pending = { originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending' as const, envelope: commentAdd('resumed-comment') }
     const storage: CommandStorage = {
-      load: () => ({ version: 4, principalKey, operations: [pending] }),
+      load: () => ({ version: 5, principalKey, operations: [pending] }),
       save: async () => undefined,
     }
     const source = createDemoRepository()
@@ -199,6 +294,40 @@ describe('Task 7 session races', () => {
     release()
     await expect(session.queue.submit(commentAdd('resumed-comment')).result()).resolves.toMatchObject({ status: 'saved' })
   })
+
+  it('consumes a stale-session rejection from a resumed background write and leaves it adoptable', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const pending = {
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'pending' as const,
+      envelope: commentAdd('resumed-stale-comment'),
+    }
+    let saved: unknown
+    const storage: CommandStorage = {
+      load: () => ({ version: 5, principalKey, operations: [pending] }),
+      save: async (_scope, document) => { saved = structuredClone(document) },
+    }
+    const source = createDemoRepository()
+    const repository: AppRepository = {
+      ...source,
+      commands: {
+        async execute(command) {
+          if (command.operationId === 'resumed-stale-comment') await gate
+          return source.commands.execute(command)
+        },
+      },
+    }
+    const session = createAppSession({ repository, principal, commandStorage: storage })
+    await session.ready
+
+    session.freeze()
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(saved).toMatchObject({ operations: [expect.objectContaining({ status: 'pending', envelope: expect.objectContaining({ operationId: 'resumed-stale-comment' }) })] })
+  })
 })
 
 function commentAdd(operationId: string) {
@@ -208,6 +337,23 @@ function commentAdd(operationId: string) {
     groupId: 'lake-house-weekend',
     expenseId: 'groceries',
     body: 'A durable comment',
+    attachmentRefs: [],
+  }
+}
+
+function expenseAdd(operationId: string) {
+  const participantIds = ['maya-p', 'jordan-k', 'alex-r', 'taylor-s'] as const
+  return {
+    kind: 'expense.add' as const,
+    operationId,
+    groupId: 'lake-house-weekend',
+    description: 'Firewood',
+    date: '2026-08-31',
+    total: { currency: 'USD' as const, minorAmount: 2400 },
+    payments: [{ participantId: 'maya-p', money: { currency: 'USD' as const, minorAmount: 2400 } }],
+    allocations: participantIds.map((participantId) => ({ participantId, money: { currency: 'USD' as const, minorAmount: 600 } })),
+    category: 'Supplies',
+    splitMethod: { type: 'equal' as const, participantIds },
     attachmentRefs: [],
   }
 }

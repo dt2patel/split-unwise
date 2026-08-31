@@ -12,6 +12,7 @@ import ReceiptReview from './components/ReceiptReview.vue'
 import RecurrenceSheet from './components/RecurrenceSheet.vue'
 import SplitEditor from './components/SplitEditor.vue'
 import { useExpenseStore, type ExpenseOrigin, type PaymentInput, type ReceiptItemInput, type SplitInput } from './expenseStore'
+import { parseStrictScalarId } from '../../data/identifiers'
 
 const route = useRoute()
 const router = useRouter()
@@ -57,8 +58,7 @@ onBeforeUnmount(() => {
 async function initialize(): Promise<void> {
   const match = /^\/tabs\/(home|groups|activity|account)\/expenses\//.exec(route.path)
   const origin = (match?.[1] ?? 'home') as ExpenseOrigin
-  const queryGroupId = Array.isArray(route.query.groupId) ? route.query.groupId[0] : route.query.groupId
-  const groupId = typeof queryGroupId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(queryGroupId) ? queryGroupId : undefined
+  const groupId = parseStrictScalarId(route.query.groupId)
   const expenseId = typeof route.params.expenseId === 'string' ? route.params.expenseId : undefined
   await store.initialize({ origin, groupId, expenseId })
 }

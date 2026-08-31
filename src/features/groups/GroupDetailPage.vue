@@ -16,6 +16,7 @@ import {
   IonSegmentButton,
   IonTitle,
   IonToolbar,
+  onIonViewWillEnter,
 } from '@ionic/vue'
 import { listOutline, settingsOutline, timeOutline } from 'ionicons/icons'
 import AppFab from '../../components/AppFab.vue'
@@ -24,6 +25,7 @@ import ActionRail from './components/ActionRail.vue'
 import GroupHero from './components/GroupHero.vue'
 import { useGroupStore } from './groupStore'
 import { activityDestination, activityText } from '../activity/activityStore'
+import { isStrictId } from '../../data/identifiers'
 
 type GroupView = 'expenses' | 'activity'
 
@@ -38,10 +40,28 @@ const monthLabel = computed(() => {
   if (!date) return ''
   return new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00.000Z`))
 })
+const groupedActivity = computed(() => {
+  const groups: Array<{ readonly key: string; readonly label: string; readonly items: typeof recentActivity.value }> = []
+  for (const item of recentActivity.value) {
+    const key = item.createdAt.slice(0, 10)
+    const existing = groups.at(-1)
+    if (existing?.key === key) {
+      groups[groups.length - 1] = { ...existing, items: [...existing.items, item] }
+    } else {
+      groups.push({ key, label: formatActivityDay(item.createdAt), items: [item] })
+    }
+  }
+  return groups
+})
 
 watch(groupId, (id) => {
   if (id) void store.loadGroup(id)
 }, { immediate: true })
+onIonViewWillEnter(() => { void refreshOnViewEntry() })
+
+async function refreshOnViewEntry(): Promise<void> {
+  if (isStrictId(groupId.value)) await store.loadGroup(groupId.value)
+}
 
 function selectView(view: GroupView): void {
   selectedView.value = view
@@ -54,10 +74,13 @@ function onSegmentChange(event: CustomEvent<{ value?: string | number }>): void 
 function onScroll(event: CustomEvent<{ scrollTop?: number }>): void {
   isCollapsed.value = (event.detail.scrollTop ?? 0) > 72
 }
+function formatActivityDay(timestamp: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'long', timeZone: 'UTC' }).format(new Date(timestamp))
+}
 function retryExpense(operationId: string | undefined): void { if (operationId) void store.retryOperation(operationId).result().catch(() => undefined) }
 function discardExpense(operationId: string | undefined): void { if (operationId) store.discardFailedOperation(operationId) }
 function expenseDetailDestination(expenseId: string): string | undefined {
-  if (expenseId.startsWith('pending:') || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(groupId.value) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(expenseId)) return undefined
+  if (expenseId.startsWith('pending:') || !isStrictId(groupId.value) || !isStrictId(expenseId)) return undefined
   return `/tabs/groups/expenses/${encodeURIComponent(expenseId)}?groupId=${encodeURIComponent(groupId.value)}`
 }
 async function reloadRemoteExpense(operationId: string | undefined): Promise<void> {
@@ -104,7 +127,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
         <action-rail :group-id="groupId" />
 
         <section class="group-detail__ledger" aria-label="Group journal">
-          <h2 v-if="monthLabel" class="month-divider" data-testid="month-divider">{{ monthLabel }}</h2>
+          <h2 v-if="selectedView === 'expenses' && monthLabel" class="month-divider" data-testid="month-divider">{{ monthLabel }}</h2>
 
           <transition name="journal-fade" mode="out-in">
             <div v-if="selectedView === 'expenses'" key="expenses" data-testid="expense-journal">
@@ -130,13 +153,23 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
                 @delete-remote="deleteRemoteExpense(expense.clientOperationId)"
               />
             </div>
-            <ol v-else key="activity" class="activity-list" data-testid="group-activity">
-              <li v-for="item in recentActivity" :key="item.id">
-                <router-link v-if="activityDestination(item, 'groups')" :to="activityDestination(item, 'groups')!">{{ activityText(item) }}</router-link>
-                <span v-else>{{ activityText(item) }}</span>
-                <time :datetime="item.createdAt">{{ new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(item.createdAt)) }}</time>
-              </li>
-            </ol>
+            <div v-else key="activity" data-testid="group-activity">
+              <section v-for="day in groupedActivity" :key="day.key" class="activity-day">
+                <h3 class="activity-day__heading" data-testid="activity-date-divider">{{ day.label }}</h3>
+                <ol class="activity-list">
+                  <li v-for="item in day.items" :key="item.id" :data-activity-id="item.id" :data-sync-state="item.syncState">
+                    <router-link v-if="activityDestination(item, 'groups')" :to="activityDestination(item, 'groups')!" class="activity-list__body">
+                      <span>{{ activityText(item) }}</span>
+                      <time :datetime="item.createdAt">{{ new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(item.createdAt)) }}</time>
+                    </router-link>
+                    <div v-else class="activity-list__body">
+                      <span>{{ activityText(item) }}</span>
+                      <time :datetime="item.createdAt">{{ new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(item.createdAt)) }}</time>
+                    </div>
+                  </li>
+                </ol>
+              </section>
+            </div>
           </transition>
         </section>
       </main>
@@ -175,8 +208,10 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
 .group-detail__main > :deep(.action-rail) { margin-top: 16px; }
 .group-detail__ledger { padding: 0 var(--su-journal-gutter) 10px; }
 .month-divider { margin: 20px 0 0; padding: 0 3px 7px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); color: var(--ion-color-medium); font-size: 0.82rem; font-weight: 520; line-height: 1.2; }
-.activity-list { min-height: 415px; margin: 0; padding: 0; list-style: none; }
-.activity-list li { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); font-size: 0.9rem; }
+.activity-day__heading { margin: 18px 0 0; padding: 0 3px 7px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); color: var(--ion-color-medium); font-size: 0.82rem; font-weight: 520; }
+.activity-list { margin: 0; padding: 0; list-style: none; }
+.activity-list li { border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); font-size: 0.9rem; }
+.activity-list__body { display: flex; min-height: 44px; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 2px; color: inherit; text-decoration: none; }
 .activity-list time { flex: 0 0 auto; color: var(--ion-color-medium); font-size: 0.75rem; }
 .group-detail__status { padding: 32px 18px; color: var(--ion-color-medium); text-align: center; }
 .group-detail__footer { padding: 5px 14px calc(5px + env(safe-area-inset-bottom)); background: color-mix(in srgb, var(--su-surface) 94%, transparent); backdrop-filter: blur(18px); }

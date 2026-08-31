@@ -3,11 +3,16 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { IonButton, IonToggle } from '@ionic/vue'
 import { getAppSession } from '../../data'
 import type { NotificationItem, NotificationPreferences, TimelineCursor } from '../../data/repositories'
+import { compareTimelineAscending, compareTimelineDescending } from '../../data/timeline'
 
 const session = getAppSession()
 const notifications = ref<readonly NotificationItem[]>([])
-const preferences = ref<NotificationPreferences>({ emailEnabled: true, pushEnabled: true })
+const preferences = ref<NotificationPreferences>()
+const authoritativeUnreadCount = ref(0)
+const nextCursor = ref<TimelineCursor>()
 const isLoading = ref(true)
+const isLoadingMore = ref(false)
+const loadError = ref('')
 const error = ref('')
 const status = ref('')
 const inFlight = ref(new Set<string>())
@@ -42,7 +47,7 @@ const rows = computed(() => {
 
 const projectedPreferences = computed(() => {
   queueRevision.value
-  let projected = { ...preferences.value }
+  let projected = preferences.value ? { ...preferences.value } : undefined
   for (const operation of relevantOperations()) {
     if (operation.envelope.kind !== 'notification.preferences') continue
     if (operation.status === 'pending' || operation.status === 'failed') projected = { ...operation.envelope.preferences }
@@ -51,8 +56,7 @@ const projectedPreferences = computed(() => {
   return projected
 })
 
-const unreadCount = computed(() => rows.value.filter(({ readAt }) => !readAt).length)
-const unreadLabel = computed(() => `${unreadCount.value} unread notification${unreadCount.value === 1 ? '' : 's'}`)
+const unreadLabel = computed(() => `${authoritativeUnreadCount.value} unread notification${authoritativeUnreadCount.value === 1 ? '' : 's'}`)
 const latestCutoff = computed<TimelineCursor | undefined>(() => rows.value[0] ? { createdAt: rows.value[0].createdAt, id: rows.value[0].notificationId } : undefined)
 const failedOperation = computed(() => [...relevantOperations()].reverse().find((operation) => operation.status === 'failed'))
 
@@ -67,19 +71,45 @@ onBeforeUnmount(() => { ++request; unsubscribe?.() })
 
 async function load(): Promise<void> {
   const active = ++request
+  isLoading.value = true
+  loadError.value = ''
   try {
     await session.ready
-    const [page, savedPreferences] = await Promise.all([
+    const [page, savedPreferences, savedUnreadCount] = await Promise.all([
       session.repository.notifications.list({ limit: 100 }),
       session.repository.notifications.getPreferences(),
+      session.repository.notifications.unreadCount(),
     ])
     if (active !== request) return
     notifications.value = page.items
+    nextCursor.value = page.nextCursor
     preferences.value = savedPreferences
+    authoritativeUnreadCount.value = savedUnreadCount
   } catch (reason) {
-    if (active === request) error.value = message(reason, 'Notifications could not be loaded.')
+    if (active === request) {
+      preferences.value = undefined
+      loadError.value = message(reason, 'Notifications could not be loaded.')
+    }
   } finally {
     if (active === request) isLoading.value = false
+  }
+}
+
+async function loadMore(): Promise<void> {
+  const cursor = nextCursor.value
+  if (!cursor || isLoadingMore.value) return
+  isLoadingMore.value = true
+  loadError.value = ''
+  try {
+    const page = await session.repository.notifications.list({ limit: 100, cursor })
+    const merged = new Map(notifications.value.map((notification) => [notification.notificationId, notification]))
+    for (const notification of page.items) merged.set(notification.notificationId, notification)
+    notifications.value = [...merged.values()].sort(newestFirst)
+    nextCursor.value = page.nextCursor
+  } catch (reason) {
+    loadError.value = message(reason, 'More notifications could not be loaded.')
+  } finally {
+    isLoadingMore.value = false
   }
 }
 
@@ -106,7 +136,7 @@ async function markRead(notification: NotificationItem): Promise<void> {
 
 async function markAllRead(): Promise<void> {
   const cutoff = latestCutoff.value
-  if (!cutoff || unreadCount.value === 0 || inFlight.value.has('all')) return
+  if (!cutoff || authoritativeUnreadCount.value === 0 || inFlight.value.has('all')) return
   inFlight.value = new Set(inFlight.value).add('all')
   error.value = ''
   status.value = 'Marking notifications read…'
@@ -126,9 +156,10 @@ async function markAllRead(): Promise<void> {
 
 async function updatePreference(key: keyof NotificationPreferences, event: CustomEvent<{ checked?: boolean }>): Promise<void> {
   const checked = event.detail.checked
-  if (typeof checked !== 'boolean') return
-  const next = { ...projectedPreferences.value, [key]: checked }
-  if (next.emailEnabled === projectedPreferences.value.emailEnabled && next.pushEnabled === projectedPreferences.value.pushEnabled) return
+  const current = projectedPreferences.value
+  if (typeof checked !== 'boolean' || !current) return
+  const next = { ...current, [key]: checked }
+  if (next.emailEnabled === current.emailEnabled && next.pushEnabled === current.pushEnabled) return
   error.value = ''
   status.value = 'Saving notification preferences…'
   try {
@@ -180,8 +211,8 @@ function notificationText(notification: NotificationItem): string {
   if (notification.kind === 'comment.added') return `${notification.actor.displayName} commented on ${label}`
   return `${notification.actor.displayName} changed ${label}`
 }
-function atOrBefore(notification: NotificationItem, cutoff: TimelineCursor): boolean { return notification.createdAt.localeCompare(cutoff.createdAt) < 0 || (notification.createdAt === cutoff.createdAt && notification.notificationId.localeCompare(cutoff.id) <= 0) }
-function newestFirst(left: NotificationItem, right: NotificationItem): number { return right.createdAt.localeCompare(left.createdAt) || right.notificationId.localeCompare(left.notificationId) }
+function atOrBefore(notification: NotificationItem, cutoff: TimelineCursor): boolean { return compareTimelineAscending({ createdAt: notification.createdAt, id: notification.notificationId }, cutoff) <= 0 }
+function newestFirst(left: NotificationItem, right: NotificationItem): number { return compareTimelineDescending({ createdAt: left.createdAt, id: left.notificationId }, { createdAt: right.createdAt, id: right.notificationId }) }
 function message(reason: unknown, fallback: string): string { return reason instanceof Error && reason.message.trim() ? reason.message : fallback }
 function createOperationId(prefix: string): string { return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}` }
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
@@ -194,7 +225,7 @@ function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
         <h2 id="notifications-title">Notifications</h2>
         <p data-testid="unread-count">{{ unreadLabel }}</p>
       </div>
-      <ion-button fill="clear" :disabled="unreadCount === 0 || inFlight.has('all')" data-action="mark-all-read" @click="markAllRead">Mark all read</ion-button>
+      <ion-button fill="clear" :disabled="authoritativeUnreadCount === 0 || inFlight.has('all')" data-action="mark-all-read" @click="markAllRead">Mark all read</ion-button>
     </div>
 
     <p v-if="isLoading" role="status">Loading notifications…</p>
@@ -216,12 +247,20 @@ function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
         >Mark read</ion-button>
       </li>
     </ol>
+    <ion-button v-if="nextCursor" fill="clear" :disabled="isLoadingMore" data-action="load-more-notifications" @click="loadMore">
+      {{ isLoadingMore ? 'Loading…' : 'Load more' }}
+    </ion-button>
 
     <div class="notification-preferences" role="group" aria-labelledby="notification-preferences-title">
       <h3 id="notification-preferences-title">Future delivery</h3>
-      <label>Email notifications <ion-toggle :model-value="projectedPreferences.emailEnabled" @ion-change="updatePreference('emailEnabled', $event)" /></label>
-      <label>Push notifications <ion-toggle :model-value="projectedPreferences.pushEnabled" @ion-change="updatePreference('pushEnabled', $event)" /></label>
+      <label>Email notifications <ion-toggle :model-value="projectedPreferences?.emailEnabled ?? false" :disabled="!projectedPreferences || isLoading" @ion-change="updatePreference('emailEnabled', $event)" /></label>
+      <label>Push notifications <ion-toggle :model-value="projectedPreferences?.pushEnabled ?? false" :disabled="!projectedPreferences || isLoading" @ion-change="updatePreference('pushEnabled', $event)" /></label>
       <p>Preferences change future email and push delivery. They do not erase Activity.</p>
+    </div>
+
+    <div v-if="loadError" class="notification-center__error" role="alert">
+      <p data-testid="notification-load-error">{{ loadError }}</p>
+      <ion-button fill="clear" data-action="retry-notification-load" @click="load">Retry</ion-button>
     </div>
 
     <p v-if="status" role="status">{{ status }}</p>

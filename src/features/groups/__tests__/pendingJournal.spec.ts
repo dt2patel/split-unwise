@@ -54,7 +54,7 @@ describe('pending journal projection', () => {
         },
       },
     }
-    const pending: CommandOperation = { originPrincipalKey: PRINCIPAL_KEY, status: 'pending', envelope: command('hydrated-pending') }
+    const pending: CommandOperation = { originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending', envelope: command('hydrated-pending') }
     const queue = new CommandQueue({ storage: storageWith([pending]), handlers: {}, })
     let releaseIdentity!: () => void
     const ready = new Promise<void>((resolve) => {
@@ -131,7 +131,7 @@ describe('pending journal projection', () => {
   it('keeps a failed draft visible and surfaces an error when discard persistence fails', async () => {
     const repository = createDemoRepository()
     const failed = {
-      originPrincipalKey: PRINCIPAL_KEY,
+      originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'failed',
       envelope: command('discard-storage-failure'),
       error: { code: 'validation', message: 'invalid draft', retryable: false },
@@ -163,13 +163,13 @@ describe('pending journal projection', () => {
     const oldEdit = { ...groceries, description: 'Older groceries', revision: 2 }
     const operations: readonly CommandOperation[] = [
       {
-        originPrincipalKey: PRINCIPAL_KEY,
+        originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
         status: 'fresh',
         envelope: { kind: 'expense.delete', operationId: 'delete-groceries', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 2 },
         result: { kind: 'expense.delete', operationId: 'delete-groceries', status: 'saved', tombstone: { id: groceries.id, groupId: groceries.groupId, revision: 3, deletedAt: '2026-08-30T13:00:00.000Z' } },
       },
       {
-        originPrincipalKey: PRINCIPAL_KEY,
+        originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
         status: 'fresh',
         envelope: editCommand('older-edit', groceries, 1, oldEdit.description),
         result: { kind: 'expense.edit', operationId: 'older-edit', status: 'saved', expense: oldEdit },
@@ -206,13 +206,13 @@ describe('pending journal projection', () => {
     const olderEdit = { ...groceries, description: 'Older groceries', revision: 2 }
     const operations: readonly CommandOperation[] = [
       {
-        originPrincipalKey: PRINCIPAL_KEY,
+        originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
         status: 'fresh',
         envelope: editCommand('older-edit-before-delete', groceries, 1, olderEdit.description),
         result: { kind: 'expense.edit', operationId: 'older-edit-before-delete', status: 'saved', expense: olderEdit },
       },
       {
-        originPrincipalKey: PRINCIPAL_KEY,
+        originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
         status: 'fresh',
         envelope: { kind: 'expense.delete', operationId: 'acknowledged-delete', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 2 },
         result: { kind: 'expense.delete', operationId: 'acknowledged-delete', status: 'saved', tombstone: { id: groceries.id, groupId: groceries.groupId, revision: 3, deletedAt: '2026-08-30T13:00:00.000Z' } },
@@ -241,13 +241,13 @@ describe('pending journal projection', () => {
     const olderEdit = { ...groceries, description: 'Cached groceries', revision: 2, updatedAt: '2026-08-30T12:00:00.000Z' }
     const storage = storageWith([
       {
-        originPrincipalKey: PRINCIPAL_KEY,
+        originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
         status: 'fresh',
         envelope: editCommand('cached-edit-before-unconfirmed-delete', groceries, 1, olderEdit.description),
         result: { kind: 'expense.edit', operationId: 'cached-edit-before-unconfirmed-delete', status: 'saved', expense: olderEdit },
       },
       {
-        originPrincipalKey: PRINCIPAL_KEY,
+        originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
         status: 'fresh',
         envelope: { kind: 'expense.delete', operationId: 'unconfirmed-delete', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 2 },
         result: { kind: 'expense.delete', operationId: 'unconfirmed-delete', status: 'saved', tombstone: { id: groceries.id, groupId: groceries.groupId, revision: 3, deletedAt: '2026-08-30T13:00:00.000Z' } },
@@ -291,13 +291,13 @@ describe('pending journal projection', () => {
     const revisionTwo = { ...groceries, description: 'Old groceries', revision: 2, updatedAt: '2026-08-30T12:00:00.000Z' }
     const operations: readonly CommandOperation[] = [
       {
-        originPrincipalKey: PRINCIPAL_KEY,
+        originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
         status: 'fresh',
         envelope: editCommand('newest-first', groceries, 3, revisionFour.description),
         result: { kind: 'expense.edit', operationId: 'newest-first', status: 'saved', expense: revisionFour },
       },
       {
-        originPrincipalKey: PRINCIPAL_KEY,
+        originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
         status: 'stale',
         envelope: editCommand('older-last', groceries, 1, revisionTwo.description),
         result: { kind: 'expense.edit', operationId: 'older-last', status: 'saved', expense: revisionTwo },
@@ -330,7 +330,7 @@ describe('pending journal projection', () => {
       ],
     }
     const operation: CommandOperation = {
-      originPrincipalKey: PRINCIPAL_KEY,
+      originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'pending',
       envelope: { kind: 'expense.edit', operationId: 'pending-net-edit', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: 1, draft: localDraft },
     }
@@ -461,10 +461,10 @@ describe('pending journal projection', () => {
   it('marks only retryable failures as retryable journal rows', async () => {
     const repository = createDemoRepository()
     const retryable = {
-      originPrincipalKey: PRINCIPAL_KEY, status: 'failed', envelope: command('network-failure'), error: { code: 'network', message: 'offline', retryable: true },
+      originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z', status: 'failed', envelope: command('network-failure'), error: { code: 'network', message: 'offline', retryable: true },
     } as CommandOperation
     const finalFailure = {
-      originPrincipalKey: PRINCIPAL_KEY, status: 'failed', envelope: command('validation-failure'), error: { code: 'validation', message: 'invalid', retryable: false },
+      originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z', status: 'failed', envelope: command('validation-failure'), error: { code: 'validation', message: 'invalid', retryable: false },
     } as CommandOperation
     const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith([retryable, finalFailure]), handlers: {} })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
@@ -481,6 +481,6 @@ describe('pending journal projection', () => {
 
 function storageWith(operations: readonly CommandOperation[]) {
   return createMemoryCommandStorage({
-    [PRINCIPAL_KEY]: { version: 4, principalKey: PRINCIPAL_KEY, operations },
+    [PRINCIPAL_KEY]: { version: 5, principalKey: PRINCIPAL_KEY, operations },
   })
 }

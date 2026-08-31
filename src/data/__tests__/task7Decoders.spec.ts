@@ -33,6 +33,10 @@ describe('Task 7 Firebase boundary decoders', () => {
     expect(decodeExpenseRevision('lake-house-weekend', 'groceries', 'revision-groceries-2', raw)).toMatchObject({ revision: 2, action: 'updated' })
     expect(() => decodeExpenseRevision('lake-house-weekend', 'groceries', 'revision-groceries-2', { ...raw, revision: 3 })).toThrow('snapshot revision')
     expect(() => decodeExpenseRevision('lake-house-weekend', 'groceries', 'revision-groceries-2', { ...raw, createdAt: 'August 31' })).toThrow('ISO timestamp')
+    expect(() => decodeExpenseRevision('lake-house-weekend', 'groceries', 'revision-groceries-2', { ...raw, action: 'created' })).toThrow('created revision')
+    expect(() => decodeExpenseRevision('lake-house-weekend', 'groceries', 'revision-groceries-2', {
+      ...raw, actor: { id: 'alex-r', displayName: 'Alex R.' }, expense: { ...raw.expense, updatedBy: { id: 'maya-p', displayName: 'Maya P.' } },
+    })).toThrow('actor')
   })
 
   it('strictly decodes structured comments and activity without renderer HTML or URLs', () => {
@@ -57,6 +61,18 @@ describe('Task 7 Firebase boundary decoders', () => {
       operationId: 'comment-op', kind: 'comment.added', subject: { kind: 'comment', id: 'comment-1' },
       actor: { id: 'maya-p', displayName: 'Maya P.' }, createdAt: 'not-a-timestamp',
     })).toThrow('ISO timestamp')
+    expect(() => decodeActivity('../cross-scope', 'activity-1', {
+      operationId: 'comment-op', kind: 'comment.added', subject: { kind: 'comment', id: 'comment-1' },
+      actor: { id: 'maya-p', displayName: 'Maya P.' }, expenseId: 'groceries', commentId: 'comment-1', createdAt: '2026-08-31T12:00:00.000Z',
+    })).toThrow('groupId')
+    expect(() => decodeActivity('lake-house-weekend', 'activity-1', {
+      operationId: 'comment-op', kind: 'comment.added', subject: { kind: 'expense', id: 'groceries' },
+      actor: { id: 'maya-p', displayName: 'Maya P.' }, expenseId: 'groceries', commentId: 'comment-1', createdAt: '2026-08-31T12:00:00.000Z',
+    })).toThrow('comment subject')
+    expect(() => decodeActivity('lake-house-weekend', 'activity-1', {
+      operationId: 'expense-op', kind: 'expense.updated', subject: { kind: 'expense', id: 'different-expense' },
+      actor: { id: 'maya-p', displayName: 'Maya P.' }, expenseId: 'groceries', revision: 2, createdAt: '2026-08-31T12:00:00.000Z',
+    })).toThrow('subject ID')
   })
 
   it('binds notifications to the repository principal and strictly decodes read timestamps', () => {
@@ -66,6 +82,8 @@ describe('Task 7 Firebase boundary decoders', () => {
       createdAt: '2026-08-31T12:00:00.000Z', readAt: '2026-08-31T12:01:00.000Z',
     }
     expect(decodeNotification('maya-p', 'notification-1', raw)).toMatchObject({ notificationId: 'notification-1', readAt: raw.readAt })
+    expect(decodeNotification('maya-p', 'notification-unread', { ...raw, readAt: null })).not.toHaveProperty('readAt')
+    expect(() => decodeNotification('maya-p', 'notification-omitted', { ...raw, readAt: undefined })).toThrow('readAt')
     expect(() => decodeNotification('jordan-k', 'notification-1', raw)).toThrow('principalId')
     expect(() => decodeNotification('maya-p', 'notification-1', { ...raw, readAt: 'now' })).toThrow('ISO timestamp')
   })

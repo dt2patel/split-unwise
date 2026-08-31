@@ -2,7 +2,9 @@
 
 Date: 2026-08-31
 
-Baseline: `a7bbf24`
+Original implementation baseline: `a7bbf24`
+
+Fix round 1 review baseline: `e0531ea`
 
 Scope: Expense detail, immutable audit/revisions, comments, global Activity, and principal-owned notifications.
 
@@ -147,6 +149,41 @@ Production break named: edit Cancel/Save returned to the stack root, and a direc
 - RED: unauthorized editor rendered with Save enabled and no alert.
 - GREEN: editor fails closed before initialization.
 
+## Fix round 1 RED-first evidence
+
+The review hardening pass closed every independent finding without deferring behavior to Task 11 or Task 12.
+
+### Durable data, queue, Firebase, and decoding boundaries
+
+Production breaks named: demo authoritative results disappeared with a new repository instance; prepared envelopes could drift beyond declared receipt promotion; a frozen session could leak a stale resume rejection; tombstones polluted Firebase live aggregates; notification unread reads used inconsistent representations; timeline ties depended on host locale; Firebase feeds fetched all documents before paging; and revision/activity decoders accepted cross-field corruption.
+
+- Command: `pnpm vitest run src/data/__tests__/auditRepositories.spec.ts src/data/__tests__/task7Decoders.spec.ts src/data/__tests__/task7QueueSession.spec.ts src/data/__tests__/firebaseRepository.spec.ts`
+- RED: 15 failed / 26 passed across the four review suites.
+- GREEN: 4 files passed / 41 tests passed.
+- Result: demo state and replay ledgers are versioned and rehydrated across repository instances; queue schema v5 persists `submittedAt`, observes resume failures, and restricts prepared changes to position-preserving local-to-remote receipt promotion; Firebase live queries exclude tombstones, use one `readAt: null` unread representation, server ordering/limits/cursors, and filter-aware continuation; strict decoders enforce IDs and action/kind invariants.
+
+### Strict route context, Activity, notifications, and ordering
+
+Production breaks named: repeated query scalars were accepted inconsistently; pending Activity invented occurrence/epoch times; pagination and authoritative unread totals were absent; notification preferences appeared enabled before a successful load; and punctuation/case ties used locale-dependent ordering.
+
+- RED: 4/4 origin routes accepted repeated `groupId`; 3 Activity tests failed; 3 notification tests failed.
+- GREEN: repeated `groupId` fails closed in all four origins; Activity pagination/timestamps/byte ordering passed; all 7 notification tests passed with server cursor continuation, authoritative unread count, disabled unknown preferences, and explicit load retry.
+
+### Comment, keyboard, expense deletion, audit, and attachment recovery
+
+Production breaks named: a pre-queue receipt claim failure left the composer locked; attachments exposed internal references and could not be removed; durable comment and expense deletions were not rehydrated; delete conflicts had no resolution; keyboard avoidance scrolled the component instead of Ionic's real scroll host; and audit history lacked usable diffs/snapshots.
+
+- RED: 3 comment recovery tests, 1 non-zero-layout Ionic scroll-host test, and 5 expense detail tests failed. A deeper full-snapshot assertion then failed once before completion.
+- GREEN: 10 CommentThread tests, 6 keyboard tests, and 13 ExpenseDetail tests passed.
+- Result: claim failure resets submission state; attachments show filename/durability/preview availability with Remove and never render storage refs; exact pending/failed/conflicted delete operations survive recreation with Retry/Discard/reload/delete-latest controls and duplicate suppression; keyboard calculations target `ion-content.getScrollElement()`; audit rows have concise diffs and expandable full snapshots.
+
+### Group Activity integration
+
+Production breaks named: Group Activity omitted durable queue projections, reused the expense month heading, did not refresh on Ionic view entry, and exposed undersized inline links.
+
+- RED: 2/2 focused Group Activity tests failed.
+- GREEN: 2/2 passed with the shared queue projection, `submittedAt` date groups, `onIonViewWillEnter` refresh, and a full-width link body with a minimum 44px target.
+
 ## Final GREEN verification
 
 ### Focused Task 7 matrix
@@ -155,22 +192,22 @@ Command:
 
 `pnpm vitest run src/data/__tests__/auditRepositories.spec.ts src/data/__tests__/task7Decoders.spec.ts src/data/__tests__/task7QueueSession.spec.ts src/app/__tests__/router.spec.ts src/features/expenses/__tests__/ExpenseDetailPage.spec.ts src/features/expenses/__tests__/ExpenseEditorPage.spec.ts src/features/comments/__tests__/CommentThread.spec.ts src/features/activity/__tests__/ActivityPage.spec.ts src/features/notifications/__tests__/NotificationCenter.spec.ts src/components/__tests__/ExpenseRow.spec.ts src/features/groups/__tests__/GroupDetailPage.spec.ts`
 
-Result: 11 files passed, 144 tests passed.
+Fix-round focused result: 14 files passed, 223 tests passed.
 
 ### Full suite
 
 - Command: `pnpm test`
-- Result: 35 files passed, 404 tests passed.
+- Result: 36 files passed, 435 tests passed.
 
 ### Static/build checks
 
 - Command: `pnpm typecheck`
 - Result: passed (`vue-tsc --noEmit`).
 - Command: `pnpm build`
-- Result: passed; 314 modules transformed. Vite emitted only its existing large-chunk advisory.
-- Command before commit: `git diff --check`
+- Result: passed; 316 modules transformed. Vite emitted only its existing large-chunk advisory.
+- Command before commit: `git diff --check e0531ea`
 - Result: passed with no whitespace errors.
-- Command after implementation commit: `git diff --check a7bbf24..HEAD`
+- Command after implementation commit: `git diff --check e0531ea..HEAD`
 - Result: passed with no whitespace errors.
 
 No browser or Playwright validation was run because the Task 7 brief explicitly prohibited it.

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { IonContent, IonHeader, IonLabel, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToolbar } from '@ionic/vue'
+import { IonButton, IonContent, IonHeader, IonLabel, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToolbar } from '@ionic/vue'
 import { activityDestination, activityText, useActivityStore } from './activityStore'
 import NotificationCenter from '../notifications/NotificationCenter.vue'
 import type { ActivityFilter } from '../../data/repositories'
 
 const store = useActivityStore()
-const { error, filter, isLoading, items } = storeToRefs(store)
+const { error, filter, isLoading, isLoadingMore, items, nextCursor } = storeToRefs(store)
 
 const filters: readonly { value: ActivityFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -69,6 +69,9 @@ function formatDate(value: string): string {
             </div>
           </li>
         </ol>
+        <ion-button v-if="nextCursor" expand="block" fill="outline" data-action="load-more-activity" :disabled="isLoadingMore" @click="store.loadMore">
+          {{ isLoadingMore ? 'Loading…' : 'Load more activity' }}
+        </ion-button>
         <notification-center />
       </main>
     </ion-content>

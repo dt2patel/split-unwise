@@ -2,9 +2,10 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
-import { createMemoryCommandStorage } from '../../../data/commandQueue'
+import { CommandConflictError, CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import { createAppSession, setAppSessionForTesting } from '../../../data/session'
+import { createMemoryReceiptStore } from '../../../data/receipts'
+import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
 import type { AppRepository } from '../../../data/repositories'
 import ExpenseDetailPage from '../ExpenseDetailPage.vue'
 
@@ -20,6 +21,7 @@ const ionicStubs = {
   IonIcon: { template: '<span aria-hidden="true" />' },
   IonAlert: { name: 'IonAlert', props: ['isOpen', 'header', 'message', 'buttons'], emits: ['didDismiss'], template: '<div v-if="isOpen" data-testid="delete-alert" />' },
 }
+const principalKey = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: 'maya-p' })
 
 beforeEach(() => {
   setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
@@ -112,9 +114,102 @@ describe('expense detail financial and destructive states', () => {
     expect(wrapper.text()).toContain('Lake view')
     expect(wrapper.text()).toContain('Monthly')
     expect(wrapper.text()).toContain('America/Chicago')
-    expect(wrapper.text()).toContain('receipts/lodge.jpg')
+    expect(wrapper.text()).toContain('Receipt attachment')
+    expect(wrapper.text()).toContain('Preview unavailable on this device')
+    expect(wrapper.text()).not.toContain('receipts/lodge.jpg')
     expect(wrapper.text()).toContain('Created by Maya P.')
     expect(wrapper.get('time').attributes('datetime')).toMatch(/^2026-/)
+  })
+
+  it('renders attachment filename, durability, and a preview action without exposing its internal reference', async () => {
+    const repository = createDemoRepository({ now: () => '2026-08-31T19:00:00.000Z' })
+    const receipts = createMemoryReceiptStore({ id: () => 'detail-local-receipt' })
+    const reference = await receipts.put(new File(['receipt'], 'lake-lodge.jpg', { type: 'image/jpeg' }), { fileName: 'lake-lodge.jpg' })
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'detail-local-file', groupId: 'lake-house-weekend', description: 'Local receipt', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Other',
+      splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [reference],
+    })
+    if (added.status !== 'saved') throw new Error('Expected demo save')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage(), receipts }))
+
+    const wrapper = await mountRoute(`/tabs/groups/expenses/${added.expense.id}?groupId=lake-house-weekend`)
+    expect(wrapper.text()).toContain('lake-lodge.jpg')
+    expect(wrapper.text()).toContain('stored only on this device')
+    expect(wrapper.find('[data-action="open-expense-attachment"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain(reference)
+  })
+
+  it('summarizes each audit revision diff and keeps the full snapshot expandable', async () => {
+    const repository = createDemoRepository({ now: () => '2026-08-31T19:00:00.000Z' })
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'audit-diff-add', groupId: 'lake-house-weekend', description: 'Old lodge', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Lodging',
+      splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [],
+    })
+    if (added.status !== 'saved') throw new Error('Expected demo save')
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'audit-diff-edit', groupId: 'lake-house-weekend', expenseId: added.expense.id, expectedRevision: 1,
+      draft: { groupId: 'lake-house-weekend', description: 'New lodge', date: '2026-08-31', total: { currency: 'USD', minorAmount: 2000 },
+        payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2000 } }], allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2000 } }],
+        category: 'Lodging', splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [] },
+    })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute(`/tabs/activity/expenses/${added.expense.id}?groupId=lake-house-weekend`)
+    const diffs = wrapper.findAll('[data-testid="revision-diff"]')
+    expect(diffs.at(-1)?.text()).toContain('description')
+    expect(diffs.at(-1)?.text()).toContain('total')
+    expect(wrapper.findAll('[data-testid="revision-snapshot"]')).toHaveLength(2)
+    expect(wrapper.findAll('[data-testid="revision-snapshot"]').at(-1)?.text()).toContain('Paid by')
+    expect(wrapper.findAll('[data-testid="revision-snapshot"]').at(-1)?.text()).toContain('Allocated to')
+    expect(wrapper.findAll('[data-testid="revision-snapshot"]').at(-1)?.text()).toContain('Recurrence')
+  })
+
+  it('rehydrates the exact failed deletion with Retry and Discard and does not submit a duplicate', async () => {
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({ originPrincipalKey: principalKey, storage: createMemoryCommandStorage(), handlers: {
+      'expense.delete': async () => { throw Object.assign(new Error('offline'), { code: 'unavailable' }) },
+    } })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const first = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    await first.get('[data-action="delete-expense"]').trigger('click')
+    const alert = first.getComponent({ name: 'IonAlert' })
+    await alert.props('buttons').find((button: { role?: string }) => button.role === 'destructive').handler()
+    await flushPromises()
+    first.unmount()
+
+    const recreated = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    expect(recreated.get('[data-testid="delete-state"]').text()).toContain('Deletion failed')
+    expect(recreated.find('[data-action="delete-expense"]').exists()).toBe(false)
+    expect(recreated.find('[data-action="retry-expense-delete"]').exists()).toBe(true)
+    expect(recreated.find('[data-action="discard-expense-delete"]').exists()).toBe(true)
+    expect(queue.snapshot().filter(({ envelope }) => envelope.kind === 'expense.delete')).toHaveLength(1)
+  })
+
+  it('rehydrates a deletion conflict with explicit reload and delete-latest resolution choices', async () => {
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({ originPrincipalKey: principalKey, storage: createMemoryCommandStorage(), handlers: {
+      'expense.delete': async () => { throw new CommandConflictError('Expense changed remotely', { groupId: 'lake-house-weekend', expenseId: 'groceries' }) },
+    } })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const first = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    await first.get('[data-action="delete-expense"]').trigger('click')
+    const alert = first.getComponent({ name: 'IonAlert' })
+    await alert.props('buttons').find((button: { role?: string }) => button.role === 'destructive').handler()
+    await flushPromises()
+    first.unmount()
+
+    const recreated = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    expect(recreated.get('[data-testid="delete-state"]').text()).toContain('Deletion conflict')
+    expect(recreated.find('[data-action="reload-expense-delete-conflict"]').exists()).toBe(true)
+    expect(recreated.find('[data-action="delete-latest-expense"]').exists()).toBe(true)
+    await recreated.get('[data-action="reload-expense-delete-conflict"]').trigger('click')
+    await flushPromises()
+    expect(queue.snapshot()).toEqual([])
+    expect(recreated.find('[data-action="delete-expense"]').exists()).toBe(true)
   })
 
   it('names the expense in confirmation, defaults to cancel, restores focus, and suppresses duplicate deletion', async () => {

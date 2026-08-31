@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getAppSession } from '../../data'
 import type { ExpenseComment, Member } from '../../data/repositories'
+import type { ReceiptAsset } from '../../data/receipts'
+import { compareFirestoreStrings } from '../../data/timeline'
 import { useSheetKeyboardAvoidance } from '../expenses/components/useSheetKeyboardAvoidance'
 
 const props = defineProps<{ readonly groupId: string; readonly expenseId: string; readonly closed: boolean }>()
@@ -14,13 +16,18 @@ const status = ref('')
 const isLoading = ref(true)
 const currentUser = ref<Member>()
 const operationId = ref<string>()
-const pendingDeletes = ref(new Set<string>())
+const attachmentAssets = ref(new Map<string, ReceiptAsset | null>())
 const queueRevision = ref(0)
 const composer = ref<HTMLElement>()
 const errorSummary = ref<HTMLElement>()
 let unsubscribe: (() => void) | undefined
 
-useSheetKeyboardAvoidance(composer)
+useSheetKeyboardAvoidance(composer, {
+  async resolveScrollHost(element) {
+    const content = element.closest('ion-content') as (HTMLElement & { getScrollElement?: () => Promise<HTMLElement> }) | null
+    return await content?.getScrollElement?.() ?? element
+  },
+})
 
 const visibleComments = computed(() => {
   queueRevision.value
@@ -46,7 +53,7 @@ const visibleComments = computed(() => {
       if (current) byId.set(envelope.commentId, { ...current, syncState: operation.status })
     }
   }
-  return [...byId.values()].sort((left, right) => (left.createdAt ?? '9999').localeCompare(right.createdAt ?? '9999') || left.commentId.localeCompare(right.commentId))
+  return [...byId.values()].sort((left, right) => compareFirestoreStrings(left.createdAt ?? '9999', right.createdAt ?? '9999') || compareFirestoreStrings(left.commentId, right.commentId))
 })
 
 onMounted(async () => {
@@ -65,6 +72,7 @@ async function reload(): Promise<void> {
     comments.value = loadedComments
     currentUser.value = user
     restoreDurableDraft()
+    await hydrateAttachmentMetadata([...loadedComments.flatMap(({ attachmentRefs: references }) => references), ...attachmentRefs.value])
   } catch (reason) {
     error.value = message(reason, 'Comments could not be loaded.')
   } finally {
@@ -105,6 +113,7 @@ async function submit(): Promise<void> {
     const operation = session.queue.get(nextOperationId)
     error.value = operation?.status === 'conflicted' ? 'Comment conflicted. Your draft is preserved.' : `Comment failed: ${message(reason, 'Try again or discard the draft.')}`
     status.value = ''
+    if (!operation) operationId.value = undefined
   }
 }
 
@@ -143,8 +152,7 @@ async function discard(): Promise<void> {
 }
 
 async function deleteComment(comment: CommentDisplay): Promise<void> {
-  if (comment.deletedAt || pendingDeletes.value.has(comment.commentId)) return
-  pendingDeletes.value = new Set(pendingDeletes.value).add(comment.commentId)
+  if (comment.deletedAt || deleteOperation(comment.commentId)) return
   const id = createOperationId('comment-delete')
   try {
     await session.queue.submit({ kind: 'comment.delete', operationId: id, groupId: props.groupId, expenseId: props.expenseId, commentId: comment.commentId }).result()
@@ -152,10 +160,45 @@ async function deleteComment(comment: CommentDisplay): Promise<void> {
     status.value = 'Comment deleted.'
   } catch (reason) {
     error.value = `Comment deletion failed: ${message(reason, 'Try again.')}`
-  } finally {
-    const next = new Set(pendingDeletes.value)
-    next.delete(comment.commentId)
-    pendingDeletes.value = next
+  }
+}
+
+async function retryCommentDelete(commentId: string): Promise<void> {
+  const operation = deleteOperation(commentId)
+  if (operation?.status !== 'failed') return
+  error.value = ''
+  try {
+    await session.queue.retry(operation.envelope.operationId).result()
+    status.value = 'Comment deleted.'
+    await reload()
+  } catch (reason) {
+    error.value = `Comment deletion failed: ${message(reason, 'Try again.')}`
+  }
+}
+
+async function discardCommentDelete(commentId: string): Promise<void> {
+  const operation = deleteOperation(commentId)
+  if (operation?.status !== 'failed') return
+  try {
+    await session.queue.discard(operation.envelope.operationId)
+    error.value = ''
+    status.value = 'Comment deletion discarded.'
+    queueRevision.value += 1
+  } catch (reason) {
+    error.value = message(reason, 'Comment deletion could not be discarded.')
+  }
+}
+
+async function resolveCommentDeleteConflict(commentId: string): Promise<void> {
+  const operation = deleteOperation(commentId)
+  if (operation?.status !== 'conflicted') return
+  try {
+    await session.queue.acknowledge(operation.envelope.operationId)
+    await reload()
+    error.value = ''
+    status.value = 'Reloaded the current comment.'
+  } catch (reason) {
+    error.value = message(reason, 'The current comment could not be reloaded.')
   }
 }
 
@@ -166,6 +209,7 @@ async function attach(event: Event): Promise<void> {
   try {
     const reference = await session.receipts.put(file, { fileName: file.name })
     attachmentRefs.value = [...attachmentRefs.value, reference]
+    attachmentAssets.value = new Map(attachmentAssets.value).set(reference, await session.receipts.get(reference) ?? null)
     status.value = 'Attachment saved on this device.'
   } catch (reason) {
     error.value = message(reason, 'The attachment could not be saved.')
@@ -174,12 +218,57 @@ async function attach(event: Event): Promise<void> {
   }
 }
 
+async function removeAttachment(reference: string): Promise<void> {
+  attachmentRefs.value = attachmentRefs.value.filter((candidate) => candidate !== reference)
+  const next = new Map(attachmentAssets.value)
+  next.delete(reference)
+  attachmentAssets.value = next
+  if (reference.startsWith('local-receipt:')) await session.receipts.delete(reference as `local-receipt:${string}`)
+}
+
+async function hydrateAttachmentMetadata(references: readonly string[]): Promise<void> {
+  const next = new Map(attachmentAssets.value)
+  await Promise.all([...new Set(references)].map(async (reference) => {
+    if (next.has(reference)) return
+    next.set(reference, reference.startsWith('local-receipt:') ? await session.receipts.get(reference as `local-receipt:${string}`) ?? null : null)
+  }))
+  attachmentAssets.value = next
+}
+
+function attachmentLabel(reference: string): string {
+  return attachmentAssets.value.get(reference)?.fileName ?? (reference.startsWith('local-receipt:') ? 'Attachment unavailable' : 'Receipt attachment')
+}
+function attachmentDurability(reference: string): string {
+  const asset = attachmentAssets.value.get(reference)
+  if (!asset) return 'Preview unavailable on this device.'
+  if (asset.durability.status === 'uploaded') return 'Uploaded and durable.'
+  return asset.durability.reason
+}
+function openAttachment(reference: string): void {
+  const asset = attachmentAssets.value.get(reference)
+  if (!asset || typeof URL.createObjectURL !== 'function') return
+  const url = URL.createObjectURL(asset.blob)
+  window.open(url, '_blank', 'noopener,noreferrer')
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 function formatTime(timestamp: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp))
 }
 function isFailedRetryable(id: string | undefined): boolean {
   if (!id) return false
   const operation = session.queue.get(id)
+  return operation?.status === 'failed' && operation.error.retryable
+}
+function deleteOperation(commentId: string) {
+  return [...session.queue.snapshot()].reverse().find((operation) => {
+    const envelope = operation.envelope
+    return envelope.kind === 'comment.delete' && envelope.groupId === props.groupId && envelope.expenseId === props.expenseId && envelope.commentId === commentId
+      && (operation.status === 'pending' || operation.status === 'failed' || operation.status === 'conflicted')
+  })
+}
+function deleteRetryable(commentId: string): boolean {
+  const operation = deleteOperation(commentId)
   return operation?.status === 'failed' && operation.error.retryable
 }
 function restoreDurableDraft(): void {
@@ -227,16 +316,28 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
         <p v-if="comment.deletedAt" class="comment-thread__deleted">Comment deleted</p>
         <p v-else>{{ comment.body }}</p>
         <ul v-if="!comment.deletedAt && comment.attachmentRefs.length" aria-label="Comment attachments">
-          <li v-for="attachment in comment.attachmentRefs" :key="attachment">{{ attachment }}</li>
+          <li v-for="attachment in comment.attachmentRefs" :key="attachment">
+            <strong>{{ attachmentLabel(attachment) }}</strong>
+            <span>{{ attachmentDurability(attachment) }}</span>
+            <button v-if="attachmentAssets.get(attachment)" type="button" data-action="open-comment-attachment" @click="openAttachment(attachment)">Open preview</button>
+          </li>
         </ul>
         <button
-          v-if="!comment.commentId.startsWith('pending:') && !comment.deletedAt && comment.author.id === currentUser?.id"
+          v-if="!comment.commentId.startsWith('pending:') && !comment.deletedAt && comment.author.id === currentUser?.id && !deleteOperation(comment.commentId)"
           type="button"
           data-action="delete-comment"
-          :disabled="pendingDeletes.has(comment.commentId)"
           :aria-label="`Delete comment by ${comment.author.displayName}`"
           @click="deleteComment(comment)"
-        >{{ pendingDeletes.has(comment.commentId) ? 'Deleting…' : 'Delete' }}</button>
+        >Delete</button>
+        <span v-if="deleteOperation(comment.commentId)?.status === 'pending'" role="status">Deleting…</span>
+        <div v-else-if="deleteOperation(comment.commentId)?.status === 'failed'" class="comment-thread__recovery">
+          <button v-if="deleteRetryable(comment.commentId)" type="button" data-action="retry-comment-delete" @click="retryCommentDelete(comment.commentId)">Retry delete</button>
+          <button type="button" data-action="discard-comment-delete" @click="discardCommentDelete(comment.commentId)">Discard</button>
+        </div>
+        <div v-else-if="deleteOperation(comment.commentId)?.status === 'conflicted'" class="comment-thread__recovery">
+          <span>Delete conflict: the current comment is still available.</span>
+          <button type="button" data-action="resolve-comment-delete-conflict" @click="resolveCommentDeleteConflict(comment.commentId)">Reload comment</button>
+        </div>
       </li>
     </ol>
 
@@ -248,7 +349,11 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
       <textarea id="comment-body" v-model="body" rows="3" :aria-invalid="Boolean(error)" aria-describedby="comment-error" />
       <div class="comment-thread__attachments">
         <label class="comment-thread__attach">Attach file<input type="file" accept="image/*" @change="attach"></label>
-        <span v-for="attachment in attachmentRefs" :key="attachment">{{ attachment }}</span>
+        <span v-for="attachment in attachmentRefs" :key="attachment" class="comment-thread__attachment">
+          <span><strong>{{ attachmentLabel(attachment) }}</strong><small>{{ attachmentDurability(attachment) }}</small></span>
+          <button v-if="attachmentAssets.get(attachment)" type="button" data-action="open-comment-attachment" @click="openAttachment(attachment)">Open preview</button>
+          <button type="button" data-action="remove-comment-attachment" @click="removeAttachment(attachment)">Remove</button>
+        </span>
       </div>
       <div class="comment-thread__actions">
         <button type="submit" :disabled="Boolean(operationId)">{{ operationId ? 'Saving…' : 'Post comment' }}</button>
@@ -278,9 +383,13 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
 .comment-thread__composer { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 12px 0 max(4px, env(safe-area-inset-bottom)); background: var(--su-surface); }
 .comment-thread__composer textarea { min-height: 88px; padding: 11px; border: 1px solid var(--su-divider); border-radius: 12px; background: var(--su-surface); color: var(--su-text); font: inherit; resize: vertical; }
 .comment-thread__attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.comment-thread__attachment { display: flex; min-height: 44px; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--su-divider); border-radius: 11px; }
+.comment-thread__attachment > span { display: grid; }
+.comment-thread__attachment small { color: var(--ion-color-medium); }
 .comment-thread__attach { display: inline-grid; place-items: center; padding: 0 12px; border: 1px solid var(--su-divider); border-radius: 11px; color: var(--ion-color-primary); }
 .comment-thread__attach input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .comment-thread__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.comment-thread__recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .comment-thread__actions button { padding: 0 14px; border: 0; border-radius: 12px; background: var(--ion-color-primary); color: var(--ion-color-primary-contrast); font: inherit; font-weight: 650; }
 @media (prefers-reduced-motion: reduce) { .comment-thread * { transition-duration: 0ms; } }
 </style>

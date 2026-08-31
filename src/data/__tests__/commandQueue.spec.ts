@@ -106,8 +106,8 @@ describe('CommandQueue', () => {
     expect(queue.snapshot()).toEqual([])
     await queue.submit(addExpense('namespaced-write')).result()
 
-    expect(JSON.parse(browser.getItem('split-unwise:command-queue:v4:maya-p') ?? 'null')).toMatchObject({
-      version: 4,
+    expect(JSON.parse(browser.getItem('split-unwise:command-queue:v5:maya-p') ?? 'null')).toMatchObject({
+      version: 5,
       principalKey: DEMO_UID,
       operations: [{ originPrincipalKey: DEMO_UID, envelope: { operationId: 'namespaced-write' } }],
     })
@@ -253,10 +253,10 @@ describe('CommandQueue', () => {
 
   it('quarantines invalid and cross-owner records from a versioned document', () => {
     const quarantined: unknown[] = []
-    const valid = { originPrincipalKey: DEMO_UID, status: 'pending', envelope: addExpense('valid-owned') }
+    const valid = { originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending', envelope: addExpense('valid-owned') }
     const storage = {
       load: () => ({
-        version: 4,
+        version: 5,
         principalKey: DEMO_UID,
         operations: [
           valid,
@@ -275,7 +275,7 @@ describe('CommandQueue', () => {
     expect(quarantined).toHaveLength(3)
   })
 
-  it('uses an opaque principal key in strict version-4 browser persistence', async () => {
+  it('uses an opaque principal key in strict version-5 browser persistence', async () => {
     const principalKey = 'firebase:split-unwise-prod:user/maya@example.com'
     const browser = createWebStorage()
     const queue = createBoundQueue({
@@ -285,9 +285,9 @@ describe('CommandQueue', () => {
 
     await queue.submit(addExpense('principal-scoped-write')).result()
 
-    const document = JSON.parse(browser.getItem(`split-unwise:command-queue:v4:${encodeURIComponent(principalKey)}`) ?? 'null')
+    const document = JSON.parse(browser.getItem(`split-unwise:command-queue:v5:${encodeURIComponent(principalKey)}`) ?? 'null')
     expect(document).toMatchObject({
-      version: 4,
+      version: 5,
       principalKey,
       operations: [{ originPrincipalKey: principalKey, envelope: { operationId: 'principal-scoped-write' } }],
     })
@@ -298,10 +298,10 @@ describe('CommandQueue', () => {
     browser.setItem = () => { throw new Error('quota exceeded') }
     const storage = createBrowserCommandStorage({ storage: browser })
     const principalKey = 'demo:local:browser-write-failure'
-    const operation = { originPrincipalKey: principalKey, status: 'pending' as const, envelope: addExpense('browser-write-failure') }
+    const operation = { originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending' as const, envelope: addExpense('browser-write-failure') }
 
     await expect(storage.save(principalKey, {
-      version: 4,
+      version: 5,
       principalKey,
       operations: [operation],
     })).rejects.toThrow('quota exceeded')
@@ -328,14 +328,14 @@ describe('CommandQueue', () => {
 
   it('does not finish binding until quarantine and sanitized persistence finish', async () => {
     const principalKey = 'demo:local:bind-awaits-cleanup'
-    const invalid = { originPrincipalKey: 'another-principal', status: 'pending', envelope: addExpense('cross-principal') }
+    const invalid = { originPrincipalKey: 'another-principal', submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending', envelope: addExpense('cross-principal') }
     let releaseQuarantine!: () => void
     let releaseSave!: () => void
     const quarantineGate = new Promise<void>((resolve) => { releaseQuarantine = resolve })
     const saveGate = new Promise<void>((resolve) => { releaseSave = resolve })
     const events: string[] = []
     const storage: CommandStorage = {
-      load: () => ({ version: 4, principalKey, operations: [invalid] }),
+      load: () => ({ version: 5, principalKey, operations: [invalid] }),
       quarantine: async () => {
         events.push('quarantine-start')
         await quarantineGate
@@ -375,9 +375,9 @@ describe('CommandQueue', () => {
     let handlerCalls = 0
     const storage: CommandStorage = {
       load: () => ({
-        version: 4,
+        version: 5,
         principalKey,
-        operations: [{ originPrincipalKey: 'cross-principal', status: 'pending', envelope: addExpense('quarantined-before-submit') }],
+        operations: [{ originPrincipalKey: 'cross-principal', submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending', envelope: addExpense('quarantined-before-submit') }],
       }),
       quarantine: async () => { await quarantineGate },
       save: async () => undefined,
@@ -407,12 +407,12 @@ describe('CommandQueue', () => {
   it('quarantines persisted saved results with invalid targets or revision transitions', () => {
     const principalKey = 'demo:local:maya-p'
     const valid = {
-      originPrincipalKey: principalKey,
+      originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'pending',
       envelope: addExpense('valid-v3-pending'),
     }
     const invalidAdd = {
-      originPrincipalKey: principalKey,
+      originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'fresh',
       envelope: addExpense('persisted-bad-add'),
       result: {
@@ -422,14 +422,14 @@ describe('CommandQueue', () => {
     }
     const edit = editExpense('persisted-bad-edit')
     const invalidEdit = {
-      originPrincipalKey: principalKey,
+      originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'fresh',
       envelope: edit,
       result: savedEdit(edit, { ...expenseRow(edit.groupId, edit.expenseId), revision: edit.expectedRevision }),
     }
     const deletion = deleteExpense('persisted-bad-delete')
     const invalidDelete = {
-      originPrincipalKey: principalKey,
+      originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'fresh',
       envelope: deletion,
       result: {
@@ -442,7 +442,7 @@ describe('CommandQueue', () => {
       defaultSplit: { type: 'equal', participantIds: ['maya-p', 'jordan-k'] },
     }
     const invalidDefaultSplit = {
-      originPrincipalKey: principalKey,
+      originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'fresh',
       envelope: defaultSplit,
       result: { kind: 'group.default-split', operationId: defaultSplit.operationId, status: 'saved', resourceId: 'another-group' },
@@ -450,7 +450,7 @@ describe('CommandQueue', () => {
     const invalid = [invalidAdd, invalidEdit, invalidDelete, invalidDefaultSplit]
     const quarantined: unknown[] = []
     const storage = {
-      load: () => ({ version: 4, principalKey, operations: [valid, ...invalid] }),
+      load: () => ({ version: 5, principalKey, operations: [valid, ...invalid] }),
       save: async () => undefined,
       quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as CommandStorage
@@ -464,14 +464,14 @@ describe('CommandQueue', () => {
   it('quarantines a persisted storage failure without a boolean execution marker', () => {
     const principalKey = 'demo:local:invalid-persistence-marker'
     const operation = {
-      originPrincipalKey: principalKey,
+      originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'failed',
       envelope: addExpense('invalid-persistence-marker'),
       error: { code: 'persistence', message: 'disk unavailable', retryable: true, executed: 'false' },
     }
     const quarantined: unknown[] = []
     const storage: CommandStorage = {
-      load: () => ({ version: 4, principalKey, operations: [operation] }),
+      load: () => ({ version: 5, principalKey, operations: [operation] }),
       save: async () => undefined,
       quarantine: async (_scopeKey, records) => { quarantined.push(...records) },
     }
@@ -485,17 +485,17 @@ describe('CommandQueue', () => {
   it('accepts occurrence-scoped edits and quarantines obsolete single-scope records', () => {
     const quarantined: unknown[] = []
     const occurrence = {
-      originPrincipalKey: DEMO_UID,
+      originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'pending',
       envelope: { ...addExpense('current-occurrence-scope'), occurrenceEditScope: 'occurrence' },
     }
     const obsolete = {
-      originPrincipalKey: DEMO_UID,
+      originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'pending',
       envelope: { ...addExpense('obsolete-single-scope'), occurrenceEditScope: 'single' },
     }
     const storage = {
-      load: () => ({ version: 4, principalKey: DEMO_UID, operations: [occurrence, obsolete] }),
+      load: () => ({ version: 5, principalKey: DEMO_UID, operations: [occurrence, obsolete] }),
       save: async () => undefined,
       quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as unknown as CommandStorage
@@ -895,7 +895,7 @@ describe('CommandQueue', () => {
   it('quarantines a persisted conflict with an invalid edit remote', () => {
     const command = editExpense('persisted-invalid-remote')
     const operation = {
-      originPrincipalKey: DEMO_UID,
+      originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z',
       status: 'conflicted',
       envelope: command,
       error: { code: 'conflict', message: 'remote changed', retryable: false },
@@ -903,7 +903,7 @@ describe('CommandQueue', () => {
     }
     const quarantined: unknown[] = []
     const storage = {
-      load: () => ({ version: 4, principalKey: DEMO_UID, operations: [operation] }),
+      load: () => ({ version: 5, principalKey: DEMO_UID, operations: [operation] }),
       save: async () => undefined,
       quarantine: async (_scopeKey: string, records: readonly unknown[]) => { quarantined.push(...records) },
     } as unknown as CommandStorage
@@ -933,9 +933,9 @@ describe('CommandQueue', () => {
   })
 
   it('persists a pending envelope and resumes it after re-instantiation without repeating the operation ID', async () => {
-    const pending = { originPrincipalKey: DEMO_UID, status: 'pending' as const, envelope: addExpense('reload-safe') }
+    const pending = { originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending' as const, envelope: addExpense('reload-safe') }
     const storage = createMemoryCommandStorage({
-      [DEMO_UID]: { version: 4, principalKey: DEMO_UID, operations: [pending] },
+      [DEMO_UID]: { version: 5, principalKey: DEMO_UID, operations: [pending] },
     })
     let calls = 0
     const handler = async (command: { readonly operationId: string }): Promise<ExpenseAddResult> => {
@@ -949,9 +949,9 @@ describe('CommandQueue', () => {
 
     expect(calls).toBe(1)
     expect(storage.load(DEMO_UID)).toMatchObject({
-      version: 4,
+      version: 5,
       principalKey: DEMO_UID,
-      operations: [expect.objectContaining({ originPrincipalKey: DEMO_UID, status: 'fresh', envelope: expect.objectContaining({ operationId: 'reload-safe' }) })],
+      operations: [expect.objectContaining({ originPrincipalKey: DEMO_UID, submittedAt: '2026-08-31T20:00:00.000Z', status: 'fresh', envelope: expect.objectContaining({ operationId: 'reload-safe' }) })],
     })
   })
 

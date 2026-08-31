@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import type { Component } from 'vue'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -133,6 +135,43 @@ describe('Lake House group journal', () => {
     expect(wrapper.find('[data-testid="expense-journal"]').exists()).toBe(true)
   })
 
+  it('shares the durable queue projection and groups Activity by its own submission date', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolveGate) => { release = resolveGate })
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({
+      originPrincipalKey: PRINCIPAL_KEY,
+      storage: createMemoryCommandStorage(),
+      now: () => '2026-09-02T18:30:00.000Z',
+      handlers: { 'comment.add': async (command) => {
+        if (command.kind !== 'comment.add') throw new Error('Unexpected command')
+        await gate
+        return repository.comments.add(command)
+      } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+    const handle = queue.submit({ kind: 'comment.add', operationId: 'group-pending-comment', groupId: 'lake-house-weekend', expenseId: 'groceries', body: 'Pending group note', attachmentRefs: [] })
+    await vi.waitFor(() => expect(queue.get('group-pending-comment')?.status).toBe('pending'))
+    await wrapper.get('[data-view="activity"]').trigger('click')
+    await flushPromises()
+
+    const pending = wrapper.get('[data-activity-id="pending:group-pending-comment"]')
+    expect(pending.attributes('data-sync-state')).toBe('pending')
+    expect(pending.get('time').attributes('datetime')).toBe('2026-09-02T18:30:00.000Z')
+    expect(wrapper.get('[data-testid="activity-date-divider"]').text()).toContain('September 2, 2026')
+    expect(wrapper.find('[data-testid="month-divider"]').exists()).toBe(false)
+
+    release()
+    await handle.result()
+  })
+
+  it('refreshes on Ionic view entry and gives linked Activity rows a full tap target', () => {
+    expect(groupDetailSource).toContain('onIonViewWillEnter')
+    expect(groupDetailSource).toContain('class="activity-list__body"')
+    expect(groupDetailSource).toMatch(/\.activity-list__body\s*\{[^}]*min-height:\s*44px/s)
+  })
+
   it('marks the hero collapsed after the journal scroll threshold', async () => {
     const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
 
@@ -238,5 +277,3 @@ function expenseDraft(expense: ExpenseRow, description: string) {
     attachmentRefs: [...expense.attachmentRefs],
   }
 }
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'

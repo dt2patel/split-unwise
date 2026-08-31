@@ -3,7 +3,7 @@ import type { FirebaseConfiguration } from './firebase'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseAddResult, ExpenseDeleteResult, ExpenseEditResult, ExpenseRow, Member, NotificationItem, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseDeleteResult, ExpenseEditResult, ExpenseRow, Member, NotificationItem, TimelineCursor } from './repositories'
 
 type FirestoreModule = typeof import('firebase/firestore')
 type AuthModule = typeof import('firebase/auth')
@@ -30,7 +30,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   async function listExpenses(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
     const { db, firestore } = await readyContext
     const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses'), firestore.orderBy('date', 'asc')))
-    return snapshot.docs.map((document) => decodeExpense(groupId, document.id, document.data()))
+    return snapshot.docs.map((document) => decodeExpense(groupId, document.id, document.data())).filter(({ deletedAt }) => deletedAt === undefined)
   }
 
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
@@ -101,21 +101,36 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     activity: {
       async listForGroup(groupId) {
         const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'asc')))
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'asc'), firestore.orderBy(firestore.documentId(), 'asc')))
         return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
       },
       async listForAccount(query) {
         const { db, firestore, userId } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'activity'), firestore.orderBy('createdAt', 'desc'), firestore.orderBy(firestore.documentId(), 'desc')))
+        assertTimelineLimit(query.limit)
+        const constraints = [
+          ...activityFilterConstraints(firestore, query.filter),
+          firestore.orderBy('createdAt', 'desc'),
+          firestore.orderBy(firestore.documentId(), 'desc'),
+          ...(query.cursor ? [firestore.startAfter(query.cursor.createdAt, query.cursor.id)] : []),
+          firestore.limit(query.limit + 1),
+        ]
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'activity'), ...constraints))
         const decoded = snapshot.docs.map((document) => decodeActivity(String(document.data().groupId ?? ''), document.id, document.data()))
-        return pageTimeline(decoded.filter((item) => query.filter === 'all' || (query.filter === 'expenses' && item.kind.startsWith('expense.')) || (query.filter === 'comments' && item.kind.startsWith('comment.')) || (query.filter === 'payments' && item.kind.startsWith('settlement.'))), query.limit, query.cursor, (item) => item.id)
+        return serverPage(decoded, query.limit, (item) => item.id)
       },
     },
     notifications: {
       async list(query) {
         const { db, firestore, userId } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'notifications'), firestore.orderBy('createdAt', 'desc'), firestore.orderBy(firestore.documentId(), 'desc')))
-        return pageTimeline(snapshot.docs.map((document) => decodeNotification(userId, document.id, document.data())), query.limit, query.cursor, (item) => item.notificationId)
+        assertTimelineLimit(query.limit)
+        const snapshot = await firestore.getDocs(firestore.query(
+          firestore.collection(db, 'users', userId, 'notifications'),
+          firestore.orderBy('createdAt', 'desc'),
+          firestore.orderBy(firestore.documentId(), 'desc'),
+          ...(query.cursor ? [firestore.startAfter(query.cursor.createdAt, query.cursor.id)] : []),
+          firestore.limit(query.limit + 1),
+        ))
+        return serverPage(snapshot.docs.map((document) => decodeNotification(userId, document.id, document.data())), query.limit, (item) => item.notificationId)
       },
       async unreadCount() {
         const { db, firestore, userId } = await context()
@@ -138,14 +153,25 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   }
 }
 
-function pageTimeline<T extends ActivityItem | NotificationItem>(values: readonly T[], limit: number, cursor: TimelineCursor | undefined, id: (value: T) => string): { items: readonly T[]; nextCursor?: TimelineCursor } {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Timeline limit must be between 1 and 100')
-  const sorted = [...values].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || id(right).localeCompare(id(left)))
-  const remaining = cursor ? sorted.filter((item) => item.createdAt.localeCompare(cursor.createdAt) < 0 || (item.createdAt === cursor.createdAt && id(item).localeCompare(cursor.id) < 0)) : sorted
-  const items = remaining.slice(0, limit)
-  if (remaining.length <= limit) return { items }
+function serverPage<T extends ActivityItem | NotificationItem>(values: readonly T[], limit: number, id: (value: T) => string): { items: readonly T[]; nextCursor?: TimelineCursor } {
+  const items = values.slice(0, limit)
+  if (values.length <= limit) return { items }
   const last = items.at(-1)!
   return { items, nextCursor: { createdAt: last.createdAt, id: id(last) } }
+}
+
+function assertTimelineLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Timeline limit must be between 1 and 100')
+}
+
+function activityFilterConstraints(firestore: FirestoreModule, filter: ActivityFilter): readonly ReturnType<FirestoreModule['where']>[] {
+  if (filter === 'all') return []
+  const kinds = filter === 'expenses'
+    ? ['expense.created', 'expense.updated', 'expense.deleted']
+    : filter === 'comments'
+      ? ['comment.added', 'comment.deleted']
+      : ['settlement.created', 'settlement.voided']
+  return [firestore.where('kind', 'in', kinds)]
 }
 
 async function connect(configuration: FirebaseConfiguration): Promise<FirebaseClient> {
