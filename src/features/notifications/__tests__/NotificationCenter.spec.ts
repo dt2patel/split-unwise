@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CommandFailedError, CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import { appPrincipalKey, createAppSession, getAppSession, setAppSessionForTesting } from '../../../data/session'
@@ -126,6 +126,63 @@ describe('NotificationCenter', () => {
     await flushPromises()
     expect(wrapper.findAll('[data-notification-id]')).toHaveLength(2)
     expect(calls).toEqual([undefined, all[0].notificationId])
+  })
+
+  it('drops a stale load-more page after a newer authoritative load wins', async () => {
+    const source = createDemoRepository()
+    const all = (await source.notifications.list({ limit: 100 })).items
+    let releaseMore!: () => void
+    const moreGate = new Promise<void>((resolve) => { releaseMore = resolve })
+    let rootCalls = 0
+    const repository = {
+      ...source,
+      notifications: {
+        ...source.notifications,
+        async list(query: { readonly cursor?: { readonly createdAt: string; readonly id: string } }) {
+          if (query.cursor) { await moreGate; return { items: [all[1]] } }
+          rootCalls += 1
+          return rootCalls === 1
+            ? { items: [all[0]], nextCursor: { createdAt: all[0].createdAt, id: all[0].notificationId } }
+            : { items: [all[2]] }
+        },
+      },
+    }
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'notification.preferences': async (command) => {
+        if (command.kind !== 'notification.preferences') throw new Error('Wrong command')
+        return source.notifications.updatePreferences(command)
+      } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const wrapper = await mountCenter()
+    void wrapper.get('[data-action="load-more-notifications"]').trigger('click')
+    await queue.submit({ kind: 'notification.preferences', operationId: 'refresh-during-more', preferences: { emailEnabled: false, pushEnabled: true } }).result()
+    await vi.waitFor(() => expect(rootCalls).toBeGreaterThanOrEqual(2))
+    releaseMore()
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-notification-id]').map((row) => row.attributes('data-notification-id'))).toEqual([all[2].notificationId])
+  })
+
+  it('restores Retry and Discard for a persisted failed notification operation after recreation', async () => {
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'notification.preferences': async () => { throw new CommandFailedError('network', 'Persisted offline change') } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const first = await mountCenter()
+    await first.findAll('input[type="checkbox"]')[0].setValue(false)
+    await flushPromises()
+    first.unmount()
+
+    const recreated = await mountCenter()
+    expect(recreated.get('[data-testid="notification-error"]').text()).toContain('Persisted offline change')
+    expect(recreated.find('[data-action="retry-notification"]').exists()).toBe(true)
+    expect(recreated.find('[data-action="discard-notification"]').exists()).toBe(true)
   })
 
   it('keeps preferences unknown and disabled until loaded, then offers an explicit load retry', async () => {

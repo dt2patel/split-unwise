@@ -18,6 +18,7 @@ const status = ref('')
 const inFlight = ref(new Set<string>())
 const queueRevision = ref(0)
 let request = 0
+let pageRequest = 0
 let unsubscribe: (() => void) | undefined
 
 const rows = computed(() => {
@@ -58,7 +59,11 @@ const projectedPreferences = computed(() => {
 
 const unreadLabel = computed(() => `${authoritativeUnreadCount.value} unread notification${authoritativeUnreadCount.value === 1 ? '' : 's'}`)
 const latestCutoff = computed<TimelineCursor | undefined>(() => rows.value[0] ? { createdAt: rows.value[0].createdAt, id: rows.value[0].notificationId } : undefined)
-const failedOperation = computed(() => [...relevantOperations()].reverse().find((operation) => operation.status === 'failed'))
+const failedOperation = computed(() => {
+  queueRevision.value
+  return [...relevantOperations()].reverse().find((operation) => operation.status === 'failed')
+})
+const failureMessage = computed(() => error.value || failedOperation.value?.error.message || '')
 
 onMounted(() => {
   unsubscribe = session.queue.subscribe(() => {
@@ -67,10 +72,12 @@ onMounted(() => {
   })
   void load()
 })
-onBeforeUnmount(() => { ++request; unsubscribe?.() })
+onBeforeUnmount(() => { ++request; ++pageRequest; unsubscribe?.() })
 
 async function load(): Promise<void> {
   const active = ++request
+  ++pageRequest
+  isLoadingMore.value = false
   isLoading.value = true
   loadError.value = ''
   try {
@@ -98,18 +105,21 @@ async function load(): Promise<void> {
 async function loadMore(): Promise<void> {
   const cursor = nextCursor.value
   if (!cursor || isLoadingMore.value) return
+  const activeRoot = request
+  const activePage = ++pageRequest
   isLoadingMore.value = true
   loadError.value = ''
   try {
     const page = await session.repository.notifications.list({ limit: 100, cursor })
+    if (activeRoot !== request || activePage !== pageRequest) return
     const merged = new Map(notifications.value.map((notification) => [notification.notificationId, notification]))
     for (const notification of page.items) merged.set(notification.notificationId, notification)
     notifications.value = [...merged.values()].sort(newestFirst)
     nextCursor.value = page.nextCursor
   } catch (reason) {
-    loadError.value = message(reason, 'More notifications could not be loaded.')
+    if (activeRoot === request && activePage === pageRequest) loadError.value = message(reason, 'More notifications could not be loaded.')
   } finally {
-    isLoadingMore.value = false
+    if (activeRoot === request && activePage === pageRequest) isLoadingMore.value = false
   }
 }
 
@@ -264,8 +274,8 @@ function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
     </div>
 
     <p v-if="status" role="status">{{ status }}</p>
-    <div v-if="error" class="notification-center__error" role="alert">
-      <p data-testid="notification-error">{{ error }}</p>
+    <div v-if="failureMessage" class="notification-center__error" role="alert">
+      <p data-testid="notification-error">{{ failureMessage }}</p>
       <ion-button v-if="failedOperation?.error.retryable" fill="clear" data-action="retry-notification" @click="retryFailed">Retry</ion-button>
       <ion-button v-if="failedOperation" fill="clear" data-action="discard-notification" @click="discardFailed">Discard</ion-button>
     </div>

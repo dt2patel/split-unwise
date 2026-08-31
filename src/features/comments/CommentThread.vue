@@ -55,6 +55,11 @@ const visibleComments = computed(() => {
   }
   return [...byId.values()].sort((left, right) => compareFirestoreStrings(left.createdAt ?? '9999', right.createdAt ?? '9999') || compareFirestoreStrings(left.commentId, right.commentId))
 })
+const activeAddOperation = computed(() => {
+  queueRevision.value
+  return operationId.value ? session.queue.get(operationId.value) : undefined
+})
+const isDraftLocked = computed(() => activeAddOperation.value?.status === 'pending' || activeAddOperation.value?.status === 'failed' || activeAddOperation.value?.status === 'conflicted')
 
 onMounted(async () => {
   unsubscribe = session.queue.subscribe(() => { queueRevision.value += 1; void reload() })
@@ -151,6 +156,21 @@ async function discard(): Promise<void> {
   }
 }
 
+async function discardCommentConflict(): Promise<void> {
+  const id = operationId.value
+  if (!id || activeAddOperation.value?.status !== 'conflicted') return
+  try {
+    await session.queue.acknowledge(id)
+    operationId.value = undefined
+    body.value = ''
+    attachmentRefs.value = []
+    error.value = ''
+    status.value = 'Conflicted draft discarded. You can write a new comment.'
+  } catch (reason) {
+    error.value = message(reason, 'The conflicted draft could not be discarded.')
+  }
+}
+
 async function deleteComment(comment: CommentDisplay): Promise<void> {
   if (comment.deletedAt || deleteOperation(comment.commentId)) return
   const id = createOperationId('comment-delete')
@@ -193,8 +213,14 @@ async function resolveCommentDeleteConflict(commentId: string): Promise<void> {
   const operation = deleteOperation(commentId)
   if (operation?.status !== 'conflicted') return
   try {
+    const [loadedComments, user] = await Promise.all([
+      session.repository.comments.listForExpense(props.groupId, props.expenseId),
+      session.repository.app.getCurrentUser(),
+    ])
     await session.queue.acknowledge(operation.envelope.operationId)
-    await reload()
+    comments.value = loadedComments
+    currentUser.value = user
+    await hydrateAttachmentMetadata(loadedComments.flatMap(({ attachmentRefs: references }) => references))
     error.value = ''
     status.value = 'Reloaded the current comment.'
   } catch (reason) {
@@ -203,6 +229,7 @@ async function resolveCommentDeleteConflict(commentId: string): Promise<void> {
 }
 
 async function attach(event: Event): Promise<void> {
+  if (isDraftLocked.value) return
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
@@ -219,6 +246,7 @@ async function attach(event: Event): Promise<void> {
 }
 
 async function removeAttachment(reference: string): Promise<void> {
+  if (isDraftLocked.value) return
   attachmentRefs.value = attachmentRefs.value.filter((candidate) => candidate !== reference)
   const next = new Map(attachmentAssets.value)
   next.delete(reference)
@@ -346,19 +374,21 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
     <p v-if="closed" class="comment-thread__closed">Comments are closed because this expense was deleted.</p>
     <form v-else class="comment-thread__composer" aria-label="Add a comment" @submit.prevent="submit">
       <label for="comment-body">Add a comment</label>
-      <textarea id="comment-body" v-model="body" rows="3" :aria-invalid="Boolean(error)" aria-describedby="comment-error" />
+      <textarea id="comment-body" v-model="body" rows="3" :readonly="isDraftLocked" :aria-invalid="Boolean(error)" aria-describedby="comment-error" />
+      <p v-if="isDraftLocked" class="comment-thread__locked">This saved draft is locked to the original comment. Retry sends exactly this text and these attachments. Discard it before making changes.</p>
       <div class="comment-thread__attachments">
-        <label class="comment-thread__attach">Attach file<input type="file" accept="image/*" @change="attach"></label>
+        <label class="comment-thread__attach" :aria-disabled="isDraftLocked">Attach file<input type="file" accept="image/*" :disabled="isDraftLocked" @change="attach"></label>
         <span v-for="attachment in attachmentRefs" :key="attachment" class="comment-thread__attachment">
           <span><strong>{{ attachmentLabel(attachment) }}</strong><small>{{ attachmentDurability(attachment) }}</small></span>
           <button v-if="attachmentAssets.get(attachment)" type="button" data-action="open-comment-attachment" @click="openAttachment(attachment)">Open preview</button>
-          <button type="button" data-action="remove-comment-attachment" @click="removeAttachment(attachment)">Remove</button>
+          <button type="button" data-action="remove-comment-attachment" :disabled="isDraftLocked" @click="removeAttachment(attachment)">Remove</button>
         </span>
       </div>
       <div class="comment-thread__actions">
         <button type="submit" :disabled="Boolean(operationId)">{{ operationId ? 'Saving…' : 'Post comment' }}</button>
         <button v-if="isFailedRetryable(operationId)" type="button" data-action="retry-comment" @click="retry">Retry</button>
         <button v-if="operationId && session.queue.get(operationId)?.status === 'failed'" type="button" data-action="discard-comment" @click="discard">Discard</button>
+        <button v-if="activeAddOperation?.status === 'conflicted'" type="button" data-action="discard-comment-conflict" @click="discardCommentConflict">Discard conflicted draft</button>
       </div>
     </form>
   </section>
@@ -380,6 +410,7 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
 .comment-thread__error:empty { min-height: 0; margin: 0; }
 .comment-thread__error { margin: 0; color: var(--su-owing); font-weight: 650; }
 .comment-thread__closed { margin: 0; color: var(--ion-color-medium); }
+.comment-thread__locked { margin: 0; color: var(--ion-color-medium); font-size: 0.82rem; line-height: 1.4; }
 .comment-thread__composer { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 12px 0 max(4px, env(safe-area-inset-bottom)); background: var(--su-surface); }
 .comment-thread__composer textarea { min-height: 88px; padding: 11px; border: 1px solid var(--su-divider); border-radius: 12px; background: var(--su-surface); color: var(--su-text); font: inherit; resize: vertical; }
 .comment-thread__attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

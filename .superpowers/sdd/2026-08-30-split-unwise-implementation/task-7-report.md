@@ -6,6 +6,8 @@ Original implementation baseline: `a7bbf24`
 
 Fix round 1 review baseline: `e0531ea`
 
+Fix round 2 review baseline: `969e3fe`
+
 Scope: Expense detail, immutable audit/revisions, comments, global Activity, and principal-owned notifications.
 
 ## Outcome
@@ -184,6 +186,50 @@ Production breaks named: Group Activity omitted durable queue projections, reuse
 - RED: 2/2 focused Group Activity tests failed.
 - GREEN: 2/2 passed with the shared queue projection, `submittedAt` date groups, `onIonViewWillEnter` refresh, and a full-width link body with a minimum 44px target.
 
+## Fix round 2 RED-first evidence
+
+This review pass closed all ten independent findings without deferral.
+
+### Preparation immutability and same-principal queue races
+
+Production breaks named: a preparer could mutate the stored envelope by reference and thereby defeat semantic-equivalence validation; a frozen queue could also persist its old pending snapshot after a newer same-principal queue had already stored a fresh completion.
+
+- Command: `pnpm vitest run src/data/__tests__/task7QueueSession.spec.ts`
+- RED: 2 focused tests failed: in-place preparation changed the authoritative command intent, and the released old queue replaced the newer fresh shared-storage record with pending state.
+- GREEN: 19/19 passed after preparing independent clones against an untouched snapshot and removing the stale-session write. The original pending record remains durable/adoptable when no newer session has reconciled it.
+
+### Exact comment recovery
+
+Production breaks named: failed comment drafts remained editable even though Retry replayed the immutable stored body/attachments; conflicted adds left a disabled composer with no recovery; and comment-delete conflict acknowledgement could precede a failed repository reload.
+
+- Command: `pnpm vitest run src/features/comments/__tests__/CommentThread.spec.ts`
+- RED: the focused lock and conflicted-add checks both failed; the reload-failure regression was added to the same cluster and retained the expected conflicted record until recovery.
+- GREEN: 13/13 passed. Pending/failed/conflicted drafts lock the exact displayed body and attachments with explicit copy, failed drafts retain Retry/Discard, conflicted adds have an explicit discard-and-start-again action, and delete conflicts are acknowledged only after the authoritative comments/user reload succeeds.
+
+### Rehydrated deletion and ISO audit money
+
+Production breaks named: a deletion restored as pending could stay in a saving state after its queue result became fresh/stale, and audit snapshots assumed every currency used two fraction digits.
+
+- Command: `pnpm vitest run src/features/expenses/__tests__/ExpenseDetailPage.spec.ts`
+- RED: 1 rehydrated-delete reconciliation test and 3 exponent table cases (JPY, BHD, CLF) failed.
+- GREEN: 17/17 passed. Exact durable delete results immediately apply their tombstone, reconcile retained audit data, close comments, and leave saving state; audit totals and allocations use the shared ISO-exponent formatter.
+
+### Filter-aware Activity pagination
+
+Production break named: filtering only the already-loaded all-activity page could falsely show no results when matching records existed after the first 100 rows.
+
+- Command: `pnpm vitest run src/features/activity/__tests__/ActivityPage.spec.ts`
+- RED: the selected-filter server query/pagination regression failed.
+- GREEN: 10/10 passed. Filter changes load their own server page and cursor; continuation remains bound to the selected filter and stale results cannot merge after a filter change.
+
+### Notification generation and durable failure recovery
+
+Production breaks named: an older load-more request could merge after a newer authoritative refresh, and a recreated component hid persisted failed notification operations because its transient error string was empty.
+
+- Command: `pnpm vitest run src/features/notifications/__tests__/NotificationCenter.spec.ts`
+- RED: 2/2 new regressions failed.
+- GREEN: 9/9 passed. Root refresh/unmount invalidates page generations, and durable failed operations independently restore their message plus Retry/Discard actions.
+
 ## Final GREEN verification
 
 ### Focused Task 7 matrix
@@ -192,12 +238,18 @@ Command:
 
 `pnpm vitest run src/data/__tests__/auditRepositories.spec.ts src/data/__tests__/task7Decoders.spec.ts src/data/__tests__/task7QueueSession.spec.ts src/app/__tests__/router.spec.ts src/features/expenses/__tests__/ExpenseDetailPage.spec.ts src/features/expenses/__tests__/ExpenseEditorPage.spec.ts src/features/comments/__tests__/CommentThread.spec.ts src/features/activity/__tests__/ActivityPage.spec.ts src/features/notifications/__tests__/NotificationCenter.spec.ts src/components/__tests__/ExpenseRow.spec.ts src/features/groups/__tests__/GroupDetailPage.spec.ts`
 
-Fix-round focused result: 14 files passed, 223 tests passed.
+Fix-round-1 focused result: 14 files passed, 223 tests passed.
+
+Fix-round-2 affected-suite command:
+
+`pnpm vitest run src/data/__tests__/task7QueueSession.spec.ts src/features/comments/__tests__/CommentThread.spec.ts src/features/expenses/__tests__/ExpenseDetailPage.spec.ts src/features/activity/__tests__/ActivityPage.spec.ts src/features/notifications/__tests__/NotificationCenter.spec.ts`
+
+Fix-round-2 affected-suite result: 5 files passed, 68 tests passed.
 
 ### Full suite
 
 - Command: `pnpm test`
-- Result: 36 files passed, 435 tests passed.
+- Result: 36 files passed, 447 tests passed.
 
 ### Static/build checks
 
@@ -205,9 +257,9 @@ Fix-round focused result: 14 files passed, 223 tests passed.
 - Result: passed (`vue-tsc --noEmit`).
 - Command: `pnpm build`
 - Result: passed; 316 modules transformed. Vite emitted only its existing large-chunk advisory.
-- Command before commit: `git diff --check e0531ea`
+- Command before fix-round-2 commit: `git diff --check 969e3fe`
 - Result: passed with no whitespace errors.
-- Command after implementation commit: `git diff --check e0531ea..HEAD`
+- Command after fix-round-2 implementation commit: `git diff --check 969e3fe..HEAD`
 - Result: passed with no whitespace errors.
 
 No browser or Playwright validation was run because the Task 7 brief explicitly prohibited it.

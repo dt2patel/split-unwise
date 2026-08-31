@@ -7,7 +7,7 @@ import NotificationCenter from '../notifications/NotificationCenter.vue'
 import type { ActivityFilter } from '../../data/repositories'
 
 const store = useActivityStore()
-const { error, filter, isLoading, isLoadingMore, items, nextCursor } = storeToRefs(store)
+const { error, filter, isFiltering, isLoading, isLoadingMore, items, nextCursor } = storeToRefs(store)
 
 const filters: readonly { value: ActivityFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -15,7 +15,7 @@ const filters: readonly { value: ActivityFilter; label: string }[] = [
   { value: 'comments', label: 'Comments' },
   { value: 'payments', label: 'Payments' },
 ]
-const status = computed(() => isLoading.value ? 'Loading activity…' : error.value)
+const status = computed(() => isLoading.value || isFiltering.value ? 'Loading activity…' : error.value)
 
 onMounted(() => { void store.load() })
 

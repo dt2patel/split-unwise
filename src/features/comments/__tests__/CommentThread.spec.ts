@@ -79,6 +79,67 @@ describe('comment thread', () => {
     expect(queue.snapshot()).toEqual([])
   })
 
+  it('locks the exact failed body and attachments so Retry cannot replay different visible intent', async () => {
+    const repository = createDemoRepository()
+    const receipts = createMemoryReceiptStore({ id: () => 'locked-comment-file' })
+    let attempts = 0
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'comment.add': async (command) => {
+        if (command.kind !== 'comment.add') throw new Error('Wrong command')
+        attempts += 1
+        if (attempts === 1) throw Object.assign(new Error('offline'), { code: 'unavailable' })
+        return repository.comments.add(command)
+      } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage(), receipts }), queue, receipts })
+    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
+    await flushPromises()
+    const input = wrapper.get<HTMLInputElement>('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['photo'], 'locked.jpg', { type: 'image/jpeg' })] })
+    await input.trigger('change')
+    await wrapper.get('textarea').setValue('Immutable failed comment')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('textarea').attributes('readonly')).toBeDefined()
+    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-action="remove-comment-attachment"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Retry sends exactly this text and these attachments')
+    expect(queue.snapshot()[0]?.envelope).toMatchObject({ body: 'Immutable failed comment', attachmentRefs: ['local-receipt:locked-comment-file'] })
+
+    await wrapper.get('[data-action="retry-comment"]').trigger('click')
+    await vi.waitFor(async () => {
+      const saved = await repository.comments.listForExpense('lake-house-weekend', 'groceries')
+      expect(saved.find(({ body }) => body === 'Immutable failed comment')).toMatchObject({ attachmentRefs: ['local-receipt:locked-comment-file'] })
+    })
+  })
+
+  it('offers an explicit recovery from a conflicted comment add instead of a disabled deadlock', async () => {
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'comment.add': async () => { throw new CommandConflictError('Comment target changed') } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('Conflicted draft')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(queue.snapshot()[0]?.status).toBe('conflicted')
+    expect(wrapper.get('[data-action="discard-comment-conflict"]').text()).toContain('Discard')
+    expect(wrapper.get('textarea').attributes('readonly')).toBeDefined()
+    await wrapper.get('[data-action="discard-comment-conflict"]').trigger('click')
+    await flushPromises()
+    expect(queue.snapshot()).toEqual([])
+    expect(wrapper.get('textarea').element).toHaveProperty('value', '')
+    expect(wrapper.get<HTMLButtonElement>('button[type="submit"]').element.disabled).toBe(false)
+  })
+
   it('recovers from a pre-queue attachment claim failure and lets the attachment be removed by filename', async () => {
     const receipts = createMemoryReceiptStore({ id: () => 'comment-photo' })
     let reference: LocalReceiptReference | undefined
@@ -210,6 +271,40 @@ describe('comment thread', () => {
     await flushPromises()
     expect(queue.snapshot()).toEqual([])
     expect(recreated.find(`[data-comment-id="${added.comment.commentId}"] [data-action="delete-comment"]`).exists()).toBe(true)
+  })
+
+  it('keeps a comment-delete conflict durable when reloading the repository fails', async () => {
+    const source = createDemoRepository({ now: () => '2026-08-31T20:00:00.000Z' })
+    const added = await source.comments.add({ kind: 'comment.add', operationId: 'reload-failure-source', groupId: 'lake-house-weekend', expenseId: 'groceries', body: 'Still remote', attachmentRefs: [] })
+    if (added.status !== 'saved') throw new Error('Expected save')
+    let failReload = false
+    const repository = {
+      ...source,
+      comments: {
+        ...source.comments,
+        async listForExpense(groupId: string, expenseId: string) {
+          if (failReload) throw new Error('Reload failed remotely')
+          return source.comments.listForExpense(groupId, expenseId)
+        },
+      },
+    }
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      handlers: { 'comment.delete': async () => { throw new CommandConflictError('Comment changed remotely') } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
+    await flushPromises()
+    await wrapper.get(`[data-comment-id="${added.comment.commentId}"] [data-action="delete-comment"]`).trigger('click')
+    await flushPromises()
+    failReload = true
+
+    await wrapper.get('[data-action="resolve-comment-delete-conflict"]').trigger('click')
+    await flushPromises()
+    expect(queue.snapshot()[0]?.status).toBe('conflicted')
+    expect(wrapper.get('[data-testid="comment-error"]').text()).toContain('Reload failed remotely')
+    expect(wrapper.find('[data-action="resolve-comment-delete-conflict"]').exists()).toBe(true)
   })
 
   it('keeps prior comments visible while closing the composer on a deleted expense', async () => {

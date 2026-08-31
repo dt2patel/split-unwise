@@ -168,6 +168,27 @@ describe('expense detail financial and destructive states', () => {
     expect(wrapper.findAll('[data-testid="revision-snapshot"]').at(-1)?.text()).toContain('Recurrence')
   })
 
+  it.each([
+    ['JPY' as const, 1200, '1,200'],
+    ['BHD' as const, 1234, '1.234'],
+    ['CLF' as const, 12345, '1.2345'],
+  ])('formats %s audit snapshot money with its ISO currency exponent', async (currency, minorAmount, expected) => {
+    const repository = createDemoRepository({ now: () => '2026-08-31T19:00:00.000Z' })
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: `audit-${currency.toLowerCase()}`, groupId: 'lake-house-weekend', description: `${currency} audit`, date: '2026-08-31',
+      total: { currency, minorAmount }, payments: [{ participantId: 'maya-p', money: { currency, minorAmount } }],
+      allocations: [{ participantId: 'maya-p', money: { currency, minorAmount } }], category: 'Other',
+      splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [],
+    })
+    if (added.status !== 'saved') throw new Error('Expected demo save')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute(`/tabs/activity/expenses/${added.expense.id}?groupId=lake-house-weekend`)
+    const snapshot = wrapper.get('[data-testid="revision-snapshot"]').text()
+    expect(snapshot).toContain(expected)
+    expect(snapshot).not.toContain((minorAmount / 100).toFixed(2))
+  })
+
   it('rehydrates the exact failed deletion with Retry and Discard and does not submit a duplicate', async () => {
     const repository = createDemoRepository()
     const queue = new CommandQueue({ originPrincipalKey: principalKey, storage: createMemoryCommandStorage(), handlers: {
@@ -187,6 +208,35 @@ describe('expense detail financial and destructive states', () => {
     expect(recreated.find('[data-action="retry-expense-delete"]').exists()).toBe(true)
     expect(recreated.find('[data-action="discard-expense-delete"]').exists()).toBe(true)
     expect(queue.snapshot().filter(({ envelope }) => envelope.kind === 'expense.delete')).toHaveLength(1)
+  })
+
+  it('reconciles a rehydrated pending deletion when it becomes fresh and closes the comment composer', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({ originPrincipalKey: principalKey, storage: createMemoryCommandStorage(), handlers: {
+      'expense.delete': async (command) => {
+        if (command.kind !== 'expense.delete') throw new Error('Wrong command')
+        await gate
+        return repository.expenses.delete(command)
+      },
+    } })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const first = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    await first.get('[data-action="delete-expense"]').trigger('click')
+    const alert = first.getComponent({ name: 'IonAlert' })
+    void alert.props('buttons').find((button: { role?: string }) => button.role === 'destructive').handler()
+    await vi.waitFor(() => expect(queue.snapshot()[0]?.status).toBe('pending'))
+    first.unmount()
+
+    const recreated = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    expect(recreated.get('[data-testid="delete-state"]').text()).toContain('Saving deletion')
+    release()
+    await vi.waitFor(() => expect(queue.snapshot()[0]?.status).toBe('fresh'))
+    await vi.waitFor(() => expect(recreated.get('[data-testid="delete-state"]').text()).toContain('Deleted'))
+    expect(recreated.get('[data-testid="deleted-state"]').text()).toContain('deleted')
+    expect(recreated.get('[data-testid="comments"]').text()).toContain('Comments are closed')
+    expect(recreated.find('[data-testid="comments"] form').exists()).toBe(false)
   })
 
   it('rehydrates a deletion conflict with explicit reload and delete-latest resolution choices', async () => {

@@ -11,6 +11,7 @@ export const useActivityStore = defineStore('activity', () => {
   const canonical = ref<readonly ActivityItem[]>([])
   const filter = ref<ActivityFilter>('all')
   const isLoading = ref(false)
+  const isFiltering = ref(false)
   const isLoadingMore = ref(false)
   const error = ref('')
   const nextCursor = ref<TimelineCursor>()
@@ -26,14 +27,16 @@ export const useActivityStore = defineStore('activity', () => {
   })
   const items = computed(() => allItems.value.filter((item) => matchesFilter(item, filter.value)))
 
-  async function load(): Promise<void> {
+  async function load(selectedFilter: ActivityFilter = filter.value): Promise<void> {
     const active = ++request
-    isLoading.value = true
+    const blocking = canonical.value.length === 0
+    isLoading.value = blocking
+    isFiltering.value = !blocking
     error.value = ''
     try {
       await session.ready
       const [page, user] = await Promise.all([
-        session.repository.activity.listForAccount({ filter: 'all', limit: 100 }),
+        session.repository.activity.listForAccount({ filter: selectedFilter, limit: 100 }),
         session.repository.app.getCurrentUser(),
       ])
       if (active !== request) return
@@ -43,7 +46,10 @@ export const useActivityStore = defineStore('activity', () => {
     } catch (reason) {
       if (active === request) error.value = reason instanceof Error ? reason.message : 'Activity could not be loaded.'
     } finally {
-      if (active === request) isLoading.value = false
+      if (active === request) {
+        isLoading.value = false
+        isFiltering.value = false
+      }
     }
   }
 
@@ -51,11 +57,12 @@ export const useActivityStore = defineStore('activity', () => {
     const cursor = nextCursor.value
     if (!cursor || isLoadingMore.value) return
     const active = request
+    const selectedFilter = filter.value
     isLoadingMore.value = true
     error.value = ''
     try {
-      const page = await session.repository.activity.listForAccount({ filter: 'all', limit: 100, cursor })
-      if (active !== request) return
+      const page = await session.repository.activity.listForAccount({ filter: selectedFilter, limit: 100, cursor })
+      if (active !== request || filter.value !== selectedFilter) return
       const byId = new Map(canonical.value.map((item) => [item.id, item]))
       page.items.forEach((item) => byId.set(item.id, item))
       canonical.value = [...byId.values()].sort(newestActivityFirst)
@@ -67,9 +74,13 @@ export const useActivityStore = defineStore('activity', () => {
     }
   }
 
-  function setFilter(next: ActivityFilter): void { filter.value = next }
+  function setFilter(next: ActivityFilter): void {
+    if (filter.value === next) return
+    filter.value = next
+    void load(next)
+  }
 
-  return { items, allItems, filter, isLoading, isLoadingMore, error, nextCursor, load, loadMore, setFilter }
+  return { items, allItems, filter, isLoading, isFiltering, isLoadingMore, error, nextCursor, load, loadMore, setFilter }
 })
 
 export function projectActivityTimeline(

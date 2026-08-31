@@ -65,6 +65,25 @@ describe('Task 7 queue schema and identity', () => {
     expect(queue.get(original.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation' } })
   })
 
+  it('passes preparation a clone so in-place mutation cannot rewrite the stored intent or bypass equivalence', async () => {
+    const original = expenseAdd('mutating-preparer')
+    let calls = 0
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey,
+      storage: createMemoryCommandStorage(),
+      prepare: async (command) => {
+        if (command.kind === 'expense.add') (command.total as { minorAmount: number }).minorAmount += 100
+        return command
+      },
+      handlers: { 'expense.add': async () => { calls += 1; throw new Error('must not run') } },
+    })
+
+    await expect(queue.submit(original).result()).rejects.toMatchObject({ code: 'validation' })
+    expect(calls).toBe(0)
+    expect(queue.get(original.operationId)?.envelope).toMatchObject({ total: { minorAmount: 2400 } })
+    expect(original.total.minorAmount).toBe(2400)
+  })
+
   it('permits only local-to-remote substitutions at the same attachment positions', async () => {
     const repository = createDemoRepository()
     const original = { ...expenseAdd('attachment-promotion'), attachmentRefs: ['local-receipt:one', 'remote-receipt:kept'] }
@@ -304,11 +323,7 @@ describe('Task 7 session races', () => {
       status: 'pending' as const,
       envelope: commentAdd('resumed-stale-comment'),
     }
-    let saved: unknown
-    const storage: CommandStorage = {
-      load: () => ({ version: 5, principalKey, operations: [pending] }),
-      save: async (_scope, document) => { saved = structuredClone(document) },
-    }
+    const storage = createMemoryCommandStorage({ [principalKey]: { version: 5, principalKey, operations: [pending] } })
     const source = createDemoRepository()
     const repository: AppRepository = {
       ...source,
@@ -326,7 +341,49 @@ describe('Task 7 session races', () => {
     release()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(saved).toMatchObject({ operations: [expect.objectContaining({ status: 'pending', envelope: expect.objectContaining({ operationId: 'resumed-stale-comment' }) })] })
+    expect(storage.load(principalKey)).toMatchObject({ operations: [expect.objectContaining({ status: 'pending', envelope: expect.objectContaining({ operationId: 'resumed-stale-comment' }) })] })
+  })
+
+  it('does not let a frozen old queue overwrite a newer same-principal fresh completion', async () => {
+    let releaseOld!: () => void
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve })
+    let announceOldStarted!: () => void
+    const oldStarted = new Promise<void>((resolve) => { announceOldStarted = resolve })
+    let announceOldReturned!: () => void
+    const oldReturned = new Promise<void>((resolve) => { announceOldReturned = resolve })
+    const pending = {
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'pending' as const,
+      envelope: commentAdd('shared-storage-race'),
+    }
+    const storage = createMemoryCommandStorage({ [principalKey]: { version: 5, principalKey, operations: [pending] } })
+    const source = createDemoRepository()
+    const delayedRepository: AppRepository = {
+      ...source,
+      commands: {
+        async execute(command) {
+          announceOldStarted()
+          await oldGate
+          const result = await source.commands.execute(command)
+          announceOldReturned()
+          return result
+        },
+      },
+    }
+    const oldSession = createAppSession({ repository: delayedRepository, principal, commandStorage: storage })
+    await oldSession.ready
+    await oldStarted
+    const newSession = createAppSession({ repository: source, principal, commandStorage: storage })
+    await newSession.ready
+    await expect(newSession.queue.submit(commentAdd('shared-storage-race')).result()).resolves.toMatchObject({ status: 'saved' })
+
+    oldSession.freeze()
+    releaseOld()
+    await oldReturned
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(storage.load(principalKey)).toMatchObject({ operations: [expect.objectContaining({ status: 'fresh', envelope: expect.objectContaining({ operationId: 'shared-storage-race' }) })] })
   })
 })
 

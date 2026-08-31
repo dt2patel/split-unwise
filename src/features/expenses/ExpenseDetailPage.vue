@@ -12,11 +12,12 @@ import {
   IonTitle,
   IonToolbar,
 } from '@ionic/vue'
-import MoneyAmount from '../../components/MoneyAmount.vue'
+import MoneyAmount, { formatMoney as formatMoneyValue } from '../../components/MoneyAmount.vue'
 import CommentThread from '../comments/CommentThread.vue'
 import { getAppSession } from '../../data'
 import type { ExpenseRevision, ExpenseRow, Member } from '../../data/repositories'
 import type { ReceiptAsset } from '../../data/receipts'
+import type { CommandOperation } from '../../data/commandQueue'
 import { isStrictId, parseStrictScalarId } from '../../data/identifiers'
 
 type DetailOrigin = 'account' | 'activity' | 'groups' | 'home'
@@ -37,7 +38,7 @@ const deleteOperationId = ref<string>()
 const attachmentAssets = ref(new Map<string, ReceiptAsset | null>())
 const deleteTrigger = ref<HTMLElement>()
 let loadRequest = 0
-const unsubscribe = session.queue.subscribe(() => syncDeleteOperation())
+const unsubscribe = session.queue.subscribe((operation) => { void reconcileDeleteOperation(operation) })
 onBeforeUnmount(unsubscribe)
 
 const origin = computed<DetailOrigin>(() => {
@@ -107,7 +108,7 @@ async function load(): Promise<void> {
     expense.value = loadedExpense
     revisions.value = history
     await hydrateAttachmentMetadata([...loadedExpense.attachmentRefs, ...history.flatMap((revision) => revision.expense.attachmentRefs)])
-    syncDeleteOperation()
+    await reconcileStoredDelete()
   } catch (reason) {
     if (request !== loadRequest) return
     error.value = message(reason, 'This expense is not available.')
@@ -230,11 +231,37 @@ function currentDeleteOperation() {
   })
 }
 
-function syncDeleteOperation(): void {
-  const operation = currentDeleteOperation()
-  if (!operation) return
+async function reconcileStoredDelete(): Promise<void> {
+  const operation = [...session.queue.snapshot()].reverse().find(isExactDeleteOperation)
+  if (operation) await reconcileDeleteOperation(operation)
+}
+
+async function reconcileDeleteOperation(operation: CommandOperation): Promise<void> {
+  if (!isExactDeleteOperation(operation)) return
   deleteOperationId.value = operation.envelope.operationId
-  if (operation.status === 'pending' || operation.status === 'failed' || operation.status === 'conflicted') deleteState.value = operation.status
+  if (operation.status === 'pending' || operation.status === 'failed' || operation.status === 'conflicted') {
+    deleteState.value = operation.status
+    return
+  }
+  if (operation.result.status !== 'saved' || operation.result.kind !== 'expense.delete') return
+  const tombstone = operation.result.tombstone
+  if (expense.value?.groupId === tombstone.groupId && expense.value.id === tombstone.id) {
+    expense.value = { ...expense.value, revision: tombstone.revision, updatedAt: tombstone.deletedAt, deletedAt: tombstone.deletedAt, syncState: operation.status }
+  }
+  deleteState.value = 'saved'
+  try {
+    const [retained, history] = await Promise.all([
+      session.repository.expenses.getById(tombstone.groupId, tombstone.id),
+      session.repository.expenses.listRevisions(tombstone.groupId, tombstone.id),
+    ])
+    if (retained?.groupId === tombstone.groupId && retained.id === tombstone.id && retained.deletedAt) expense.value = retained
+    if (history.every((revision) => revision.groupId === tombstone.groupId && revision.expenseId === tombstone.id)) revisions.value = history
+  } catch { /* the saved tombstone result already closes mutation and comment surfaces truthfully */ }
+}
+
+function isExactDeleteOperation(operation: CommandOperation): boolean {
+  const envelope = operation.envelope
+  return envelope.kind === 'expense.delete' && envelope.groupId === groupId.value && envelope.expenseId === expenseId.value
 }
 
 async function hydrateAttachmentMetadata(references: readonly string[]): Promise<void> {
@@ -288,9 +315,9 @@ function revisionDiff(revision: ExpenseRevision, index: number): string {
   if (JSON.stringify(previous.recurrence) !== JSON.stringify(revision.expense.recurrence)) changed.push('recurrence')
   return changed.length ? `Changed ${changed.join(', ')}.` : 'Metadata-only update.'
 }
-function formatMoney(row: ExpenseRow): string { return new Intl.NumberFormat(undefined, { style: 'currency', currency: row.total.currency }).format(row.total.minorAmount / 100) }
+function formatMoney(row: ExpenseRow): string { return formatMoneyValue(row.total) }
 function allocationLabel(row: ExpenseRow, participantId: string, minorAmount: number): string {
-  return `${payerName(participantId)} ${new Intl.NumberFormat(undefined, { style: 'currency', currency: row.total.currency }).format(minorAmount / 100)}`
+  return `${payerName(participantId)} ${formatMoneyValue({ currency: row.total.currency, minorAmount })}`
 }
 function splitLabel(row: ExpenseRow): string { return `${row.splitMethod.type} split` }
 function recurrenceLabel(row: ExpenseRow): string {

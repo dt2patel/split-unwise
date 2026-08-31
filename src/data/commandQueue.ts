@@ -227,10 +227,11 @@ export class CommandQueue {
         if (!current || current.status !== 'pending' || canonicalEnvelopeFingerprint(current.envelope) !== canonicalEnvelopeFingerprint(operation.envelope)) return undefined
         let execution = current.executionEnvelope ?? current.envelope
         if (!current.executionEnvelope && this.options.prepare) {
-          const prepared = await this.options.prepare(current.envelope)
-          if (!isExecutionEnvelopeFor(prepared, current.envelope)) throw new CommandFailedError('validation', 'Command preparation returned an invalid or mismatched execution envelope')
-          if (canonicalEnvelopeFingerprint(prepared) !== canonicalEnvelopeFingerprint(current.envelope)
-            || this.options.shouldPersistExecution?.(current.envelope, prepared)) {
+          const original = clone(current.envelope)
+          const prepared = await this.options.prepare(clone(original))
+          if (!isExecutionEnvelopeFor(prepared, original)) throw new CommandFailedError('validation', 'Command preparation returned an invalid or mismatched execution envelope')
+          if (canonicalEnvelopeFingerprint(prepared) !== canonicalEnvelopeFingerprint(original)
+            || this.options.shouldPersistExecution?.(original, prepared)) {
             const mapped: CommandOperation = { ...current, executionEnvelope: clone(prepared) }
             await this.replace(mapped)
           }
@@ -254,9 +255,8 @@ export class CommandQueue {
         const current = this.operations.get(operationId)
         if (!current || canonicalEnvelopeFingerprint(current.envelope) !== canonicalEnvelopeFingerprint(operation.envelope)) return
         if (isIndeterminateExecutionError(error)) {
-          // A frozen session must not terminalize intent, but a background resume
-          // still reaffirms the pending record so the next matching principal can adopt it.
-          try { await this.persist() } catch { /* the already persisted pending record remains authoritative */ }
+          // The pending intent was persisted before execution. Never write an old
+          // in-memory snapshot here: another same-principal queue may have reconciled it.
           throw error
         }
         const mapped = toFailure(error)

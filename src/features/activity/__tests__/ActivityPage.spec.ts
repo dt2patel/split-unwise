@@ -47,10 +47,13 @@ describe('global Activity page', () => {
     const wrapper = await mountActivity()
 
     await wrapper.get('[data-filter="comments"]').trigger('click')
+    await flushPromises()
     expect(wrapper.findAll('[data-activity-id]').map((row) => row.attributes('data-activity-id'))).toEqual(['activity-cabin-comment'])
     await wrapper.get('[data-filter="expenses"]').trigger('click')
+    await flushPromises()
     expect(wrapper.findAll('[data-activity-id]')).toHaveLength(5)
     await wrapper.get('[data-filter="all"]').trigger('click')
+    await flushPromises()
     expect(wrapper.findAll('[data-activity-id]')).toHaveLength(6)
   })
 
@@ -134,6 +137,42 @@ describe('Activity durable projection', () => {
     expect(wrapper.findAll('[data-activity-id]')).toHaveLength(2)
     expect(new Set(wrapper.findAll('[data-activity-id]').map((row) => row.attributes('data-activity-id'))).size).toBe(2)
     expect(calls).toEqual([undefined, all[0].id])
+  })
+
+  it('queries and paginates the selected server filter so matches beyond the first all-page are not falsely empty', async () => {
+    const source = createDemoRepository()
+    const all = (await source.activity.listForAccount({ filter: 'all', limit: 100 })).items
+    const expense = all.find(({ kind }) => kind.startsWith('expense.'))!
+    const comment = all.find(({ kind }) => kind === 'comment.added')!
+    const olderComment = { ...comment, id: 'activity-older-comment', operationId: 'older-comment', createdAt: '2026-08-20T12:00:00.000Z' }
+    const calls: Array<{ readonly filter: string; readonly cursor?: string }> = []
+    const repository = {
+      ...source,
+      activity: {
+        ...source.activity,
+        async listForAccount(query: { readonly filter: string; readonly cursor?: { readonly createdAt: string; readonly id: string } }) {
+          calls.push({ filter: query.filter, cursor: query.cursor?.id })
+          if (query.filter === 'all') return { items: [expense] }
+          if (!query.cursor) return { items: [comment], nextCursor: { createdAt: comment.createdAt, id: comment.id } }
+          return { items: [olderComment] }
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+    expect(wrapper.findAll('[data-activity-id]')).toHaveLength(1)
+
+    await wrapper.get('[data-filter="comments"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-activity-id]').map((row) => row.attributes('data-activity-id'))).toEqual([comment.id])
+    await wrapper.get('[data-action="load-more-activity"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-activity-id]').map((row) => row.attributes('data-activity-id'))).toEqual([comment.id, olderComment.id])
+    expect(calls).toEqual([
+      { filter: 'all', cursor: undefined },
+      { filter: 'comments', cursor: undefined },
+      { filter: 'comments', cursor: comment.id },
+    ])
   })
 
   it('projects one pending event across store recreation and leaves an ID-less add noninteractive', async () => {
