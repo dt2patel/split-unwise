@@ -318,7 +318,7 @@ function deferredReceiptStore(
     async put(blob, metadata) { return (await resolved()).put(blob, metadata) },
     async get(reference) { return (await resolved()).get(reference) },
     async setDurability(reference, durability) { await (await resolved()).setDurability(reference, durability) },
-    async claim(reference, operationId) { await (await resolved()).claim(reference, operationId) },
+    async claim(reference, operationId) { return (await resolved()).claim(reference, operationId) },
     async delete(reference) { await (await resolved()).delete(reference) },
   }
 }

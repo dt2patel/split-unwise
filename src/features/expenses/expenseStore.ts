@@ -279,7 +279,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     editor.recurrence = { ...editor.recurrence, anchor: { month, day } }
   }
 
-  function submit(requestedOperationId?: string): boolean {
+  async function submit(requestedOperationId?: string): Promise<boolean> {
     if (mode.value === 'edit' && (!expenseId.value || revision.value === undefined)) {
       errorSummary.value = 'This edit is missing its expense revision. Reload the expense before saving.'
       saveState.value = 'failed'
@@ -314,14 +314,19 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     saveState.value = 'pending'
     let handle
     try {
+      const localReceipts = [...new Set(validation.draft.attachmentRefs.filter((reference): reference is LocalReceiptReference => reference.startsWith('local-receipt:')))]
+      for (const reference of localReceipts) {
+        const claimed = await session.receipts.claim(reference, operationId)
+        if (!claimed) throw new Error('A local receipt is no longer available. Reattach the receipt before saving.')
+      }
+      if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return false
       handle = session.queue.submit(command)
     } catch (reason) {
-      saveState.value = 'failed'
-      errorSummary.value = messageFor(reason, 'The expense could not be queued.')
+      if (editorContext === initializationRequest && lastOperationId.value === operationId) {
+        saveState.value = 'failed'
+        errorSummary.value = messageFor(reason, 'The expense could not be queued.')
+      }
       return false
-    }
-    for (const reference of validation.draft.attachmentRefs) {
-      if (reference.startsWith('local-receipt:')) void session.receipts.claim(reference as LocalReceiptReference, operationId)
     }
     void handle.result().then(async (result) => {
       if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createDemoReceiptProvider, createIndexedDbReceiptStore, createMemoryReceiptStore } from '../receipts'
+import { createDemoReceiptProvider, createIndexedDbReceiptStore, createMemoryReceiptStore, type LocalReceiptReference, type ReceiptAsset } from '../receipts'
+import { createInterleavingIndexedDb } from './indexedDbInterleaving'
 
 describe('receipt ports', () => {
   it('keeps blobs behind a durable local reference and deletes them explicitly', async () => {
@@ -94,7 +95,35 @@ describe('receipt ports', () => {
 
     expect(database.openedNames).toEqual(['split-unwise-receipts:demo:split-unwise:maya-p'])
   })
+
+  it('keeps a receipt when its IndexedDB claim starts before stale cleanup', async () => {
+    const reference: LocalReceiptReference = 'local-receipt:claim-first'
+    const database = createInterleavingIndexedDb([receiptAsset(reference)])
+    const store = createIndexedDbReceiptStore({ indexedDb: database.factory })
+
+    const claim = store.claim(reference, 'save-claim-first')
+    const cleanup = store.delete(reference)
+    await database.runToIdle()
+
+    await expect(claim).resolves.toBe(true)
+    await cleanup
+    expect(database.read(reference)?.commandOperationIds).toEqual(['save-claim-first'])
+  })
 })
+
+function receiptAsset(reference: LocalReceiptReference): ReceiptAsset {
+  const blob = new Blob(['receipt'], { type: 'image/jpeg' })
+  return {
+    reference,
+    blob,
+    fileName: 'receipt.jpg',
+    mimeType: blob.type,
+    size: blob.size,
+    createdAt: '2026-08-31T07:00:00.000Z',
+    durability: { status: 'local-only', reason: 'Receipt is stored only on this device until upload succeeds.' },
+    commandOperationIds: [],
+  }
+}
 
 function fakeIndexedDb() {
   const openedNames: string[] = []

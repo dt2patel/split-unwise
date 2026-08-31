@@ -39,6 +39,7 @@ describe('ExpenseEditorPage', () => {
     expect(wrapper.find('[aria-label="Primary navigation"]').exists()).toBe(false)
 
     await wrapper.get('[data-action="save-expense"]').trigger('click')
+    await flushPromises()
     const summary = wrapper.get('[data-testid="expense-error-summary"]')
     expect(summary.attributes('aria-live')).toBe('assertive')
     expect(document.activeElement).toBe(summary.element)
@@ -127,6 +128,7 @@ describe('ExpenseEditorPage', () => {
     store.editor.participants = []
     store.editor.payments = []
     await wrapper.get('[data-action="save-expense"]').trigger('click')
+    await flushPromises()
 
     expect(wrapper.get('#context-sheet-trigger').attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'expense-context-error' })
     expect(wrapper.get('#expense-description').attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'expense-description-error' })

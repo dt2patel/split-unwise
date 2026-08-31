@@ -21,7 +21,7 @@ export interface ReceiptBlobStore {
   get(reference: LocalReceiptReference): Promise<ReceiptAsset | undefined>
   setDurability(reference: LocalReceiptReference, durability: ReceiptDurability): Promise<void>
   /** Prevents stale editor cleanup from deleting a local asset captured by a durable command. */
-  claim(reference: LocalReceiptReference, operationId: string): Promise<void>
+  claim(reference: LocalReceiptReference, operationId: string): Promise<boolean>
   delete(reference: LocalReceiptReference): Promise<void>
 }
 
@@ -73,9 +73,10 @@ export function createMemoryReceiptStore(options: ReceiptStoreOptions = {}): Rec
     },
     async claim(reference, operationId) {
       const asset = assets.get(reference)
-      if (!asset) return
+      if (!asset) return false
       const commandOperationIds = [...new Set([...asset.commandOperationIds, operationId])]
       assets.set(reference, { ...asset, commandOperationIds })
+      return true
     },
     async delete(reference) {
       if (assets.get(reference)?.commandOperationIds.length) return
@@ -104,15 +105,31 @@ export function createIndexedDbReceiptStore(options: ReceiptStoreOptions & { rea
       if (asset) await requestFrom(getDatabase(), 'readwrite', (store) => store.put({ ...asset, durability }))
     },
     async claim(reference, operationId) {
-      const asset = await requestFrom(getDatabase(), 'readonly', (store) => store.get(reference)) as ReceiptAsset | undefined
-      if (!asset) return
-      const commandOperationIds = [...new Set([...(asset.commandOperationIds ?? []), operationId])]
-      await requestFrom(getDatabase(), 'readwrite', (store) => store.put({ ...asset, commandOperationIds }))
+      return readWriteFrom(getDatabase(), (store, succeed, fail) => {
+        const read = store.get(reference)
+        read.onsuccess = () => {
+          const asset = read.result as ReceiptAsset | undefined
+          if (!asset) { succeed(false); return }
+          const commandOperationIds = [...new Set([...(asset.commandOperationIds ?? []), operationId])]
+          const write = store.put({ ...asset, commandOperationIds })
+          write.onsuccess = () => succeed(true)
+          write.onerror = () => fail(write.error ?? new Error('Receipt claim could not be saved'))
+        }
+        read.onerror = () => fail(read.error ?? new Error('Receipt claim could not be read'))
+      })
     },
     async delete(reference) {
-      const asset = await requestFrom(getDatabase(), 'readonly', (store) => store.get(reference)) as ReceiptAsset | undefined
-      if (!asset || asset.commandOperationIds?.length) return
-      await requestFrom(getDatabase(), 'readwrite', (store) => store.delete(reference))
+      await readWriteFrom(getDatabase(), (store, succeed, fail) => {
+        const read = store.get(reference)
+        read.onsuccess = () => {
+          const asset = read.result as ReceiptAsset | undefined
+          if (!asset || asset.commandOperationIds?.length) { succeed(undefined); return }
+          const deletion = store.delete(reference)
+          deletion.onsuccess = () => succeed(undefined)
+          deletion.onerror = () => fail(deletion.error ?? new Error('Receipt cleanup could not be saved'))
+        }
+        read.onerror = () => fail(read.error ?? new Error('Receipt cleanup could not be read'))
+      })
     },
   }
 }
@@ -189,5 +206,40 @@ async function requestFrom(
     }
     transaction.onerror = () => fail(transaction.error ?? new Error('Receipt storage transaction failed'))
     transaction.onabort = () => fail(transaction.error ?? new Error('Receipt storage transaction was aborted'))
+  })
+}
+
+async function readWriteFrom<T>(
+  database: Promise<IDBDatabase>,
+  operation: (store: IDBObjectStore, succeed: (result: T) => void, fail: (reason: unknown) => void) => void,
+): Promise<T> {
+  const db = await database
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('receipts', 'readwrite')
+    let operationResult: T
+    let operationSucceeded = false
+    let settled = false
+    const fail = (reason: unknown) => {
+      if (settled) return
+      settled = true
+      reject(reason)
+    }
+    const succeed = (result: T) => {
+      operationResult = result
+      operationSucceeded = true
+    }
+    transaction.oncomplete = () => {
+      if (settled) return
+      if (!operationSucceeded) { fail(new Error('Receipt storage transaction completed without a result')); return }
+      settled = true
+      resolve(operationResult!)
+    }
+    transaction.onerror = () => fail(transaction.error ?? new Error('Receipt storage transaction failed'))
+    transaction.onabort = () => fail(transaction.error ?? new Error('Receipt storage transaction was aborted'))
+    try {
+      operation(transaction.objectStore('receipts'), succeed, fail)
+    } catch (reason) {
+      fail(reason)
+    }
   })
 }

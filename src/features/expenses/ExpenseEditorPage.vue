@@ -69,7 +69,7 @@ async function cancel(): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  if (!store.submit()) {
+  if (!await store.submit()) {
     await haptics.warning()
     await nextTick()
     errorSummary.value?.focus()

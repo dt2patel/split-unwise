@@ -231,3 +231,49 @@ Final verification:
 - Production upload/OCR and Firebase financial mutations remain explicit provider/server boundaries.
 - The deferred `removeReceipt` cleanup sequencing before an authoritative edit commit was not expanded in this round.
 - `public/assets/images/app-icon-1024.png` remains untouched, untracked, and unstaged.
+
+## Fix Round 4 — 2026-08-31
+
+### Atomic receipt ownership RED
+
+The Round 3 memory-store regression could not reproduce IndexedDB's transaction interleaving. `claim()` and guarded `delete()` each read in one transaction and wrote in a later transaction, while editor save submitted the command before its fire-and-forget claims completed. A stale cleanup could therefore read the unclaimed asset, allow claim to write, and then delete the queue-referenced blob.
+
+The new stateful IndexedDB-like harness permits concurrent readonly snapshots and serializes readwrite transactions to completion. It drives the real IndexedDB receipt store and, for the delete-first ordering, the real editor/session/queue path.
+
+RED command:
+
+`pnpm vitest run src/data/__tests__/receipts.spec.ts src/features/expenses/__tests__/expenseStore.spec.ts`
+
+Result before production changes: 2 files failed with 2 expected failures and 31 existing tests passed. The claim-first regression received `undefined` instead of committed ownership success; the delete-first editor regression returned `true` and queued the expense instead of failing without submission.
+
+### Atomic receipt ownership GREEN
+
+- `ReceiptBlobStore.claim()` now returns a boolean only after its ownership read/update commits in one readwrite transaction. A missing asset returns `false`.
+- IndexedDB cleanup now checks ownership and conditionally deletes within one readwrite transaction. Claim-first therefore blocks later cleanup; delete-first commits first and causes the later claim to fail.
+- Editor save is single-flight while it awaits every local receipt claim. It calls `queue.submit()` only after all claims succeed and reports a missing local receipt without creating a queue operation. If queue submission later throws, the receipt remains conservatively claimed; no race-prone cleanup or unclaim was added.
+- The memory store, deferred session port, editor page, and existing test seams use the same boolean claim contract. Receipt upload promotion, frozen replay mappings, unavailable-upload fallback, and stale recognition cleanup behavior remain intact.
+
+Initial GREEN command:
+
+`pnpm vitest run src/data/__tests__/receipts.spec.ts src/features/expenses/__tests__/expenseStore.spec.ts`
+
+Result: 2 files passed, 33 tests passed.
+
+Required focused command:
+
+`pnpm vitest run src/data/__tests__/receipts.spec.ts src/features/expenses/__tests__/ExpenseEditorPage.spec.ts src/features/expenses/__tests__/expenseStore.spec.ts src/data/__tests__/session.spec.ts src/data/__tests__/commandQueue.spec.ts`
+
+Result: 5 files passed, 126 tests passed. Node localStorage experimental and upstream Ionic sourcemap notices remained non-blocking test-environment warnings.
+
+### Round 4 final verification
+
+- `pnpm test` — 28 files passed, 337 tests passed.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed; Vite emitted only the existing large-chunk advisory.
+- The committed-baseline `git diff --check 088c5fd..HEAD` check follows the single Round 4 commit.
+
+### Round 4 residual QA
+
+- No browser/device claim is made. Real browser IndexedDB interruption behavior remains part of device/browser QA; both transaction orderings are deterministic in automated coverage.
+- Production upload/OCR and Firebase financial mutations remain explicit provider/server boundaries.
+- `public/assets/images/app-icon-1024.png` remains untouched, untracked, and unstaged.

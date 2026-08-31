@@ -5,6 +5,8 @@ import { createDemoRepository } from '../../../data/demoRepository'
 import { createMemoryReceiptStore, type LocalReceiptReference, type ReceiptAsset, type ReceiptBlobStore, type ReceiptDurability, type ReceiptProvider, type ReceiptRecognitionResult } from '../../../data/receipts'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import type { AppRepository, Group, Member } from '../../../data/repositories'
+import { createInterleavingIndexedDb } from '../../../data/__tests__/indexedDbInterleaving'
+import { createIndexedDbReceiptStore } from '../../../data/receipts'
 import { validateExpenseInput, useExpenseStore } from '../expenseStore'
 
 const members: readonly Member[] = [
@@ -226,7 +228,7 @@ describe('expense store lifecycle', () => {
 
     expect(store.recurringTemplateId).toBe('cabin-deposit-monthly')
     expect(store.editor.occurrenceEditScope).toBeUndefined()
-    expect(store.submit('recurring-without-scope')).toBe(false)
+    expect(await store.submit('recurring-without-scope')).toBe(false)
     expect(store.errors.recurrence).toContain('occurrence or future')
     expect(session.queue.get('recurring-without-scope')).toBeUndefined()
   })
@@ -284,7 +286,7 @@ describe('expense store lifecycle', () => {
     store.editor.amountText = '4.00'
     store.editor.category = 'Supplies'
 
-    expect(store.submit('pending-ice')).toBe(true)
+    expect(await store.submit('pending-ice')).toBe(true)
     expect(queue.get('pending-ice')).toMatchObject({ status: 'pending', envelope: { description: 'Ice' } })
     release()
     await queue.submit(queue.get('pending-ice')!.envelope).result()
@@ -384,7 +386,7 @@ describe('expense store lifecycle', () => {
     const attachment = store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
     await recognitionStarted.promise
     completeValidEditor(store)
-    expect(store.submit('receipt-owned-by-command')).toBe(true)
+    expect(await store.submit('receipt-owned-by-command')).toBe(true)
     store.leaveEditor()
     recognition.resolve({ status: 'unavailable', reason: 'Recognition unavailable.' })
 
@@ -393,6 +395,27 @@ describe('expense store lifecycle', () => {
     await expect(receipts.get('local-receipt:command-owned-receipt')).resolves.toMatchObject({
       durability: { status: 'upload-unavailable', reason: 'Upload unavailable.' },
     })
+  })
+
+  it('does not queue an expense when IndexedDB cleanup deletes its receipt before claim', async () => {
+    const reference: LocalReceiptReference = 'local-receipt:delete-first'
+    const database = createInterleavingIndexedDb([receiptAsset(reference, new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')])
+    const receipts = createIndexedDbReceiptStore({ indexedDb: database.factory })
+    const session = createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts })
+    setAppSessionForTesting(session)
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+    completeValidEditor(store)
+    store.editor.attachmentRefs = [reference]
+
+    const cleanup = receipts.delete(reference)
+    const submission = store.submit('deleted-before-claim')
+    await database.runToIdle()
+
+    await cleanup
+    await expect(Promise.resolve(submission)).resolves.toBe(false)
+    expect(session.queue.snapshot()).toEqual([])
+    expect(store.errorSummary).toContain('receipt')
   })
 
   it('lets only the latest receipt attachment commit when local writes resolve out of order', async () => {
@@ -413,7 +436,7 @@ describe('expense store lifecycle', () => {
         const asset = assets.get(reference)
         if (asset) assets.set(reference, { ...asset, durability })
       },
-      async claim() { /* ownership is not involved in this out-of-order write seam */ },
+      async claim() { return true },
     }
     setAppSessionForTesting(createAppSession({
       repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts,
@@ -512,7 +535,7 @@ describe('expense store lifecycle', () => {
     await store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
     completeValidEditor(store)
 
-    expect(store.submit('offline-receipt-save')).toBe(true)
+    expect(await store.submit('offline-receipt-save')).toBe(true)
     const operation = session.queue.get('offline-receipt-save')
     if (!operation) throw new Error('Expected persisted receipt operation')
     await session.queue.submit(operation.envelope).result()
