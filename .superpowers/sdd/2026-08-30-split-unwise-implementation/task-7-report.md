@@ -10,6 +10,8 @@ Fix round 2 review baseline: `969e3fe`
 
 Fix round 3 review baseline: `ca44a68`
 
+Fix round 4 review baseline: `721dbd3`
+
 Scope: Expense detail, immutable audit/revisions, comments, global Activity, and principal-owned notifications.
 
 ## Outcome
@@ -261,6 +263,19 @@ Production break named: an authoritative refresh left the old cursor enabled unt
 - RED: the in-flight refresh started a cursor request for `notification-c`, the prior root's cursor.
 - GREEN: the regression passed after refresh synchronously invalidated/cleared continuation and pagination required a completed root generation plus the exact cursor snapshot. The next accepted page used only the refreshed root cursor.
 
+## Fix round 4 RED-first evidence
+
+This preparation-path pass closed the one independent finding without deferral.
+
+### Frozen receipt-preparation rejection normalization
+
+Production break named: receipt preparation checked session activity after successful preparation but not after upload/storage rejection, so an ordinary late provider error from a frozen old session could persist `failed` over a newer same-principal `fresh` result.
+
+- RED command: `pnpm vitest run src/data/__tests__/task7QueueSession.spec.ts -t "receipt preparation failure"`
+- RED: 1 failed / 20 skipped; shared storage changed from the replacement session's `fresh` completion to the old session's late `network` failure.
+- GREEN command: `pnpm vitest run src/data/__tests__/task7QueueSession.spec.ts src/data/__tests__/session.spec.ts -t "receipt preparation failure|persists a thrown upload reason"`
+- GREEN: 2 passed / 37 skipped. A post-freeze preparation rejection now normalizes to `StaleAppSessionError` and cannot terminalize or overwrite durable intent; the existing active-session upload rejection still persists a retryable `network/failed` operation and can be retried successfully.
+
 ## Final GREEN verification
 
 ### Focused Task 7 matrix
@@ -283,10 +298,16 @@ Fix-round-3 affected-suite command:
 
 Fix-round-3 affected-suite result: 3 files passed, 41 tests passed.
 
+Fix-round-4 affected-suite command:
+
+`pnpm vitest run src/data/__tests__/task7QueueSession.spec.ts src/data/__tests__/session.spec.ts`
+
+Fix-round-4 affected-suite result: 2 files passed, 39 tests passed.
+
 ### Full suite
 
 - Command: `pnpm test`
-- Result: 36 files passed, 450 tests passed.
+- Result: 36 files passed, 451 tests passed.
 
 ### Static/build checks
 
@@ -294,9 +315,9 @@ Fix-round-3 affected-suite result: 3 files passed, 41 tests passed.
 - Result: passed (`vue-tsc --noEmit`).
 - Command: `pnpm build`
 - Result: passed; 316 modules transformed. Vite emitted only its existing large-chunk advisory.
-- Command before fix-round-3 commit: `git diff --check ca44a68`
+- Command before fix-round-4 commit: `git diff --check 721dbd3`
 - Result: passed with no whitespace errors.
-- Command after fix-round-3 implementation commit: `git diff --check ca44a68..HEAD`
+- Command after fix-round-4 implementation commit: `git diff --check 721dbd3..HEAD`
 - Result: passed with no whitespace errors.
 
 No browser or Playwright validation was run because the Task 7 brief explicitly prohibited it.

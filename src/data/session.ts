@@ -123,7 +123,13 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
         assertActive()
         const receipts = receiptStore
         if (!receipts) throw new Error('Receipt store is unavailable')
-        const prepared = await prepareCommandReceipts(command, receiptProvider, receipts)
+        let prepared: CommandEnvelope
+        try {
+          prepared = await prepareCommandReceipts(command, receiptProvider, receipts)
+        } catch (reason) {
+          assertActive()
+          throw reason
+        }
         assertActive()
         return prepared
       },

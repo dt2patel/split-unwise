@@ -422,6 +422,53 @@ describe('Task 7 session races', () => {
 
     expect(storage.load(principalKey)).toMatchObject({ operations: [expect.objectContaining({ status: 'fresh', envelope: expect.objectContaining({ operationId: 'shared-storage-network-race' }) })] })
   })
+
+  it('does not let a frozen old receipt preparation failure overwrite a newer same-principal completion', async () => {
+    let releaseOldUpload!: () => void
+    const oldUploadGate = new Promise<void>((resolve) => { releaseOldUpload = resolve })
+    let announceOldUpload!: () => void
+    const oldUploadStarted = new Promise<void>((resolve) => { announceOldUpload = resolve })
+    const oldReceipts = createMemoryReceiptStore({ id: () => 'shared-preparation-race' })
+    const newReceipts = createMemoryReceiptStore({ id: () => 'shared-preparation-race' })
+    const oldReference = await oldReceipts.put(new Blob(['receipt'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
+    const newReference = await newReceipts.put(new Blob(['receipt'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
+    expect(newReference).toBe(oldReference)
+    const envelope = { ...commentAdd('shared-preparation-race'), attachmentRefs: [oldReference] }
+    const pending = {
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'pending' as const,
+      envelope,
+    }
+    const storage = createMemoryCommandStorage({ [principalKey]: { version: 5, principalKey, operations: [pending] } })
+    const oldProvider: ReceiptProvider = {
+      async upload() {
+        announceOldUpload()
+        await oldUploadGate
+        throw Object.assign(new Error('Old receipt upload rejected after replacement'), { code: 'unavailable' })
+      },
+      async recognize() { return { status: 'unavailable', reason: 'Not used.' } },
+      async delete() { /* no remote asset */ },
+    }
+    const newProvider: ReceiptProvider = {
+      async upload() { return { status: 'uploaded', attachmentRef: 'remote-receipt:shared-preparation-race' } },
+      async recognize() { return { status: 'unavailable', reason: 'Not used.' } },
+      async delete() { /* no remote asset */ },
+    }
+    const source = createDemoRepository()
+    const oldSession = createAppSession({ repository: source, principal, commandStorage: storage, receipts: oldReceipts, receiptProvider: oldProvider })
+    await oldSession.ready
+    await oldUploadStarted
+    const newSession = createAppSession({ repository: source, principal, commandStorage: storage, receipts: newReceipts, receiptProvider: newProvider })
+    await newSession.ready
+    await expect(newSession.queue.submit(envelope).result()).resolves.toMatchObject({ status: 'saved' })
+
+    oldSession.freeze()
+    releaseOldUpload()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(storage.load(principalKey)).toMatchObject({ operations: [expect.objectContaining({ status: 'fresh', envelope: expect.objectContaining({ operationId: envelope.operationId }) })] })
+  })
 })
 
 function commentAdd(operationId: string) {
