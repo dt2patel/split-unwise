@@ -236,7 +236,23 @@ async function verifyInvitationVerificationGate(browser, invitationUrl) {
 }
 
 async function signIn(page, email) {
-  await page.locator('#auth-email').waitFor({ state: 'visible' })
+  try {
+    await page.locator('#auth-email').waitFor({ state: 'visible' })
+  } catch (cause) {
+    const diagnostic = await page.evaluate(() => ({
+      pathname: location.pathname,
+      authInputCount: document.querySelectorAll('#auth-email').length,
+      visiblePages: Array.from(document.querySelectorAll('.ion-page:not(.ion-page-hidden)')).map((pageElement) => ({
+        className: pageElement.className,
+        text: (pageElement.textContent ?? '').trim().slice(0, 160),
+      })),
+      hiddenPages: Array.from(document.querySelectorAll('.ion-page.ion-page-hidden')).map((pageElement) => ({
+        className: pageElement.className,
+        text: (pageElement.textContent ?? '').trim().slice(0, 160),
+      })),
+    }))
+    throw new Error(`Hosted sign-in form did not become visible: ${JSON.stringify(diagnostic)}`, { cause })
+  }
   await page.locator('#auth-email').fill(email)
   await page.locator('#auth-password').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
