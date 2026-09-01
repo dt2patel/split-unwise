@@ -16,4 +16,14 @@ describe('Ionic Vue navigation runtime', () => {
     expect(patch).toContain('if (enteringEl === undefined || leavingEl === undefined)')
     expect(patch).toContain('if (enteringViewItem?.ionPageElement)')
   })
+
+  it('marks an interactive swipe as started before awaiting its animation', () => {
+    const patch = readFileSync(resolve(process.cwd(), 'patches/@ionic__vue@9.0.1.patch'), 'utf8')
+    const transitionStart = patch.indexOf('+            swipeTransitionStarted = true;')
+    const transitionWait = patch.indexOf('+            await transition(enteringEl, leavingEl, "back"')
+
+    expect(transitionStart).toBeGreaterThan(-1)
+    expect(transitionWait).toBeGreaterThan(-1)
+    expect(transitionStart).toBeLessThan(transitionWait)
+  })
 })

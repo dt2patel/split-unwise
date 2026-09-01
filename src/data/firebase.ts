@@ -37,6 +37,10 @@ export type PublicEnvironment = Partial<Record<
   string
 >>
 
+export interface RuntimeResolutionOptions {
+  readonly nativeUiTestDemo?: boolean
+}
+
 let activeRuntimeConfiguration: RuntimeConfiguration | undefined
 
 const CORE_FIELDS = ['VITE_FIREBASE_API_KEY', 'VITE_FIREBASE_AUTH_DOMAIN', 'VITE_FIREBASE_PROJECT_ID', 'VITE_FIREBASE_APP_ID'] as const
@@ -90,7 +94,15 @@ export function readRuntimeConfiguration(environment?: PublicEnvironment): Runti
 }
 
 /** Resolves Firebase Hosting's same-origin auto-init payload without embedding public project configuration in source. */
-export async function resolveRuntimeConfiguration(environment?: PublicEnvironment): Promise<RuntimeConfiguration> {
+export async function resolveRuntimeConfiguration(
+  environment?: PublicEnvironment,
+  options: RuntimeResolutionOptions = { nativeUiTestDemo: import.meta.env.VITE_NATIVE_UI_TEST_DEMO === 'true' },
+): Promise<RuntimeConfiguration> {
+  if (options.nativeUiTestDemo) {
+    const demo = demoConfiguration()
+    activeRuntimeConfiguration = demo
+    return demo
+  }
   const configured = readRuntimeConfiguration(environment)
   const nativePlatform = environment === undefined && configured.kind === 'demo' ? await runningNatively() : false
   const initUrl = environment === undefined && configured.kind === 'demo'

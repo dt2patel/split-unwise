@@ -23,7 +23,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, repeated touch swipe-back navigation, recurrence card modal, invitation acceptance, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence card modal, invitation acceptance, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -109,6 +109,8 @@ async function verifyAuthenticatedMobileJourney() {
     await restoredGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
     const persistedExpense = restoredGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: browserExpenseDescription })
     await persistedExpense.getByText(browserExpenseDescription, { exact: true }).waitFor({ state: 'visible' })
+    const restoredOfflineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
+    if (await restoredOfflineReadyDismiss.isVisible()) await restoredOfflineReadyDismiss.click()
     await verifySwipeBackGesture(context, page)
     await restoredGroup.getByRole('button', { name: 'More', exact: true }).click()
     await restoredGroup.getByRole('link', { name: 'Recurring', exact: true }).click()
@@ -137,42 +139,86 @@ async function verifySwipeBackGesture(context, page) {
   const cdp = await context.newCDPSession(page)
   try {
     for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await dismissAppStatus(page)
       const group = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
       await group.getByRole('link', { name: 'Invite', exact: true }).click()
       await page.waitForURL(`${deepUrl}/invite`)
-      await page.getByRole('heading', { name: 'Invite to Live Account Proof', exact: true }).waitFor({ state: 'visible' })
-
-      const y = 422
-      await cdp.send('Input.dispatchTouchEvent', {
-        type: 'touchStart',
-        touchPoints: [{ x: 2, y, radiusX: 1, radiusY: 1, force: 1 }],
-      })
-      for (let step = 1; step <= 12; step += 1) {
-        await cdp.send('Input.dispatchTouchEvent', {
-          type: 'touchMove',
-          touchPoints: [{ x: 2 + (step * 31), y, radiusX: 1, radiusY: 1, force: 1 }],
-        })
-        await page.waitForTimeout(16)
-      }
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+      const inviteHeading = page.getByRole('heading', { name: 'Invite to Live Account Proof', exact: true })
+      await inviteHeading.waitFor({ state: 'visible' })
+      await verifyCancelledSwipeBackGesture(cdp, page, inviteHeading, `${deepUrl}/invite`, `invite attempt ${attempt}`)
+      await dispatchSwipeBack(cdp, page, Array.from({ length: 12 }, (_, index) => 2 + ((index + 1) * 31)), 16)
 
       await page.waitForURL(deepUrl, { timeout: 10_000 })
       const restoredGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
       await restoredGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
       await restoredGroup.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
-      try {
-        await page.waitForFunction(() => {
-          const groupPage = document.querySelector('[data-testid="group-detail"]:not(.ion-page-hidden)')
-          if (!groupPage) return false
-          return Array.from(groupPage.parentElement?.children ?? [])
-            .filter((candidate) => candidate.classList.contains('ion-page') && !candidate.classList.contains('ion-page-hidden')).length === 1
-        }, undefined, { polling: 50, timeout: 2_000 })
-      } catch {
-        throw new Error(`Hosted swipe-back attempt ${attempt} did not leave exactly one visible Ionic page.`)
-      }
+      await requireSingleVisibleIonicPage(page, restoredGroup, `completed invite attempt ${attempt}`)
     }
+
+    await dismissAppStatus(page)
+    const group = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+    await group.getByRole('link', { name: 'Group settings', exact: true }).click()
+    await page.waitForURL(`${deepUrl}/settings`)
+    const settingsHeading = page.getByRole('heading', { name: 'Group settings', exact: true })
+    await settingsHeading.waitFor({ state: 'visible' })
+    await verifyCancelledSwipeBackGesture(cdp, page, settingsHeading, `${deepUrl}/settings`, 'lazy group settings')
+    await dispatchSwipeBack(cdp, page, Array.from({ length: 12 }, (_, index) => 2 + ((index + 1) * 31)), 16)
+    await page.waitForURL(deepUrl, { timeout: 10_000 })
+    const restoredGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+    await restoredGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+    await requireSingleVisibleIonicPage(page, restoredGroup, 'completed lazy group settings swipe')
   } finally {
     await cdp.detach()
+  }
+}
+
+async function verifyCancelledSwipeBackGesture(cdp, page, activeHeading, expectedUrl, label) {
+  await dispatchSwipeBack(cdp, page, [18, 35, 55, 72, 88, 70, 50, 30], 28)
+  if (page.url() !== expectedUrl) throw new Error(`Hosted cancelled ${label} swipe unexpectedly navigated to ${page.url()}.`)
+  await activeHeading.waitFor({ state: 'visible' })
+  const activePage = activeHeading.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " ion-page ")][1]')
+  await requireSingleVisibleIonicPage(page, activePage, `cancelled ${label} swipe`)
+}
+
+async function dispatchSwipeBack(cdp, page, xPositions, delayMs) {
+  const y = 422
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [{ x: 2, y, radiusX: 1, radiusY: 1, force: 1 }],
+  })
+  for (const x of xPositions) {
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x, y, radiusX: 1, radiusY: 1, force: 1 }],
+    })
+    await page.waitForTimeout(delayMs)
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+}
+
+async function requireSingleVisibleIonicPage(page, activePage, label) {
+  try {
+    await activePage.waitFor({ state: 'visible' })
+    await page.waitForFunction((pageElement) => {
+      if (!(pageElement instanceof HTMLElement)) return false
+      return Array.from(pageElement.parentElement?.children ?? [])
+        .filter((candidate) => candidate.classList.contains('ion-page') && !candidate.classList.contains('ion-page-hidden')).length === 1
+    }, await activePage.elementHandle(), { polling: 50, timeout: 2_000 })
+  } catch {
+    const visibleCount = await activePage.evaluate(visibleSiblingIonicPages).catch(() => 0)
+    throw new Error(`Hosted ${label} left ${visibleCount} visible sibling Ionic pages.`)
+  }
+}
+
+function visibleSiblingIonicPages(pageElement) {
+  return Array.from(pageElement.parentElement?.children ?? [])
+    .filter((candidate) => candidate.classList.contains('ion-page') && !candidate.classList.contains('ion-page-hidden')).length
+}
+
+async function dismissAppStatus(page) {
+  for (const name of ['OK', 'Later']) {
+    const button = page.locator('.app-status').getByRole('button', { name, exact: true })
+    if (await button.isVisible()) await button.click()
   }
 }
 

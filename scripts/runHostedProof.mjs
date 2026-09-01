@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import { rmSync } from 'node:fs'
 
 import { assertExpectedHostedCommit } from './hostedBundleContract.mjs'
 
@@ -17,6 +18,7 @@ const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
 const unverifiedEmail = `live-unverified-${suffix}@example.com`
 const keepLiveProof = process.env.KEEP_LIVE_PROOF === '1'
+const runIosGestureProof = process.env.RUN_IOS_GESTURE_PROOF === '1'
 if (keepLiveProof && !process.env.LIVE_PROOF_PASSWORD) throw new Error('KEEP_LIVE_PROOF requires an explicit LIVE_PROOF_PASSWORD so retained fixtures remain usable.')
 const expectedHostedCommit = assertExpectedHostedCommit(process.env.EXPECTED_HOSTED_COMMIT
   ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim())
@@ -162,6 +164,80 @@ try {
       stdio: ['ignore', 'pipe', 'pipe'], killProcessGroup: true, env: proofEnvironment,
     })
     throwIfTerminated()
+    if (runIosGestureProof) {
+      const simulatorId = process.env.SU_IOS_SIMULATOR_ID
+      if (!simulatorId || !/^[A-F0-9-]{36}$/.test(simulatorId)) throw new Error('RUN_IOS_GESTURE_PROOF requires a valid SU_IOS_SIMULATOR_ID.')
+      const resultBundlePath = join(process.cwd(), 'ios', 'DerivedData', 'NavigationGestureTests.xcresult')
+      const appBundlePath = join(process.cwd(), 'ios', 'DerivedData', 'Build', 'Products', 'Debug-iphonesimulator', 'App.app')
+      const releaseBuildEnvironment = { ...proofEnvironment, VITE_BUILD_COMMIT: expectedHostedCommit }
+      delete releaseBuildEnvironment.VITE_NATIVE_UI_TEST_DEMO
+      let iosFailure
+      let restoreFailure
+      try {
+        await run('pnpm', ['build'], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...releaseBuildEnvironment, VITE_NATIVE_UI_TEST_DEMO: 'true' },
+        })
+        await run('pnpm', ['exec', 'cap', 'sync', 'ios'], { stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment })
+        rmSync(resultBundlePath, { recursive: true, force: true })
+        await run('/usr/bin/xcodebuild', [
+          '-quiet',
+          '-project', 'ios/App/App.xcodeproj',
+          '-scheme', 'App',
+          '-configuration', 'Debug',
+          '-destination', `platform=iOS Simulator,id=${simulatorId}`,
+          '-derivedDataPath', 'ios/DerivedData',
+          'CODE_SIGNING_ALLOWED=NO',
+          'build-for-testing',
+        ], { stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment })
+        await run('/usr/bin/xcrun', ['simctl', 'install', simulatorId, appBundlePath], {
+          stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment,
+        })
+        await run('/usr/bin/xcrun', ['simctl', 'terminate', simulatorId, 'app.splitunwise.mobile'], {
+          stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment,
+        }).catch(() => undefined)
+        await run('/usr/bin/xcrun', ['simctl', 'launch', simulatorId, 'app.splitunwise.mobile'], {
+          stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment,
+        })
+        await new Promise((resolve) => setTimeout(resolve, 20_000))
+        await run('/usr/bin/xcodebuild', [
+          '-quiet',
+          '-project', 'ios/App/App.xcodeproj',
+          '-scheme', 'App',
+          '-configuration', 'Debug',
+          '-destination', `platform=iOS Simulator,id=${simulatorId}`,
+          '-derivedDataPath', 'ios/DerivedData',
+          '-resultBundlePath', resultBundlePath,
+          'CODE_SIGNING_ALLOWED=NO',
+          'test-without-building',
+          '-only-testing:AppUITests/NavigationGestureTests/testCancelledAndCompletedEdgeSwipesKeepAVisiblePage',
+        ], { stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment })
+        const resultSummary = JSON.parse(execFileSync('/usr/bin/xcrun', [
+          'xcresulttool', 'get', 'test-results', 'summary', '--path', resultBundlePath,
+        ], { encoding: 'utf8' }))
+        if (resultSummary.totalTestCount !== 1 || resultSummary.passedTests !== 1 || resultSummary.skippedTests !== 0 || resultSummary.failedTests !== 0) {
+          throw new Error(`iOS gesture proof did not execute exactly one passing test: ${JSON.stringify({
+            totalTestCount: resultSummary.totalTestCount,
+            passedTests: resultSummary.passedTests,
+            skippedTests: resultSummary.skippedTests,
+            failedTests: resultSummary.failedTests,
+          })}`)
+        }
+        rmSync(resultBundlePath, { recursive: true, force: true })
+        console.log('iOS gesture proof passed with one executed test and no skipped or failed tests.')
+      } catch (error) {
+        iosFailure = error
+      }
+      try {
+        await run('pnpm', ['build'], { stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment })
+        await run('pnpm', ['exec', 'cap', 'sync', 'ios'], { stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment })
+      } catch (error) {
+        restoreFailure = error
+      }
+      if (iosFailure && restoreFailure) throw new AggregateError([iosFailure, restoreFailure], 'iOS gesture proof and release-bundle restoration both failed.')
+      if (iosFailure) throw iosFailure
+      if (restoreFailure) throw restoreFailure
+    }
     await run(process.execPath, ['scripts/runHostedBrowserProof.mjs'], {
       stdio: ['ignore', 'pipe', 'pipe'], killProcessGroup: true, env: proofEnvironment,
     })

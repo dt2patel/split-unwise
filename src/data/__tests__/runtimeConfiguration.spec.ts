@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { firebaseHostingInitUrl, FirebaseConfigurationError, readFirebaseConfiguration, readFirebaseHostingConfiguration, readRuntimeConfiguration, type PublicEnvironment } from '../firebase'
+import { firebaseHostingInitUrl, FirebaseConfigurationError, readFirebaseConfiguration, readFirebaseHostingConfiguration, readRuntimeConfiguration, resolveRuntimeConfiguration, type PublicEnvironment } from '../firebase'
 
 const core: PublicEnvironment = {
   VITE_FIREBASE_API_KEY: 'AIzaSyExampleKey',
@@ -67,5 +67,17 @@ describe('runtime configuration', () => {
     expect(firebaseHostingInitUrl({ hostname: 'split-unwise-aditya.web.app', protocol: 'https:' }, false)).toBe('/__/firebase/init.json')
     expect(firebaseHostingInitUrl({ hostname: 'localhost', protocol: 'capacitor:' }, true)).toBe('https://split-unwise-aditya.web.app/__/firebase/init.json')
     expect(firebaseHostingInitUrl({ hostname: 'localhost', protocol: 'http:' }, false)).toBeUndefined()
+  })
+
+  it('keeps native UI gesture tests on deterministic demo data without weakening normal runtime discovery', async () => {
+    await expect(resolveRuntimeConfiguration(undefined, { nativeUiTestDemo: true })).resolves.toMatchObject({
+      kind: 'demo', label: 'Demo mode', capabilities: { auth: 'demo', firestore: 'demo' },
+    })
+    await expect(resolveRuntimeConfiguration(core, { nativeUiTestDemo: true })).resolves.toMatchObject({
+      kind: 'demo', label: 'Demo mode',
+    })
+    await expect(resolveRuntimeConfiguration(core, { nativeUiTestDemo: false })).resolves.toMatchObject({
+      kind: 'firebase', firebase: { projectId: 'split-unwise' },
+    })
   })
 })

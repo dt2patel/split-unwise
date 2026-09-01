@@ -59,8 +59,8 @@ index 6cf2b0d88921541056308d07029d26f6b9d60d16..9577fcc7ccf5aa19ba9c2ed482b9b7b7
 +                animationBuilder = customAnimation;
              }
 +            leavingViewItem.routerAnimation = animationBuilder;
-+            await transition(enteringEl, leavingEl, "back", ionRouter.canGoBack(2), true, animationBuilder);
 +            swipeTransitionStarted = true;
++            await transition(enteringEl, leavingEl, "back", ionRouter.canGoBack(2), true, animationBuilder);
              return Promise.resolve();
          };
          const onEnd = (shouldContinue) => {
