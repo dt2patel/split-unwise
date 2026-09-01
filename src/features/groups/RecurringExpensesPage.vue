@@ -20,7 +20,7 @@ import { formatMoney } from '../../components/MoneyAmount.vue'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
-import type { ExpenseRow, Group, Member, RecurringExpense } from '../../data/repositories'
+import type { ExpenseRow, Group, MaterializeDueResult, Member, RecurringExpense } from '../../data/repositories'
 
 const route = useRoute()
 const session = getAppSession()
@@ -76,12 +76,15 @@ function enterPage(id = groupId.value): Promise<void> {
 
 async function loadPage(id: string): Promise<void> {
   const request = ++loadRequest
+  cancellationTarget.value = undefined
+  cancellingTemplateId.value = ''
+  operationNotice.value = ''
+  operationError.value = ''
   isLoading.value = true
   loadError.value = ''
   catchUpError.value = ''
   catchUpNotice.value = ''
   catchUpCap.value = ''
-  operationError.value = ''
   if (!isStrictId(id)) {
     loadError.value = 'Open recurring expenses from a valid group link.'
     isLoading.value = false
@@ -125,14 +128,21 @@ async function loadPage(id: string): Promise<void> {
 
 function catchUp(id: string, request = loadRequest): Promise<void> {
   if (catchUpFlight?.groupId === id) return catchUpFlight.promise
+  const before = recurringState(templates.value, groupExpenses.value)
   isCatchingUp.value = true
   catchUpError.value = ''
   catchUpNotice.value = ''
   catchUpCap.value = ''
   let pending!: Promise<void>
   pending = (async () => {
+    let result: MaterializeDueResult
     try {
-      const result = await session.repository.groups.materializeDue(id, localToday(), 24)
+      result = await session.repository.groups.materializeDue(id, localToday(), 24)
+    } catch (reason) {
+      await reconcileRejectedCatchUp(id, request, before, reason)
+      return
+    }
+    try {
       const [refreshedTemplates, refreshedExpenses] = await Promise.all([
         session.repository.groups.listRecurring(id),
         session.repository.expenses.listForGroup(id),
@@ -159,6 +169,34 @@ function catchUp(id: string, request = loadRequest): Promise<void> {
   return pending
 }
 
+async function reconcileRejectedCatchUp(id: string, request: number, before: RecurringState, reason: unknown): Promise<void> {
+  if (request !== loadRequest || groupId.value !== id) return
+  try {
+    const [loadedTemplates, loadedExpenses] = await Promise.all([
+      session.repository.groups.listRecurring(id),
+      session.repository.expenses.listForGroup(id),
+    ])
+    if (request !== loadRequest || groupId.value !== id) return
+    const refreshedTemplates = verifiedTemplates(id, loadedTemplates)
+    const refreshedExpenses = verifiedExpenses(id, loadedExpenses)
+    const after = recurringState(refreshedTemplates, refreshedExpenses)
+    templates.value = refreshedTemplates
+    groupExpenses.value = refreshedExpenses
+    const addedCount = [...after.occurrenceIds].filter((expenseId) => !before.occurrenceIds.has(expenseId)).length
+    if (addedCount > 0) {
+      const noun = addedCount === 1 ? 'expense was' : 'expenses were'
+      catchUpNotice.value = `${addedCount} due ${noun} added before catch-up stopped. The confirmed list is shown.`
+    } else if (after.fingerprint !== before.fingerprint) {
+      catchUpNotice.value = 'Recurring expenses changed before catch-up stopped. The latest confirmed state is shown.'
+    }
+    catchUpError.value = messageFor(reason, 'Due expenses could not be fully checked.')
+  } catch {
+    if (request === loadRequest && groupId.value === id) {
+      catchUpError.value = `${messageFor(reason, 'Due expenses could not be fully checked.')} The latest confirmed list could not be refreshed.`
+    }
+  }
+}
+
 function requestCancellation(template: RecurringExpense): void {
   if (!canCancel(template) || cancellingTemplateId.value) return
   operationError.value = ''
@@ -173,47 +211,74 @@ async function cancelRecurrence(): Promise<void> {
   const template = cancellationTarget.value
   cancellationTarget.value = undefined
   if (!template || !canCancel(template) || !isStrictId(groupId.value)) return
-  cancellingTemplateId.value = template.id
+  const submittedGroupId = groupId.value
+  const submittedTemplateId = template.id
+  const submittedEntry = loadRequest
+  cancellingTemplateId.value = submittedTemplateId
   operationError.value = ''
   operationNotice.value = `Stopping future expenses for ${template.description}…`
   try {
     const result = await session.queue.submit({
       kind: 'recurrence.cancel',
       operationId: createClientOperationId('recurrence-cancel'),
-      groupId: groupId.value,
-      templateId: template.id,
+      groupId: submittedGroupId,
+      templateId: submittedTemplateId,
       expectedRevision: template.revision,
     }).result()
     if (result.kind !== 'recurrence.cancel' || result.status !== 'saved') throw new Error('The recurring expense could not be stopped.')
+    if (!isCurrentEntry(submittedGroupId, submittedEntry)) return
     templates.value = templates.value.map((item) => item.id === result.template.id ? result.template : item)
     operationNotice.value = 'Future expenses stopped. Past expenses remain in this group.'
     try {
-      await refreshSeries(groupId.value)
+      await refreshSeries(submittedGroupId, submittedEntry)
     } catch {
-      operationError.value = 'Future expenses were stopped, but the latest recurring list could not be refreshed. Reload this screen to confirm the latest group state.'
+      if (isCurrentEntry(submittedGroupId, submittedEntry)) {
+        operationError.value = 'Future expenses were stopped, but the latest recurring list could not be refreshed. Reload this screen to confirm the latest group state.'
+      }
     }
   } catch (reason) {
-    operationNotice.value = ''
-    operationError.value = messageFor(reason, 'The recurring expense could not be stopped.')
+    if (isCurrentEntry(submittedGroupId, submittedEntry)) {
+      operationNotice.value = ''
+      operationError.value = messageFor(reason, 'The recurring expense could not be stopped.')
+    }
   } finally {
-    cancellingTemplateId.value = ''
+    if (isCurrentEntry(submittedGroupId, submittedEntry) && cancellingTemplateId.value === submittedTemplateId) cancellingTemplateId.value = ''
   }
 }
 
-async function refreshSeries(id: string): Promise<void> {
+async function refreshSeries(id: string, entry: number): Promise<void> {
+  if (!isCurrentEntry(id, entry)) return
   const [refreshedTemplates, refreshedExpenses] = await Promise.all([
     session.repository.groups.listRecurring(id),
     session.repository.expenses.listForGroup(id),
   ])
-  if (groupId.value !== id) return
+  if (!isCurrentEntry(id, entry)) return
   templates.value = verifiedTemplates(id, refreshedTemplates)
   groupExpenses.value = verifiedExpenses(id, refreshedExpenses)
+}
+
+function isCurrentEntry(id: string, entry: number): boolean {
+  return groupId.value === id && loadRequest === entry
 }
 
 function canCancel(template: RecurringExpense): boolean {
   return template.status === 'active'
     && Boolean(currentUser.value)
     && (template.createdBy.id === currentUser.value?.id || currentUser.value?.canManage === true)
+}
+
+function canEditFuture(template: RecurringExpense): boolean {
+  const frontier = confirmedFrontierExpense(template)
+  return template.status === 'active'
+    && Boolean(currentUser.value)
+    && Boolean(frontier)
+    && (currentUser.value?.canManage === true || frontier?.createdBy?.id === currentUser.value?.id)
+}
+
+function confirmedFrontierExpense(template: RecurringExpense): ExpenseRow | undefined {
+  const linked = groupExpenses.value.filter((expense) => expense.recurringTemplateId === template.id && !expense.deletedAt && isStrictId(expense.id))
+  if (template.lastOccurrenceId) return linked.find((expense) => expense.id === template.lastOccurrenceId)
+  return linked.length === 1 ? linked[0] : undefined
 }
 
 function frontierExpenseId(template: RecurringExpense): string | undefined {
@@ -223,10 +288,16 @@ function frontierExpenseId(template: RecurringExpense): string | undefined {
     .sort((left, right) => right.date.localeCompare(left.date) || right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id))[0]?.id
 }
 
-function expensePath(template: RecurringExpense, edit = false): string | undefined {
+function expensePath(template: RecurringExpense): string | undefined {
   const expenseId = frontierExpenseId(template)
   if (!expenseId || !isStrictId(groupId.value)) return undefined
-  return `/tabs/groups/expenses/${encodeURIComponent(expenseId)}${edit ? '/edit' : ''}?groupId=${encodeURIComponent(groupId.value)}`
+  return `/tabs/groups/expenses/${encodeURIComponent(expenseId)}?groupId=${encodeURIComponent(groupId.value)}`
+}
+
+function editExpensePath(template: RecurringExpense): string | undefined {
+  const expenseId = confirmedFrontierExpense(template)?.id
+  if (!expenseId || !isStrictId(groupId.value)) return undefined
+  return `/tabs/groups/expenses/${encodeURIComponent(expenseId)}/edit?groupId=${encodeURIComponent(groupId.value)}`
 }
 
 function frequencyLabel(template: RecurringExpense): string {
@@ -255,6 +326,20 @@ function verifiedTemplates(id: string, values: readonly RecurringExpense[]): rea
 function verifiedExpenses(id: string, values: readonly ExpenseRow[]): readonly ExpenseRow[] {
   if (values.some((expense) => expense.groupId !== id)) throw new Error('Recurring source expenses did not match the requested group.')
   return values
+}
+
+interface RecurringState { readonly occurrenceIds: ReadonlySet<string>; readonly fingerprint: string }
+
+function recurringState(currentTemplates: readonly RecurringExpense[], currentExpenses: readonly ExpenseRow[]): RecurringState {
+  const recurringExpenses = currentExpenses.filter((expense): expense is ExpenseRow & { readonly recurringTemplateId: string } => Boolean(expense.recurringTemplateId))
+  const occurrenceIds = recurringExpenses
+    .filter((expense) => expense.id.startsWith(`occ_${expense.recurringTemplateId}_`))
+    .map(({ id }) => id)
+  const fingerprint = [
+    ...currentTemplates.map((template) => `template:${template.id}:${template.status}:${template.revision}:${template.nextDate}:${template.lastOccurrenceId ?? ''}`),
+    ...recurringExpenses.map((expense) => `expense:${expense.id}:${expense.revision}:${expense.updatedAt}:${expense.deletedAt ?? ''}`),
+  ].sort().join('|')
+  return { occurrenceIds: new Set(occurrenceIds), fingerprint }
 }
 
 function messageFor(reason: unknown, fallback: string): string {
@@ -362,10 +447,10 @@ function messageFor(reason: unknown, fallback: string): string {
                   :router-link="expensePath(template)"
                 >View latest expense</ion-button>
                 <ion-button
-                  v-if="canCancel(template) && expensePath(template, true)"
+                  v-if="canEditFuture(template) && editExpensePath(template)"
                   fill="outline"
                   data-action="edit-recurring-expense"
-                  :router-link="expensePath(template, true)"
+                  :router-link="editExpensePath(template)"
                 ><ion-icon :icon="createOutline" aria-hidden="true" />Edit future</ion-button>
                 <ion-button
                   v-if="canCancel(template)"

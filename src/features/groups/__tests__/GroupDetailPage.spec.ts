@@ -346,6 +346,41 @@ describe('Lake House group journal', () => {
     await vi.waitFor(() => expect(listForGroup).toHaveBeenCalledTimes(callsBeforeCatchUpFinishes + 1))
   })
 
+  it('reconciles the journal after catch-up rejects following a confirmed partial posting without looping', async () => {
+    const repository = createDemoRepository()
+    const source = await repository.expenses.getById('lake-house-weekend', 'cabin-deposit')
+    if (!source) throw new Error('Missing recurring source fixture')
+    const posted: ExpenseRow = {
+      ...source,
+      id: 'occ_cabin-deposit-monthly_2026-09-28',
+      date: '2026-09-28',
+      createdAt: '2026-09-28T14:00:00.000Z',
+      updatedAt: '2026-09-28T14:00:00.000Z',
+      createdBy: { id: 'maya-p', displayName: 'Maya P.' },
+      updatedBy: { id: 'maya-p', displayName: 'Maya P.' },
+    }
+    let partialPostingConfirmed = false
+    const listForGroup = vi.fn(async () => partialPostingConfirmed ? [source, posted] : [source])
+    const materializeDue = vi.fn(async () => {
+      partialPostingConfirmed = true
+      throw new Error('A later series has a removed participant')
+    })
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...repository,
+        groups: { ...repository.groups, materializeDue },
+        expenses: { ...repository.expenses, listForGroup },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+
+    await vi.waitFor(() => expect(wrapper.find(`[data-expense-id="${posted.id}"]`).exists()).toBe(true))
+    expect(listForGroup).toHaveBeenCalledTimes(2)
+    expect(materializeDue).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the routed Ionic page as the native navigation root', () => {
     expect(groupDetailSource).not.toContain('<ion-split-pane')
     expect(groupDetailSource).not.toContain('class="ion-page group-detail__detail"')

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import type { AppRepository, CommandEnvelope, CommandResult, Group, MaterializeDueResult, RecurringExpense } from '../../../data/repositories'
+import type { AppRepository, CommandEnvelope, CommandResult, ExpenseRow, Group, MaterializeDueResult, RecurringExpense } from '../../../data/repositories'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import { lakeHouseExpenses, lakeHouseGroup, lakeHouseRecurring } from '../../../demo/lakeHouse'
 import RecurringExpensesPage from '../RecurringExpensesPage.vue'
@@ -79,6 +79,29 @@ describe('recurring expense management page states', () => {
     releaseGroup(lakeHouseGroup)
     await flushPromises()
     expect(wrapper.find('[data-testid="recurring-loading"]').exists()).toBe(false)
+  })
+
+  it('renders the first usable recurring list while catch-up is still gated', async () => {
+    let releaseCatchUp!: (result: MaterializeDueResult) => void
+    const catchUpGate = new Promise<MaterializeDueResult>((resolveGate) => { releaseCatchUp = resolveGate })
+    const repository = createDemoRepository()
+    setSession({
+      ...repository,
+      groups: {
+        ...repository.groups,
+        async materializeDue() { return catchUpGate },
+      },
+    })
+
+    const wrapper = await mountRecurring(false)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="recurring-loading"]').exists()).toBe(false)
+    expect(wrapper.get('[data-template-id="cabin-deposit-monthly"]').text()).toContain('Cabin deposit')
+    expect(wrapper.get('.catch-up-message').text()).toContain('Checking for due expenses')
+
+    releaseCatchUp({ occurrences: [], moreRemain: false })
+    await flushPromises()
   })
 
   it('renders an empty state with the exact group-scoped Add expense route and no premium fan-out', async () => {
@@ -199,6 +222,83 @@ describe('recurring expense management page states', () => {
     expect(yearly.text()).toContain('Past expenses remain')
     expect(yearly.find('[data-testid="recurring-next-date"]').exists()).toBe(false)
   })
+
+  it('does not let the series creator edit when another member owns the current frontier expense', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    const source = recurringSourceExpense()
+    const frontier = recurringOccurrenceExpense({ createdBy: { id: 'jordan-k', displayName: 'Jordan K.' }, updatedBy: { id: 'jordan-k', displayName: 'Jordan K.' } })
+    const template = recurringTemplate({
+      lastOccurrenceId: frontier.id,
+      lastOccurrenceDate: frontier.date,
+      nextDate: '2026-10-28',
+      revision: 2,
+    })
+    setSession({
+      ...repository,
+      groups: {
+        ...repository.groups,
+        async listRecurring() { return [template] },
+        async materializeDue() { return { occurrences: [], moreRemain: false } },
+      },
+      expenses: { ...repository.expenses, async listForGroup() { return [source, frontier] } },
+    })
+
+    const wrapper = await mountRecurring()
+    const card = wrapper.get(`[data-template-id="${template.id}"]`)
+
+    expect(card.find('[data-action="cancel-recurrence"]').exists()).toBe(true)
+    expect(card.find('[data-action="edit-recurring-expense"]').exists()).toBe(false)
+  })
+
+  it('lets a non-manager current frontier creator edit future expenses without granting cancellation', async () => {
+    const repository = createDemoRepository({ currentUserId: 'jordan-k' })
+    const source = recurringSourceExpense()
+    const frontier = recurringOccurrenceExpense({ createdBy: { id: 'jordan-k', displayName: 'Jordan K.' }, updatedBy: { id: 'jordan-k', displayName: 'Jordan K.' } })
+    const template = recurringTemplate({
+      lastOccurrenceId: frontier.id,
+      lastOccurrenceDate: frontier.date,
+      nextDate: '2026-10-28',
+      revision: 2,
+    })
+    setSession({
+      ...repository,
+      groups: {
+        ...repository.groups,
+        async listRecurring() { return [template] },
+        async materializeDue() { return { occurrences: [], moreRemain: false } },
+      },
+      expenses: { ...repository.expenses, async listForGroup() { return [source, frontier] } },
+    })
+
+    const wrapper = await mountRecurring()
+    const card = wrapper.get(`[data-template-id="${template.id}"]`)
+
+    expect(card.get('[data-action="edit-recurring-expense"]').attributes('href')).toBe(`/tabs/groups/expenses/${frontier.id}/edit?groupId=lake-house-weekend`)
+    expect(card.find('[data-action="cancel-recurrence"]').exists()).toBe(false)
+  })
+
+  it('fails closed for Edit future when the declared frontier expense is not in the confirmed list', async () => {
+    const repository = createDemoRepository({ currentUserId: 'maya-p' })
+    const template = recurringTemplate({
+      lastOccurrenceId: 'occ_cabin-deposit-monthly_2026-09-28',
+      lastOccurrenceDate: '2026-09-28',
+      nextDate: '2026-10-28',
+      revision: 2,
+    })
+    setSession({
+      ...repository,
+      groups: {
+        ...repository.groups,
+        async listRecurring() { return [template] },
+        async materializeDue() { return { occurrences: [], moreRemain: false } },
+      },
+      expenses: { ...repository.expenses, async listForGroup() { return [recurringSourceExpense()] } },
+    })
+
+    const wrapper = await mountRecurring()
+
+    expect(wrapper.find('[data-action="edit-recurring-expense"]').exists()).toBe(false)
+  })
 })
 
 describe('recurring catch-up and cancellation', () => {
@@ -242,6 +342,71 @@ describe('recurring catch-up and cancellation', () => {
     expect(wrapper.get('[data-testid="catch-up-status"]').attributes('role')).toBe('status')
     expect(wrapper.get('[data-testid="catch-up-status"]').text()).toContain('2 due expenses were added')
     expect(wrapper.find('[data-testid="catch-up-cap"]').exists()).toBe(false)
+  })
+
+  it('reconciles and announces confirmed partial postings when a later due series rejects catch-up', async () => {
+    const repository = createDemoRepository()
+    const source = recurringSourceExpense()
+    const posted = recurringOccurrenceExpense()
+    const initialTemplate = recurringTemplate()
+    const advancedTemplate: RecurringExpense = {
+      ...initialTemplate,
+      lastOccurrenceId: posted.id,
+      lastOccurrenceDate: posted.date,
+      nextDate: '2026-10-28',
+      revision: 2,
+    }
+    let partialPostingConfirmed = false
+    const listRecurring = vi.fn(async () => partialPostingConfirmed ? [advancedTemplate] : [initialTemplate])
+    const listForGroup = vi.fn(async () => partialPostingConfirmed ? [source, posted] : [source])
+    setSession({
+      ...repository,
+      groups: {
+        ...repository.groups,
+        listRecurring,
+        async materializeDue() {
+          partialPostingConfirmed = true
+          throw new Error('A later series has a removed participant')
+        },
+      },
+      expenses: { ...repository.expenses, listForGroup },
+    })
+
+    const wrapper = await mountRecurring()
+
+    expect(listRecurring).toHaveBeenCalledTimes(2)
+    expect(listForGroup).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-testid="catch-up-status"]').text()).toContain('1 due expense was added before catch-up stopped')
+    const catchUpError = wrapper.get('[data-action="retry-catch-up"]').element.closest('[role="alert"]')
+    expect(catchUpError?.textContent).toContain('A later series has a removed participant')
+    expect(wrapper.get('[data-action="view-recurring-expense"]').attributes('href')).toBe(`/tabs/groups/expenses/${posted.id}?groupId=lake-house-weekend`)
+  })
+
+  it('announces a reconciled recurring-state change without claiming that a new expense posted', async () => {
+    const repository = createDemoRepository()
+    const source = recurringSourceExpense()
+    const initialTemplate = recurringTemplate()
+    const cancelledTemplate: RecurringExpense = { ...initialTemplate, status: 'cancelled', revision: 2 }
+    let changedRemotely = false
+    setSession({
+      ...repository,
+      groups: {
+        ...repository.groups,
+        async listRecurring() { return changedRemotely ? [cancelledTemplate] : [initialTemplate] },
+        async materializeDue() {
+          changedRemotely = true
+          throw new Error('The recurring series changed remotely')
+        },
+      },
+      expenses: { ...repository.expenses, async listForGroup() { return [source] } },
+    })
+
+    const wrapper = await mountRecurring()
+
+    expect(wrapper.get('[data-template-id="cabin-deposit-monthly"]').text()).toContain('Stopped')
+    expect(wrapper.get('[data-testid="catch-up-status"]').text()).toContain('Recurring expenses changed before catch-up stopped')
+    expect(wrapper.get('[data-testid="catch-up-status"]').text()).not.toContain('due expense was added')
+    expect(wrapper.find('[data-action="retry-catch-up"]').exists()).toBe(true)
   })
 
   it('lets the creator confirm a durable exact-revision cancellation and refreshes to stopped while preserving history copy', async () => {
@@ -381,6 +546,85 @@ describe('recurring catch-up and cancellation', () => {
     expect(wrapper.get('[data-testid="recurrence-operation-error"]').text()).toContain('Connection lost while stopping the series')
     expect(wrapper.get('[data-action="cancel-recurrence"]').attributes('disabled')).toBeUndefined()
   })
+
+  it('clears an open cancellation alert when a new group route enters the reused page', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    const secondGroup: Group = { ...lakeHouseGroup, id: 'ski-trip', name: 'Ski Trip' }
+    const members = await repository.groups.listMembers(lakeHouseGroup.id)
+    const source = recurringSourceExpense()
+    setSession({
+      ...repository,
+      groups: {
+        ...repository.groups,
+        async getById(id) { return id === secondGroup.id ? secondGroup : id === lakeHouseGroup.id ? lakeHouseGroup : undefined },
+        async listMembers() { return members },
+        async listRecurring(id) { return id === lakeHouseGroup.id ? [recurringTemplate()] : [] },
+        async materializeDue() { return { occurrences: [], moreRemain: false } },
+      },
+      expenses: { ...repository.expenses, async listForGroup(id) { return id === lakeHouseGroup.id ? [source] : [] } },
+    })
+
+    const wrapper = await mountRecurring()
+    await wrapper.get('[data-action="cancel-recurrence"]').trigger('click')
+    expect(wrapper.find('[data-testid="cancel-recurrence-alert"]').exists()).toBe(true)
+
+    await wrapper.vm.$router.push('/tabs/groups/ski-trip/recurring')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cancel-recurrence-alert"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Ski Trip')
+  })
+
+  it('does not refresh or publish status from a cancellation submitted on an earlier group entry', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    const secondGroup: Group = { ...lakeHouseGroup, id: 'ski-trip', name: 'Ski Trip' }
+    const members = await repository.groups.listMembers(lakeHouseGroup.id)
+    const source = recurringSourceExpense()
+    const active = recurringTemplate({ revision: 7 })
+    const stopped: RecurringExpense = { ...active, status: 'cancelled', revision: 8 }
+    let releaseSave!: () => void
+    const saveGate = new Promise<void>((resolveGate) => { releaseSave = resolveGate })
+    const execute = vi.fn(async (command: CommandEnvelope): Promise<CommandResult> => {
+      if (command.kind !== 'recurrence.cancel') return repository.commands.execute(command)
+      await saveGate
+      return { kind: command.kind, operationId: command.operationId, status: 'saved', template: stopped }
+    })
+    const listRecurring = vi.fn(async (id: string) => id === lakeHouseGroup.id ? [active] : [])
+    setSession({
+      ...repository,
+      groups: {
+        ...repository.groups,
+        async getById(id) { return id === secondGroup.id ? secondGroup : id === lakeHouseGroup.id ? lakeHouseGroup : undefined },
+        async listMembers() { return members },
+        listRecurring,
+        async materializeDue() { return { occurrences: [], moreRemain: false } },
+      },
+      expenses: { ...repository.expenses, async listForGroup(id) { return id === lakeHouseGroup.id ? [source] : [] } },
+      commands: { execute },
+    })
+
+    const wrapper = await mountRecurring()
+    await wrapper.get('[data-action="cancel-recurrence"]').trigger('click')
+    const alert = wrapper.getComponent({ name: 'IonAlert' })
+    const stopButton = (alert.props('buttons') as Array<{ role?: string; handler?: () => Promise<void> }>).find(({ role }) => role === 'destructive')
+    const saving = stopButton?.handler?.()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="recurrence-operation"]').text()).toContain('Stopping future expenses')
+
+    await wrapper.vm.$router.push('/tabs/groups/ski-trip/recurring')
+    await flushPromises()
+    const secondGroupListCalls = listRecurring.mock.calls.filter(([id]) => id === secondGroup.id).length
+    expect(wrapper.find('[data-testid="recurrence-operation"]').exists()).toBe(false)
+
+    releaseSave()
+    await saving
+    await flushPromises()
+
+    expect(listRecurring.mock.calls.filter(([id]) => id === secondGroup.id)).toHaveLength(secondGroupListCalls)
+    expect(wrapper.find('[data-testid="recurrence-operation"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="recurrence-operation-error"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Ski Trip')
+  })
 })
 
 describe('recurring page mobile contract', () => {
@@ -413,4 +657,24 @@ function recurringTemplate(overrides: Partial<RecurringExpense> = {}): Recurring
   const source = lakeHouseRecurring[0]
   if (!source) throw new Error('Missing recurring fixture')
   return { ...structuredClone(source), ...structuredClone(overrides) }
+}
+
+function recurringSourceExpense(): ExpenseRow {
+  const source = lakeHouseExpenses.find(({ recurringTemplateId }) => recurringTemplateId === 'cabin-deposit-monthly')
+  if (!source) throw new Error('Missing recurring source fixture')
+  return structuredClone(source)
+}
+
+function recurringOccurrenceExpense(overrides: Partial<ExpenseRow> = {}): ExpenseRow {
+  const source = recurringSourceExpense()
+  return {
+    ...source,
+    id: 'occ_cabin-deposit-monthly_2026-09-28',
+    date: '2026-09-28',
+    createdAt: '2026-09-28T14:00:00.000Z',
+    updatedAt: '2026-09-28T14:00:00.000Z',
+    createdBy: { id: 'maya-p', displayName: 'Maya P.' },
+    updatedBy: { id: 'maya-p', displayName: 'Maya P.' },
+    ...structuredClone(overrides),
+  }
 }

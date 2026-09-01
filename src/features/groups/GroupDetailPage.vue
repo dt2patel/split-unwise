@@ -86,8 +86,12 @@ function startRecurringCatchUp(id: string): Promise<void> {
   if (recurringCatchUp?.groupId === id) return recurringCatchUp.promise
   let pending!: Promise<void>
   pending = (async () => {
-    const result = await session.repository.groups.materializeDue(id, localToday(), 24)
-    if (result.occurrences.length > 0 && groupId.value === id) await store.loadGroup(id)
+    try {
+      const result = await session.repository.groups.materializeDue(id, localToday(), 24)
+      if (result.occurrences.length > 0 && groupId.value === id) await store.loadGroup(id)
+    } catch {
+      if (groupId.value === id) await store.loadGroup(id)
+    }
   })().catch(() => undefined).finally(() => {
     if (recurringCatchUp?.promise === pending) recurringCatchUp = undefined
   })
