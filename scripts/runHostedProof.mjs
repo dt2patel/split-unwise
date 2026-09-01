@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import { randomBytes } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+
+import { assertExpectedHostedCommit } from './hostedBundleContract.mjs'
 
 const projectId = 'split-unwise-aditya'
 const hostedOrigin = 'https://split-unwise-aditya.web.app'
@@ -15,6 +17,8 @@ const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
 const keepLiveProof = process.env.KEEP_LIVE_PROOF === '1'
 if (keepLiveProof && !process.env.LIVE_PROOF_PASSWORD) throw new Error('KEEP_LIVE_PROOF requires an explicit LIVE_PROOF_PASSWORD so retained fixtures remain usable.')
+const expectedHostedCommit = assertExpectedHostedCommit(process.env.EXPECTED_HOSTED_COMMIT
+  ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim())
 const require = createRequire(import.meta.url)
 const firebaseAuth = require('firebase-tools/lib/auth')
 const { requireAuth } = require('firebase-tools/lib/requireAuth')
@@ -145,16 +149,20 @@ try {
   }
 
   try {
+    const proofEnvironment = {
+      ...process.env,
+      EXPECTED_HOSTED_COMMIT: expectedHostedCommit,
+      LIVE_PROOF_SUFFIX: suffix,
+      LIVE_PROOF_PASSWORD: password,
+      LIVE_PREVERIFIED_ACCOUNTS: '1',
+      LIVE_PROOF_EXTERNAL_CLEANUP: '1',
+    }
     await run(process.execPath, [vitestEntrypoint, 'run', 'src/data/__tests__/productionHosted.spec.ts'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      killProcessGroup: true,
-      env: {
-        ...process.env,
-        LIVE_PROOF_SUFFIX: suffix,
-        LIVE_PROOF_PASSWORD: password,
-        LIVE_PREVERIFIED_ACCOUNTS: '1',
-        LIVE_PROOF_EXTERNAL_CLEANUP: '1',
-      },
+      stdio: ['ignore', 'pipe', 'pipe'], killProcessGroup: true, env: proofEnvironment,
+    })
+    throwIfTerminated()
+    await run(process.execPath, ['scripts/runHostedBrowserProof.mjs'], {
+      stdio: ['ignore', 'pipe', 'pipe'], killProcessGroup: true, env: proofEnvironment,
     })
   } catch (error) {
     testFailure = error
