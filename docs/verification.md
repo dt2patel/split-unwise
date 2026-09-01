@@ -1,6 +1,6 @@
 # Split Unwise release verification
 
-P1 identity and shared-groups implementation: `ce4747adc3791291c6140d2e12f7e16de6d2c1d4`
+Verified P1 release source: `888984fcf0541c1dd95a9f099c2ab8a8aee36eff`
 
 Date: 2026-08-31 (America/Chicago)
 
@@ -8,17 +8,17 @@ Date: 2026-08-31 (America/Chicago)
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Unit and component suite | Pass | `pnpm test`: 73 files passed, 6 skipped; 679 tests passed, 29 skipped |
+| Unit and component suite | Pass | `pnpm test`: 73 files passed, 6 skipped; 681 tests passed, 29 skipped |
 | Type safety | Pass | `pnpm typecheck` |
 | Firestore rules | Pass | `pnpm test:firebase`: 8 emulator-backed rules tests |
 | Auth/group/invite flow | Pass | One emulator flow plus one live production flow with two temporary Firebase Auth accounts and separate client sessions |
 | Functions and service behavior | Pass | `pnpm test:firebase`: 16 emulator-backed tests |
 | Production web bundle | Pass | `pnpm build`: 503 modules transformed; Workbox generated 99 precache entries |
-| Artifact policy | Pass | 101 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
+| Artifact policy | Pass | 103 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
 | Reference-rate provider | Pass | Live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS |
 | Capacitor synchronization | Pass | `pnpm exec cap sync ios`; local `dist` copied with no production `server.url` |
 | Native compile | Pass | `pnpm ios:build`; unsigned Debug build for a generic iOS simulator |
-| Simulator package | Pass | `artifacts/Split-Unwise-Simulator.zip`; embedded build commit `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`; SHA-256 `273ed146d73b1b77ba52d8a2e002a2aebb0c4383a7e73fb0d22770b19092dabe` |
+| Simulator package | Pass | `artifacts/Split-Unwise-Simulator.zip`; embedded source commit `888984fcf0541c1dd95a9f099c2ab8a8aee36eff`; SHA-256 `0afef898bd04c340fca30c1c00579fd3c1c4ac565200d12b5138546abdc23eb0` |
 | Firebase Hosting | Pass | Both production domains serve the exact release; root, deep link, manifest, service worker, build metadata, security headers, and hashed-asset cache policy were checked live |
 | Whitespace integrity | Pass | `git diff --check` and `git diff --cached --check` |
 
@@ -39,7 +39,7 @@ The compiled `App.app` was installed and launched, not inferred from a web build
 
 The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`; the iPad simulator identifier was `348D09B8-FC5D-4936-8ED8-69FC1D92AF5C`. Both ran the Apple iOS 26.5 simulator runtime installed through Xcode.
 
-The previously packaged native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the mobile home shell at 390 × 844 points. The P1 package is rebuilt and its embedded source identifier rechecked as part of the final release procedure below.
+The final `888984fcf0541c1dd95a9f099c2ab8a8aee36eff` native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the real Firebase Email/Password sign-in surface at 390 × 844 points. The packaged `App.app` contains the same source identifier. Native Auth uses explicit local persistence without a browser popup resolver, avoiding the WKWebView OAuth-helper startup hang caught during release verification.
 
 ## PWA, offline, and update behavior
 

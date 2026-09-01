@@ -1,6 +1,6 @@
 # Firebase deployment record
 
-P1 identity and shared-groups implementation: `ce4747adc3791291c6140d2e12f7e16de6d2c1d4`
+Verified P1 release source: `888984fcf0541c1dd95a9f099c2ab8a8aee36eff`
 
 ## Current state
 
@@ -47,10 +47,11 @@ Rollback Hosting through Firebase release history or redeploy the prior exact co
 | Firestore rules / indexes | Deployed successfully from the reviewed repository files; deployment job `1788226382428` |
 | Auth providers | Identity Platform/Firebase Auth initialized; Email/Password and Google enabled; both Hosting domains authorized |
 | Preview URL / release | `https://split-unwise-aditya--split-unwise-rc-iy5k2wwr.web.app`; commit `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`; expires 2026-09-08T01:36:43.187899648Z |
-| Production URL / release | `https://split-unwise-aditya.web.app` and `https://split-unwise-aditya.firebaseapp.com`; P1 build deployed from the reviewed branch |
+| Production URL / release | `https://split-unwise-aditya.web.app` and `https://split-unwise-aditya.firebaseapp.com`; source commit `888984fcf0541c1dd95a9f099c2ab8a8aee36eff` |
 | Production health | Root, manifest, service worker, hashed asset, build metadata, nested-route rewrite, cache policy, CSP, and security headers passed on both domains |
 | Storage | Not provisioned; deployment was rejected at project setup/billing, and local security rules were not weakened |
 | Functions | Source build and 16 emulator tests pass; production deployment blocked because Blaze is required to enable Artifact Registry/Cloud Build |
 | App Check | Not configured; enforcement is not claimed |
 | Auth/profile/group/invite P1 | Production pass with two temporary Email/Password accounts in separate Firebase app sessions: owner created a group and private link, friend joined, both read the same two-member group, and owner persisted across sign-out/in. All temporary Auth users and exact Firestore test trees were deleted and queried empty afterward. |
+| Native Auth | Capacitor uses Firebase's resolver-free Auth initialization with persistent local sessions. The final simulator build opened the real Email/Password sign-in surface; browser-based Google OAuth stays enabled on Hosting and is deliberately disabled in the native WebView. |
 | Authenticated add/edit/settle replay | Not run against production because callable Functions are not deployed; financial transaction/replay/conflict behavior is emulator-verified only |
