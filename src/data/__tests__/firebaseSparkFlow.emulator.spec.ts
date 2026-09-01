@@ -154,6 +154,19 @@ describe('Firebase Spark two-account flow', () => {
       total: { currency: 'EUR', minorAmount: 5_000 }, currencyConversion: { sourceMoney: { currency: 'USD', minorAmount: 10_000 } },
     })
 
+    const postConversionDefault = {
+      kind: 'group.default-split' as const, operationId: `post-conversion-default-${suffix}`, groupId: created.groupId,
+      expectedRevision: 4, defaultSplit: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] },
+    }
+    await expect(ownerRepository.groups.setDefaultSplit(postConversionDefault)).resolves.toMatchObject({ status: 'saved' })
+    await expect(ownerRepository.groups.getSettings(created.groupId)).resolves.toMatchObject({
+      revision: 5, defaultSplit: postConversionDefault.defaultSplit,
+      currencyConversion: { targetCurrency: 'EUR', rates: conversionCommand.rates },
+    })
+    await expect(ownerRepository.expenses.getById(created.groupId, originalExpense.expense.id)).resolves.toMatchObject({
+      total: { currency: 'EUR', minorAmount: 5_000 }, currencyConversion: { sourceMoney: { currency: 'USD', minorAmount: 10_000 } },
+    })
+
     const laterExpense = await ownerRepository.expenses.add({
       kind: 'expense.add', operationId: `conversion-later-${suffix}`, groupId: created.groupId, description: 'Later USD taxi', date: '2026-09-02',
       total: { currency: 'USD', minorAmount: 2_000 },
@@ -171,7 +184,7 @@ describe('Firebase Spark two-account flow', () => {
     await signInWithEmailAndPassword(auth, friendEmail, password)
     const friendConvertedRepository = createFirebaseRepository(configuration, friend.user.uid)
     await expect(friendConvertedRepository.expenses.getById(created.groupId, originalExpense.expense.id)).resolves.toMatchObject({ total: { currency: 'EUR', minorAmount: 5_000 } })
-    await expect(friendConvertedRepository.groups.convertCurrencies({ ...conversionCommand, operationId: `friend-currency-${suffix}`, expectedRevision: 4 })).rejects.toThrow(/manager/i)
+    await expect(friendConvertedRepository.groups.convertCurrencies({ ...conversionCommand, operationId: `friend-currency-${suffix}`, expectedRevision: 5 })).rejects.toThrow(/manager/i)
   }, 30_000)
 
   emulatorIt('soft-removes an uninvolved member as one replay-safe group bundle', async () => {

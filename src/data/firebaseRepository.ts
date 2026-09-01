@@ -210,12 +210,27 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       const data = snapshot.data()
       const pointer = data.currencyConversion
       if (!isRecord(pointer) || Array.isArray(pointer.rates)) return decodeGroupSettings(groupId, data)
-      if (typeof data.lastResourceToken !== 'string' || !/^[a-f0-9]{48}$/.test(data.lastResourceToken)) throw new Error('Group currency conversion pointer is invalid')
-      const manifestReference = firestore.doc(db, 'groups', groupId, 'currencyConversions', `conversion-${data.lastResourceToken}`)
-      const manifest = await firestore.getDoc(manifestReference)
+      if (typeof pointer.operationId !== 'string') throw new Error('Group currency conversion pointer is invalid')
+      const manifest = await (async () => {
+        // The top-level token advances for every settings mutation. It addresses the
+        // manifest only while the conversion remains the latest settings operation.
+        if (data.lastOperationId === pointer.operationId) {
+          if (typeof data.lastResourceToken !== 'string' || !/^[a-f0-9]{48}$/.test(data.lastResourceToken)) throw new Error('Group currency conversion pointer is invalid')
+          return firestore.getDoc(firestore.doc(db, 'groups', groupId, 'currencyConversions', `conversion-${data.lastResourceToken}`))
+        }
+        const matches = await firestore.getDocs(firestore.query(
+          firestore.collection(db, 'groups', groupId, 'currencyConversions'),
+          firestore.where('operationId', '==', pointer.operationId), firestore.limit(2),
+        ))
+        if (matches.size !== 1) throw new Error('Group currency conversion manifest is unavailable')
+        return matches.docs[0]!
+      })()
       if (!manifest.exists()) throw new Error('Group currency conversion manifest is unavailable')
+      if (!/^conversion-[a-f0-9]{48}$/.test(manifest.id)) throw new Error('Group currency conversion manifest is invalid')
+      const manifestReference = firestore.doc(db, 'groups', groupId, 'currencyConversions', manifest.id)
       const manifestData = manifest.data()
-      if (!Array.isArray(manifestData.sourceCurrencies) || manifestData.sourceCurrencies.some((currency) => typeof currency !== 'string')) throw new Error('Group currency conversion manifest is invalid')
+      if (manifestData.operationId !== pointer.operationId || manifestData.targetCurrency !== pointer.targetCurrency
+        || !Array.isArray(manifestData.sourceCurrencies) || manifestData.sourceCurrencies.some((currency) => typeof currency !== 'string')) throw new Error('Group currency conversion manifest is invalid')
       const rateSnapshots = await firestore.getDocs(firestore.query(firestore.collection(manifestReference, 'rates'), firestore.limit(6)))
       const rateBySource = new Map(rateSnapshots.docs.map((document) => [document.id, document.data()]))
       if (rateBySource.size !== manifestData.sourceCurrencies.length || manifestData.sourceCurrencies.some((currency) => !rateBySource.has(currency))) throw new Error('Group currency conversion rates are incomplete')
