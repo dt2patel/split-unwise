@@ -278,7 +278,7 @@ function canEditFuture(template: RecurringExpense): boolean {
   return template.status === 'active'
     && Boolean(currentUser.value)
     && Boolean(frontier)
-    && (currentUser.value?.canManage === true || frontier?.createdBy?.id === currentUser.value?.id)
+    && (currentUser.value?.canManage === true || template.createdBy.id === currentUser.value?.id)
 }
 
 function confirmedFrontierExpense(template: RecurringExpense): ExpenseRow | undefined {
@@ -371,7 +371,7 @@ function messageFor(reason: unknown, fallback: string): string {
           <div>
             <p>{{ group?.name ?? 'Group' }}</p>
             <h1>Recurring expenses</h1>
-            <span>Due expenses are added when an active member opens this group or this screen.</span>
+            <span>Due expenses are added when the series creator or a group manager opens this group or this screen.</span>
           </div>
         </header>
 

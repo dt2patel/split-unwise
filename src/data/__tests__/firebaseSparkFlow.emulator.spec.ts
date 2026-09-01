@@ -452,7 +452,7 @@ describe('Firebase Spark two-account flow', () => {
     ]))
   }, 30_000)
 
-  emulatorIt('creates one recurring template and one occurrence when clients race, then semantically replays across users', async () => {
+  emulatorIt('keeps materialization with the series creator or manager while ordinary members skip due work', async () => {
     const auth = getAuth(app)
     const suffix = crypto.randomUUID()
     const ownerEmail = `recurrence-owner-${suffix}@example.com`
@@ -498,31 +498,42 @@ describe('Firebase Spark two-account flow', () => {
     await signOut(auth)
     await signInWithEmailAndPassword(auth, friendEmail, password)
     const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
-    const firstRace = friendRepository.commands.execute({
+    await expect(friendRepository.groups.materializeDue(created.groupId, '2026-10-01')).resolves.toEqual({ occurrences: [], moreRemain: false })
+    await expect(friendRepository.commands.execute({
+      kind: 'recurrence.materialize', operationId: `friend-denied-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
+    })).rejects.toThrow(/series creator|manager/i)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const firstRace = ownerRepository.commands.execute({
       kind: 'recurrence.materialize', operationId: `race-a-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
     })
-    const secondRace = friendRepository.commands.execute({
+    const secondRace = ownerRepository.commands.execute({
       kind: 'recurrence.materialize', operationId: `race-b-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
     })
     const [first, second] = await Promise.all([firstRace, secondRace])
     expect(first).toMatchObject({ status: 'saved', occurrence: { id: `occ_${templateId}_2026-10-01` } })
     expect(second).toMatchObject({ status: 'saved', occurrence: { id: `occ_${templateId}_2026-10-01` } })
-    await expect(friendRepository.groups.listRecurring(created.groupId)).resolves.toEqual([
+    await expect(ownerRepository.groups.listRecurring(created.groupId)).resolves.toEqual([
       expect.objectContaining({ id: templateId, nextDate: '2026-11-01', revision: 2, lastOccurrenceDate: '2026-10-01' }),
     ])
-    expect((await friendRepository.expenses.listForGroup(created.groupId)).filter(({ recurringTemplateId }) => recurringTemplateId === templateId)).toHaveLength(2)
-    await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
+    const recurringExpenses = (await ownerRepository.expenses.listForGroup(created.groupId)).filter(({ recurringTemplateId }) => recurringTemplateId === templateId)
+    expect(recurringExpenses).toHaveLength(2)
+    expect(recurringExpenses.find(({ id }) => id === `occ_${templateId}_2026-10-01`)).toMatchObject({
+      createdBy: { id: owner.user.uid, displayName: 'Recurrence Owner' },
+      updatedBy: { id: owner.user.uid, displayName: 'Recurrence Owner' },
+    })
+    await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
       pairwise: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2000 } }],
     })
-    expect((await friendRepository.activity.listForGroup(created.groupId)).filter(({ expenseId }) => expenseId === `occ_${templateId}_2026-10-01`)).toHaveLength(1)
+    expect((await ownerRepository.activity.listForGroup(created.groupId)).filter(({ expenseId }) => expenseId === `occ_${templateId}_2026-10-01`)).toHaveLength(1)
 
     await signOut(auth)
-    await signInWithEmailAndPassword(auth, ownerEmail, password)
-    const crossUserReplay = await ownerRepository.commands.execute({
-      kind: 'recurrence.materialize', operationId: `owner-replay-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
-    })
-    expect(crossUserReplay).toMatchObject({ status: 'saved', occurrence: { id: `occ_${templateId}_2026-10-01` }, template: { revision: 2 } })
-    expect((await ownerRepository.activity.listForGroup(created.groupId)).filter(({ expenseId }) => expenseId === `occ_${templateId}_2026-10-01`)).toHaveLength(1)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    await expect(friendRepository.commands.execute({
+      kind: 'recurrence.materialize', operationId: `friend-replay-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
+    })).rejects.toThrow(/series creator|manager/i)
+    expect((await friendRepository.activity.listForGroup(created.groupId)).filter(({ expenseId }) => expenseId === `occ_${templateId}_2026-10-01`)).toHaveLength(1)
   }, 45_000)
 
   emulatorIt('isolates occurrence edits, gates future edits to the series frontier, and cancels without touching expenses', async () => {

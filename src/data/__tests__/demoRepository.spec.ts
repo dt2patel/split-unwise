@@ -116,8 +116,25 @@ describe('demo repository', () => {
 
     const result = await repository.groups.materializeDue('lake-house-weekend', '2026-11-28', 1)
 
-    expect(result).toMatchObject({ occurrences: [{ id: 'occ_cabin-deposit-monthly_2026-09-28' }], moreRemain: true })
+    expect(result).toMatchObject({
+      occurrences: [{
+        id: 'occ_cabin-deposit-monthly_2026-09-28',
+        createdBy: { id: 'alex-r', displayName: 'Alex R.' },
+        updatedBy: { id: 'maya-p', displayName: 'Maya P.' },
+      }],
+      moreRemain: true,
+    })
     await expect(repository.groups.materializeDue('lake-house-weekend', '2026-11-28', 25)).rejects.toThrow(/24/)
+  })
+
+  it('skips another creator due series for an ordinary member and denies direct materialization', async () => {
+    const repository = createDemoRepository({ currentUserId: 'jordan-k' })
+
+    await expect(repository.groups.materializeDue('lake-house-weekend', '2026-09-28')).resolves.toEqual({ occurrences: [], moreRemain: false })
+    await expect(repository.commands.execute({
+      kind: 'recurrence.materialize', operationId: 'jordan-materialize-alex-series', groupId: 'lake-house-weekend',
+      templateId: 'cabin-deposit-monthly', occurrenceDate: '2026-09-28',
+    })).rejects.toThrow(/series creator|manager/i)
   })
 
   it('updates an active template only for a latest future-series edit', async () => {

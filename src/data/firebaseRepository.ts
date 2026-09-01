@@ -338,12 +338,16 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         : undefined
       const templateSnapshot = templateReference ? await transaction.get(templateReference) : undefined
       if (templateReference && !templateSnapshot?.exists()) throw new Error('Linked recurring template is unavailable')
+      const authorization = {
+        actor: { id: userId, displayName: memberData.displayName },
+        canManage: memberData.canManage === true,
+      }
       try {
         const mutation = buildSparkExpenseMutationRecord(
           command,
           headData,
           currentData,
-          { actor: { id: userId, displayName: memberData.displayName }, canManage: memberData.canManage === true },
+          authorization,
           identity,
           firestore.serverTimestamp(),
         )
@@ -354,7 +358,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         )
         if (templateReference && templateSnapshot?.exists() && command.kind === 'expense.edit') {
           transaction.set(templateReference, buildSparkFutureRecurringTemplateRecord(
-            command, current, templateSnapshot.data(), { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp(),
+            command, current, templateSnapshot.data(), authorization, identity, firestore.serverTimestamp(),
           ))
         }
       } catch (error) {
@@ -774,6 +778,11 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         }
         if (!templateSnapshot.exists()) throw new Error('Recurring template was not found')
         const currentTemplate = decodeRecurringExpense(command.groupId, command.templateId, templateSnapshot.data())
+        const authorization = {
+          actor: { id: userId, displayName: memberData.displayName },
+          canManage: memberData.canManage === true,
+        }
+        assertRecurringSeriesAuthority(currentTemplate, authorization, 'materialize it')
         if (occurrenceSnapshot.exists()) {
           const existing = decodeExpense(command.groupId, occurrenceId, occurrenceSnapshot.data())
           if (existing.id !== occurrenceId || existing.groupId !== command.groupId || existing.recurringTemplateId !== command.templateId
@@ -782,7 +791,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         }
         if (activitySnapshot.exists()) throw new OperationReplayConflictError()
         const record = buildSparkRecurrenceMaterializationRecord(
-          command, templateSnapshot.data(), { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp(),
+          command, templateSnapshot.data(), authorization, identity, firestore.serverTimestamp(),
         )
         transaction.set(occurrenceReference, record.occurrenceDocument)
         transaction.set(templateReference, record.templateDocument)
@@ -800,6 +809,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const template = decodeRecurringExpense(command.groupId, command.templateId, savedTemplate.data())
     if (occurrence.id !== occurrenceId || occurrence.groupId !== command.groupId || occurrence.recurringTemplateId !== command.templateId
       || template.id !== command.templateId || template.groupId !== command.groupId
+      || occurrence.createdBy?.id !== template.createdBy.id || occurrence.createdBy.displayName !== template.createdBy.displayName
       || template.nextDate <= command.occurrenceDate) throw new OperationReplayConflictError()
     const creationToken = isRecord(savedOccurrenceData) ? savedOccurrenceData.resourceToken : undefined
     if (typeof creationToken !== 'string' || !/^[a-f0-9]{48}$/.test(creationToken)) throw new OperationReplayConflictError()
@@ -809,7 +819,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const activity = decodeActivity(command.groupId, activityId, savedActivity.data())
     if (activity.kind !== 'expense.created' || activity.expenseId !== occurrenceId || activity.subject.id !== occurrenceId
       || activity.operationId !== savedOccurrenceData.operationId || activity.revision !== 1
-      || activity.actor.id !== occurrence.createdBy?.id || activity.actor.displayName !== occurrence.createdBy.displayName
+      || activity.actor.id !== occurrence.updatedBy?.id || activity.actor.displayName !== occurrence.updatedBy.displayName
       || activity.createdAt !== occurrence.createdAt) throw new OperationReplayConflictError()
     return { kind: command.kind, operationId: command.operationId, status: 'saved', template, occurrence }
   }
@@ -834,7 +844,9 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       }
       try {
         transaction.set(templateReference, buildSparkRecurrenceCancellationRecord(
-          command, data, { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp(),
+          command, data,
+          { actor: { id: userId, displayName: memberData.displayName }, canManage: memberData.canManage === true },
+          identity, firestore.serverTimestamp(),
         ))
       } catch (error) {
         if (error instanceof Error && /changed remotely/i.test(error.message)) {
@@ -918,10 +930,19 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       listRecurring,
       async materializeDue(groupId, throughDate, maxOccurrences = 24) {
         assertMaterializationRequest(throughDate, maxOccurrences)
-        const templates = [...await listRecurring(groupId)]
+        const readyContext = context()
+        const [{ db, firestore, userId }, loadedTemplates] = await Promise.all([readyContext, listRecurring(groupId, readyContext)])
+        const member = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'members', userId))
+        const memberData = member.data()
+        if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active') {
+          throw new Error('Only active group members can check recurring expenses')
+        }
+        const canManage = memberData.canManage === true
+        const canMaterialize = (template: RecurringExpense) => template.createdBy.id === userId || canManage
+        const templates = [...loadedTemplates]
         const occurrences: ExpenseRow[] = []
         while (occurrences.length < maxOccurrences) {
-          const template = templates.filter((item) => item.status === 'active' && item.nextDate <= throughDate)
+          const template = templates.filter((item) => item.status === 'active' && item.nextDate <= throughDate && canMaterialize(item))
             .sort((left, right) => left.nextDate.localeCompare(right.nextDate) || left.id.localeCompare(right.id))[0]
           if (!template) break
           const command: RecurrenceMaterializeCommand = {
@@ -934,7 +955,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           occurrences.push(result.occurrence)
           templates[templates.indexOf(template)] = result.template
         }
-        const moreRemain = templates.some((template) => template.status === 'active' && template.nextDate <= throughDate)
+        const moreRemain = templates.some((template) => template.status === 'active' && template.nextDate <= throughDate && canMaterialize(template))
         return { occurrences, moreRemain }
       },
       setDefaultSplit: execute,
@@ -1132,6 +1153,16 @@ function decodeGroupSettings(groupId: string, value: unknown): GroupSettings {
   const defaultSplit = value.defaultSplit
   if (defaultSplit === undefined) return base
   try { return { ...base, defaultSplit: decodeDefaultSplit(defaultSplit) } } catch { throw new Error('Group default split is invalid') }
+}
+
+function assertRecurringSeriesAuthority(
+  template: Pick<RecurringExpense, 'createdBy'>,
+  authorization: { readonly actor: Pick<Member, 'id'>; readonly canManage: boolean },
+  action: string,
+): void {
+  if (template.createdBy.id !== authorization.actor.id && !authorization.canManage) {
+    throw new Error(`Only the series creator or an active group manager can ${action}.`)
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }

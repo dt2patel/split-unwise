@@ -14,6 +14,7 @@ const firebase = vi.hoisted(() => ({
   groupActivityDocuments: {} as Record<string, Array<{ id: string; data: () => Record<string, unknown> }>>,
   notificationDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   profileDocument: undefined as { data: () => Record<string, unknown> } | undefined,
+  memberDocument: undefined as { data: () => Record<string, unknown> } | undefined,
   documentReads: [] as string[],
 }))
 
@@ -67,7 +68,7 @@ vi.mock('firebase/firestore', () => {
   const snapshotFor = (reference: { path: string; id: string }) => {
     const found = reference.path === 'users/maya-p' ? firebase.profileDocument
       : reference.path.startsWith('groups/') && reference.path.split('/').length === 2 ? firebase.groupDocuments[reference.path]
-      : reference.path === 'groups/lake-house-weekend/members/maya-p' ? documentValue('maya-p', { status: 'active', displayName: 'Maya P.', canManage: true })
+      : reference.path === 'groups/lake-house-weekend/members/maya-p' ? firebase.memberDocument
       : reference.path.endsWith('/balance/current') ? firebase.balanceDocument
       : reference.path.endsWith('/settings/defaults') ? firebase.settingsDocument
       : reference.path.includes('/recurringTemplates/') ? firebase.recurringDocuments.find(({ id }) => id === reference.id)
@@ -162,6 +163,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
       document('notification-B', notificationData(null, '2026-08-30T12:00:00.000Z')),
     ]
     firebase.profileDocument = document('maya-p', { displayName: 'Maya P.', initials: 'MP' })
+    firebase.memberDocument = document('maya-p', { status: 'active', displayName: 'Maya P.', canManage: true })
     firebase.documentReads.length = 0
   })
 
@@ -373,6 +375,54 @@ describe('Task 7 Firebase repository query boundaries', () => {
     })
     expect(firebase.queries.filter(({ base }) => base.path === 'groups/lake-house-weekend/recurringTemplates')).toHaveLength(1)
   })
+
+  it('skips due templates an ordinary member did not create', async () => {
+    firebase.memberDocument = document('maya-p', { status: 'active', displayName: 'Maya P.', canManage: false })
+    firebase.expenseDocuments = []
+    firebase.recurringDocuments = [
+      document('recurring-other', recurringData({ id: 'recurring-other', createdBy: { id: 'other', displayName: 'Other Creator' } })),
+      document('recurring-own', recurringData({ id: 'recurring-own' })),
+    ]
+    firebase.groupActivityDocuments['groups/lake-house-weekend/activity'] = []
+    const repository = createFirebaseRepository(configuration)
+
+    await expect(repository.groups.materializeDue('lake-house-weekend', '2026-09-30', 24)).resolves.toEqual({
+      occurrences: [expect.objectContaining({ id: 'occ_recurring-own_2026-09-30', createdBy: { id: 'maya-p', displayName: 'Maya P.' } })],
+      moreRemain: false,
+    })
+    expect(firebase.expenseDocuments.some(({ id }) => id === 'occ_recurring-other_2026-09-30')).toBe(false)
+  })
+
+  it('rejects an unauthorized semantic replay after another principal materialized the occurrence', async () => {
+    firebase.memberDocument = document('maya-p', { status: 'active', displayName: 'Maya P.', canManage: false })
+    const templateId = 'recurring-other'
+    const occurrenceId = `occ_${templateId}_2026-09-30`
+    firebase.recurringDocuments = [document(templateId, recurringData({
+      id: templateId,
+      nextDate: '2026-10-30',
+      createdBy: { id: 'other', displayName: 'Other Creator' },
+      revision: 2,
+      lastOccurrenceId: occurrenceId,
+      lastOccurrenceDate: '2026-09-30',
+    }))]
+    firebase.expenseDocuments = [document(occurrenceId, {
+      ...expenseData(), id: occurrenceId, groupId: 'lake-house-weekend', date: '2026-09-30',
+      recurringTemplateId: templateId, recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'UTC' },
+      operationId: 'materialize-other', requestFingerprint: 'a'.repeat(64), resourceToken: 'b'.repeat(48),
+      lastOperationId: 'materialize-other', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: 'b'.repeat(48),
+      createdBy: { id: 'other', displayName: 'Other Creator' }, updatedBy: { id: 'manager', displayName: 'Series Manager' },
+    })]
+    firebase.groupActivityDocuments['groups/lake-house-weekend/activity'] = [document(`activity-${'b'.repeat(48)}`, {
+      groupId: 'lake-house-weekend', operationId: 'materialize-other', kind: 'expense.created',
+      subject: { kind: 'expense', id: occurrenceId, label: 'Groceries' }, actor: { id: 'manager', displayName: 'Series Manager' },
+      expenseId: occurrenceId, resourceToken: 'b'.repeat(48), revision: 1, createdAt: '2026-08-30T10:00:00.000Z',
+    })]
+    const repository = createFirebaseRepository(configuration)
+
+    await expect(repository.commands.execute({
+      kind: 'recurrence.materialize', operationId: 'unauthorized-replay', groupId: 'lake-house-weekend', templateId, occurrenceDate: '2026-09-30',
+    })).rejects.toThrow(/series creator|manager/i)
+  })
 })
 
 function document(id: string, value: Record<string, unknown>) { return { id, data: () => structuredClone(value) } }
@@ -430,6 +480,10 @@ function recurringData(input: {
   anchorDate?: string
   nextDate?: string
   anchor?: { readonly month: number; readonly day: number }
+  createdBy?: { readonly id: string; readonly displayName: string }
+  revision?: number
+  lastOccurrenceId?: string
+  lastOccurrenceDate?: string
 }) {
   return {
     id: input.id, groupId: 'lake-house-weekend', sourceExpenseId: 'source-rent', status: 'active', description: 'Rent',
@@ -437,7 +491,9 @@ function recurringData(input: {
     allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing',
     splitMethod: { type: 'equal', participantIds: ['maya-p'] },
     recurrence: { frequency: 'monthly', anchor: input.anchor ?? { month: 8, day: 30 }, timeZone: 'UTC' },
-    anchorDate: input.anchorDate ?? '2026-08-30', nextDate: input.nextDate ?? '2026-09-30', revision: 1,
-    createdBy: { id: 'maya-p', displayName: 'Maya P.' },
+    anchorDate: input.anchorDate ?? '2026-08-30', nextDate: input.nextDate ?? '2026-09-30', revision: input.revision ?? 1,
+    createdBy: input.createdBy ?? { id: 'maya-p', displayName: 'Maya P.' },
+    ...(input.lastOccurrenceId ? { lastOccurrenceId: input.lastOccurrenceId } : {}),
+    ...(input.lastOccurrenceDate ? { lastOccurrenceDate: input.lastOccurrenceDate } : {}),
   }
 }

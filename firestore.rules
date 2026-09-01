@@ -297,7 +297,9 @@ service cloud.firestore {
         && data.lastResourceToken == data.resourceToken
         && data.splitType == 'exact' && data.attachmentRefs == []
         && data.createdAt == request.time && data.updatedAt == request.time
-        && validSparkCurrentActor(groupId, data.createdBy) && data.updatedBy == data.createdBy
+        && data.createdBy == before.createdBy && validSparkActorShape(data.createdBy)
+        && validSparkCurrentActor(groupId, data.updatedBy)
+        && (request.auth.uid == before.createdBy.id || activeManager(groupId))
         && data.revision == 1
         && before.status == 'active' && before.nextDate == data.date
         && expenseId == 'occ_' + data.recurringTemplateId + '_' + before.nextDate
@@ -306,7 +308,7 @@ service cloud.firestore {
         && after.lastOccurrenceId == expenseId && after.lastOccurrenceDate == data.date
         && after.lastOperationId == data.operationId && after.lastResourceToken == data.resourceToken
         && activity.expenseId == expenseId && activity.operationId == data.operationId
-        && activity.resourceToken == data.resourceToken;
+        && activity.resourceToken == data.resourceToken && activity.actor == data.updatedBy;
     }
     function sparkHeadRevision(data) {
       return 'headRevision' in data ? data.headRevision : data.revision;
@@ -392,6 +394,7 @@ service cloud.firestore {
       let nextRevision = sparkHeadRevision(resource.data) + 1;
       let version = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)/revisions/$(data.lastResourceToken)).data;
       let expense = version.expense;
+      let template = get(/databases/$(database)/documents/groups/$(groupId)/recurringTemplates/$(resource.data.recurringTemplateId)).data;
       return !sparkHeadDeleted(resource.data)
         && data.diff(resource.data).affectedKeys().hasOnly([
           'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'headRevision', 'headDeleted', 'current'
@@ -401,7 +404,8 @@ service cloud.firestore {
         && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
         && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
         && data.lastOperationId != resource.data.lastOperationId && data.lastResourceToken != resource.data.lastResourceToken
-        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
+        && resource.data.createdBy == template.createdBy
+        && (request.auth.uid == template.createdBy.id || activeManager(groupId))
         && version.keys().size() == 8
         && version.groupId == groupId && version.expenseId == expenseId
         && version.revision == nextRevision && version.operationId == data.lastOperationId
@@ -514,6 +518,7 @@ service cloud.firestore {
     function validSparkRecurrenceMaterialization(groupId, templateId, data) {
       let occurrence = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(data.lastOccurrenceId)).data;
       return resource.data.status == 'active' && data.status == 'active'
+        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
         && data.diff(resource.data).affectedKeys().hasOnly([
           'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
           'nextDate', 'revision', 'lastOccurrenceId', 'lastOccurrenceDate', 'updatedAt', 'updatedBy'
@@ -534,7 +539,7 @@ service cloud.firestore {
         && occurrence.resourceToken == data.lastResourceToken
         && occurrence.lastResourceToken == data.lastResourceToken
         && occurrence.createdAt == request.time && occurrence.updatedAt == request.time
-        && occurrence.createdBy == data.updatedBy && occurrence.updatedBy == data.updatedBy
+        && occurrence.createdBy == resource.data.createdBy && occurrence.updatedBy == data.updatedBy
         && occurrence.revision == 1 && !('occurrenceEditScope' in occurrence)
         && validSparkTemplatePayloadMatchesExpense(resource.data, occurrence);
     }
@@ -544,6 +549,7 @@ service cloud.firestore {
       let head = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(frontierId)).data;
       let expense = head.current;
       return resource.data.status == 'active' && data.status == 'active'
+        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
         && data.diff(resource.data).affectedKeys().hasOnly([
           'description', 'total', 'payments', 'allocations', 'payerIds', 'participantIds', 'involvedMemberIds',
           'category', 'splitMethod', 'recurrence', 'anchorDate', 'nextDate',
@@ -555,6 +561,7 @@ service cloud.firestore {
         && head.lastOperationId == data.lastOperationId
         && head.lastRequestFingerprint == data.lastRequestFingerprint
         && expense.recurringTemplateId == templateId
+        && expense.createdBy == resource.data.createdBy
         && expense.occurrenceEditScope == 'future'
         && data.updatedAt == request.time && data.updatedBy == expense.updatedBy
         && validSparkCurrentActor(groupId, data.updatedBy)
@@ -597,7 +604,7 @@ service cloud.firestore {
         && data.revision == 1
         && expense.id == data.expenseId && expense.operationId == data.operationId
         && expense.resourceToken == data.resourceToken && expense.lastResourceToken == data.resourceToken
-        && expense.createdBy == data.actor && expense.updatedBy == data.actor
+        && expense.updatedBy == data.actor && validSparkCurrentActor(groupId, data.actor)
         && expense.createdAt == request.time && expense.updatedAt == request.time
         && expense.revision == 1 && expense.description == data.subject.label;
     }

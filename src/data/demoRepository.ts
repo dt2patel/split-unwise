@@ -249,6 +249,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         if (!previous.recurringTemplateId && (command.draft.recurrence || command.draft.occurrenceEditScope)) throw new Error('Recurrence requires a linked recurring expense')
         if (command.draft.occurrenceEditScope === 'future') {
           if (!template || template.status !== 'active') throw new Error('Recurring template is not active')
+          assertSeriesPermission(template, 'edit future expenses')
           if (!command.draft.recurrence) throw new Error('A future-series edit requires recurrence settings')
           assertLatestFutureEdit(previous, template, expenses)
           assertRecurrenceAnchor(command.draft.date, command.draft.recurrence)
@@ -487,6 +488,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         assertActiveMembership()
         const template = recurring.find((item) => item.id === command.templateId && item.groupId === command.groupId)
         if (!template) throw new Error('Recurring template was not found')
+        assertSeriesPermission(template, 'materialize it')
         const occurrenceId = recurringOccurrenceId(command.templateId, command.occurrenceDate)
         const existing = expenses.find((item) => item.id === occurrenceId && item.groupId === command.groupId)
         if (existing) {
@@ -498,11 +500,12 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         if (template.nextDate !== command.occurrenceDate) throw new CommandConflictError('Recurring template changed remotely.', { remote: clone(template) })
         const createdAt = checkedNow(now)
         const actor = actorSnapshot(currentUser)
+        const seriesCreator = { ...template.createdBy }
         const occurrence: ExpenseRow = {
           id: occurrenceId, groupId: command.groupId, description: template.description, date: command.occurrenceDate,
           total: { ...template.total }, payments: template.payments.map(cloneAllocation), allocations: template.allocations.map(cloneAllocation),
           category: template.category, splitMethod: clone(template.splitMethod), attachmentRefs: [], recurrence: clone(template.recurrence),
-          recurringTemplateId: template.id, createdAt, updatedAt: createdAt, createdBy: actor, updatedBy: actor,
+          recurringTemplateId: template.id, createdAt, updatedAt: createdAt, createdBy: seriesCreator, updatedBy: actor,
           revision: 1, syncState: 'fresh',
         }
         const advanced: RecurringExpense = {
@@ -521,6 +524,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         assertActiveMembership()
         const template = recurring.find((item) => item.id === command.templateId && item.groupId === command.groupId)
         if (!template) throw new Error('Recurring template was not found')
+        assertSeriesPermission(template, 'stop future expenses')
         if (template.status !== 'active') throw new Error('Recurring template is already cancelled')
         if (template.revision !== command.expectedRevision) throw new CommandConflictError('Recurring template changed remotely.', { remote: clone(template) })
         const cancelled: RecurringExpense = { ...template, status: 'cancelled', revision: template.revision + 1 }
@@ -531,8 +535,22 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   }
 
   function assertActiveMembership(): void {
+    currentMembership()
+  }
+
+  function currentMembership(): Member {
     const member = lakeHouseMembers.find(({ id }) => id === currentUser.id)
     if (!member) throw new Error('You are not an active group member')
+    return member
+  }
+
+  function canManageSeries(template: RecurringExpense): boolean {
+    const membership = currentMembership()
+    return template.createdBy.id === currentUser.id || membership.canManage === true
+  }
+
+  function assertSeriesPermission(template: RecurringExpense, action: string): void {
+    if (!canManageSeries(template)) throw new Error(`Only the series creator or an active group manager can ${action}.`)
   }
 
   function assertExpenseMutationPermission(expense: ExpenseRow): void {
@@ -578,7 +596,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         const templates = recurring.filter((item) => item.groupId === groupId).map(clone)
         const occurrences: ExpenseRow[] = []
         while (occurrences.length < maxOccurrences) {
-          const template = templates.filter((item) => item.status === 'active' && item.nextDate <= throughDate)
+          const template = templates.filter((item) => item.status === 'active' && item.nextDate <= throughDate && canManageSeries(item))
             .sort((left, right) => left.nextDate.localeCompare(right.nextDate) || left.id.localeCompare(right.id))[0]
           if (!template) break
           const command = {
@@ -590,7 +608,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
           occurrences.push(cloneExpense(result.occurrence))
           templates[templates.indexOf(template)] = clone(result.template)
         }
-        const moreRemain = templates.some((item) => item.status === 'active' && item.nextDate <= throughDate)
+        const moreRemain = templates.some((item) => item.status === 'active' && item.nextDate <= throughDate && canManageSeries(item))
         return { occurrences, moreRemain }
       },
       setDefaultSplit: execute,

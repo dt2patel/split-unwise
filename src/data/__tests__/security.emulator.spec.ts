@@ -29,14 +29,17 @@ beforeEach(async () => {
     await setDoc(doc(db, 'users/outsider'), { displayName: 'Outsider', initials: 'O' })
     await setDoc(doc(db, 'users/friend'), { displayName: 'Friend', initials: 'F' })
     await setDoc(doc(db, 'users/manager'), { displayName: 'Series Manager', initials: 'SM' })
-    await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'friend', 'manager'] })
+    await setDoc(doc(db, 'users/materializer'), { displayName: 'Materializer', initials: 'M' })
+    await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'friend', 'manager', 'materializer'] })
     await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', canManage: true, displayName: 'Active Member' })
     await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', canManage: false, displayName: 'Friend' })
     await setDoc(doc(db, 'groups/group-a/members/manager'), { status: 'active', canManage: true, displayName: 'Series Manager' })
+    await setDoc(doc(db, 'groups/group-a/members/materializer'), { status: 'active', canManage: false, displayName: 'Materializer' })
     await setDoc(doc(db, 'groups/group-a/members/removed'), { status: 'removed' })
     await setDoc(doc(db, 'users/active/groups/group-a'), { groupId: 'group-a', status: 'active' })
     await setDoc(doc(db, 'users/friend/groups/group-a'), { groupId: 'group-a', status: 'active' })
     await setDoc(doc(db, 'users/manager/groups/group-a'), { groupId: 'group-a', status: 'active' })
+    await setDoc(doc(db, 'users/materializer/groups/group-a'), { groupId: 'group-a', status: 'active' })
     await setDoc(doc(db, 'users/removed/groups/group-a'), { groupId: 'group-a', status: 'removed' })
     await setDoc(doc(db, 'groups/group-a/settings/defaults'), { schemaVersion: 1, groupId: 'group-a', revision: 1, simplifyDebtsEnabled: true, updatedAt: Timestamp.fromMillis(0) })
     await setDoc(doc(db, 'groups/group-a/balance/current'), { groupId: 'group-a', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
@@ -355,6 +358,50 @@ describe('Firestore rules in the emulator', () => {
     })
     const removedParticipant = sparkRecurringMaterialization(advancedTemplate, '3', '2026-11-01', '2026-12-01')
     await assertFails(commitSparkRecurringMaterialization(active, removedParticipant))
+  })
+
+  emulatorIt('denies an ordinary member raw schedule jump while allowing the creator and a manager to materialize', async () => {
+    const creator = environment.authenticatedContext('friend').firestore()
+    const materializer = environment.authenticatedContext('materializer').firestore()
+    const manager = environment.authenticatedContext('manager').firestore()
+    const creatorActor = { id: 'friend', displayName: 'Friend' }
+    const materializerActor = { id: 'materializer', displayName: 'Materializer' }
+    const managerActor = { id: 'manager', displayName: 'Series Manager' }
+    const source = sparkRecurringSource('4', creatorActor)
+    const template = sparkRecurringTemplate(source, '2026-10-01')
+    await assertSucceeds(commitSparkRecurringCreation(creator, source, template))
+    const savedTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+
+    const hostileJump = sparkRecurringMaterialization(savedTemplate, '5', '2026-10-01', '9999-12-31', materializerActor)
+    await assertFails(commitSparkRecurringMaterialization(materializer, hostileJump))
+
+    const managed = sparkRecurringMaterialization(savedTemplate, '6', '2026-10-01', '2026-11-01', managerActor)
+    await assertSucceeds(commitSparkRecurringMaterialization(manager, managed))
+    expect((await getDoc(doc(manager, `groups/group-a/expenses/${managed.occurrence.id}`))).data()).toMatchObject({
+      createdBy: creatorActor,
+      updatedBy: managerActor,
+    })
+
+    const advanced = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+    const creatorMaterialization = sparkRecurringMaterialization(advanced, '7', '2026-11-01', '2026-12-01', creatorActor)
+    await assertSucceeds(commitSparkRecurringMaterialization(creator, creatorMaterialization))
+
+    const creatorFrontier = (await getDoc(doc(creator, `groups/group-a/expenses/${creatorMaterialization.occurrence.id}`))).data()!
+    const creatorTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+    const deniedFuture = sparkFutureRecurringEdit(creatorFrontier, creatorTemplate, '8', materializerActor)
+    await assertFails(commitSparkFutureRecurringEdit(materializer, deniedFuture, deniedFuture.template))
+
+    const creatorFuture = sparkFutureRecurringEdit(creatorFrontier, creatorTemplate, '9', creatorActor)
+    await assertSucceeds(commitSparkFutureRecurringEdit(creator, creatorFuture, creatorFuture.template))
+    const futureTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+    await assertFails(setDoc(
+      doc(materializer, `groups/group-a/recurringTemplates/${template.id}`),
+      sparkRecurringCancellation(futureTemplate, 'a', Number(futureTemplate.revision), materializerActor),
+    ))
+    await assertSucceeds(setDoc(
+      doc(creator, `groups/group-a/recurringTemplates/${template.id}`),
+      sparkRecurringCancellation(futureTemplate, 'b', Number(futureTemplate.revision), creatorActor),
+    ))
   })
 
   emulatorIt('authorizes cancellation independently for the creator or a manager at the current revision', async () => {
@@ -702,7 +749,7 @@ function sparkExpenseVersion(expense: Record<string, unknown>, operationId: stri
 }
 
 function sparkExpenseActivity(expense: Record<string, unknown>, kind: 'expense.created' | 'expense.updated' | 'expense.deleted', createdAt: unknown): Record<string, unknown> {
-  const actor = kind === 'expense.created' ? expense.createdBy : expense.updatedBy
+  const actor = kind === 'expense.created' && !expense.recurringTemplateId ? expense.createdBy : expense.updatedBy
   return {
     groupId: 'group-a', operationId: expense.lastOperationId, kind,
     subject: { kind: 'expense', id: expense.id, label: expense.description },
@@ -796,7 +843,7 @@ function sparkRecurringMaterialization(
     lastOperationId: `materialize-${token}`, lastRequestFingerprint: token.repeat(64), lastResourceToken: resourceToken,
     description: template.description, date: occurrenceDate, total: template.total, payments: template.payments, allocations: template.allocations,
     category: template.category, splitType: 'exact', splitMethod: template.splitMethod, recurrence: template.recurrence, recurringTemplateId: templateId,
-    createdBy: actor, updatedBy: actor, revision: 1,
+    createdBy: template.createdBy, updatedBy: actor, revision: 1,
   })
   const advanced = {
     ...template,
@@ -830,8 +877,8 @@ function sparkRecurringCancellation(
 
 function sparkFutureRecurringEdit(
   source: Record<string, unknown>, template: Record<string, unknown>, token: string,
+  actor: Record<string, unknown> = { id: 'active', displayName: 'Active Member' },
 ): { expense: Record<string, unknown>; head: Record<string, unknown>; revision: Record<string, unknown>; template: Record<string, unknown> } {
-  const actor = { id: 'active', displayName: 'Active Member' }
   const resourceToken = token.repeat(48)
   const current = (source.current && typeof source.current === 'object' ? source.current : source) as Record<string, unknown>
   const revisionNumber = Number(source.headRevision ?? current.revision) + 1

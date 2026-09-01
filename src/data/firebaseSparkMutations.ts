@@ -7,7 +7,7 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
@@ -242,17 +242,18 @@ export function buildSparkExpenseActivityRecord(input: {
 export function buildSparkRecurrenceMaterializationRecord(
   command: RecurrenceMaterializeCommand,
   currentTemplate: Readonly<Record<string, unknown>>,
-  actor: ActorSnapshot,
+  authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
   identity: OperationIdentity,
   committedAt: unknown,
 ): SparkRecurrenceMaterializationRecord {
   const parsed = command
   if (parsed.kind !== 'recurrence.materialize' || !parsed.groupId.trim()) throw new Error('Spark recurrence materialization command is invalid.')
   recurringOccurrenceId(parsed.templateId, parsed.occurrenceDate)
-  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  const token = assertSparkOperationIdentity(parsed, authorization.actor, identity)
   if (currentTemplate.id !== undefined && currentTemplate.id !== parsed.templateId) throw new Error('Recurring template identity is invalid.')
   if (currentTemplate.groupId !== undefined && currentTemplate.groupId !== parsed.groupId) throw new Error('Recurring template group is invalid.')
   const template = decodeRecurringExpense(parsed.groupId, parsed.templateId, currentTemplate)
+  assertSparkSeriesAuthority(template, authorization, 'materialize it')
   if (template.status !== 'active') throw new Error('Recurring template is not active.')
   if (template.nextDate !== parsed.occurrenceDate) throw new Error('Recurring template changed remotely. Reload it before trying again.')
   const occurrenceId = recurringOccurrenceId(parsed.templateId, parsed.occurrenceDate)
@@ -261,11 +262,12 @@ export function buildSparkRecurrenceMaterializationRecord(
     total: template.total, payments: template.payments, allocations: template.allocations, category: template.category,
     splitMethod: template.splitMethod, attachmentRefs: [], recurrence: template.recurrence,
   }, identity.resourceId, parsed.templateId)
-  const normalizedActorValue = normalizedActor(actor)
+  const normalizedActorValue = normalizedActor(authorization.actor)
+  const seriesCreator = normalizedActor(template.createdBy)
   const occurrenceDocument: Readonly<Record<string, unknown>> = {
     id: occurrenceId, groupId: parsed.groupId, operationId: parsed.operationId, requestFingerprint: identity.requestFingerprint, resourceToken: token,
     lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
-    ...normalized, createdAt: committedAt, createdBy: normalizedActorValue, updatedAt: committedAt, updatedBy: normalizedActorValue, revision: 1,
+    ...normalized, createdAt: committedAt, createdBy: seriesCreator, updatedAt: committedAt, updatedBy: normalizedActorValue, revision: 1,
   }
   const templateDocument: Readonly<Record<string, unknown>> = {
     ...currentTemplate,
@@ -288,18 +290,19 @@ export function buildSparkRecurrenceMaterializationRecord(
 export function buildSparkRecurrenceCancellationRecord(
   command: RecurrenceCancelCommand,
   currentTemplate: Readonly<Record<string, unknown>>,
-  actor: ActorSnapshot,
+  authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
   identity: OperationIdentity,
   committedAt: unknown,
 ): Readonly<Record<string, unknown>> {
   const parsed = command
   if (parsed.kind !== 'recurrence.cancel' || !parsed.groupId.trim() || !isStrictId(parsed.templateId)
     || !Number.isSafeInteger(parsed.expectedRevision) || parsed.expectedRevision < 1) throw new Error('Spark recurrence cancellation command is invalid.')
-  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  const token = assertSparkOperationIdentity(parsed, authorization.actor, identity)
   const template = decodeRecurringExpense(parsed.groupId, parsed.templateId, currentTemplate)
+  assertSparkSeriesAuthority(template, authorization, 'stop future expenses')
   if (template.status !== 'active') throw new Error('Recurring template is already cancelled.')
   if (template.revision !== parsed.expectedRevision) throw new Error('Recurring template changed remotely. Reload it before trying again.')
-  const normalizedActorValue = normalizedActor(actor)
+  const normalizedActorValue = normalizedActor(authorization.actor)
   return {
     ...currentTemplate,
     status: 'cancelled', revision: template.revision + 1,
@@ -313,7 +316,7 @@ export function buildSparkFutureRecurringTemplateRecord(
   command: ExpenseEditCommand,
   currentExpense: Pick<ExpenseRow, 'id' | 'recurringTemplateId'>,
   currentTemplate: Readonly<Record<string, unknown>>,
-  actor: ActorSnapshot,
+  authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
   identity: OperationIdentity,
   committedAt: unknown,
 ): Readonly<Record<string, unknown>> {
@@ -321,8 +324,9 @@ export function buildSparkFutureRecurringTemplateRecord(
   if (parsed.kind !== 'expense.edit' || parsed.draft.occurrenceEditScope !== 'future' || !parsed.draft.recurrence) {
     throw new Error('Spark future recurrence edit command is invalid.')
   }
-  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  const token = assertSparkOperationIdentity(parsed, authorization.actor, identity)
   const template = decodeRecurringExpense(parsed.groupId, currentExpense.recurringTemplateId ?? '', currentTemplate)
+  assertSparkSeriesAuthority(template, authorization, 'edit future expenses')
   if (!currentExpense.recurringTemplateId || currentExpense.recurringTemplateId !== template.id) throw new Error('Expense is not linked to this recurring template.')
   if (template.status !== 'active') throw new Error('Recurring template is not active.')
   const sourceExpenseId = typeof currentTemplate.sourceExpenseId === 'string' ? currentTemplate.sourceExpenseId : undefined
@@ -332,7 +336,7 @@ export function buildSparkFutureRecurringTemplateRecord(
   }
   assertSparkRecurrenceAnchor(parsed.draft.date, parsed.draft.recurrence)
   const normalized = normalizeSparkExpenseDraft(parsed.draft, identity.resourceId, template.id)
-  const normalizedActorValue = normalizedActor(actor)
+  const normalizedActorValue = normalizedActor(authorization.actor)
   return {
     ...currentTemplate,
     description: normalized.description, total: { ...parsed.draft.total },
@@ -651,6 +655,16 @@ function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string, rec
 function assertSparkRecurrenceAnchor(date: string, recurrence: NonNullable<ExpenseDraft['recurrence']>): void {
   const anchor = `${String(recurrence.anchor.month).padStart(2, '0')}-${String(recurrence.anchor.day).padStart(2, '0')}`
   if (date.slice(5) !== anchor) throw new Error('Recurring expense date must match its recurrence anchor.')
+}
+
+function assertSparkSeriesAuthority(
+  template: Pick<RecurringExpense, 'createdBy'>,
+  authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
+  action: string,
+): void {
+  if (template.createdBy.id !== authorization.actor.id && !authorization.canManage) {
+    throw new Error(`Only the series creator or an active group manager can ${action}.`)
+  }
 }
 
 function assertSparkOperationIdentity(command: { readonly kind: string; readonly operationId: string; readonly groupId: string }, actor: ActorSnapshot, identity: OperationIdentity): string {
