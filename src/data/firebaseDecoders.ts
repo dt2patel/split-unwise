@@ -30,7 +30,7 @@ export function decodeMember(id: string, value: unknown, isCurrentUser: boolean)
   const data = record(value, `member ${id}`)
   return {
     id, displayName: requiredString(data.displayName, `member ${id}.displayName`), initials: requiredString(data.initials, `member ${id}.initials`),
-    ...(data.avatarUrl === undefined ? {} : { avatarUrl: requiredString(data.avatarUrl, `member ${id}.avatarUrl`) }),
+    ...(data.avatarUrl === undefined || data.avatarUrl === null ? {} : { avatarUrl: requiredString(data.avatarUrl, `member ${id}.avatarUrl`) }),
     ...(data.canManage === undefined ? {} : { canManage: requiredBoolean(data.canManage, `member ${id}.canManage`) }),
     isCurrentUser,
   }

@@ -59,6 +59,13 @@ describe('Firebase Spark two-account flow', () => {
 
     await signOut(auth)
     await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const ownerRepository = createFirebaseRepository(configuration, owner.user.uid)
+    await expect(ownerRepository.app.getCurrentUser()).resolves.toMatchObject({ id: owner.user.uid, displayName: 'Owner Account' })
+    await expect(ownerRepository.groups.list()).resolves.toEqual([expect.objectContaining({ id: created.groupId, name: 'Shared Chicago Trip' })])
+    await expect(ownerRepository.groups.listMembers(created.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: owner.user.uid, displayName: 'Owner Account' }),
+      expect.objectContaining({ id: friend.user.uid, displayName: 'Friend Account' }),
+    ]))
     expect((await getDoc(doc(getFirestore(app), `groups/${created.groupId}`))).exists()).toBe(true)
   }, 30_000)
 

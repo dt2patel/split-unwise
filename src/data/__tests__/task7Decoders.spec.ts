@@ -11,7 +11,11 @@ import {
 describe('Task 7 Firebase boundary decoders', () => {
   it('decodes explicit manager capability and rejects a non-boolean value', () => {
     expect(decodeMember('maya-p', { displayName: 'Maya P.', initials: 'MP', canManage: true }, true)).toMatchObject({ canManage: true })
-    expect(decodeMember('jordan-k', { displayName: 'Jordan K.', initials: 'JK' }, false).canManage).toBeUndefined()
+    expect(decodeMember('jordan-k', { displayName: 'Jordan K.', initials: 'JK', avatarUrl: null }, false)).toEqual({
+      id: 'jordan-k', displayName: 'Jordan K.', initials: 'JK', isCurrentUser: false,
+    })
+    expect(decodeMember('maya-p', { displayName: 'Maya P.', initials: 'MP', avatarUrl: 'https://example.com/maya.png' }, true).avatarUrl).toBe('https://example.com/maya.png')
+    expect(() => decodeMember('alex-r', { displayName: 'Alex R.', initials: 'AR', avatarUrl: 42 }, false)).toThrow('avatarUrl')
     expect(() => decodeMember('alex-r', { displayName: 'Alex R.', initials: 'AR', canManage: 'yes' }, false)).toThrow('canManage')
   })
 
