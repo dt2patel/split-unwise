@@ -534,6 +534,64 @@ describe('Firebase Spark two-account flow', () => {
       kind: 'recurrence.materialize', operationId: `friend-replay-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
     })).rejects.toThrow(/series creator|manager/i)
     expect((await friendRepository.activity.listForGroup(created.groupId)).filter(({ expenseId }) => expenseId === `occ_${templateId}_2026-10-01`)).toHaveLength(1)
+
+    const creatorSeries = await friendRepository.expenses.add({
+      kind: 'expense.add', operationId: `friend-series-${suffix}`, groupId: created.groupId, description: 'Creator-owned storage', date: '2026-09-15',
+      total: { currency: 'USD' as const, minorAmount: 1600 }, payments: [{ participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 1600 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 800 } },
+        { participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 800 } },
+      ],
+      category: 'Housing', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+      recurrence: { frequency: 'monthly' as const, anchor: { month: 9, day: 15 }, timeZone: 'America/Chicago' },
+    })
+    if (creatorSeries.status !== 'saved' || !creatorSeries.expense.recurringTemplateId) throw new Error('Expected friend-owned recurring series')
+    const creatorTemplateId = creatorSeries.expense.recurringTemplateId
+    const managerMaterialize = {
+      kind: 'recurrence.materialize' as const, operationId: `manager-materialize-${suffix}`, groupId: created.groupId,
+      templateId: creatorTemplateId, occurrenceDate: '2026-10-15',
+    }
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const managerMaterialized = await ownerRepository.commands.execute(managerMaterialize)
+    if (managerMaterialized.kind !== 'recurrence.materialize' || managerMaterialized.status !== 'saved') throw new Error('Expected manager materialization')
+    expect(managerMaterialized.occurrence).toMatchObject({
+      createdBy: { id: friend.user.uid, displayName: 'Recurrence Friend' },
+      updatedBy: { id: owner.user.uid, displayName: 'Recurrence Owner' },
+    })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const editedOccurrence = await friendRepository.expenses.edit({
+      kind: 'expense.edit', operationId: `creator-occurrence-edit-${suffix}`, groupId: created.groupId,
+      expenseId: managerMaterialized.occurrence.id, expectedRevision: 1,
+      draft: {
+        groupId: created.groupId, description: 'Creator-adjusted storage', date: '2026-10-16',
+        total: { currency: 'USD' as const, minorAmount: 1600 }, payments: [{ participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 1600 } }],
+        allocations: [
+          { participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 800 } },
+          { participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 800 } },
+        ],
+        category: 'Housing', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+        occurrenceEditScope: 'occurrence' as const,
+      },
+    })
+    expect(editedOccurrence).toMatchObject({ status: 'saved', expense: { revision: 2, updatedBy: { id: friend.user.uid } } })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const managerReplayRepository = createFirebaseRepository(configuration, owner.user.uid)
+    await expect(managerReplayRepository.commands.execute(managerMaterialize)).resolves.toMatchObject({
+      status: 'saved', occurrence: { id: managerMaterialized.occurrence.id, description: 'Creator-adjusted storage', revision: 2 },
+    })
+    await expect(managerReplayRepository.expenses.listRevisions(created.groupId, managerMaterialized.occurrence.id)).resolves.toMatchObject([
+      {
+        revision: 1, action: 'created', actor: { id: owner.user.uid, displayName: 'Recurrence Owner' },
+        expense: { createdBy: { id: friend.user.uid, displayName: 'Recurrence Friend' }, updatedBy: { id: owner.user.uid, displayName: 'Recurrence Owner' } },
+      },
+      { revision: 2, action: 'updated', actor: { id: friend.user.uid, displayName: 'Recurrence Friend' } },
+    ])
   }, 45_000)
 
   emulatorIt('isolates occurrence edits, gates future edits to the series frontier, and cancels without touching expenses', async () => {

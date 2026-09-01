@@ -121,6 +121,37 @@ describe('expense detail financial and destructive states', () => {
     expect(wrapper.get('time').attributes('datetime')).toMatch(/^2026-/)
   })
 
+  it('shows the series creator as author and the materializing manager as the creation-history actor', async () => {
+    const source = createDemoRepository()
+    const baseExpense = await source.expenses.getById('lake-house-weekend', 'groceries')
+    const baseRevision = (await source.expenses.listRevisions('lake-house-weekend', 'groceries'))[0]
+    if (!baseExpense || !baseRevision) throw new Error('Expected demo audit fixture')
+    const expense = {
+      ...baseExpense, id: 'recurring-history', recurringTemplateId: 'monthly-rent',
+      recurrence: { frequency: 'monthly' as const, anchor: { month: 8, day: 30 }, timeZone: 'UTC' },
+      createdBy: { id: 'series-creator', displayName: 'Series Creator' },
+      updatedBy: { id: 'series-manager', displayName: 'Series Manager' },
+    }
+    const repository: AppRepository = {
+      ...source,
+      expenses: {
+        ...source.expenses,
+        getById: async (groupId, expenseId) => groupId === expense.groupId && expenseId === expense.id ? expense : undefined,
+        listRevisions: async () => [{
+          ...baseRevision, id: 'materialize-token', expenseId: expense.id, operationId: 'materialize-rent',
+          actor: { id: 'series-manager', displayName: 'Series Manager' }, expense,
+        }],
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute('/tabs/groups/expenses/recurring-history?groupId=lake-house-weekend')
+
+    expect(wrapper.text()).toContain('Created by Series Creator.')
+    expect(wrapper.get('[aria-labelledby="audit-title"]').text()).toContain('Series Manager created this expense')
+    expect(wrapper.get('[aria-labelledby="audit-title"]').text()).not.toContain('Series Creator created this expense')
+  })
+
   it('renders attachment filename, durability, and a preview action without exposing its internal reference', async () => {
     const repository = createDemoRepository({ now: () => '2026-08-31T19:00:00.000Z' })
     const receipts = createMemoryReceiptStore({ id: () => 'detail-local-receipt' })

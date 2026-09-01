@@ -143,7 +143,9 @@ export function decodeExpenseRevision(groupId: string, expenseId: string, id: st
   if (action === 'deleted' && expense.deletedAt === undefined) throw new DocumentDecodeError(`expense revision ${id}`, 'deleted revision requires a tombstone snapshot')
   if (action !== 'deleted' && expense.deletedAt !== undefined) throw new DocumentDecodeError(`expense revision ${id}`, 'live revision cannot contain a tombstone snapshot')
   const actor = actorSnapshot(data.actor, `expense revision ${id}.actor`)
-  const commitActor = action === 'created' ? expense.createdBy : expense.updatedBy
+  const commitActor = action === 'created'
+    ? (expense.recurringTemplateId ? expense.updatedBy : expense.createdBy)
+    : expense.updatedBy
   if (!commitActor || !sameActor(actor, commitActor)) throw new DocumentDecodeError(`expense revision ${id}`, 'actor does not match the committed expense snapshot')
   const createdAt = isoTimestamp(data.createdAt, `expense revision ${id}.createdAt`)
   const snapshotTimestamp = action === 'created' ? expense.createdAt : expense.updatedAt

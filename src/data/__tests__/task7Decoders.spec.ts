@@ -43,6 +43,27 @@ describe('Task 7 Firebase boundary decoders', () => {
     })).toThrow('actor')
   })
 
+  it('attributes a recurring occurrence creation revision to its materializer while retaining the series creator as author', () => {
+    const creator = { id: 'series-creator', displayName: 'Series Creator' }
+    const materializer = { id: 'series-manager', displayName: 'Series Manager' }
+    const expense = {
+      ...rawExpense(), recurringTemplateId: 'monthly-rent', recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'UTC' },
+      createdBy: creator, updatedBy: materializer,
+    }
+    const revision = {
+      groupId: 'lake-house-weekend', expenseId: 'rent-occurrence', revision: 1, operationId: 'materialize-rent', action: 'created',
+      actor: materializer, createdAt: expense.createdAt, expense,
+    }
+
+    expect(decodeExpenseRevision('lake-house-weekend', 'rent-occurrence', 'creation-token', revision)).toMatchObject({
+      action: 'created', actor: materializer, expense: { createdBy: creator, updatedBy: materializer },
+    })
+    expect(() => decodeExpenseRevision('lake-house-weekend', 'rent-occurrence', 'creation-token', { ...revision, actor: creator })).toThrow('actor')
+    expect(() => decodeExpenseRevision('lake-house-weekend', 'ordinary-expense', 'creation-token', {
+      ...revision, expenseId: 'ordinary-expense', expense: { ...expense, recurringTemplateId: undefined }, actor: materializer,
+    })).toThrow('actor')
+  })
+
   it('strictly decodes structured comments and activity without renderer HTML or URLs', () => {
     expect(decodeComment('lake-house-weekend', 'groceries', 'comment-1', {
       expenseId: 'groceries', operationId: 'comment-op', author: { id: 'maya-p', displayName: 'Maya P.' }, body: 'Hello',

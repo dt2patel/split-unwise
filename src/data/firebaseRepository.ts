@@ -805,6 +805,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const [savedOccurrence, savedTemplate] = await Promise.all([firestore.getDoc(occurrenceReference), firestore.getDoc(templateReference)])
     if (!savedOccurrence.exists() || !savedTemplate.exists()) throw new Error('Saved recurring occurrence is unavailable')
     const savedOccurrenceData = savedOccurrence.data()
+    const creationOccurrence = decodeExpense(command.groupId, occurrenceId, savedOccurrenceData)
     const occurrence = await resolveSparkExpenseHead(db, firestore, command.groupId, occurrenceId, savedOccurrenceData)
     const template = decodeRecurringExpense(command.groupId, command.templateId, savedTemplate.data())
     if (occurrence.id !== occurrenceId || occurrence.groupId !== command.groupId || occurrence.recurringTemplateId !== command.templateId
@@ -819,8 +820,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const activity = decodeActivity(command.groupId, activityId, savedActivity.data())
     if (activity.kind !== 'expense.created' || activity.expenseId !== occurrenceId || activity.subject.id !== occurrenceId
       || activity.operationId !== savedOccurrenceData.operationId || activity.revision !== 1
-      || activity.actor.id !== occurrence.updatedBy?.id || activity.actor.displayName !== occurrence.updatedBy.displayName
-      || activity.createdAt !== occurrence.createdAt) throw new OperationReplayConflictError()
+      || activity.actor.id !== creationOccurrence.updatedBy?.id || activity.actor.displayName !== creationOccurrence.updatedBy.displayName
+      || activity.createdAt !== creationOccurrence.createdAt) throw new OperationReplayConflictError()
     return { kind: command.kind, operationId: command.operationId, status: 'saved', template, occurrence }
   }
 
@@ -981,7 +982,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         const rootData = root.data()
         const creation = decodeExpenseRevision(groupId, expenseId, String(rootData.resourceToken), {
           groupId, expenseId, revision: 1, operationId: rootData.operationId, action: 'created',
-          actor: rootData.createdBy, createdAt: rootData.createdAt, expense: rootData,
+          actor: rootData.updatedBy, createdAt: rootData.createdAt, expense: rootData,
         })
         return [creation, ...snapshot.docs.map((document) => decodeExpenseRevision(groupId, expenseId, document.id, document.data()))]
       },

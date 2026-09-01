@@ -224,6 +224,22 @@ describe('Task 7 Firebase repository query boundaries', () => {
     expect(firebase.documentReads.filter((path) => path.includes('/revisions/'))).toHaveLength(0)
   })
 
+  it('synthesizes recurring occurrence creation history with the immutable materializer actor', async () => {
+    const occurrenceId = 'occ_monthly-rent_2026-09-30'
+    const creator = { id: 'series-creator', displayName: 'Series Creator' }
+    const materializer = { id: 'series-manager', displayName: 'Series Manager' }
+    firebase.expenseDocuments = [document(occurrenceId, {
+      ...expenseData(), operationId: 'materialize-rent', resourceToken: 'c'.repeat(48), recurringTemplateId: 'monthly-rent',
+      recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'UTC' }, createdBy: creator, updatedBy: materializer,
+    })]
+    const repository = createFirebaseRepository(configuration)
+
+    await expect(repository.expenses.listRevisions('lake-house-weekend', occurrenceId)).resolves.toMatchObject([{
+      action: 'created', operationId: 'materialize-rent', actor: materializer,
+      expense: { createdBy: creator, updatedBy: materializer },
+    }])
+  })
+
   it('uses server filters, stable document ordering, limit-plus-one, and cursor continuation for activity', async () => {
     const repository = createFirebaseRepository(configuration, undefined, 'us-central1')
     const first = await repository.activity.listForAccount({ filter: 'expenses', limit: 1 })
