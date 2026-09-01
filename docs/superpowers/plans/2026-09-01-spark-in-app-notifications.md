@@ -79,6 +79,6 @@
 
 - [x] Extend the hosted flow to prove cross-account unread notification, individual read/replay, read-all/replay, and self-event exclusion.
 - [x] Run typecheck, the full unit/component suite, Firebase emulator suite, production build, Capacitor sync/build, and `git diff --check`.
-- [ ] Commit and push the exact branch without force.
-- [ ] Build with `VITE_BUILD_COMMIT=$(git rev-parse HEAD)` and deploy Hosting plus Firestore rules to `split-unwise-aditya`.
-- [ ] Run the hosted suite against `https://split-unwise-aditya.web.app`, verify root/deep routes and `/build-info.json`, delete exact proof data, and confirm Auth/Firestore cleanup.
+- [x] Commit and push the exact branch without force.
+- [x] Build with `VITE_BUILD_COMMIT=$(git rev-parse HEAD)` and deploy Hosting plus Firestore rules to `split-unwise-aditya`.
+- [x] Run the hosted suite against `https://split-unwise-aditya.web.app`, verify root/deep routes and `/build-info.json`, delete exact proof data, and confirm Auth/Firestore cleanup.
