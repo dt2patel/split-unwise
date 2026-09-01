@@ -37,9 +37,18 @@ export async function loadGroupPremiumSnapshot(groupId: string): Promise<GroupPr
     session.repository.expenses.listForGroup(groupId), session.repository.settlements.listForGroup(groupId), session.repository.groups.getSettings(groupId),
   ])
   if (!group || group.id !== groupId) throw new Error('This group is not available.')
-  if (!members.some(({ id }) => id === currentUser.id)) throw new Error('You are not an active member of this group.')
+  const currentMembership = members.find(({ id }) => id === currentUser.id)
+  if (!currentMembership) throw new Error('You are not an active member of this group.')
   const coverage = coverageFor(session.repository.mode, 1, expenses.length)
-  return { group, currentUser, members, expenses, settlements, settings, report: buildReport(selectReportInput({ currentUserId: currentUser.id, members, expenses, settlements, coverage })) }
+  return {
+    group,
+    currentUser: { ...currentUser, ...currentMembership, isCurrentUser: true },
+    members,
+    expenses,
+    settlements,
+    settings,
+    report: buildReport(selectReportInput({ currentUserId: currentUser.id, members, expenses, settlements, coverage })),
+  }
 }
 
 export async function runPremiumSearch(filters: ExpenseSearchFilters, groupId?: string): Promise<ExpenseSearchResult> {
