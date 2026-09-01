@@ -1,6 +1,6 @@
 # Split Unwise release verification
 
-Verified release candidate: `b0cffeef6302bf81fa50e60bf7dffb04e5d0cc3a`
+Verified release candidate: `73016574a5a4b9b563a5aa145accd4aca87927af`
 
 Date: 2026-08-31 (America/Chicago)
 
@@ -8,14 +8,16 @@ Date: 2026-08-31 (America/Chicago)
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Unit and component suite | Pass | `pnpm test`: 71 files passed, 5 skipped; 658 tests passed, 23 skipped |
+| Unit and component suite | Pass | `pnpm test`: 72 files passed, 5 skipped; 667 tests passed, 23 skipped |
 | Type safety | Pass | `pnpm typecheck` |
 | Firestore rules | Pass | `pnpm test:firebase`: 5 emulator-backed rules tests |
 | Functions and service behavior | Pass | `pnpm test:firebase`: 14 emulator-backed tests |
-| Production web bundle | Pass | `pnpm build`: 499 modules transformed; Workbox generated 95 precache entries |
-| Artifact policy | Pass | 97 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
+| Production web bundle | Pass | `pnpm build`: 502 modules transformed; Workbox generated 98 precache entries |
+| Artifact policy | Pass | 100 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
+| Reference-rate provider | Pass | Live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS |
 | Capacitor synchronization | Pass | `pnpm exec cap sync ios`; local `dist` copied with no production `server.url` |
 | Native compile | Pass | `pnpm ios:build`; unsigned Debug build for a generic iOS simulator |
+| Simulator package | Pass | `artifacts/Split-Unwise-Simulator.zip`; embedded build commit `73016574a5a4b9b563a5aa145accd4aca87927af`; SHA-256 `89a024538d1d7f495fbdf0269857a5622afd05957ad473bc5eb9f0d85216fc16` |
 | Whitespace integrity | Pass | `git diff --check` and `git diff --cached --check` |
 
 The largest natural framework chunk is 1,133,240 bytes raw and about 242 KB gzip, below the enforced 1.2 MB raw / 300 KB gzip ceilings. Manually partitioning Ionic/Vue vendor cycles caused runtime failures in JavaScriptCore, so the release keeps Vite's valid framework graph while retaining route-level lazy loading.
@@ -43,6 +45,14 @@ The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`
 - `/__/`, `/api/`, emulator URLs, the demo Firebase project identity, source maps, and the 1024-pixel source icon are excluded from the release artifact.
 - Hosting policy makes only hashed `/assets/**` immutable. The HTML shell, manifest, service worker, Workbox loader, startup diagnostics, icons, and build metadata revalidate.
 - Global offline, update-ready, offline-ready, and update-blocked status is rendered in an announced app-level surface.
+- The Hosting CSP permits only the exact `https://api.frankfurter.dev` reference-rate origin in addition to the existing Firebase origins. Rate responses are not runtime-cached by the service worker.
+
+## Reference currency conversion
+
+- Group actions now open a native-styled conversion screen with a preferred target-currency picker, dated reference values, retryable per-currency failures, and reduced-motion-safe entry animation.
+- The provider accepts only a matching requested pair, a real ISO effective date, and a finite positive rate from the European Central Bank through Frankfurter.
+- Conversion uses rational `BigInt` arithmetic and both ISO currency exponents; the release suite explicitly covers USD-to-JPY zero-decimal conversion.
+- Converted values are informational previews only. The feature does not create commands, relabel money, combine currencies, alter balances, or change settlement values.
 
 ## Accessibility and interaction evidence
 

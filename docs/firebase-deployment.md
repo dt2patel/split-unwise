@@ -1,6 +1,6 @@
 # Firebase deployment record
 
-Release candidate: `b0cffeef6302bf81fa50e60bf7dffb04e5d0cc3a`
+Release candidate: `73016574a5a4b9b563a5aa145accd4aca87927af`
 
 ## Current state
 
@@ -25,7 +25,7 @@ After OAuth completes:
 1. Bind the Firebase tooling to this exact repository and the new exact project ID.
 2. Create the Web app and iOS app (`app.splitunwise.mobile`), then write the Web config to `.env.production.local`.
 3. Initialize Auth and Firestore without overwriting the reviewed local rules, indexes, Storage rules, Functions, or Hosting configuration.
-4. Build with `VITE_BUILD_COMMIT=b0cffeef6302bf81fa50e60bf7dffb04e5d0cc3a`.
+4. Build with `VITE_BUILD_COMMIT=73016574a5a4b9b563a5aa145accd4aca87927af`.
 5. Deploy Firestore rules/indexes, then any billing-permitted Storage/Functions resources.
 6. Deploy a seven-day Hosting preview and inspect it before production promotion.
 7. Deploy Hosting production and record the project, region, preview URL, production URL, release identifier, providers, billing tier, and App Check state here.
