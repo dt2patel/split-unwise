@@ -27,8 +27,10 @@ beforeEach(async () => {
     const db = context.firestore()
     await setDoc(doc(db, 'users/active'), { displayName: 'Active Member', initials: 'AM' })
     await setDoc(doc(db, 'users/outsider'), { displayName: 'Outsider', initials: 'O' })
-    await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'removed'] })
-    await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active' })
+    await setDoc(doc(db, 'users/friend'), { displayName: 'Friend', initials: 'F' })
+    await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'friend', 'removed'] })
+    await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', displayName: 'Active Member' })
+    await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', displayName: 'Friend' })
     await setDoc(doc(db, 'groups/group-a/members/removed'), { status: 'removed' })
     await setDoc(doc(db, 'groups/group-a/expenses/expense-a'), { description: 'Dinner' })
   })
@@ -101,6 +103,34 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(getDocs(query(collection(active, 'groups'), limit(10))))
     await assertFails(getDocs(query(collectionGroup(active, 'expenses'), limit(10))))
   })
+
+  emulatorIt('allows one strictly validated immutable expense record from an active member', async () => {
+    const active = environment.authenticatedContext('active').firestore()
+    const outsider = environment.authenticatedContext('outsider').firestore()
+    await assertSucceeds(setDoc(doc(active, 'groups/group-a/expenses/expense-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), sparkExpense()))
+    await assertSucceeds(getDoc(doc(active, 'groups/group-a/expenses/expense-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')))
+
+    await assertFails(setDoc(doc(outsider, 'groups/group-a/expenses/expense-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'), sparkExpense('b')))
+    await assertFails(setDoc(doc(active, 'groups/group-a/expenses/expense-cccccccccccccccccccccccccccccccccccccccccccccccc'), sparkExpense('c', { allocations: [
+      { participantId: 'active', money: { currency: 'USD', minorAmount: 400 } },
+      { participantId: 'friend', money: { currency: 'USD', minorAmount: 599 } },
+    ] })))
+    await assertFails(setDoc(doc(active, 'groups/group-a/expenses/expense-dddddddddddddddddddddddddddddddddddddddddddddddd'), sparkExpense('d', {
+      participantIds: ['active', 'removed'], involvedMemberIds: ['active', 'removed'], allocations: [
+        { participantId: 'active', money: { currency: 'USD', minorAmount: 400 } },
+        { participantId: 'removed', money: { currency: 'USD', minorAmount: 600 } },
+      ],
+    })))
+  })
+
+  emulatorIt('rejects overwritten expenses and client-authored duplicate revision or activity projections', async () => {
+    const active = environment.authenticatedContext('active').firestore()
+    const expense = sparkExpense('e')
+    await assertSucceeds(setDoc(doc(active, `groups/group-a/expenses/${expense.id}`), expense))
+    await assertFails(updateDoc(doc(active, `groups/group-a/expenses/${expense.id}`), { description: 'Changed outside the audit bundle' }))
+    await assertFails(setDoc(doc(active, 'groups/group-a/activity/activity-ffffffffffffffffffffffffffffffffffffffffffffffff'), { kind: 'expense.created' }))
+    await assertFails(setDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/0000000002`), { action: 'updated' }))
+  })
 })
 
 function profile(displayName: string, initials: string): Record<string, unknown> {
@@ -138,6 +168,26 @@ function acceptInvitation(source: unknown, invitationId: string, groupId: string
   batch.set(doc(db, `users/${uid}/groups/${groupId}`), { groupId, status: 'active', invitationId, joinedAt: serverTimestamp(), updatedAt: serverTimestamp() })
   return batch.commit()
 }
+
+function sparkExpense(token = 'a', overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const resourceToken = token.repeat(48)
+  const expenseId = `expense-${resourceToken}`
+  const activityId = `activity-${resourceToken}`
+  const allocations = [
+    { participantId: 'active', money: { currency: 'USD', minorAmount: 400 } },
+    { participantId: 'friend', money: { currency: 'USD', minorAmount: 600 } },
+  ]
+  return {
+    id: expenseId, groupId: 'group-a', operationId: `expense-operation-${token}`, requestFingerprint: token.repeat(64), resourceToken,
+    description: 'Dinner', date: '2026-09-01', total: { currency: 'USD', minorAmount: 1000 },
+    payments: [{ participantId: 'active', money: { currency: 'USD', minorAmount: 1000 } }], allocations,
+    payerIds: ['active'], participantIds: ['active', 'friend'], involvedMemberIds: ['active', 'friend'], category: 'Food', splitType: 'percentage',
+    splitMethod: { type: 'exact', allocations }, attachmentRefs: [], createdAt: serverTimestamp(), createdBy: { id: 'active', displayName: 'Active Member' },
+    updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 1,
+    ...overrides,
+  }
+}
+
 
 describe('Storage rules in the emulator', () => {
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])

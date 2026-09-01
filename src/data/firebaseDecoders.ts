@@ -412,8 +412,14 @@ function isoDate(value: unknown, path: string): string {
   return date
 }
 function isoTimestamp(value: unknown, path: string): string {
-  const timestamp = requiredString(value, path)
+  const timestamp = typeof value === 'string' ? requiredString(value, path) : firebaseTimestamp(value, path)
   const parsed = new Date(timestamp)
   if (Number.isNaN(parsed.valueOf()) || parsed.toISOString() !== timestamp) throw new DocumentDecodeError(path, 'must be an ISO timestamp')
   return timestamp
+}
+function firebaseTimestamp(value: unknown, path: string): string {
+  if (value === null || typeof value !== 'object' || !('toDate' in value) || typeof value.toDate !== 'function') throw new DocumentDecodeError(path, 'must be an ISO timestamp')
+  const date = value.toDate()
+  if (!(date instanceof Date) || Number.isNaN(date.valueOf())) throw new DocumentDecodeError(path, 'must be an ISO timestamp')
+  return date.toISOString()
 }

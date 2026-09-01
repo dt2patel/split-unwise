@@ -139,7 +139,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
   })
 
   it('reads the server-maintained balance snapshot and immutable settlements without client recomputation', async () => {
-    const repository = createFirebaseRepository(configuration)
+    const repository = createFirebaseRepository(configuration, undefined, 'us-central1')
 
     await expect(repository.groups.getBalanceSnapshot('lake-house-weekend')).resolves.toEqual(balanceData())
     await expect(repository.settlements.listForGroup('lake-house-weekend')).resolves.toEqual([

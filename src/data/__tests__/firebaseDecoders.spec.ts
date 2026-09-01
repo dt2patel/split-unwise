@@ -30,6 +30,20 @@ describe('Firebase boundary decoders', () => {
     expect(() => decodeExpense('lake-house-weekend', 'duplicate-payer', { ...raw, payments: [raw.payments[0], raw.payments[0], { participantId: 'alex-r', money: { currency: 'USD', minorAmount: -200 } }] })).toThrow(DocumentDecodeError)
   })
 
+  it('normalizes native Firestore timestamps at the repository boundary', () => {
+    const timestamp = { toDate: () => new Date('2026-08-30T12:00:00.000Z') }
+    const decoded = decodeExpense('lake-house-weekend', 'spark-expense', {
+      description: 'Dinner', date: '2026-08-30', category: 'Food', createdAt: timestamp, updatedAt: timestamp, revision: 1,
+      total: { currency: 'USD', minorAmount: 1000 },
+      payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+      splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }] }, attachmentRefs: [],
+    })
+
+    expect(decoded).toMatchObject({ createdAt: '2026-08-30T12:00:00.000Z', updatedAt: '2026-08-30T12:00:00.000Z' })
+    expect(() => decodeExpense('lake-house-weekend', 'bad-timestamp', { ...decoded, createdAt: { toDate: () => new Date('invalid') } })).toThrow('ISO timestamp')
+  })
+
   it('rejects missing recurrence and unknown activity types without inventing meaning', () => {
     expect(() => decodeRecurringExpense('lake-house-weekend', 'missing-rule', {
       description: 'Cabin', total: { currency: 'USD', minorAmount: 40000 }, payments: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 40000 } }], nextDate: '2026-09-28',

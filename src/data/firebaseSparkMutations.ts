@@ -5,6 +5,9 @@ import { canonicalHttpsOrigin, generateInvitationSecret, hashInvitationSecret, t
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { isStrictId } from './identifiers'
+import type { ActorSnapshot, ExpenseAddCommand } from './repositories'
+import type { OperationIdentity } from './operationIdentity'
+import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
 
 export interface FirebaseIdentity {
   readonly uid: string
@@ -23,6 +26,46 @@ export interface SparkInvitationPreview {
   readonly groupId: string
   readonly groupName: string
   readonly alreadyMember: boolean
+}
+
+export interface SparkExpenseRecord {
+  readonly expenseId: string
+  readonly expenseDocument: Readonly<Record<string, unknown>>
+}
+
+/** Builds the single immutable source document authorized by the Spark rules path. */
+export function buildSparkExpenseRecord(command: ExpenseAddCommand, actor: ActorSnapshot, identity: OperationIdentity, committedAt: unknown): SparkExpenseRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'expense.add') throw new Error('Spark expense command is invalid.')
+  if (identity.userId !== actor.id || identity.operationId !== parsed.operationId || identity.kind !== parsed.kind || identity.groupId !== parsed.groupId) throw new Error('Spark expense operation identity does not match the command.')
+  if (!/^[a-f0-9]{64}$/.test(identity.requestFingerprint)) throw new Error('Spark expense request fingerprint is invalid.')
+  const token = /^operation-([a-f0-9]{48})$/.exec(identity.resourceId)?.[1]
+  if (!token) throw new Error('Spark expense resource identity is invalid.')
+  if (!actor.displayName.trim() || actor.displayName.length > 120) throw new Error('Spark expense actor is invalid.')
+  if (parsed.attachmentRefs.length) throw new Error('Spark expense attachments require the secure cloud asset service.')
+  if (parsed.recurrence) throw new Error('Recurring Spark expenses require the secure recurrence service.')
+  if (parsed.occurrenceEditScope) throw new Error('Occurrence scope requires a recurring expense.')
+  validateLedgerExpense({ id: identity.resourceId, total: parsed.total, payments: parsed.payments, allocations: parsed.allocations })
+  assertSplitMatchesAllocations(parsed.total, parsed.splitMethod, parsed.allocations)
+  const payerIds = parsed.payments.map(({ participantId }) => participantId)
+  const participantIds = parsed.allocations.map(({ participantId }) => participantId)
+  const involvedMemberIds = [...new Set([...payerIds, ...participantIds])].sort((left, right) => left.localeCompare(right))
+  if (involvedMemberIds.length > 6) throw new Error('Spark expenses currently support at most six involved members.')
+  const expenseId = `expense-${token}`
+  const description = parsed.description.replace(/\s+/g, ' ').trim()
+  const notes = parsed.notes?.replace(/\s+/g, ' ').trim()
+  const normalizedActor = { id: actor.id, displayName: actor.displayName.trim() }
+  const exactAllocations = parsed.allocations.map(({ participantId, money }) => ({ participantId, money: { ...money } }))
+  const expenseDocument: Record<string, unknown> = {
+    id: expenseId, groupId: parsed.groupId, operationId: parsed.operationId, requestFingerprint: identity.requestFingerprint, resourceToken: token,
+    description, date: parsed.date, total: { ...parsed.total },
+    payments: parsed.payments.map(({ participantId, money }) => ({ participantId, money: { ...money } })), allocations: exactAllocations,
+    payerIds, participantIds, involvedMemberIds, category: parsed.category.trim(), splitType: parsed.splitMethod.type,
+    splitMethod: { type: 'exact', allocations: exactAllocations }, attachmentRefs: [],
+    ...(notes ? { notes } : {}),
+    createdAt: committedAt, createdBy: normalizedActor, updatedAt: committedAt, updatedBy: normalizedActor, revision: 1,
+  }
+  return { expenseId, expenseDocument }
 }
 
 export function buildFirebaseProfile(identity: FirebaseIdentity): FirebaseProfileDocument {
