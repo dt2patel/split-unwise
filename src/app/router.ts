@@ -25,6 +25,7 @@ const AppearancePage = () => import('../features/account/AppearancePage.vue')
 const CurrencyPreferencesPage = () => import('../features/account/CurrencyPreferencesPage.vue')
 const InviteSheet = () => import('../features/invitations/InviteSheet.vue')
 const InvitationLandingPage = () => import('../features/invitations/InvitationLandingPage.vue')
+const TransactionImportPage = () => import('../features/transactions/TransactionImportPage.vue')
 
 const routes: RouteRecordRaw[] = [
   { path: '/auth', name: 'auth', component: AuthPage, meta: { public: true } },
@@ -60,6 +61,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'account', name: 'account', component: AccountPage, meta: { pageTitle: 'Account', pageDescription: 'Manage your profile, appearance, currencies, and data.' } },
       { path: 'account/appearance', name: 'account-appearance', component: AppearancePage, meta: { pageTitle: 'Appearance', hideAppChrome: true } },
       { path: 'account/currencies', name: 'account-currencies', component: CurrencyPreferencesPage, meta: { pageTitle: 'Currencies', hideAppChrome: true } },
+      { path: 'account/transactions/import', name: 'account-transaction-import', component: TransactionImportPage, meta: { pageTitle: 'Import transactions', pageDescription: 'Review statement transactions before splitting them.', hideAppChrome: true } },
       { path: 'account/export', name: 'account-export', component: ExportPage, meta: { pageTitle: 'Export', pageDescription: 'Download your account data as CSV or JSON.', hideAppChrome: true } },
     ],
   },

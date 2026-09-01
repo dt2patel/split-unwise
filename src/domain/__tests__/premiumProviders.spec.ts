@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { createFxPreview, fetchReferenceRate, getPremiumProviderStates } from '../premiumProviders'
 
 describe('premium provider boundaries', () => {
-  it('keeps transaction import unavailable without emitting ledger commands', () => {
+  it('offers local review-only statement import without pretending a bank provider is connected', () => {
     const states = getPremiumProviderStates()
 
-    expect(states.import).toEqual({ status: 'unavailable', reason: 'provider-not-configured', proposals: [] })
+    expect(states.import).toEqual({ status: 'available', capability: 'local-statement-review', connectedProvider: 'unavailable', proposals: [] })
     expect(JSON.stringify(states.import)).not.toMatch(/expense\.add|command/i)
   })
 

@@ -8,6 +8,7 @@ import type { AppRepository, Group, Member } from '../../../data/repositories'
 import { createInterleavingIndexedDb } from '../../../data/__tests__/indexedDbInterleaving'
 import { createIndexedDbReceiptStore } from '../../../data/receipts'
 import { validateExpenseInput, useExpenseStore } from '../expenseStore'
+import { storeTransactionImportDraft } from '../../transactions/transactionImportDrafts'
 
 const members: readonly Member[] = [
   { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true },
@@ -67,6 +68,29 @@ describe('expense input validation', () => {
 })
 
 describe('expense store lifecycle', () => {
+  it('consumes an imported transaction once and prefills a dirty draft without queuing a ledger command', async () => {
+    const session = createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    const principal = await session.principal
+    const draftId = storeTransactionImportDraft(principal, {
+      fingerprint: `transaction-v1:${'b'.repeat(64)}`,
+      date: '2026-08-29', description: 'Train tickets', money: { currency: 'EUR', minorAmount: 1890 }, sourceRow: 4,
+    }, { storage: sessionStorage, id: () => '123e4567-e89b-42d3-a456-426614174010' })
+    const store = useExpenseStore()
+
+    await store.initialize({ origin: 'account', importDraftId: draftId, today: '2026-08-31' })
+
+    expect(store.editor).toMatchObject({ description: 'Train tickets', date: '2026-08-29', currency: 'EUR', amountText: '18.90', category: 'Other' })
+    expect(store.notice).toContain('Review the imported transaction')
+    expect(store.isDirty).toBe(true)
+    expect(session.queue.snapshot()).toEqual([])
+
+    await store.initialize({ origin: 'account', importDraftId: draftId, today: '2026-08-31' })
+    expect(store.editor.description).toBe('')
+    expect(store.editor.amountText).toBe('')
+    expect(session.queue.snapshot()).toEqual([])
+  })
+
   it('seeds a new group draft from the versioned shared default without changing payers', async () => {
     const repository = createDemoRepository()
     await repository.groups.setDefaultSplit({

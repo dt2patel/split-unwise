@@ -58,8 +58,9 @@ async function initialize(): Promise<void> {
   const match = /^\/tabs\/(home|groups|activity|account)\/expenses\//.exec(route.path)
   const origin = (match?.[1] ?? 'home') as ExpenseOrigin
   const groupId = parseStrictScalarId(route.query.groupId)
+  const importDraftId = parseStrictScalarId(route.query.importDraft)
   const expenseId = typeof route.params.expenseId === 'string' ? route.params.expenseId : undefined
-  await store.initialize({ origin, groupId, expenseId })
+  await store.initialize({ origin, groupId, expenseId, importDraftId })
 }
 
 async function cancel(): Promise<void> {

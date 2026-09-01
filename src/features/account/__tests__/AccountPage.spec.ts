@@ -19,6 +19,7 @@ describe('Account page', () => {
     expect(wrapper.text()).toContain('Appearance')
     expect(wrapper.text()).toContain('Currencies')
     expect(wrapper.text()).toContain('Export your data')
+    expect(wrapper.text()).toContain('Import transactions')
     expect(wrapper.text()).toContain('Everything on this device is settled')
     expect(wrapper.text()).toContain('Delete account')
   })

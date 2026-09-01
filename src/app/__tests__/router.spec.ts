@@ -31,6 +31,7 @@ describe('application routes', () => {
     ['/tabs/account/export', 'account-export'],
     ['/tabs/account/appearance', 'account-appearance'],
     ['/tabs/account/currencies', 'account-currencies'],
+    ['/tabs/account/transactions/import', 'account-transaction-import'],
     ['/tabs/groups/lake-house-weekend/invite', 'group-invite'],
   ])('resolves %s through the tabs shell to %s', (path, routeName) => {
     const router = createAppRouter()
@@ -104,6 +105,7 @@ describe('application routes', () => {
     '/tabs/groups/lake-house-weekend/settings',
     '/tabs/groups/lake-house-weekend/export',
     '/tabs/account/export',
+    '/tabs/account/transactions/import',
   ])('hides global app chrome for the premium tool route %s', (path) => {
     expect(createAppRouter().resolve(path).meta.hideAppChrome).toBe(true)
   })

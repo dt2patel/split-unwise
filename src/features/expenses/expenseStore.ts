@@ -7,6 +7,7 @@ import { assertCurrencyCode, fromMinorUnits, toMinorUnits, type CurrencyCode } f
 import { currencyPickerOrder, loadCurrencyPreferences, SUPPORTED_CURRENCIES } from '../account/currencyPreferences'
 import { computeAllocations } from '../../domain/splits'
 import type { ItemizedSplitItem, Recurrence, SplitMethod } from '../../domain/model'
+import { consumeTransactionImportDraft } from '../transactions/transactionImportDrafts'
 
 export type ExpenseOrigin = 'account' | 'activity' | 'groups' | 'home'
 export type ExpenseSheet = 'context' | 'participants' | 'payers' | 'receipt' | 'recurrence' | 'split'
@@ -169,7 +170,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   const canSubmit = computed(() => hasInitialized.value && !isLoading.value && !loadError.value && saveState.value !== 'pending')
   const receiptDurability = computed<ReceiptDurability | undefined>(() => receiptPreview.value?.durability)
 
-  async function initialize(options: { readonly origin: ExpenseOrigin; readonly groupId?: string; readonly expenseId?: string; readonly today?: string }): Promise<void> {
+  async function initialize(options: { readonly origin: ExpenseOrigin; readonly groupId?: string; readonly expenseId?: string; readonly importDraftId?: string; readonly today?: string }): Promise<void> {
     const request = ++initializationRequest
     invalidateEditorSubrequests()
     reset()
@@ -225,6 +226,16 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         }
         Object.assign(nextEditor, editorInputFromExpense(loadedExpense))
       }
+      const pristineFingerprint = JSON.stringify(nextEditor)
+      const imported = !options.expenseId && options.importDraftId ? consumeTransactionImportDraft(principal, options.importDraftId) : undefined
+      if (imported) {
+        if (options.groupId && imported.money.currency !== nextEditor.currency) throw new Error('The imported transaction currency does not match this group. Open the import from Account and choose a compatible group.')
+        nextEditor.description = imported.description
+        nextEditor.date = imported.date
+        nextEditor.currency = imported.money.currency
+        nextEditor.amountText = fromMinorUnits(imported.money.minorAmount, imported.money.currency)
+        nextEditor.category = 'Other'
+      }
       const localReceipt = nextEditor.attachmentRefs.find((reference): reference is LocalReceiptReference => reference.startsWith('local-receipt:'))
       const loadedReceiptPreview = localReceipt ? await session.receipts.get(localReceipt) : undefined
       if (request !== initializationRequest) return
@@ -236,7 +247,8 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       revision.value = loadedExpense?.revision
       recurringTemplateId.value = loadedExpense?.recurringTemplateId
       receiptPreview.value = loadedReceiptPreview
-      initialFingerprint = JSON.stringify(editor)
+      notice.value = imported ? 'Review the imported transaction, choose who shares it, then save when every detail is correct.' : ''
+      initialFingerprint = imported ? pristineFingerprint : JSON.stringify(editor)
       hasInitialized.value = true
     } catch (reason) {
       if (request !== initializationRequest) return

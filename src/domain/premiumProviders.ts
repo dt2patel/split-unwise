@@ -9,7 +9,10 @@ export interface ProviderUnavailable {
   readonly reason: 'provider-not-configured'
 }
 
-export interface TransactionImportUnavailable extends ProviderUnavailable {
+export interface TransactionImportAvailable {
+  readonly status: 'available'
+  readonly capability: 'local-statement-review'
+  readonly connectedProvider: 'unavailable'
   /** Unverified provider data can never cross the ledger command boundary. */
   readonly proposals: readonly never[]
 }
@@ -21,7 +24,7 @@ export interface ReferencePreviewAvailable {
 }
 
 export interface PremiumProviderStates {
-  readonly import: TransactionImportUnavailable
+  readonly import: TransactionImportAvailable
   readonly fx: ReferencePreviewAvailable
 }
 
@@ -52,7 +55,7 @@ export interface ReferenceRateFetchOptions {
 
 export function getPremiumProviderStates(): PremiumProviderStates {
   return {
-    import: { status: 'unavailable', reason: 'provider-not-configured', proposals: [] },
+    import: { status: 'available', capability: 'local-statement-review', connectedProvider: 'unavailable', proposals: [] },
     fx: { status: 'available', authority: FX_AUTHORITY, capability: 'reference-preview' },
   }
 }

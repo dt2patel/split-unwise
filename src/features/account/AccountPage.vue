@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { IonAlert, IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
-import { archiveOutline, cardOutline, chevronForward, cloudOfflineOutline, colorPaletteOutline, logOutOutline, notificationsOutline, personCircleOutline, trashOutline } from 'ionicons/icons'
+import { archiveOutline, cardOutline, chevronForward, cloudOfflineOutline, colorPaletteOutline, documentAttachOutline, logOutOutline, notificationsOutline, personCircleOutline, trashOutline } from 'ionicons/icons'
 import { getAppSession, type UnresolvedWorkSummary } from '../../data/session'
 import { createBrowserPrincipalLocalDataPort } from '../../data/localData'
 import { createClientOperationId } from '../../data/clientOperationId'
@@ -136,6 +136,7 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
 
         <p class="section-label">Data</p>
         <section class="settings-group">
+          <router-link class="nav-row" to="/tabs/account/transactions/import"><span class="row-icon"><ion-icon :icon="documentAttachOutline" /></span><span><strong>Import transactions</strong><small>Review a bank statement CSV on this device</small></span><ion-icon :icon="chevronForward" /></router-link>
           <router-link class="nav-row" to="/tabs/account/export"><span class="row-icon"><ion-icon :icon="archiveOutline" /></span><span><strong>Export your data</strong><small>CSV or JSON, separated by currency</small></span><ion-icon :icon="chevronForward" /></router-link>
           <div class="info-row"><span class="row-icon"><ion-icon :icon="cloudOfflineOutline" /></span><span><strong>Offline changes</strong><small>{{ unresolved.total ? `${unresolved.pending} pending · ${unresolved.failed} failed · ${unresolved.conflicted} conflicted` : 'Everything on this device is settled' }}</small></span></div>
           <button class="danger-row" type="button" @click="beginClear"><span class="row-icon"><ion-icon :icon="trashOutline" /></span><span><strong>Clear local data</strong><small>Only this signed-in account on this device</small></span></button>
