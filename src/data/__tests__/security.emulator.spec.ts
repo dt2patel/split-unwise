@@ -339,6 +339,24 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(commitSparkRecurringMaterialization(active, sparkRecurringMaterialization(cancelled, '6', '2026-11-01', '2026-12-01')))
   })
 
+  emulatorIt('revalidates stored template participants before every materialization', async () => {
+    const active = environment.authenticatedContext('active').firestore()
+    const source = sparkRecurringSource('1')
+    const template = sparkRecurringTemplate(source, '2026-10-01')
+    await assertSucceeds(commitSparkRecurringCreation(active, source, template))
+    const createdTemplate = (await getDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+
+    const activeParticipants = sparkRecurringMaterialization(createdTemplate, '2', '2026-10-01', '2026-11-01')
+    await assertSucceeds(commitSparkRecurringMaterialization(active, activeParticipants))
+    const advancedTemplate = (await getDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'groups/group-a/members/friend'), { status: 'removed' })
+    })
+    const removedParticipant = sparkRecurringMaterialization(advancedTemplate, '3', '2026-11-01', '2026-12-01')
+    await assertFails(commitSparkRecurringMaterialization(active, removedParticipant))
+  })
+
   emulatorIt('authorizes cancellation independently for the creator or a manager at the current revision', async () => {
     const creator = environment.authenticatedContext('active').firestore()
     const manager = environment.authenticatedContext('manager').firestore()

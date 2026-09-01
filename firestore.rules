@@ -520,6 +520,7 @@ service cloud.firestore {
         ])
         && data.revision == resource.data.revision + 1
         && data.lastResourceToken != resource.data.lastResourceToken
+        && validSparkInvolvedMembers(groupId, resource.data.involvedMemberIds)
         && validSparkIsoDate(data.nextDate)
         && data.nextDate > resource.data.nextDate
         && data.lastOccurrenceDate == resource.data.nextDate
