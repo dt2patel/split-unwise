@@ -54,6 +54,41 @@ suite('ledger against the Firestore emulator', () => {
     await expect(executeLedgerCommand(db, 'owner', request)).rejects.toMatchObject({ code: 'permission-denied' })
   })
 
+  it('propagates a profile rename to active member snapshots and only the active friendship counterpart projection', async () => {
+    await Promise.all([
+      db.doc('groups/group-a/members/owner').update({ displayName: 'Owner', initials: 'O' }),
+      db.doc('users/owner/groups/group-a').set({ groupId: 'group-a', status: 'active', contextLabel: 'Group A' }),
+      db.doc('users/member/groups/group-a').set({ groupId: 'group-a', status: 'active', contextLabel: 'Group A' }),
+      db.doc('groups/friendship-active').set({ kind: 'friendship', name: 'Member', memberIds: ['owner', 'member'] }),
+      db.doc('groups/friendship-active/members/owner').set({ status: 'active', displayName: 'Owner', initials: 'O' }),
+      db.doc('groups/friendship-active/members/member').set({ status: 'active', displayName: 'Member', initials: 'M' }),
+      db.doc('users/owner/groups/friendship-active').set({ groupId: 'friendship-active', status: 'active', contextLabel: 'Member' }),
+      db.doc('users/member/groups/friendship-active').set({ groupId: 'friendship-active', status: 'active', contextLabel: 'Owner', updatedAt: '2026-08-01T00:00:00.000Z' }),
+      db.doc('groups/friendship-removed').set({ kind: 'friendship', name: 'Removed', memberIds: ['owner', 'removed'] }),
+      db.doc('groups/friendship-removed/members/owner').set({ status: 'removed', displayName: 'Owner', initials: 'O' }),
+      db.doc('groups/friendship-removed/members/removed').set({ status: 'active', displayName: 'Removed', initials: 'R' }),
+      db.doc('users/owner/groups/friendship-removed').set({ groupId: 'friendship-removed', status: 'removed', contextLabel: 'Removed' }),
+      db.doc('users/removed/groups/friendship-removed').set({ groupId: 'friendship-removed', status: 'active', contextLabel: 'Owner', updatedAt: '2026-08-01T00:00:00.000Z' }),
+    ])
+    const request = { schemaVersion: 1, command: { kind: 'profile.update', operationId: 'rename-owner', displayName: 'Renamed Owner', initials: 'RO' } }
+    const committedAt = '2026-09-01T16:00:00.000Z'
+
+    const first = await executeLedgerCommand(db, 'owner', request, new Date(committedAt))
+    const replay = await executeLedgerCommand(db, 'owner', request, new Date('2026-09-01T17:00:00.000Z'))
+
+    expect(replay).toEqual(first)
+    expect((await db.doc('users/owner').get()).data()).toMatchObject({ displayName: 'Renamed Owner', initials: 'RO', updatedAt: committedAt })
+    expect((await db.doc('groups/group-a/members/owner').get()).data()).toMatchObject({ status: 'active', displayName: 'Renamed Owner', initials: 'RO' })
+    expect((await db.doc('groups/friendship-active/members/owner').get()).data()).toMatchObject({ status: 'active', displayName: 'Renamed Owner', initials: 'RO' })
+    expect((await db.doc('groups/friendship-removed/members/owner').get()).data()).toMatchObject({ status: 'removed', displayName: 'Owner', initials: 'O' })
+    expect((await db.doc('users/member/groups/friendship-active').get()).data()).toMatchObject({ contextLabel: 'Renamed Owner', updatedAt: committedAt })
+    expect((await db.doc('users/owner/groups/friendship-active').get()).data()).toMatchObject({ contextLabel: 'Member' })
+    expect((await db.doc('users/member/groups/group-a').get()).data()).toMatchObject({ contextLabel: 'Group A' })
+    expect((await db.doc('users/removed/groups/friendship-removed').get()).data()).toMatchObject({ contextLabel: 'Owner', updatedAt: '2026-08-01T00:00:00.000Z' })
+    expect((await db.doc('groups/friendship-active').get()).data()).toMatchObject({ name: 'Member' })
+    expect((await db.collection('users/owner/operations').get()).size).toBe(1)
+  })
+
   it('rejects inactive participants, unsafe totals, and stale revisions', async () => {
     const inactive = addRequest('inactive-operation')
     inactive.command.allocations = [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }, { participantId: 'removed', money: { currency: 'USD', minorAmount: 500 } }]

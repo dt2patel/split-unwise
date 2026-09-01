@@ -47,10 +47,47 @@ interface PrivateContext { db: Firestore; transaction: Transaction; uid: string;
 async function executePrivateCommand({ db, transaction, uid, command, isoNow }: PrivateContext): Promise<CallableResult> {
   if (command.kind === 'profile.update') {
     const userRef = db.doc(`users/${uid}`)
-    const current = await transaction.get(userRef)
+    const [current, projections] = await Promise.all([
+      transaction.get(userRef),
+      transaction.get(db.collection(`users/${uid}/groups`).limit(101)),
+    ])
+    if (projections.size > 100) throw new LedgerError('resource-exhausted', 'Profile updates support at most 100 group memberships.')
+    const groupIds = projections.docs.map((projection) => projection.id)
+    const memberRefs = groupIds.map((groupId) => db.doc(`groups/${groupId}/members/${uid}`))
+    const groupRefs = groupIds.map((groupId) => db.doc(`groups/${groupId}`))
+    const membershipSnapshots = groupIds.length > 0
+      ? await transaction.getAll(...memberRefs, ...groupRefs)
+      : []
+    const members = membershipSnapshots.slice(0, groupIds.length)
+    const groups = membershipSnapshots.slice(groupIds.length)
+    const friendships = groupIds.flatMap((groupId, index) => {
+      const member = members[index]
+      const group = groups[index]
+      const data = group?.data()
+      if (member?.data()?.status !== 'active' || !group?.exists || !isRecord(data) || data.kind !== 'friendship' || !Array.isArray(data.memberIds)) return []
+      const memberIds = data.memberIds
+      if (memberIds.length !== 2 || memberIds.some((memberId) => typeof memberId !== 'string') || new Set(memberIds).size !== 2 || !memberIds.includes(uid)) return []
+      const counterpartUid = memberIds.find((memberId) => memberId !== uid)
+      return typeof counterpartUid === 'string' ? [{ groupId, counterpartUid }] : []
+    })
+    const counterpartMemberRefs = friendships.map(({ groupId, counterpartUid }) => db.doc(`groups/${groupId}/members/${counterpartUid}`))
+    const counterpartProjectionRefs = friendships.map(({ groupId, counterpartUid }) => db.doc(`users/${counterpartUid}/groups/${groupId}`))
+    const counterpartSnapshots = friendships.length > 0
+      ? await transaction.getAll(...counterpartMemberRefs, ...counterpartProjectionRefs)
+      : []
     const initials = command.initials ?? initialsFor(command.displayName)
     const profile = { displayName: command.displayName, initials, updatedAt: isoNow }
     current.exists ? transaction.update(userRef, profile) : transaction.create(userRef, { ...profile, createdAt: isoNow })
+    members.forEach((member, index) => {
+      if (member.data()?.status === 'active') transaction.update(memberRefs[index]!, { displayName: command.displayName, initials })
+    })
+    friendships.forEach((_, index) => {
+      const counterpartMember = counterpartSnapshots[index]
+      const counterpartProjection = counterpartSnapshots[index + friendships.length]
+      if (counterpartMember?.data()?.status !== 'active') return
+      if (!counterpartProjection?.exists || counterpartProjection.data()?.status !== 'active') throw new LedgerError('failed-precondition', 'The friendship projection is missing or inactive.')
+      transaction.update(counterpartProjectionRefs[index]!, { contextLabel: command.displayName, updatedAt: isoNow })
+    })
     return savedResource(command, uid)
   }
   if (command.kind === 'notification.preferences') {

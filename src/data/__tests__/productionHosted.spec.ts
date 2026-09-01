@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterAll, expect, it } from 'vitest'
-import { createUserWithEmailAndPassword, deleteUser, getAuth, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth'
+import { getAuth, signInWithEmailAndPassword, updateProfile } from 'firebase/auth'
 import { deleteApp } from 'firebase/app'
 import { collection, doc, getDoc, getDocs, getFirestore, limit, query } from 'firebase/firestore'
 import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkFriendship, createSparkGroup, createSparkInvitation, inspectSparkInvitation, synchronizeFirebaseProfile } from '../firebaseSparkMutations'
@@ -11,11 +11,11 @@ import type { FirebaseConfiguration } from '../firebase'
 const suffix = process.env.LIVE_PROOF_SUFFIX ?? 'disabled'
 const hostedIt = process.env.LIVE_PROOF_SUFFIX ? it : it.skip
 const keepLiveProof = process.env.KEEP_LIVE_PROOF === '1'
-const password = 'SplitUnwise-Live-Proof-42!'
+const externalCleanup = process.env.LIVE_PROOF_EXTERNAL_CLEANUP === '1'
+const password = process.env.LIVE_PROOF_PASSWORD ?? ''
 const ownerEmail = `live-owner-${suffix}@example.com`
 const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
-const usePreverifiedAccounts = process.env.LIVE_PREVERIFIED_ACCOUNTS === '1'
 let app: Awaited<ReturnType<typeof getSplitUnwiseFirebaseApp>> | undefined
 
 async function restartHostedClient(configuration: FirebaseConfiguration) {
@@ -27,24 +27,14 @@ async function restartHostedClient(configuration: FirebaseConfiguration) {
 
 afterAll(async () => {
   if (!app) return
-  if (keepLiveProof) {
-    await deleteApp(app)
-    resetFirebaseBootstrapForTesting()
-    return
-  }
-  const auth = getAuth(app)
-  for (const email of [thirdEmail, friendEmail, ownerEmail]) {
-    try {
-      await signOut(auth)
-      const credential = await signInWithEmailAndPassword(auth, email, password)
-      await deleteUser(credential.user)
-    } catch { /* best-effort Auth cleanup; Firestore cleanup is admin-verified separately */ }
-  }
   await deleteApp(app)
   resetFirebaseBootstrapForTesting()
 })
 
-hostedIt('proves the deployed two-account and private-account paths', async () => {
+hostedIt('proves the deployed verified-friendship and private-account paths', async () => {
+  if (process.env.LIVE_PREVERIFIED_ACCOUNTS !== '1' || !password || (!externalCleanup && !keepLiveProof)) {
+    throw new Error('Hosted proof requires verified disposable accounts. Run `pnpm test:hosted` so the fixture runner can provision and clean them.')
+  }
   const shell = await fetch('https://split-unwise-aditya.web.app', { cache: 'no-store' })
   expect(shell.status).toBe(200)
   expect(await shell.text()).toContain('id="app"')
@@ -54,14 +44,16 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
   expect(configuration.projectId).toBe('split-unwise-aditya')
   let { auth, db } = await restartHostedClient(configuration)
 
-  const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+  const owner = await signInWithEmailAndPassword(auth, ownerEmail, password)
   const ownerUid = owner.user.uid
   await updateProfile(owner.user, { displayName: 'Live Original Owner' })
   await bootstrapFirebaseProfile(configuration, owner.user)
   await synchronizeFirebaseProfile(configuration, owner.user)
   const group = await createSparkGroup(configuration, { operationId: `live-${suffix}`, name: 'Live Account Proof', currency: 'USD' })
+  console.log('LIVE_PROOF_RESOURCE', JSON.stringify({ ownerUid, groupId: group.groupId }))
   await expect(getDoc(doc(db, `groups/${group.groupId}`))).resolves.toMatchObject({ exists: expect.any(Function) })
   const invitation = await createSparkInvitation(configuration, { groupId: group.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+  console.log('LIVE_PROOF_RESOURCE', JSON.stringify({ invitationId: invitation.invitationId }))
   const token = new URL(invitation.link).hash.slice('#token='.length)
   const friendship = await createSparkFriendship(configuration, {
     operationId: `live-friendship-${suffix}`, displayName: 'Live Proof Friend', email: friendEmail, currency: 'USD',
@@ -69,42 +61,34 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
   })
   if (friendship.status !== 'ready') throw new Error(`Friendship invitation was not created: ${friendship.reason}`)
   const friendshipInvitation = friendship.invitation
+  console.log('LIVE_PROOF_RESOURCE', JSON.stringify({ friendshipId: friendship.groupId, friendshipInvitationId: friendshipInvitation.invitationId }))
   const friendshipToken = new URL(friendshipInvitation.link).hash.slice('#token='.length)
   const thirdInvitation = await createSparkInvitation(configuration, { groupId: friendship.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app', targetEmail: thirdEmail })
   const thirdToken = new URL(thirdInvitation.link).hash.slice('#token='.length)
+  console.log('LIVE_PROOF_RESOURCE', JSON.stringify({ thirdInvitationId: thirdInvitation.invitationId }))
   await expect(createFirebaseRepository(configuration, ownerUid).groups.list()).resolves.toEqual(expect.arrayContaining([
     expect.objectContaining({ id: group.groupId, kind: 'group' }),
     expect.objectContaining({ id: friendship.groupId, kind: 'friendship', memberIds: [ownerUid] }),
   ]))
 
   ;({ auth, db } = await restartHostedClient(configuration))
-  const friend = usePreverifiedAccounts
-    ? await signInWithEmailAndPassword(auth, friendEmail, password)
-    : await createUserWithEmailAndPassword(auth, friendEmail, password)
+  const friend = await signInWithEmailAndPassword(auth, friendEmail, password)
   const friendUid = friend.user.uid
   await updateProfile(friend.user, { displayName: 'Live Proof Friend' })
   await bootstrapFirebaseProfile(configuration, friend.user)
   await synchronizeFirebaseProfile(configuration, friend.user)
-  if (!usePreverifiedAccounts) await expect(inspectSparkInvitation(configuration, friendshipInvitation.invitationId, friendshipToken)).rejects.toThrow(/verified email/i)
-  else {
-    await expect(inspectSparkInvitation(configuration, friendshipInvitation.invitationId, friendshipToken)).resolves.toMatchObject({ groupId: friendship.groupId })
-    await expect(acceptSparkInvitation(configuration, friendshipInvitation.invitationId, friendshipToken)).resolves.toEqual({ groupId: friendship.groupId })
-  }
+  await expect(inspectSparkInvitation(configuration, friendshipInvitation.invitationId, friendshipToken)).resolves.toMatchObject({ groupId: friendship.groupId })
+  await expect(acceptSparkInvitation(configuration, friendshipInvitation.invitationId, friendshipToken)).resolves.toEqual({ groupId: friendship.groupId })
   await acceptSparkInvitation(configuration, invitation.invitationId, token)
   await expect(getDoc(doc(db, `groups/${group.groupId}`))).resolves.toMatchObject({ exists: expect.any(Function) })
 
   ;({ auth, db } = await restartHostedClient(configuration))
-  const third = usePreverifiedAccounts
-    ? await signInWithEmailAndPassword(auth, thirdEmail, password)
-    : await createUserWithEmailAndPassword(auth, thirdEmail, password)
-  const thirdUid = third.user.uid
+  const third = await signInWithEmailAndPassword(auth, thirdEmail, password)
   await updateProfile(third.user, { displayName: 'Live Third Person' })
   await bootstrapFirebaseProfile(configuration, third.user)
   await synchronizeFirebaseProfile(configuration, third.user)
-  if (usePreverifiedAccounts) {
-    await expect(inspectSparkInvitation(configuration, thirdInvitation.invitationId, thirdToken)).resolves.toMatchObject({ groupId: friendship.groupId })
-    await expect(acceptSparkInvitation(configuration, thirdInvitation.invitationId, thirdToken)).rejects.toThrow(/permission|friendship|two people/i)
-  }
+  await expect(inspectSparkInvitation(configuration, thirdInvitation.invitationId, thirdToken)).resolves.toMatchObject({ groupId: friendship.groupId })
+  await expect(acceptSparkInvitation(configuration, thirdInvitation.invitationId, thirdToken)).rejects.toThrow(/permission|friendship|two people/i)
 
   ;({ auth, db } = await restartHostedClient(configuration))
   await signInWithEmailAndPassword(auth, ownerEmail, password)
@@ -123,15 +107,14 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
   ;({ auth, db } = await restartHostedClient(configuration))
   await signInWithEmailAndPassword(auth, friendEmail, password)
   const friendRepository = createFirebaseRepository(configuration, friendUid)
-  const ledgerGroupId = usePreverifiedAccounts ? friendship.groupId : group.groupId
-  console.log('LIVE_PROOF_RESOURCES', JSON.stringify({ ownerUid, friendUid, thirdUid, groupId: group.groupId, invitationId: invitation.invitationId, friendshipId: friendship.groupId, friendshipInvitationId: friendshipInvitation.invitationId, thirdInvitationId: thirdInvitation.invitationId, ownerEmail, friendEmail, thirdEmail }))
-  await expect(getDocs(query(collection(db, `users/${friendUid}/groups`), limit(100)))).resolves.toMatchObject({ size: usePreverifiedAccounts ? 2 : 1 })
+  const ledgerGroupId = friendship.groupId
+  await expect(getDocs(query(collection(db, `users/${friendUid}/groups`), limit(100)))).resolves.toMatchObject({ size: 2 })
   await expect(getDoc(doc(db, `groups/${ledgerGroupId}`))).resolves.toMatchObject({ exists: expect.any(Function) })
   await expect(getDoc(doc(db, `groups/${ledgerGroupId}/members/${friendUid}`))).resolves.toMatchObject({ exists: expect.any(Function) })
   await expect(getDocs(query(collection(db, `groups/${ledgerGroupId}/members`), limit(100)))).resolves.toMatchObject({ size: 2 })
   await expect(friendRepository.groups.list()).resolves.toEqual(expect.arrayContaining([
     expect.objectContaining({ id: group.groupId, name: 'Live Account Proof' }),
-    ...(usePreverifiedAccounts ? [expect.objectContaining({ id: ledgerGroupId, kind: 'friendship', name: 'Live Renamed Owner' })] : []),
+    expect.objectContaining({ id: ledgerGroupId, kind: 'friendship', name: 'Live Renamed Owner' }),
   ]))
   await expect(friendRepository.groups.listMembers(ledgerGroupId)).resolves.toEqual(expect.arrayContaining([
     expect.objectContaining({ id: ownerUid, displayName: 'Live Renamed Owner', initials: 'LR' }),
@@ -177,9 +160,7 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
   const groupReadMs = Math.round(performance.now() - readStartedAt)
   console.log('HOSTED_GROUP_READ_MS', groupReadMs)
   expect(groupReadMs).toBeLessThan(10_000)
-  expect(loadedGroup).toMatchObject(usePreverifiedAccounts
-    ? { id: ledgerGroupId, kind: 'friendship', name: 'Live Renamed Owner' }
-    : { id: ledgerGroupId, kind: 'group', name: 'Live Account Proof' })
+  expect(loadedGroup).toMatchObject({ id: ledgerGroupId, kind: 'friendship', name: 'Live Renamed Owner' })
   expect(loadedProfile).toMatchObject({ id: friendUid, displayName: 'Live Proof Friend' })
   expect(loadedMembers).toHaveLength(2)
   expect(loadedExpenses).toEqual([expect.objectContaining({ id: added.expense.id, description: 'Hosted mobile dinner and dessert', revision: 2 })])
