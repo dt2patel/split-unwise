@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ReceiptReview from '../components/ReceiptReview.vue'
-import { bindSheetKeyboardAvoidance } from '../components/useSheetKeyboardAvoidance'
+import { bindSheetKeyboardAvoidance, resolveSheetScrollHost } from '../components/useSheetKeyboardAvoidance'
 
 const members = [
   { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true },
@@ -33,6 +33,19 @@ afterEach(() => {
 })
 
 describe('expense sheet keyboard avoidance', () => {
+  it('uses the native scroll element from a surrounding IonContent', async () => {
+    const content = document.createElement('ion-content') as HTMLElement & { getScrollElement: () => Promise<HTMLElement> }
+    const scrollHost = document.createElement('div')
+    const sheet = document.createElement('section')
+    content.getScrollElement = vi.fn().mockResolvedValue(scrollHost)
+    content.append(sheet)
+    document.body.append(content)
+
+    await expect(resolveSheetScrollHost(sheet)).resolves.toBe(scrollHost)
+    expect(content.getScrollElement).toHaveBeenCalledOnce()
+    content.remove()
+  })
+
   it('uses a distinct Ionic scroll host with non-zero layout bounds under VisualViewport', () => {
     const viewport = new TestVisualViewport()
     viewport.height = 500

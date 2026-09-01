@@ -17,9 +17,18 @@ const ionicStubs = {
   IonToolbar: { template: '<div><slot /></div>' },
   IonTitle: { template: '<div><slot /></div>' },
   IonButtons: { template: '<div><slot /></div>' },
-  IonButton: { props: ['disabled', 'ariaLabel'], emits: ['click'], template: '<button type="button" :disabled="disabled" :aria-label="ariaLabel" @click="$emit(\'click\')"><slot /></button>' },
-  IonContent: { template: '<section><slot /></section>' },
+  IonButton: { props: ['disabled', 'ariaLabel'], emits: ['click'], template: '<button type="button" data-ionic-button :disabled="disabled" :aria-label="ariaLabel" @click="$emit(\'click\')"><slot /></button>' },
+  IonContent: { template: '<section data-ionic-content><slot /></section>' },
   IonIcon: { props: ['icon'], template: '<span />' },
+  IonItem: {
+    inheritAttrs: false,
+    props: { button: Boolean, detail: Boolean, lines: String },
+    emits: ['click'],
+    template: '<div data-ionic-item :data-detail="String(detail)"><button v-if="button" type="button" v-bind="$attrs" @click="$emit(\'click\')"><slot /></button><div v-else v-bind="$attrs"><slot /></div></div>',
+  },
+  IonLabel: { template: '<span data-ionic-label><slot /></span>' },
+  IonList: { props: { inset: Boolean, lines: String }, template: '<section data-ionic-list :data-inset="String(inset)" :data-lines="lines"><slot /></section>' },
+  IonNote: { template: '<span data-ionic-note><slot /></span>' },
   IonModal: { name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement', 'initialBreakpoint', 'breakpoints'], emits: ['didDismiss'], template: '<aside v-if="isOpen" data-testid="active-sheet"><slot /></aside>' },
 }
 
@@ -45,6 +54,25 @@ describe('ExpenseEditorPage', () => {
     expect(document.activeElement).toBe(summary.element)
     expect(wrapper.get('#expense-description').attributes('aria-invalid')).toBe('true')
     expect(wrapper.get('#expense-amount').attributes('aria-invalid')).toBe('true')
+  })
+
+  it('groups context and optional details with Ionic inset lists and item rows', async () => {
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+
+    const context = wrapper.get('[data-testid="expense-context-list"]')
+    const options = wrapper.get('[data-testid="expense-options-list"]')
+    expect(context.attributes('data-inset')).toBe('true')
+    expect(options.attributes('data-inset')).toBe('true')
+    expect(options.findAll('[data-ionic-item]')).toHaveLength(7)
+  })
+
+  it('uses Ionic tap targets and trailing notes for payer and split metadata', async () => {
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+
+    expect(wrapper.get('.paid-split-sentence').findAll('[data-ionic-button]')).toHaveLength(2)
+    expect(wrapper.get('#participant-sheet-trigger').get('[data-ionic-note]').text()).toBe('4 participants')
+    expect(wrapper.get('#receipt-sheet-trigger').get('[data-ionic-note]').text()).toBe('Add receipt')
+    expect(wrapper.get('#recurrence-sheet-trigger').get('[data-ionic-note]').text()).toBe('Does not repeat')
   })
 
   it('uses deterministic direct-load Cancel and protects a dirty dismissal', async () => {
@@ -113,6 +141,13 @@ describe('ExpenseEditorPage', () => {
     expect(modal.props('breakpoints')).toBeUndefined()
   })
 
+  it('gives the iOS card modal its own Ionic scroll content before presentation', async () => {
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    await wrapper.get('#payer-sheet-trigger').trigger('click')
+
+    expect(wrapper.get('[data-testid="active-sheet"]').findAll('[data-ionic-content]')).toHaveLength(1)
+  })
+
   it('keeps clean swipe dismissal synchronous and installs the guard only after a staged change', async () => {
     const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
     await wrapper.get('#payer-sheet-trigger').trigger('click')
@@ -137,15 +172,18 @@ describe('ExpenseEditorPage', () => {
     ['split', '#split-sheet-trigger'],
     ['receipt', '#receipt-sheet-trigger'],
     ['recurrence', '#recurrence-sheet-trigger'],
-  ] as const)('marks the rendered %s sheet root as Ionic card-modal scroll content', async (name, triggerSelector) => {
+  ] as const)('renders the %s sheet inside the native card-modal scroll content', async (name, triggerSelector) => {
     const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
     if (name === 'receipt') store.editor.attachmentRefs.push('receipts/draft.jpg')
 
     await wrapper.get(triggerSelector).trigger('click')
 
-    const scrollRoot = wrapper.get('[data-testid="active-sheet"] [data-sheet-scroll]')
-    expect(scrollRoot.classes()).toContain('expense-sheet')
-    expect(scrollRoot.classes()).toContain('ion-content-scroll-host')
+    const modal = wrapper.get('[data-testid="active-sheet"]')
+    expect(modal.findAll('[data-ionic-content]')).toHaveLength(1)
+    const sheet = modal.get('[data-sheet-scroll]')
+    expect(sheet.classes()).toContain('expense-sheet')
+    expect(sheet.classes()).toContain('expense-sheet--ionic-content')
+    expect(sheet.classes()).not.toContain('ion-content-scroll-host')
   })
 
   it('lets a no-query composer choose a real group context before editing participants', async () => {
@@ -235,12 +273,10 @@ describe('ExpenseEditorPage', () => {
     const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
 
     for (const selector of ['#participant-sheet-trigger', '#receipt-sheet-trigger', '#recurrence-sheet-trigger']) {
-      const disclosure = wrapper.get(selector).find('.editor-row__chevron')
-      expect(disclosure.exists()).toBe(true)
-      expect(disclosure.attributes('aria-hidden')).toBe('true')
+      expect(wrapper.get(selector).element.closest('[data-ionic-item]')?.getAttribute('data-detail')).toBe('true')
     }
     for (const selector of ['#expense-category', '#expense-currency', '#expense-date']) {
-      expect(wrapper.get(selector).element.closest('.editor-row')?.querySelector('.editor-row__chevron')).toBeNull()
+      expect(wrapper.get(selector).element.closest('[data-ionic-item]')?.getAttribute('data-detail')).toBe('false')
     }
   })
 
@@ -334,20 +370,20 @@ describe('ExpenseEditorPage', () => {
     document.documentElement.style.fontSize = '32px'
     const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
 
-    const context = getComputedStyle(wrapper.get('.context-chip span').element)
+    const context = getComputedStyle(wrapper.get('.context-list__label').element)
     expect(context.whiteSpace).toBe('normal')
     expect(context.overflowWrap).toBe('anywhere')
     const currency = getComputedStyle(wrapper.get('.expense-core__currency-symbol').element)
     expect(currency.width).toBe('max-content')
     expect(currency.minHeight).toBe('46px')
     const row = getComputedStyle(wrapper.get('.editor-row').element)
-    expect(row.gridTemplateColumns).toContain('max-content')
-    const summary = getComputedStyle(wrapper.get('#participant-sheet-trigger small').element)
+    expect(row.getPropertyValue('--min-height').trim()).toBe('52px')
+    const summary = getComputedStyle(wrapper.get('#participant-sheet-trigger .editor-row__note').element)
     expect(summary.whiteSpace).toBe('normal')
     expect(summary.overflowWrap).toBe('anywhere')
     const date = getComputedStyle(wrapper.get('#expense-date').element)
     expect(date.minWidth).toBe('0px')
-    expect(date.maxWidth).toBe('100%')
+    expect(date.maxWidth).toBe('54%')
 
     wrapper.unmount()
     style.remove()
@@ -363,16 +399,13 @@ describe('ExpenseEditorPage', () => {
     document.head.append(style)
     const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
 
-    const rowColumns = cascadedStyleAtWidth(style, '.editor-row', 'grid-template-columns', 390)
-    expect(topLevelCssTracks(rowColumns)).toHaveLength(3)
-    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger').element).minHeight).toBe('52px')
-    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger small').element).minWidth).toBe('0px')
-    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger small').element).overflowWrap).toBe('anywhere')
+    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger').element).getPropertyValue('--min-height').trim()).toBe('52px')
+    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger .editor-row__note').element).minWidth).toBe('0px')
+    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger .editor-row__note').element).overflowWrap).toBe('anywhere')
     expect(getComputedStyle(wrapper.get('.editor-list').element).overflow).toBe('hidden')
 
-    const notesColumns = cascadedStyleAtWidth(style, '.editor-row--notes', 'grid-template-columns', 390)
-    expect(topLevelCssTracks(notesColumns)).toHaveLength(2)
-    expect(cascadedStyleAtWidth(style, '.editor-row--notes textarea', 'grid-column', 390)).toBe('2')
+    expect(getComputedStyle(wrapper.get('.editor-notes-field').element).display).toBe('grid')
+    expect(getComputedStyle(wrapper.get('#expense-notes').element).width).toBe('100%')
     expect(getComputedStyle(wrapper.get('#expense-notes').element).textAlign).toBe('start')
 
     wrapper.unmount()
@@ -420,43 +453,4 @@ function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>((done) => { resolve = done })
   return { promise, resolve }
-}
-
-function cascadedStyleAtWidth(style: HTMLStyleElement, selector: string, property: string, width: number): string {
-  let value = ''
-  const visit = (rules: CSSRuleList, applies: boolean): void => {
-    for (const rule of Array.from(rules)) {
-      if ('selectorText' in rule && rule.selectorText === selector && applies) {
-        const declared = (rule as CSSStyleRule).style.getPropertyValue(property)
-        if (declared) value = declared
-      } else if ('cssRules' in rule && 'conditionText' in rule) {
-        visit((rule as CSSMediaRule).cssRules, applies && mediaAppliesAtWidth((rule as CSSMediaRule).conditionText, width))
-      }
-    }
-  }
-  visit(style.sheet?.cssRules ?? ([] as unknown as CSSRuleList), true)
-  return value
-}
-
-function mediaAppliesAtWidth(condition: string, width: number): boolean {
-  const max = /max-width:\s*(\d+)px/.exec(condition)?.[1]
-  const min = /min-width:\s*(\d+)px/.exec(condition)?.[1]
-  if (!max && !min) return false
-  return (!max || width <= Number(max)) && (!min || width >= Number(min))
-}
-
-function topLevelCssTracks(value: string): readonly string[] {
-  const tracks: string[] = []
-  let depth = 0
-  let current = ''
-  for (const character of value.trim()) {
-    if (character === '(') depth += 1
-    if (character === ')') depth -= 1
-    if (/\s/.test(character) && depth === 0) {
-      if (current) tracks.push(current)
-      current = ''
-    } else current += character
-  }
-  if (current) tracks.push(current)
-  return tracks
 }

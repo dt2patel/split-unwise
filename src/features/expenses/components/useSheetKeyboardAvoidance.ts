@@ -6,6 +6,11 @@ export interface SheetKeyboardAvoidanceOptions {
   readonly resolveScrollHost?: (sheet: HTMLElement) => HTMLElement | Promise<HTMLElement>
 }
 
+export function resolveSheetScrollHost(sheet: HTMLElement): HTMLElement | Promise<HTMLElement> {
+  const content = sheet.closest('ion-content') as (HTMLElement & { getScrollElement?: () => Promise<HTMLElement> }) | null
+  return content?.getScrollElement?.() ?? sheet
+}
+
 export function useSheetKeyboardAvoidance(sheet: Ref<HTMLElement | undefined>, options: SheetKeyboardAvoidanceOptions = {}): void {
   let release: (() => void) | undefined
   let stopped = false
@@ -13,11 +18,7 @@ export function useSheetKeyboardAvoidance(sheet: Ref<HTMLElement | undefined>, o
   onMounted(() => {
     const element = sheet.value
     if (!element) return
-    const resolved = options.resolveScrollHost?.(element)
-    if (!resolved) {
-      release = bindSheetKeyboardAvoidance(element)
-      return
-    }
+    const resolved = (options.resolveScrollHost ?? resolveSheetScrollHost)(element)
     if (resolved instanceof Promise) {
       void resolved.then((scrollHost) => { if (!stopped) release = bindSheetKeyboardAvoidance(element, window, scrollHost) })
       return
