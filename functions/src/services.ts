@@ -36,7 +36,8 @@ export async function createInvitationService(db: Firestore, uid: string, raw: u
     if (groupData.kind === 'friendship' && (!input.targetEmail || !Array.isArray(groupData.memberIds) || groupData.memberIds.length >= 2)) {
       throw new LedgerError('failed-precondition', 'Friend invitations require a verified email and an open two-person friendship.')
     }
-    const invitation = { schemaVersion: 1, invitationId, groupId: input.groupId, tokenHash, expiresAt, createdAt: now.toISOString(), createdByUid: uid, targetEmail: input.targetEmail ?? null, status: 'active' }
+    const createdByName = normalizeDisplayName(String(member.data()?.displayName ?? 'Split Unwise member'))
+    const invitation = { schemaVersion: 1, invitationId, groupId: input.groupId, groupKind: groupData.kind ?? 'group', tokenHash, expiresAt, createdAt: now.toISOString(), createdByUid: uid, createdByName, targetEmail: input.targetEmail ?? null, status: 'active' }
     const storedResult = { invitationId, groupId: input.groupId, expiresAt, targetEmail: input.targetEmail ?? null, groupName: group.data()?.name ?? 'Group' }
     transaction.create(db.doc(`invitations/${invitationId}`), invitation)
     transaction.create(operationRef, { schemaVersion: 1, uid, kind: 'invitation.create', requestHash: hash, groupId: input.groupId, status: 'succeeded', result: storedResult, committedAt: now.toISOString() })
@@ -82,7 +83,11 @@ export async function acceptInvitationService(db: Firestore, uid: string, identi
     const actor = { id: uid, displayName: profileData.displayName }
     const activityId = deterministicId('act', input.invitationId, uid)
     transaction.set(memberRef, { status: 'active', role: 'member', canManage: false, displayName: profileData.displayName, initials: profileData.initials, avatarUrl: profileData.avatarUrl ?? null, joinedAt: now.toISOString() })
-    transaction.set(db.doc(`users/${uid}/groups/${data.groupId}`), { groupId: data.groupId, status: 'active', joinedAt: now.toISOString(), updatedAt: now.toISOString() })
+    transaction.set(db.doc(`users/${uid}/groups/${data.groupId}`), {
+      groupId: data.groupId, status: 'active',
+      contextLabel: groupData.kind === 'friendship' ? data.createdByName : groupData.name,
+      joinedAt: now.toISOString(), updatedAt: now.toISOString(),
+    })
     transaction.update(group.ref, { memberIds: FieldValue.arrayUnion(uid), updatedAt: now.toISOString() })
     transaction.update(inviteRef, { status: 'used', usedAt: now.toISOString(), usedByUid: uid })
     transaction.create(db.doc(`groups/${data.groupId}/activity/${activityId}`), { id: activityId, groupId: data.groupId, operationId: deterministicUuid(input.invitationId, uid), kind: 'membership.changed', subject: { kind: 'membership', id: uid, label: profileData.displayName }, actor, createdAt: now.toISOString() })
@@ -127,7 +132,7 @@ export async function bootstrapProfileService(db: Firestore, uid: string, identi
   })
 }
 
-const createGroupSchema = z.strictObject({ schemaVersion: z.literal(1), operationId, kind: z.enum(['group', 'friendship']).default('group'), name: z.string().trim().min(1).max(120), currency: z.string().length(3).toUpperCase() })
+const createGroupSchema = z.strictObject({ schemaVersion: z.literal(1), operationId, kind: z.enum(['group', 'friendship']).optional(), name: z.string().trim().min(1).max(120), currency: z.string().length(3).toUpperCase() })
 export async function createGroupService(db: Firestore, uid: string, raw: unknown, now = new Date()): Promise<DocumentData> {
   const input = parse(createGroupSchema, raw)
   try { assertCurrencyCode(input.currency) } catch { throw new LedgerError('invalid-argument', 'Group currency must be a supported ISO 4217 code.') }
@@ -143,14 +148,14 @@ export async function createGroupService(db: Firestore, uid: string, raw: unknow
       if (data.kind !== 'group.create' || data.requestHash !== hash) throw new LedgerError('already-exists', 'This operation ID was already used.')
       return data.result
     }
-    const group = { id: groupId, kind: input.kind, name: input.name, currency: input.currency, memberIds: [uid], createdAt: now.toISOString(), createdByUid: uid, updatedAt: now.toISOString() }
+    const group = { id: groupId, kind: input.kind ?? 'group', name: input.name, currency: input.currency, memberIds: [uid], createdAt: now.toISOString(), createdByUid: uid, updatedAt: now.toISOString() }
     const result = { status: 'created', groupId }
     transaction.create(db.doc(`groups/${groupId}`), group)
     const profileData = profile.data()!
     transaction.create(db.doc(`groups/${groupId}/members/${uid}`), { status: 'active', role: 'owner', canManage: true, displayName: profileData.displayName, initials: profileData.initials, avatarUrl: profileData.avatarUrl ?? null, joinedAt: now.toISOString() })
     transaction.create(db.doc(`groups/${groupId}/settings/defaults`), { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true, updatedAt: now.toISOString() })
     transaction.create(db.doc(`groups/${groupId}/balance/current`), { groupId, balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
-    transaction.create(db.doc(`users/${uid}/groups/${groupId}`), { groupId, status: 'active', joinedAt: now.toISOString(), updatedAt: now.toISOString() })
+    transaction.create(db.doc(`users/${uid}/groups/${groupId}`), { groupId, status: 'active', contextLabel: input.name, joinedAt: now.toISOString(), updatedAt: now.toISOString() })
     transaction.create(operationRef, { schemaVersion: 1, uid, kind: 'group.create', requestHash: hash, groupId, status: 'succeeded', result, committedAt: now.toISOString() })
     return result
   })

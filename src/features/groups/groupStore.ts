@@ -112,6 +112,8 @@ export const useGroupStore = defineStore('groups', () => {
       netsByCurrency(loadedExpenses, user.id, group.currency)
       currentUser.value = user
       members.value = loadedMembers
+      const counterpart = group.kind === 'friendship' ? loadedMembers.find((member) => member.id !== user.id) : undefined
+      if (counterpart) activeGroup.value = { ...group, name: counterpart.displayName }
       expenses.value = loadedExpenses
       for (const operation of queue.snapshot()) rememberTombstone(operation, tombstoneWatermarks)
       await acknowledgeConfirmedOperations(groupId, loadedExpenses)

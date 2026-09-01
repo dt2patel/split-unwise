@@ -24,12 +24,20 @@ function expenseContextKind(value: unknown, label: string): ExpenseContextKind {
   throw new DocumentDecodeError(label, 'must be group or friendship')
 }
 
+export interface DecodedGroupProjection {
+  readonly groupId: string
+  readonly contextLabel?: string
+}
+
 /** User-visible group projections are validated before driving a group read. */
-export function decodeGroupProjection(id: string, value: unknown): string {
+export function decodeGroupProjection(id: string, value: unknown): DecodedGroupProjection {
   const data = record(value, `group projection ${id}`)
   const groupId = requiredString(data.groupId, `group projection ${id}.groupId`)
   if (groupId !== id) throw new DocumentDecodeError(`group projection ${id}`, 'groupId does not match document ID')
-  return groupId
+  return {
+    groupId,
+    ...(data.contextLabel === undefined ? {} : { contextLabel: requiredString(data.contextLabel, `group projection ${id}.contextLabel`) }),
+  }
 }
 
 export function decodeMember(id: string, value: unknown, isCurrentUser: boolean): Member {

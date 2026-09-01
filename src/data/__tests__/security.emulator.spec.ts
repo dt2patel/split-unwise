@@ -141,9 +141,16 @@ describe('Firestore rules in the emulator', () => {
 
     const invitationId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     const secondInvitationId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    await assertFails(setDoc(doc(owner, 'invitations/ddddddddddddddddddddddddddddddddddddddddddd'), invitation('ddddddddddddddddddddddddddddddddddddddddddd', 'friendship-shared', 'friend-owner', 'Friend@Example.com')))
+    await assertFails(setDoc(doc(owner, 'invitations/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'), invitation('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'friendship-shared', 'friend-owner', 'friend@example')))
     await assertSucceeds(setDoc(doc(owner, `invitations/${invitationId}`), invitation(invitationId, 'friendship-shared', 'friend-owner', 'friend@example.com')))
     await assertSucceeds(setDoc(doc(owner, `invitations/${secondInvitationId}`), invitation(secondInvitationId, 'friendship-shared', 'friend-owner', 'third@example.com')))
     await assertSucceeds(acceptInvitation(friend, invitationId, 'friendship-shared', 'friend-member', 'Friend Member', 'FM', ['friend-owner', 'friend-member']))
+    await assertSucceeds(commitSparkProfileUpdate(owner, 'friend-owner', 'friendship-shared', 'Renamed Owner', 'RO', 'friend-member'))
+    await expect(getDoc(doc(friend, 'users/friend-member/groups/friendship-shared'))).resolves.toMatchObject({
+      data: expect.any(Function),
+    })
+    expect((await getDoc(doc(friend, 'users/friend-member/groups/friendship-shared'))).data()).toMatchObject({ contextLabel: 'Renamed Owner' })
 
     const fullInvitationId = 'ccccccccccccccccccccccccccccccccccccccccccc'
     await assertFails(setDoc(doc(owner, `invitations/${fullInvitationId}`), invitation(fullInvitationId, 'friendship-shared', 'friend-owner', 'another@example.com')))
@@ -373,7 +380,7 @@ function profile(displayName: string, initials: string): Record<string, unknown>
   return { displayName, initials, avatarUrl: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
 }
 
-function commitSparkProfileUpdate(source: unknown, uid: string, groupId: string, displayName: string, initials: string): Promise<void> {
+function commitSparkProfileUpdate(source: unknown, uid: string, groupId: string, displayName: string, initials: string, counterpartUid?: string): Promise<void> {
   const db = source as Firestore
   const batch = writeBatch(db)
   batch.update(doc(db, `users/${uid}`), {
@@ -382,6 +389,7 @@ function commitSparkProfileUpdate(source: unknown, uid: string, groupId: string,
     lastRequestFingerprint: 'e'.repeat(64), lastResourceToken: 'e'.repeat(48),
   })
   batch.update(doc(db, `groups/${groupId}/members/${uid}`), { displayName, initials, avatarUrl: null })
+  if (counterpartUid) batch.update(doc(db, `users/${counterpartUid}/groups/${groupId}`), { contextLabel: displayName, updatedAt: serverTimestamp() })
   return batch.commit()
 }
 
@@ -421,13 +429,14 @@ function commitGroupBundle(source: unknown, groupId: string, ownerUid: string, d
   batch.set(doc(db, `groups/${groupId}/members/${ownerUid}`), { status: 'active', role: 'owner', canManage: true, displayName, initials, avatarUrl: null, joinedAt: serverTimestamp() })
   batch.set(doc(db, `groups/${groupId}/settings/defaults`), { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true, updatedAt: serverTimestamp() })
   batch.set(doc(db, `groups/${groupId}/balance/current`), { groupId, balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
-  batch.set(doc(db, `users/${ownerUid}/groups/${groupId}`), { groupId, status: 'active', joinedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+  batch.set(doc(db, `users/${ownerUid}/groups/${groupId}`), { groupId, status: 'active', contextLabel: 'Shared group', joinedAt: serverTimestamp(), updatedAt: serverTimestamp() })
   return batch.commit()
 }
 
 function invitation(invitationId: string, groupId: string, creatorUid: string, targetEmail?: string): Record<string, unknown> {
   return {
-    schemaVersion: 1, invitationId, tokenHash: invitationId, groupId, groupName: 'Shared group', status: 'active', createdByUid: creatorUid,
+    schemaVersion: 1, invitationId, tokenHash: invitationId, groupId, groupKind: groupId === 'friendship-shared' ? 'friendship' : 'group', groupName: 'Shared group', status: 'active', createdByUid: creatorUid,
+    createdByName: creatorUid === 'friend-owner' ? 'Friend Owner' : 'New Owner',
     createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt: Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
     ...(targetEmail ? { targetEmail } : {}),
   }
@@ -439,7 +448,11 @@ function acceptInvitation(source: unknown, invitationId: string, groupId: string
   batch.update(doc(db, `invitations/${invitationId}`), { status: 'used', usedByUid: uid, usedAt: serverTimestamp(), updatedAt: serverTimestamp() })
   batch.update(doc(db, `groups/${groupId}`), { memberIds, updatedAt: serverTimestamp() })
   batch.set(doc(db, `groups/${groupId}/members/${uid}`), { status: 'active', role: 'member', canManage: false, displayName, initials, avatarUrl: null, invitationId, joinedAt: serverTimestamp() })
-  batch.set(doc(db, `users/${uid}/groups/${groupId}`), { groupId, status: 'active', invitationId, joinedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+  batch.set(doc(db, `users/${uid}/groups/${groupId}`), {
+    groupId, status: 'active', invitationId,
+    contextLabel: groupId === 'friendship-shared' ? 'Friend Owner' : 'Shared group',
+    joinedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  })
   return batch.commit()
 }
 

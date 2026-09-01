@@ -1,7 +1,7 @@
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebaseBootstrap'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
-import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
+import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement, type DecodedGroupProjection } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
 import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
@@ -47,16 +47,24 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     })
     return pending
   }
-  function loadGroup(groupId: string, readyContext = context()): Promise<Group | undefined> {
+  function loadGroup(groupId: string, readyContext = context(), knownProjection?: DecodedGroupProjection): Promise<Group | undefined> {
     const cached = groupCache.get(groupId)
     if (cached) return Promise.resolve(cached)
     const existing = groupRequests.get(groupId)
     if (existing) return existing
     const pending = (async () => {
-      const { db, firestore } = await readyContext
-      const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
+      const { db, firestore, userId } = await readyContext
+      const [snapshot, projection] = await Promise.all([
+        firestore.getDoc(firestore.doc(db, 'groups', groupId)),
+        knownProjection
+          ? Promise.resolve(knownProjection)
+          : firestore.getDoc(firestore.doc(db, 'users', userId, 'groups', groupId)).then((membership) => membership.exists() ? decodeGroupProjection(membership.id, membership.data()) : undefined),
+      ])
       if (!snapshot.exists()) return undefined
-      const group = decodeGroup(snapshot.id, snapshot.data())
+      const decoded = decodeGroup(snapshot.id, snapshot.data())
+      const group = decoded.kind === 'friendship' && projection?.contextLabel
+        ? { ...decoded, name: projection.contextLabel }
+        : decoded
       groupCache.set(group.id, group)
       return group
     })()
@@ -112,7 +120,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       return serverPage(decoded, activityQuery.limit, (item) => item.id)
     }
     const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
-    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()))
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()).groupId)
     const pages = await Promise.all(groupIds.map(async (groupId) => {
       const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), ...constraints))
       return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
@@ -164,7 +172,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   async function findSparkNotification(notificationId: string, readyContext = context()): Promise<NotificationItem> {
     const { db, firestore, userId } = await readyContext
     const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
-    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()))
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()).groupId)
     const snapshots = await Promise.all(groupIds.map(async (groupId) => ({
       groupId,
       snapshot: await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'activity', notificationId)),
@@ -584,7 +592,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const identity = await createOperationIdentity(userId, command)
     const token = identity.resourceId.slice('operation-'.length)
     const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
-    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()))
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()).groupId)
     const profileReference = firestore.doc(db, 'users', userId)
     await firestore.runTransaction(db, async (transaction) => {
       const memberReferences = groupIds.map((groupId) => firestore.doc(db, 'groups', groupId, 'members', userId))
@@ -610,6 +618,16 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     await firebaseAuth.updateProfile(currentAuthUser, { displayName: command.displayName.trim().replace(/\s+/g, ' ') })
     const saved = await firestore.getDoc(profileReference)
     if (!saved.exists() || saved.data().lastOperationId !== identity.operationId) throw new Error('Saved Firebase profile is unavailable')
+    const groupSnapshots = await Promise.all(groupIds.map((groupId) => firestore.getDoc(firestore.doc(db, 'groups', groupId))))
+    await Promise.all(groupSnapshots.flatMap((group, index) => {
+      const data = group.data()
+      if (!group.exists() || !isRecord(data) || data.kind !== 'friendship' || !Array.isArray(data.memberIds) || data.memberIds.length !== 2) return []
+      const counterpartUid = data.memberIds.find((memberId) => typeof memberId === 'string' && memberId !== userId)
+      if (typeof counterpartUid !== 'string') return []
+      return [firestore.updateDoc(firestore.doc(db, 'users', counterpartUid, 'groups', groupIds[index]!), {
+        contextLabel: command.displayName.trim().replace(/\s+/g, ' '), updatedAt: firestore.serverTimestamp(),
+      })]
+    }))
     return { kind: 'profile.update', operationId: command.operationId, status: 'saved', resourceId: userId }
   }
 
@@ -735,8 +753,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         const { db, firestore, userId } = await readyContext
         const projection = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
         const groups = await Promise.all(projection.docs.map((membership) => {
-          const groupId = decodeGroupProjection(membership.id, membership.data())
-          return loadGroup(groupId, readyContext)
+          const decodedProjection = decodeGroupProjection(membership.id, membership.data())
+          return loadGroup(decodedProjection.groupId, readyContext, decodedProjection)
         }))
         return groups.filter((group): group is NonNullable<typeof group> => group !== undefined).sort((left, right) => left.name.localeCompare(right.name))
       },

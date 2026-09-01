@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DocumentDecodeError, decodeActivity, decodeExpense, decodeGroup, decodeRecurringExpense } from '../firebaseDecoders'
+import { DocumentDecodeError, decodeActivity, decodeExpense, decodeGroup, decodeGroupProjection, decodeRecurringExpense } from '../firebaseDecoders'
 import { readFirebaseConfiguration } from '../firebase'
 import { createRepository } from '../repositoryFactory'
 
@@ -9,6 +9,14 @@ describe('Firebase boundary decoders', () => {
     expect(decodeGroup('friend-jordan', { ...shared, kind: 'friendship' })).toMatchObject({ kind: 'friendship' })
     expect(decodeGroup('legacy-group', shared)).toMatchObject({ kind: 'group' })
     expect(() => decodeGroup('unknown-context', { ...shared, kind: 'household' })).toThrow('kind')
+  })
+
+  it('decodes a user-specific context label while accepting legacy projections', () => {
+    expect(decodeGroupProjection('friend-jordan', { groupId: 'friend-jordan', contextLabel: 'Jordan Lee' })).toEqual({
+      groupId: 'friend-jordan', contextLabel: 'Jordan Lee',
+    })
+    expect(decodeGroupProjection('legacy-group', { groupId: 'legacy-group' })).toEqual({ groupId: 'legacy-group' })
+    expect(() => decodeGroupProjection('friend-jordan', { groupId: 'friend-jordan', contextLabel: '' })).toThrow('contextLabel')
   })
 
   it('rejects an expense with an unsupported currency instead of defaulting it', () => {

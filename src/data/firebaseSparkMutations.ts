@@ -31,6 +31,10 @@ export interface SparkInvitationPreview {
   readonly alreadyMember: boolean
 }
 
+export type SparkFriendshipCreationResult =
+  | { readonly status: 'ready'; readonly groupId: string; readonly invitation: PreparedInvitation }
+  | { readonly status: 'invitation-required'; readonly groupId: string; readonly reason: string }
+
 export interface SparkExpenseRecord {
   readonly expenseId: string
   readonly expenseDocument: Readonly<Record<string, unknown>>
@@ -667,7 +671,7 @@ export async function createSparkGroup(configuration: FirebaseConfiguration, inp
     groupId: normalized.groupId, balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [],
   })
   batch.set(doc(db, `users/${user.uid}/groups/${normalized.groupId}`), {
-    groupId: normalized.groupId, status: 'active', joinedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    groupId: normalized.groupId, status: 'active', contextLabel: normalized.name, joinedAt: serverTimestamp(), updatedAt: serverTimestamp(),
   })
   await batch.commit()
   return { groupId: normalized.groupId }
@@ -679,7 +683,7 @@ export async function createSparkFriendship(configuration: FirebaseConfiguration
   readonly email: string
   readonly currency: string
   readonly canonicalOrigin: string
-}): Promise<{ readonly groupId: string; readonly invitation: PreparedInvitation }> {
+}): Promise<SparkFriendshipCreationResult> {
   const targetEmail = normalizeEmail(input.email)
   const app = await getSplitUnwiseFirebaseApp(configuration)
   const user = getAuth(app).currentUser
@@ -688,8 +692,12 @@ export async function createSparkFriendship(configuration: FirebaseConfiguration
   const { groupId } = await createSparkGroup(configuration, {
     operationId: input.operationId, kind: 'friendship', name: input.displayName, currency: input.currency,
   })
-  const invitation = await createSparkInvitation(configuration, { groupId, canonicalOrigin: input.canonicalOrigin, targetEmail })
-  return { groupId, invitation }
+  try {
+    const invitation = await createSparkInvitation(configuration, { groupId, canonicalOrigin: input.canonicalOrigin, targetEmail })
+    return { status: 'ready', groupId, invitation }
+  } catch (reason) {
+    return { status: 'invitation-required', groupId, reason: reason instanceof Error ? reason.message : 'The invitation could not be prepared.' }
+  }
 }
 
 export async function createSparkInvitation(configuration: FirebaseConfiguration, input: { readonly groupId: string; readonly canonicalOrigin: string; readonly targetEmail?: string }): Promise<PreparedInvitation> {
@@ -699,9 +707,13 @@ export async function createSparkInvitation(configuration: FirebaseConfiguration
   const user = auth.currentUser
   if (!user) throw new Error('Sign in before inviting people.')
   const db = getFirestore(app)
-  const group = await getDoc(doc(db, `groups/${input.groupId}`))
+  const [group, profile] = await Promise.all([
+    getDoc(doc(db, `groups/${input.groupId}`)),
+    getDoc(doc(db, `users/${user.uid}`)),
+  ])
   if (!group.exists()) throw new Error('This group is not available.')
-  await writeInvitation(db, prepared, user.uid, String(group.data().name ?? 'Group'))
+  if (!profile.exists()) throw new Error('Your profile is still being prepared. Try again.')
+  await writeInvitation(db, prepared, user.uid, group.data().kind === 'friendship' ? 'friendship' : 'group', String(group.data().name ?? 'Group'), requireProfile(profile.data()).displayName)
   const { secret: _secret, ...publicInvitation } = prepared
   return publicInvitation
 }
@@ -740,6 +752,7 @@ export async function acceptSparkInvitation(configuration: FirebaseConfiguration
   ])
   if (projection.data()?.status === 'active') return { groupId }
   if (!profileSnapshot.exists()) throw new Error('Your profile is still being prepared. Try again.')
+  if (data.groupKind === 'friendship' && typeof data.createdByName !== 'string') throw new Error('This friend invitation is invalid.')
   const profile = requireProfile(profileSnapshot.data())
   const batch = writeBatch(db)
   batch.update(invitationReference, { status: 'used', usedByUid: user.uid, usedAt: serverTimestamp(), updatedAt: serverTimestamp() })
@@ -748,7 +761,9 @@ export async function acceptSparkInvitation(configuration: FirebaseConfiguration
     status: 'active', role: 'member', canManage: false, ...profile, invitationId, joinedAt: serverTimestamp(),
   })
   batch.set(doc(db, `users/${user.uid}/groups/${groupId}`), {
-    groupId, status: 'active', invitationId, joinedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    groupId, status: 'active', invitationId,
+    contextLabel: String(data.groupKind === 'friendship' ? data.createdByName : data.groupName),
+    joinedAt: serverTimestamp(), updatedAt: serverTimestamp(),
   })
   await batch.commit()
   return { groupId }
@@ -771,11 +786,12 @@ function authenticatedUser(app: Awaited<ReturnType<typeof getSplitUnwiseFirebase
   return identity ?? current
 }
 
-async function writeInvitation(db: ReturnType<typeof getFirestore>, prepared: PreparedInvitation & { readonly secret: string }, uid: string, rawGroupName: string): Promise<void> {
+async function writeInvitation(db: ReturnType<typeof getFirestore>, prepared: PreparedInvitation & { readonly secret: string }, uid: string, groupKind: ExpenseContextKind, rawGroupName: string, rawCreatedByName: string): Promise<void> {
   const groupName = normalizeDisplayName(rawGroupName)
+  const createdByName = normalizeDisplayName(rawCreatedByName)
   const data: Record<string, unknown> = {
-    schemaVersion: 1, invitationId: prepared.invitationId, tokenHash: prepared.invitationId, groupId: prepared.groupId, groupName,
-    status: 'active', createdByUid: uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt: Timestamp.fromDate(new Date(prepared.expiresAt)),
+    schemaVersion: 1, invitationId: prepared.invitationId, tokenHash: prepared.invitationId, groupId: prepared.groupId, groupKind, groupName,
+    status: 'active', createdByUid: uid, createdByName, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt: Timestamp.fromDate(new Date(prepared.expiresAt)),
   }
   if (prepared.targetEmail) data.targetEmail = prepared.targetEmail
   const batch = writeBatch(db)

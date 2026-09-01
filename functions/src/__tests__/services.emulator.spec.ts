@@ -4,6 +4,7 @@ import { getStorage } from 'firebase-admin/storage'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   acceptInvitationService,
+  createGroupService,
   createInvitationService,
   createJobService,
   fanOutActivity,
@@ -58,6 +59,16 @@ suite('Firebase services against the emulators', () => {
     await revokeInvitationService(db, 'owner', { schemaVersion: 1, operationId: 'revoke-invite', invitationId: revoked.invitationId }, now)
     await expect(inspectInvitationService(db, 'guest', { emailVerified: true }, { schemaVersion: 1, invitationId: revoked.invitationId, token: fragmentToken(String(revoked.link)) }, now)).rejects.toMatchObject({ code: 'failed-precondition' })
   }, 30_000)
+
+  it('preserves replay compatibility for legacy group creation requests without kind', async () => {
+    const request = { schemaVersion: 1 as const, operationId: 'legacy-group-create', name: 'Legacy group', currency: 'USD' }
+    const first = await createGroupService(db, 'owner', request, new Date('2026-09-01T12:00:00.000Z'))
+
+    await expect(createGroupService(db, 'owner', request, new Date('2026-09-01T12:01:00.000Z'))).resolves.toEqual(first)
+    await expect(createGroupService(db, 'owner', { ...request, kind: 'group' }, new Date('2026-09-01T12:02:00.000Z'))).rejects.toMatchObject({ code: 'already-exists' })
+    await expect(db.doc(`groups/${String(first.groupId)}`).get()).resolves.toMatchObject({ exists: true })
+    expect((await db.doc(`groups/${String(first.groupId)}`).get()).data()).toMatchObject({ kind: 'group' })
+  })
 
   it('validates job authorization and type-specific inputs before creating a private idempotent job', async () => {
     await db.doc('groups/group-a/assets/receipt-a').set({ status: 'ready', groupId: 'group-a', ownerUid: 'owner' })
@@ -135,8 +146,8 @@ async function seed(db: Firestore): Promise<void> {
     db.doc('users/challenger').set({ displayName: 'Challenger', initials: 'C' }),
     db.doc('users/removed').set({ displayName: 'Removed', initials: 'R' }),
     db.doc('groups/group-a').set({ name: 'Group A', currency: 'USD', memberIds: ['owner', 'member'] }),
-    db.doc('groups/group-a/members/owner').set({ status: 'active', role: 'owner', canManage: true }),
-    db.doc('groups/group-a/members/member').set({ status: 'active', role: 'member', canManage: false }),
+    db.doc('groups/group-a/members/owner').set({ status: 'active', role: 'owner', canManage: true, displayName: 'Owner' }),
+    db.doc('groups/group-a/members/member').set({ status: 'active', role: 'member', canManage: false, displayName: 'Member' }),
     db.doc('groups/group-a/members/removed').set({ status: 'removed', role: 'member', canManage: false }),
     db.doc('groups/group-a/balance/current').set({ groupId: 'group-a', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] }),
   ])

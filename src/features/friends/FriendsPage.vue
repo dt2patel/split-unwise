@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
 import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
 import { add, chevronForward, copyOutline, peopleOutline } from 'ionicons/icons'
 import { useGroupStore } from '../groups/groupStore'
@@ -16,6 +17,7 @@ import type { PreparedInvitation } from '../invitations/invitations'
 const store = useGroupStore()
 const { groups, error, isLoading } = storeToRefs(store)
 const session = getAppSession()
+const router = useRouter()
 const friends = computed(() => friendshipContexts(groups.value))
 const showingCreate = ref(false)
 const displayName = ref('')
@@ -43,6 +45,11 @@ async function createFriend(): Promise<void> {
       operationId: createClientOperationId('friend'), displayName: name, email: email.value, currency: currency.value,
       canonicalOrigin: String(import.meta.env.VITE_CANONICAL_ORIGIN ?? 'https://split-unwise-aditya.web.app'),
     })
+    if (result.status === 'invitation-required') {
+      await store.loadOverview()
+      await router.push(`/tabs/groups/${encodeURIComponent(result.groupId)}/invite`)
+      return
+    }
     invitation.value = result.invitation
     notice.value = `Private invitation ready for ${result.invitation.targetEmail}.`
     showingCreate.value = false

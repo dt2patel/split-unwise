@@ -38,7 +38,7 @@ async function createGroup(): Promise<void> {
     if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for group creation.')
     const operationId = createClientOperationId('group')
     const value = runtime.functionsRegion
-      ? await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId, name, currency: currency.value }, { replayProtected: true })
+      ? await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId, kind: 'group', name, currency: currency.value }, { replayProtected: true })
       : await createSparkGroup(runtime.firebase, { operationId, name, currency: currency.value })
     if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error('Group service returned an invalid response.')
     await store.loadOverview()

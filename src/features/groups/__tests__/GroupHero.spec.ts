@@ -32,4 +32,17 @@ describe('GroupHero', () => {
     expect(wrapper.get('[data-testid="group-cover"]').attributes()).toMatchObject({ src: '/cover.jpg', alt: '' })
     expect(wrapper.find('[data-testid="group-cover-fallback"]').exists()).toBe(false)
   })
+
+  it('names the other person in direct balance copy', () => {
+    const wrapper = mount(GroupHero, {
+      props: {
+        group: { ...group, kind: 'friendship', name: 'Jordan Lee' },
+        balances: [{ currency: 'USD', minorAmount: 1250 }], collapsed: false,
+      },
+      global: { stubs: { IonIcon: true } },
+    })
+
+    expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('Jordan Lee owes you')
+    expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$12.50')
+  })
 })

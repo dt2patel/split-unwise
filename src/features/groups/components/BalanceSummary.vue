@@ -3,9 +3,14 @@ import { computed } from 'vue'
 import { formatMoney } from '../../../components/MoneyAmount.vue'
 import type { Money } from '../../../domain/model'
 
-const props = defineProps<{ money: Money }>()
+const props = defineProps<{ money: Money; counterpartName?: string }>()
 
-const direction = computed(() => props.money.minorAmount > 0 ? 'You are owed' : props.money.minorAmount < 0 ? 'You owe' : 'You are settled up')
+const direction = computed(() => {
+  if (!props.counterpartName) return props.money.minorAmount > 0 ? 'You are owed' : props.money.minorAmount < 0 ? 'You owe' : 'You are settled up'
+  if (props.money.minorAmount > 0) return `${props.counterpartName} owes you`
+  if (props.money.minorAmount < 0) return `You owe ${props.counterpartName}`
+  return `You and ${props.counterpartName} are settled up`
+})
 const displayMoney = computed(() => ({ ...props.money, minorAmount: Math.abs(props.money.minorAmount) }))
 const formatted = computed(() => formatMoney(displayMoney.value))
 </script>

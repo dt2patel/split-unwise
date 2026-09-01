@@ -94,11 +94,11 @@ describe('Task 7 Firebase repository query boundaries', () => {
     ]
     firebase.groupProjectionDocuments = [
       document('lake-house-weekend', { groupId: 'lake-house-weekend', status: 'active' }),
-      document('road-trip', { groupId: 'road-trip', status: 'active' }),
+      document('road-trip', { groupId: 'road-trip', status: 'active', contextLabel: 'Jordan Lee' }),
     ]
     firebase.groupDocuments = {
       'groups/lake-house-weekend': document('lake-house-weekend', groupData('lake-house-weekend', 'Lake House Weekend')),
-      'groups/road-trip': document('road-trip', groupData('road-trip', 'Road Trip')),
+      'groups/road-trip': document('road-trip', { ...groupData('road-trip', 'Friendship storage name'), kind: 'friendship', memberIds: ['maya-p', 'jordan-p'] }),
     }
     firebase.groupActivityDocuments = {
       'groups/lake-house-weekend/activity': [
@@ -131,7 +131,9 @@ describe('Task 7 Firebase repository query boundaries', () => {
   it('reuses group documents loaded for the overview when a group is opened', async () => {
     const repository = createFirebaseRepository(configuration)
 
-    await expect(repository.groups.list()).resolves.toHaveLength(2)
+    await expect(repository.groups.list()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'road-trip', kind: 'friendship', name: 'Jordan Lee' }),
+    ]))
     const readsAfterOverview = firebase.documentReads.filter((path) => path === 'groups/lake-house-weekend').length
     await expect(repository.groups.getById('lake-house-weekend')).resolves.toMatchObject({ id: 'lake-house-weekend' })
 

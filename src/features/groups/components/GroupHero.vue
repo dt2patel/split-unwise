@@ -31,7 +31,7 @@ const initials = computed(() => {
       <div class="group-hero__monogram" data-testid="group-monogram" aria-hidden="true">{{ initials }}</div>
       <h1 id="group-title">{{ group.name }}</h1>
       <div class="group-hero__balances">
-        <balance-summary v-for="balance in balances" :key="balance.currency" :money="balance" />
+        <balance-summary v-for="balance in balances" :key="balance.currency" :money="balance" :counterpart-name="group.kind === 'friendship' ? group.name : undefined" />
       </div>
     </div>
   </section>
