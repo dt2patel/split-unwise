@@ -130,6 +130,24 @@ describe('ExpenseEditorPage', () => {
     await expect(canDismiss(undefined, 'gesture')).resolves.toBe(true)
   })
 
+  it.each([
+    ['context', '#context-sheet-trigger'],
+    ['payer', '#payer-sheet-trigger'],
+    ['participant', '#participant-sheet-trigger'],
+    ['split', '#split-sheet-trigger'],
+    ['receipt', '#receipt-sheet-trigger'],
+    ['recurrence', '#recurrence-sheet-trigger'],
+  ] as const)('marks the rendered %s sheet root as Ionic card-modal scroll content', async (name, triggerSelector) => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    if (name === 'receipt') store.editor.attachmentRefs.push('receipts/draft.jpg')
+
+    await wrapper.get(triggerSelector).trigger('click')
+
+    const scrollRoot = wrapper.get('[data-testid="active-sheet"] [data-sheet-scroll]')
+    expect(scrollRoot.classes()).toContain('expense-sheet')
+    expect(scrollRoot.classes()).toContain('ion-content-scroll-host')
+  })
+
   it('lets a no-query composer choose a real group context before editing participants', async () => {
     const { wrapper } = await mountRoute('/tabs/home/expenses/new')
     await wrapper.get('#context-sheet-trigger').trigger('click')

@@ -53,3 +53,46 @@ The existing untracked audit evidence and recurring-expenses plan were inspected
 
 - Automated tests prove the Ionic prop contract, dismissal branching, DOM accessibility behavior, and responsive CSS rules, but do not prove physical swipe feel, VoiceOver output, keyboard animation, or the rendered iOS card appearance on a device.
 - The environment continues to emit the existing Node 26 versus Functions Node 22 engine warning, experimental localStorage warning, and Ionic missing-sourcemap warnings. They did not fail the focused commands.
+
+## Review Fix Round 1
+
+### Implementation
+
+- Added Ionic's `ion-content-scroll-host` class through each active `ContextSheet`, `PayerSheet`, `ParticipantSheet`, `SplitEditor`, `ReceiptReview`, and `RecurrenceSheet` component instance. Vue attribute fallthrough places it on the existing `.expense-sheet[data-sheet-scroll]` root that already owns scrolling and keyboard avoidance.
+- Kept the inline modal in its original location and added no wrapper or second scroll container. Explicit sheet-header Cancel still closes immediately; only dirty backdrop/gesture dismissal uses the existing guard.
+
+### TDD Evidence
+
+Focused regression before the component-instance fix:
+
+```sh
+pnpm exec vitest run src/features/expenses/__tests__/ExpenseEditorPage.spec.ts -t "Ionic card-modal scroll content"
+```
+
+RED result: **6 failed, 30 skipped**. Every rendered sheet root carried `expense-sheet` but lacked `ion-content-scroll-host`.
+
+GREEN result after adding only the fallthrough classes: **6 passed, 30 skipped**.
+
+### Final Focused Verification
+
+```sh
+pnpm exec vitest run src/features/expenses/__tests__/ExpenseEditorPage.spec.ts src/features/expenses/__tests__/ExpenseSheets.spec.ts src/features/expenses/__tests__/SplitEditor.spec.ts src/features/expenses/__tests__/sheetKeyboardAvoidance.spec.ts
+pnpm typecheck
+git diff --check
+```
+
+Results:
+
+- Focused expense editor/sheet suite: **4 files passed; 87 tests passed**.
+- Shared build and Vue TypeScript check: **passed**.
+- Whitespace check: **clean**.
+
+### Fix-Round Files Changed
+
+- `src/features/expenses/ExpenseEditorPage.vue`
+- `src/features/expenses/__tests__/ExpenseEditorPage.spec.ts`
+- `.superpowers/sdd/2026-09-01-spark-recurring-expenses/task-4b-report.md`
+
+### Remaining Concern
+
+The rendered-component regression proves Ionic can discover the real scroll host without replacing the existing keyboard-aware root. Task 5/controller live-browser verification still owns proving the prior `<ion-modal> must be used inside ion-content.` console diagnostic is absent and physical card swipe dismissal initializes correctly.
