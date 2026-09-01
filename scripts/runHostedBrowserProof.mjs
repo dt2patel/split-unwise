@@ -272,7 +272,9 @@ async function verifyMemberRemoval(browser) {
     await page.goto(`${deepUrl}/settings`, { waitUntil: 'domcontentloaded' })
     await page.getByRole('heading', { name: 'Group settings', exact: true }).waitFor({ state: 'visible' })
     await page.getByText('3 active people', { exact: true }).waitFor({ state: 'visible' })
-    await page.getByRole('button', { name: 'Remove Live Third Person from group', exact: true }).click()
+    const removalAction = page.locator('ion-button[aria-label="Remove Live Third Person from group"]')
+    await removalAction.waitFor({ state: 'visible' })
+    await removalAction.click()
 
     const cardModal = page.locator('ion-modal.show-modal')
     await cardModal.waitFor({ state: 'visible' })
@@ -282,7 +284,7 @@ async function verifyMemberRemoval(browser) {
     await cardModal.waitFor({ state: 'hidden' })
     await page.getByText('Live Third Person was removed from the group.', { exact: true }).waitFor({ state: 'visible' })
     await page.getByText('2 active people', { exact: true }).waitFor({ state: 'visible' })
-    if (await page.getByRole('button', { name: 'Remove Live Third Person from group', exact: true }).count()) {
+    if (await removalAction.count()) {
       throw new Error('Hosted member list still exposed the removed account.')
     }
     assertPageClean()
