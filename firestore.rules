@@ -828,9 +828,42 @@ service cloud.firestore {
     function sparkDefaultIncludesMember(data, uid) {
       return 'defaultSplit' in data && uid in data.defaultSplit.participantIds;
     }
+    function validSparkCurrencyRateExistsAt(groupId, conversionId, sources, index) {
+      let source = sources.size() > index ? sources[index] : 'NONE';
+      return sources.size() <= index
+        || existsAfter(/databases/$(database)/documents/groups/$(groupId)/currencyConversions/$(conversionId)/rates/$(source));
+    }
+    function validSparkCurrencyConversion(conversion) {
+      return conversion is map
+        && conversion.keys().hasOnly(['schemaVersion', 'groupId', 'operationId', 'targetCurrency', 'convertedAt', 'sourceCurrencies'])
+        && conversion.keys().hasAll(['schemaVersion', 'groupId', 'operationId', 'targetCurrency', 'convertedAt', 'sourceCurrencies'])
+        && conversion.schemaVersion == 1
+        && conversion.operationId is string && conversion.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && conversion.targetCurrency is string && conversion.targetCurrency.matches('^[A-Z]{3}$')
+        && conversion.convertedAt == request.time
+        && conversion.sourceCurrencies is list
+        && conversion.sourceCurrencies.size() > 0 && conversion.sourceCurrencies.size() <= 6
+        && conversion.sourceCurrencies.toSet().size() == conversion.sourceCurrencies.size();
+    }
+    function validSparkCurrencyRateCreate(groupId, conversionId, sourceCurrency, rate) {
+      let conversion = getAfter(/databases/$(database)/documents/groups/$(groupId)/currencyConversions/$(conversionId)).data;
+      return activeManager(groupId)
+        && rate.keys().hasOnly(['schemaVersion', 'groupId', 'conversionId', 'operationId', 'baseCurrency', 'quoteCurrency', 'numerator', 'denominator', 'authority', 'effectiveDate', 'observedAt'])
+        && rate.keys().hasAll(['schemaVersion', 'groupId', 'conversionId', 'operationId', 'baseCurrency', 'quoteCurrency', 'numerator', 'denominator', 'authority', 'effectiveDate', 'observedAt'])
+        && rate.schemaVersion == 1 && rate.groupId == groupId && rate.conversionId == conversionId
+        && rate.operationId == conversion.operationId
+        && sourceCurrency == rate.baseCurrency && sourceCurrency in conversion.sourceCurrencies
+        && rate.baseCurrency is string && rate.baseCurrency.matches('^[A-Z]{3}$')
+        && rate.quoteCurrency == conversion.targetCurrency && rate.baseCurrency != conversion.targetCurrency
+        && rate.numerator is int && rate.numerator > 0
+        && rate.denominator is int && rate.denominator > 0
+        && rate.authority is string && rate.authority.size() > 0 && rate.authority.size() <= 200
+        && rate.effectiveDate is string && rate.effectiveDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && rate.observedAt is string && rate.observedAt.matches('^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$');
+    }
     function validSparkSettingsShape(groupId, data) {
       return data.keys().hasOnly([
-          'schemaVersion', 'groupId', 'revision', 'defaultSplit', 'simplifyDebtsEnabled',
+          'schemaVersion', 'groupId', 'revision', 'defaultSplit', 'simplifyDebtsEnabled', 'currencyConversion',
           'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
         ])
         && data.keys().hasAll([
@@ -889,6 +922,54 @@ service cloud.firestore {
         && after.get('defaultSplit', null) == before.get('defaultSplit', null)
         && validSparkSettingsBalanceAdvance(groupId, before, after);
     }
+    function validSparkCurrencyBalanceAdvance(groupId, beforeSettings, afterSettings) {
+      let before = get(/databases/$(database)/documents/groups/$(groupId)/balance/current).data;
+      let after = getAfter(/databases/$(database)/documents/groups/$(groupId)/balance/current).data;
+      return before.groupId == groupId && after.groupId == groupId
+        && before.balanceRevision is int && before.balanceRevision >= 0
+        && after.diff(before).affectedKeys().hasOnly(['balanceRevision'])
+        && after.balanceRevision == before.balanceRevision + 1
+        && after.simplifyDebtsEnabled == before.simplifyDebtsEnabled
+        && after.simplifyDebtsEnabled == afterSettings.simplifyDebtsEnabled;
+    }
+    function validSparkCurrencySettingsUpdate(groupId, before, after) {
+      let conversionId = 'conversion-' + after.lastResourceToken;
+      let conversion = getAfter(/databases/$(database)/documents/groups/$(groupId)/currencyConversions/$(conversionId)).data;
+      return after.lastCommandKind == 'group.currency-conversion'
+        && activeManager(groupId)
+        && after.simplifyDebtsEnabled == before.simplifyDebtsEnabled
+        && after.get('defaultSplit', null) == before.get('defaultSplit', null)
+        && after.currencyConversion != before.get('currencyConversion', null)
+        && after.currencyConversion.keys().hasOnly(['schemaVersion', 'operationId', 'targetCurrency', 'convertedAt'])
+        && after.currencyConversion.keys().hasAll(['schemaVersion', 'operationId', 'targetCurrency', 'convertedAt'])
+        && after.currencyConversion.schemaVersion == 1
+        && after.currencyConversion.operationId == after.lastOperationId
+        && after.currencyConversion.targetCurrency is string && after.currencyConversion.targetCurrency.matches('^[A-Z]{3}$')
+        && after.currencyConversion.convertedAt == request.time
+        && conversion.groupId == groupId
+        && conversion.operationId == after.currencyConversion.operationId
+        && conversion.targetCurrency == after.currencyConversion.targetCurrency
+        && conversion.convertedAt == after.currencyConversion.convertedAt
+        && validSparkCurrencyBalanceAdvance(groupId, before, after);
+    }
+    function validSparkCurrencyConversionCreate(groupId, conversionId, data) {
+      let settings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
+      return activeManager(groupId)
+        && conversionId == 'conversion-' + settings.lastResourceToken
+        && settings.lastCommandKind == 'group.currency-conversion'
+        && settings.lastOperationId == data.operationId
+        && settings.currencyConversion.operationId == data.operationId
+        && settings.currencyConversion.targetCurrency == data.targetCurrency
+        && settings.currencyConversion.convertedAt == data.convertedAt
+        && data.groupId == groupId
+        && validSparkCurrencyConversion(data)
+        && validSparkCurrencyRateExistsAt(groupId, conversionId, data.sourceCurrencies, 0)
+        && validSparkCurrencyRateExistsAt(groupId, conversionId, data.sourceCurrencies, 1)
+        && validSparkCurrencyRateExistsAt(groupId, conversionId, data.sourceCurrencies, 2)
+        && validSparkCurrencyRateExistsAt(groupId, conversionId, data.sourceCurrencies, 3)
+        && validSparkCurrencyRateExistsAt(groupId, conversionId, data.sourceCurrencies, 4)
+        && validSparkCurrencyRateExistsAt(groupId, conversionId, data.sourceCurrencies, 5);
+    }
     function validSparkMemberSettingsUpdate(groupId, before, after) {
       let group = getAfter(/databases/$(database)/documents/groups/$(groupId)).data;
       return after.lastCommandKind == 'group.member-remove'
@@ -916,21 +997,64 @@ service cloud.firestore {
           'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
         ])
         && validSparkSettingsActivityData(groupId, activityId, activity, data)
-        && (validSparkDefaultSettingsUpdate(groupId, resource.data, data)
-          || validSparkSimplifySettingsUpdate(groupId, resource.data, data)
-          || validSparkMemberSettingsUpdate(groupId, resource.data, data));
+        && (data.lastCommandKind == 'group.default-split'
+          ? validSparkDefaultSettingsUpdate(groupId, resource.data, data)
+          : (data.lastCommandKind == 'group.simplify-debts'
+            ? validSparkSimplifySettingsUpdate(groupId, resource.data, data)
+            : validSparkMemberSettingsUpdate(groupId, resource.data, data)));
+    }
+    function validSparkCurrencySettingsDocumentUpdate(groupId, data) {
+      let activityId = 'activity-' + data.lastResourceToken;
+      let activity = getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
+      return validSparkCurrencySettingsShape(groupId, data)
+        && resource.data.schemaVersion == 1 && resource.data.groupId == groupId
+        && resource.data.revision is int && data.revision == resource.data.revision + 1
+        && data.lastOperationId != resource.data.get('lastOperationId', '')
+        && data.lastResourceToken != resource.data.get('lastResourceToken', '')
+        && validSparkCurrencySettingsActivityData(groupId, activityId, activity, data)
+        && validSparkCurrencySettingsUpdate(groupId, resource.data, data);
+    }
+    function validSparkCurrencySettingsShape(groupId, data) {
+      return data.keys().hasOnly([
+          'schemaVersion', 'groupId', 'revision', 'defaultSplit', 'simplifyDebtsEnabled', 'currencyConversion',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
+        ])
+        && data.keys().hasAll([
+          'schemaVersion', 'groupId', 'revision', 'simplifyDebtsEnabled', 'currencyConversion',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
+        ])
+        && data.schemaVersion == 1 && data.groupId == groupId
+        && data.revision is int && data.revision > 1 && data.simplifyDebtsEnabled is bool
+        && data.lastCommandKind == 'group.currency-conversion'
+        && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
+        && data.updatedAt == request.time && validSparkCurrentActor(groupId, data.updatedBy);
+    }
+    function validSparkCurrencySettingsActivityData(groupId, activityId, activity, settings) {
+      return activity.keys().hasOnly(['groupId', 'operationId', 'kind', 'subject', 'actor', 'createdAt'])
+        && activityId == 'activity-' + settings.lastResourceToken
+        && activity.groupId == groupId && activity.operationId == settings.lastOperationId
+        && activity.kind == 'group.event' && activity.actor == settings.updatedBy && activity.createdAt == request.time
+        && activity.subject.keys().hasOnly(['kind', 'id', 'label'])
+        && activity.subject.kind == 'group' && activity.subject.id == groupId
+        && activity.subject.label == 'Currencies converted to ' + settings.currencyConversion.targetCurrency;
     }
     function validSparkSettingsActivityCreate(groupId, activityId, data) {
       let settings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
-      return settings.updatedAt == request.time && validSparkSettingsActivityData(groupId, activityId, data, settings);
+      return settings.updatedAt == request.time && (settings.lastCommandKind == 'group.currency-conversion'
+        ? validSparkCurrencySettingsActivityData(groupId, activityId, data, settings)
+        : validSparkSettingsActivityData(groupId, activityId, data, settings));
     }
     function validSparkBalanceSettingsUpdate(groupId) {
       let beforeSettings = get(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
       let afterSettings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
-      return afterSettings.lastCommandKind == 'group.simplify-debts'
+      return (afterSettings.lastCommandKind == 'group.simplify-debts' || afterSettings.lastCommandKind == 'group.currency-conversion')
         && afterSettings.revision == beforeSettings.revision + 1
         && afterSettings.updatedAt == request.time
-        && validSparkSettingsBalanceAdvance(groupId, beforeSettings, afterSettings);
+        && (afterSettings.lastCommandKind == 'group.currency-conversion'
+          ? validSparkCurrencyBalanceAdvance(groupId, beforeSettings, afterSettings)
+          : validSparkSettingsBalanceAdvance(groupId, beforeSettings, afterSettings));
     }
 
     function validNewGroup(groupId, data) {
@@ -1286,9 +1410,21 @@ service cloud.firestore {
       }
       match /settings/{settingId} {
         allow get: if activeMember(groupId); allow list, delete: if false;
-        allow update: if settingId == 'defaults' && validSparkSettingsUpdate(groupId, request.resource.data);
+        allow update: if settingId == 'defaults' && (request.resource.data.lastCommandKind == 'group.currency-conversion'
+          ? validSparkCurrencySettingsDocumentUpdate(groupId, request.resource.data)
+          : validSparkSettingsUpdate(groupId, request.resource.data));
         allow create: if settingId == 'defaults' && validSettings(groupId, request.resource.data)
           && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data);
+      }
+      match /currencyConversions/{conversionId} {
+        allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
+        allow create: if validSparkCurrencyConversionCreate(groupId, conversionId, request.resource.data);
+        allow update, delete: if false;
+        match /rates/{sourceCurrency} {
+          allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(6);
+          allow create: if validSparkCurrencyRateCreate(groupId, conversionId, sourceCurrency, request.resource.data);
+          allow update, delete: if false;
+        }
       }
       match /recurringTemplates/{templateId} {
         allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);

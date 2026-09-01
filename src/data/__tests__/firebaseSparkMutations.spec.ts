@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -558,6 +558,42 @@ describe('Firebase Spark mutations', () => {
     expect(cleared.activityDocument).toMatchObject({ subject: { label: 'Default split cleared' } })
   })
 
+  it('versions one manager-only applied conversion with a server cutoff and balance invalidation', () => {
+    const command: GroupCurrencyConversionCommand = {
+      kind: 'group.currency-conversion', operationId: 'convert-usd-eur', groupId: 'group-a', expectedRevision: 4, targetCurrency: 'EUR',
+      rates: [{ baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 86_237, denominator: 100_000, authority: 'ECB', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z' }],
+    }
+    const actor = { id: 'owner', displayName: 'Owner Account' }
+    const identity: OperationIdentity = { userId: actor.id, operationId: command.operationId, kind: command.kind, groupId: command.groupId, requestFingerprint: '9'.repeat(64), resourceId: `operation-${'a'.repeat(48)}` }
+    const current = { schemaVersion: 1, groupId: 'group-a', revision: 4, simplifyDebtsEnabled: true, updatedAt: 'old' }
+    const pairwise = [{ fromParticipantId: 'friend', toParticipantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }]
+    const simplified = [{ fromParticipantId: 'friend', toParticipantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }]
+    const balance = { groupId: 'group-a', balanceRevision: 7, simplifyDebtsEnabled: true, pairwise, simplified }
+    const committedAt = { kind: 'currency-converted' }
+    const buildSettings = (sparkMutations as unknown as { buildSparkGroupSettingsRecord: SparkGroupSettingsBuilder }).buildSparkGroupSettingsRecord
+
+    const record = buildSettings(command, current, balance, groupMembers, actor, identity, committedAt)
+
+    expect(record.settingsDocument).toEqual({
+      schemaVersion: 1, groupId: 'group-a', revision: 5, simplifyDebtsEnabled: true,
+      currencyConversion: { schemaVersion: 1, operationId: command.operationId, targetCurrency: 'EUR', convertedAt: committedAt },
+      lastCommandKind: command.kind, lastOperationId: command.operationId, lastRequestFingerprint: '9'.repeat(64), lastResourceToken: 'a'.repeat(48),
+      updatedAt: committedAt, updatedBy: actor,
+    })
+    expect(record.balanceDocument).toEqual({ groupId: 'group-a', balanceRevision: 8, simplifyDebtsEnabled: true, pairwise, simplified })
+    expect(record.currencyConversionId).toBe(`conversion-${'a'.repeat(48)}`)
+    expect(record.currencyConversionDocument).toEqual({
+      schemaVersion: 1, groupId: 'group-a', operationId: command.operationId, targetCurrency: 'EUR', convertedAt: committedAt,
+      sourceCurrencies: ['USD'],
+    })
+    expect(record.currencyRateDocuments).toEqual([{ id: 'USD', document: {
+      schemaVersion: 1, groupId: 'group-a', conversionId: `conversion-${'a'.repeat(48)}`, operationId: command.operationId,
+      ...command.rates[0],
+    } }])
+    expect(record.activityDocument).toMatchObject({ kind: 'group.event', subject: { kind: 'group', id: 'group-a', label: 'Currencies converted to EUR' }, actor })
+    expect(() => buildSettings(command, current, balance, groupMembers, { id: 'friend', displayName: 'Friend Account' }, { ...identity, userId: 'friend' }, committedAt)).toThrow(/manager/i)
+  })
+
   it('builds one replay-bound safe member removal bundle and clears a now-invalid default', () => {
     const command: GroupMemberRemoveCommand = { kind: 'group.member-remove', operationId: 'remove-friend', groupId: 'group-a', targetMemberId: 'friend' }
     const identity: OperationIdentity = {
@@ -792,7 +828,7 @@ type SparkCommentDeleteBuilder = (
 ) => SparkCommentRecord
 
 type SparkGroupSettingsBuilder = (
-  command: GroupDefaultSplitCommand | GroupSimplifyDebtsCommand,
+  command: GroupCurrencyConversionCommand | GroupDefaultSplitCommand | GroupSimplifyDebtsCommand,
   current: Readonly<Record<string, unknown>>,
   currentBalance: Readonly<Record<string, unknown>> | undefined,
   members: readonly Member[],
@@ -802,6 +838,9 @@ type SparkGroupSettingsBuilder = (
 ) => {
   readonly settingsDocument: Readonly<Record<string, unknown>>
   readonly balanceDocument?: Readonly<Record<string, unknown>>
+  readonly currencyConversionId?: string
+  readonly currencyConversionDocument?: Readonly<Record<string, unknown>>
+  readonly currencyRateDocuments?: readonly { readonly id: string; readonly document: Readonly<Record<string, unknown>> }[]
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }

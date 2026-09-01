@@ -572,6 +572,40 @@ describe('CommandQueue', () => {
     expect(quarantined).toEqual(invalid)
   })
 
+  it('hydrates only strict applied-currency commands and binds saved results to their group', () => {
+    const principalKey = 'demo:local:currency-conversion'
+    const rate = { baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 1, denominator: 2, authority: 'ECB', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z' }
+    const operation = (operationId: string, overrides: Record<string, unknown> = {}) => ({
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-09-01T12:00:00.000Z',
+      status: 'pending',
+      envelope: { kind: 'group.currency-conversion', operationId, groupId: 'lake-house-weekend', expectedRevision: 3, targetCurrency: 'EUR', rates: [rate], ...overrides },
+    })
+    const valid = operation('conversion-valid')
+    const invalid = [
+      operation('conversion-wrong-target', { targetCurrency: 'ZZZ' }),
+      operation('conversion-private-field', { privateState: true }),
+      operation('conversion-too-many-rates', { rates: Array.from({ length: 17 }, () => rate) }),
+      {
+        ...operation('conversion-wrong-resource'),
+        status: 'fresh',
+        result: { kind: 'group.currency-conversion', operationId: 'conversion-wrong-resource', status: 'saved', resourceId: 'another-group' },
+      },
+    ]
+    const quarantined: unknown[] = []
+    const queue = createBoundQueue({
+      storage: {
+        load: () => ({ version: 6, principalKey, operations: [valid, ...invalid] }),
+        save: async () => undefined,
+        quarantine: async (_scopeKey, records) => { quarantined.push(...records) },
+      },
+      handlers: {},
+    }, principalKey)
+
+    expect(queue.snapshot()).toEqual([valid])
+    expect(quarantined).toEqual(invalid)
+  })
+
   it('quarantines a persisted storage failure without a boolean execution marker', () => {
     const principalKey = 'demo:local:invalid-persistence-marker'
     const operation = {

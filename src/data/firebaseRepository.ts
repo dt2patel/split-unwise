@@ -4,8 +4,9 @@ import { assertFirebaseAppMatchesConfiguration, getSplitUnwiseFirebaseApp, getSp
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement, type DecodedGroupProjection } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
+import { applyCurrencyConversionToExpense, applyCurrencyConversionToSettlement, assertGroupCurrencyConversion, type GroupCurrencyConversion } from '../domain/currencyConversion'
 import { computeBalancePlans } from '../domain/balances'
 import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkFutureRecurringTemplateRecord, buildSparkGroupLifecycleRecord, buildSparkGroupSettingsRecord, buildSparkMaterializationOperationId, buildSparkMemberRemovalRecord, buildSparkNotificationPreferencesRecord, buildSparkNotificationReadAllRecord, buildSparkNotificationReadRecord, buildSparkProfileUpdateRecord, buildSparkRecurrenceCancellationRecord, buildSparkRecurrenceMaterializationRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
@@ -26,6 +27,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   let currentUserPromise: Promise<Member> | undefined
   const groupCache = new Map<string, Group>()
   const groupRequests = new Map<string, Promise<Group | undefined>>()
+  const groupSettingsRequests = new Map<string, Promise<GroupSettings>>()
   const sparkActivityRequests = new Map<string, Promise<ActivityPage>>()
   const client = () => clientPromise ??= connect(configuration, firebaseApp)
 
@@ -83,14 +85,16 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     return expenses.sort(oldestExpenseFirst)
   }
   async function listExpenses(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
-    return (await listExpenseHeads(groupId, readyContext)).filter(({ deletedAt }) => deletedAt === undefined)
+    const [heads, settings] = await Promise.all([listExpenseHeads(groupId, readyContext), getGroupSettings(groupId, readyContext)])
+    const expenses = heads.filter(({ deletedAt }) => deletedAt === undefined)
+    return settings.currencyConversion ? expenses.map((expense) => applyCurrencyConversionToExpense(expense, settings.currencyConversion!)) : expenses
   }
   async function listRecurring(groupId: string, readyContext = context()): Promise<readonly RecurringExpense[]> {
     const { db, firestore } = await readyContext
     const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'recurringTemplates'), firestore.limit(100)))
     return snapshot.docs.map((document) => decodeRecurringExpense(groupId, document.id, document.data()))
   }
-  async function listSettlements(groupId: string, readyContext = context()): Promise<readonly SettlementRecord[]> {
+  async function listRawSettlements(groupId: string, readyContext = context()): Promise<readonly SettlementRecord[]> {
     const { db, firestore } = await readyContext
     const snapshot = await firestore.getDocs(firestore.query(
       firestore.collection(db, 'groups', groupId, 'settlements'),
@@ -99,6 +103,10 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       firestore.limit(100),
     ))
     return snapshot.docs.map((document) => decodeSettlement(groupId, document.id, document.data()))
+  }
+  async function listSettlements(groupId: string, readyContext = context()): Promise<readonly SettlementRecord[]> {
+    const [settlements, settings] = await Promise.all([listRawSettlements(groupId, readyContext), getGroupSettings(groupId, readyContext)])
+    return settings.currencyConversion ? settlements.map((settlement) => applyCurrencyConversionToSettlement(settlement, settings.currencyConversion!)) : settlements
   }
   function listAccountActivity(activityQuery: ActivityQuery): Promise<ActivityPage> {
     if (functionsRegion) return loadAccountActivity(activityQuery)
@@ -192,10 +200,36 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (activity.actor.id === userId) throw new Error('A user cannot receive a notification for their own activity')
     return activityNotification(userId, activity)
   }
-  async function getGroupSettings(groupId: string, readyContext = context()): Promise<GroupSettings> {
-    const { db, firestore } = await readyContext
-    const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'settings', 'defaults'))
-    return snapshot.exists() ? decodeGroupSettings(groupId, snapshot.data()) : { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true }
+  function getGroupSettings(groupId: string, readyContext = context()): Promise<GroupSettings> {
+    const existing = groupSettingsRequests.get(groupId)
+    if (existing) return existing
+    const pending: Promise<GroupSettings> = (async (): Promise<GroupSettings> => {
+      const { db, firestore } = await readyContext
+      const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'settings', 'defaults'))
+      if (!snapshot.exists()) return { schemaVersion: 1 as const, groupId, revision: 1, simplifyDebtsEnabled: true }
+      const data = snapshot.data()
+      const pointer = data.currencyConversion
+      if (!isRecord(pointer) || Array.isArray(pointer.rates)) return decodeGroupSettings(groupId, data)
+      if (typeof data.lastResourceToken !== 'string' || !/^[a-f0-9]{48}$/.test(data.lastResourceToken)) throw new Error('Group currency conversion pointer is invalid')
+      const manifestReference = firestore.doc(db, 'groups', groupId, 'currencyConversions', `conversion-${data.lastResourceToken}`)
+      const manifest = await firestore.getDoc(manifestReference)
+      if (!manifest.exists()) throw new Error('Group currency conversion manifest is unavailable')
+      const manifestData = manifest.data()
+      if (!Array.isArray(manifestData.sourceCurrencies) || manifestData.sourceCurrencies.some((currency) => typeof currency !== 'string')) throw new Error('Group currency conversion manifest is invalid')
+      const rateSnapshots = await firestore.getDocs(firestore.query(firestore.collection(manifestReference, 'rates'), firestore.limit(6)))
+      const rateBySource = new Map(rateSnapshots.docs.map((document) => [document.id, document.data()]))
+      if (rateBySource.size !== manifestData.sourceCurrencies.length || manifestData.sourceCurrencies.some((currency) => !rateBySource.has(currency))) throw new Error('Group currency conversion rates are incomplete')
+      const rates = manifestData.sourceCurrencies.map((currency) => {
+        const stored = rateBySource.get(currency)
+        if (!isRecord(stored)) throw new Error('Group currency conversion rate is invalid')
+        const { baseCurrency, quoteCurrency, numerator, denominator, authority, effectiveDate, observedAt } = stored
+        return { baseCurrency, quoteCurrency, numerator, denominator, authority, effectiveDate, observedAt }
+      })
+      return decodeGroupSettings(groupId, { ...data, currencyConversion: { ...manifestData, rates } })
+    })()
+    groupSettingsRequests.set(groupId, pending)
+    void pending.finally(() => { if (groupSettingsRequests.get(groupId) === pending) groupSettingsRequests.delete(groupId) }).catch(() => undefined)
+    return pending
   }
   async function getSparkSettingsBalanceRevision(groupId: string, readyContext = context()): Promise<number> {
     const { db, firestore } = await readyContext
@@ -207,12 +241,14 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   async function getSparkBalanceSnapshot(groupId: string, readyContext = context()): Promise<GroupBalanceSnapshot> {
     const [allExpenses, settlements, settings, settingsBalanceRevision] = await Promise.all([
       listExpenseHeads(groupId, readyContext),
-      listSettlements(groupId, readyContext),
+      listRawSettlements(groupId, readyContext),
       getGroupSettings(groupId, readyContext),
       getSparkSettingsBalanceRevision(groupId, readyContext),
     ])
-    const expenses = allExpenses.filter(({ deletedAt }) => deletedAt === undefined)
-    const balances = computeBalancePlans(expenses, settlements.map((settlement) => ({
+    const rawExpenses = allExpenses.filter(({ deletedAt }) => deletedAt === undefined)
+    const expenses = settings.currencyConversion ? rawExpenses.map((expense) => applyCurrencyConversionToExpense(expense, settings.currencyConversion!)) : rawExpenses
+    const projectedSettlements = settings.currencyConversion ? settlements.map((settlement) => applyCurrencyConversionToSettlement(settlement, settings.currencyConversion!)) : settlements
+    const balances = computeBalancePlans(expenses, projectedSettlements.map((settlement) => ({
       id: settlement.settlementId,
       senderId: settlement.senderId,
       recipientId: settlement.recipientId,
@@ -584,7 +620,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     }
   }
 
-  async function executeSparkGroupSettings(command: GroupDefaultSplitCommand | GroupSimplifyDebtsCommand): Promise<SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>> {
+  async function executeSparkGroupSettings(command: GroupCurrencyConversionCommand | GroupDefaultSplitCommand | GroupSimplifyDebtsCommand): Promise<SavedCommandResult<'group.currency-conversion'> | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>> {
     const { db, firestore, userId } = await context()
     const identity = await createOperationIdentity(userId, command)
     const token = identity.resourceId.slice('operation-'.length)
@@ -622,6 +658,13 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         )
         transaction.set(settingsReference, record.settingsDocument)
         if (record.balanceDocument) transaction.set(balanceReference, record.balanceDocument)
+        if (record.currencyConversionId && record.currencyConversionDocument) {
+          const conversionReference = firestore.doc(db, 'groups', command.groupId, 'currencyConversions', record.currencyConversionId)
+          transaction.set(conversionReference, record.currencyConversionDocument)
+          for (const rate of record.currencyRateDocuments ?? []) {
+            transaction.set(firestore.doc(conversionReference, 'rates', rate.id), rate.document)
+          }
+        }
         transaction.set(activityReference, record.activityDocument)
       } catch (reason) {
         if (reason instanceof Error && /changed remotely/i.test(reason.message)) throw new CommandConflictError('Group settings changed remotely.')
@@ -630,7 +673,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     })
     const [savedSettings, savedActivity] = await Promise.all([firestore.getDoc(settingsReference), firestore.getDoc(activityReference)])
     if (!savedSettings.exists() || !savedActivity.exists()) throw new Error('Saved group settings are unavailable')
-    return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: command.groupId } as SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>
+    groupSettingsRequests.delete(command.groupId)
+    return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: command.groupId } as SavedCommandResult<'group.currency-conversion'> | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>
   }
 
   async function executeSparkMemberRemoval(command: GroupMemberRemoveCommand): Promise<SavedCommandResult<'group.member-remove'>> {
@@ -639,7 +683,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       readyContext,
       listExpenseHeads(command.groupId, readyContext),
       listRecurring(command.groupId, readyContext),
-      listSettlements(command.groupId, readyContext),
+      listRawSettlements(command.groupId, readyContext),
     ])
     const identity = await createOperationIdentity(userId, command)
     const token = identity.resourceId.slice('operation-'.length)
@@ -968,7 +1012,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       if (command.kind === 'comment.delete') return executeSparkCommentDelete(command)
       if (command.kind === 'settlement.record') return executeSparkSettlementRecord(command)
       if (command.kind === 'settlement.void') return executeSparkSettlementVoid(command)
-      if (command.kind === 'group.default-split' || command.kind === 'group.simplify-debts') return executeSparkGroupSettings(command)
+      if (command.kind === 'group.currency-conversion' || command.kind === 'group.default-split' || command.kind === 'group.simplify-debts') return executeSparkGroupSettings(command)
       if (command.kind === 'group.member-remove') return executeSparkMemberRemoval(command)
       if (command.kind === 'group.delete' || command.kind === 'group.restore') return executeSparkGroupLifecycle(command)
       if (command.kind === 'profile.update') return executeSparkProfileUpdate(command)
@@ -1018,7 +1062,10 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async getBalanceSnapshot(groupId) {
         const readyContext = context()
         if (functionsRegion) {
-          const { db, firestore } = await readyContext
+          const [{ db, firestore }, settings] = await Promise.all([readyContext, getGroupSettings(groupId, readyContext)])
+          // Applied conversion is a read-time ledger projection, so a legacy materialized
+          // function snapshot cannot represent it. Recompute from the immutable rows.
+          if (settings.currencyConversion) return getSparkBalanceSnapshot(groupId, readyContext)
           const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'balance', 'current'))
           if (!snapshot.exists()) throw new Error('Authoritative group balance snapshot is unavailable')
           return decodeBalanceSnapshot(groupId, snapshot.data())
@@ -1059,6 +1106,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         const moreRemain = templates.some((template) => template.status === 'active' && template.nextDate <= throughDate && canMaterialize(template))
         return { occurrences, moreRemain }
       },
+      convertCurrencies: execute,
       setDefaultSplit: execute,
       removeMember: execute,
       setSimplifyDebts: execute,
@@ -1066,9 +1114,12 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     expenses: {
       listForGroup: listExpenses,
       async getById(groupId, expenseId) {
-        const { db, firestore } = await context()
+        const readyContext = context()
+        const [{ db, firestore }, settings] = await Promise.all([readyContext, getGroupSettings(groupId, readyContext)])
         const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'expenses', expenseId))
-        return snapshot.exists() ? resolveSparkExpenseHead(db, firestore, groupId, snapshot.id, snapshot.data()) : undefined
+        if (!snapshot.exists()) return undefined
+        const expense = await resolveSparkExpenseHead(db, firestore, groupId, snapshot.id, snapshot.data())
+        return settings.currencyConversion ? applyCurrencyConversionToExpense(expense, settings.currencyConversion) : expense
       },
       async add(command) { const result = await execute(command); if (result.kind !== 'expense.add') throw new Error('Unexpected expense result'); return result },
       async edit(command): Promise<ExpenseEditResult> { const result = await execute(command); if (result.kind !== 'expense.edit') throw new Error('Unexpected expense edit result'); return result },
@@ -1100,9 +1151,12 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     settlements: {
       listForGroup: listSettlements,
       async getById(groupId, settlementId) {
-        const { db, firestore } = await context()
+        const readyContext = context()
+        const [{ db, firestore }, settings] = await Promise.all([readyContext, getGroupSettings(groupId, readyContext)])
         const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'settlements', settlementId))
-        return snapshot.exists() ? decodeSettlement(groupId, settlementId, snapshot.data()) : undefined
+        if (!snapshot.exists()) return undefined
+        const settlement = decodeSettlement(groupId, settlementId, snapshot.data())
+        return settings.currencyConversion ? applyCurrencyConversionToSettlement(settlement, settings.currencyConversion) : settlement
       },
       async record(command) {
         const result = await execute(command)
@@ -1251,10 +1305,32 @@ function descendingText(left: string, right: string): number { return left === r
 function decodeGroupSettings(groupId: string, value: unknown): GroupSettings {
   if (!isRecord(value) || value.schemaVersion !== 1 || value.groupId !== groupId || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1) throw new Error('Group settings document is invalid')
   if (value.simplifyDebtsEnabled !== undefined && typeof value.simplifyDebtsEnabled !== 'boolean') throw new Error('Group settings document is invalid')
-  const base = { schemaVersion: 1 as const, groupId, revision: value.revision as number, simplifyDebtsEnabled: value.simplifyDebtsEnabled !== false }
+  const base = {
+    schemaVersion: 1 as const,
+    groupId,
+    revision: value.revision as number,
+    simplifyDebtsEnabled: value.simplifyDebtsEnabled !== false,
+    ...(value.currencyConversion !== undefined ? { currencyConversion: decodeGroupCurrencyConversion(value.currencyConversion) } : {}),
+  }
   const defaultSplit = value.defaultSplit
   if (defaultSplit === undefined) return base
   try { return { ...base, defaultSplit: decodeDefaultSplit(defaultSplit) } } catch { throw new Error('Group default split is invalid') }
+}
+
+function decodeGroupCurrencyConversion(value: unknown): GroupCurrencyConversion {
+  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.operationId !== 'string' || typeof value.targetCurrency !== 'string' || !Array.isArray(value.rates)) throw new Error('Group currency conversion is invalid')
+  const conversion = {
+    schemaVersion: 1 as const,
+    operationId: value.operationId,
+    targetCurrency: value.targetCurrency,
+    convertedAt: firebaseTimestamp(value.convertedAt, 'group currency conversion'),
+    rates: value.rates.map((rate) => {
+      if (!isRecord(rate)) throw new Error('Group currency conversion is invalid')
+      return { ...rate }
+    }),
+  } as unknown as GroupCurrencyConversion
+  try { assertGroupCurrencyConversion(conversion) } catch { throw new Error('Group currency conversion is invalid') }
+  return conversion
 }
 
 function assertRecurringSeriesAuthority(

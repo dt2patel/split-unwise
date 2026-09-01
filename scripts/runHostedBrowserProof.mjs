@@ -26,7 +26,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -115,6 +115,7 @@ async function verifyAuthenticatedMobileJourney() {
     const restoredOfflineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
     if (await restoredOfflineReadyDismiss.isVisible()) await restoredOfflineReadyDismiss.click()
     await verifySwipeBackGesture(context, page)
+    await verifyCurrencyConversion(page)
     await restoredGroup.getByRole('button', { name: 'More', exact: true }).click()
     await restoredGroup.getByRole('link', { name: 'Recurring', exact: true }).click()
     await page.waitForURL(`${deepUrl}/recurring`)
@@ -138,6 +139,33 @@ async function verifyAuthenticatedMobileJourney() {
   } finally {
     await browser.close()
   }
+}
+
+async function verifyCurrencyConversion(page) {
+  const group = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+  await group.getByRole('button', { name: 'More', exact: true }).click()
+  await group.getByRole('link', { name: 'Convert', exact: true }).click()
+  await page.waitForURL(`${deepUrl}/convert`)
+  await page.getByRole('heading', { name: 'Convert currencies', exact: true }).waitFor({ state: 'visible' })
+  const conversion = page.locator('[data-testid="conversion-USD"]')
+  await conversion.waitFor({ state: 'visible', timeout: 30_000 })
+  await conversion.getByText('Reference in EUR', { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+  const apply = page.locator('[data-testid="apply-conversion"]')
+  await apply.waitFor({ state: 'visible' })
+  if (await apply.isDisabled()) throw new Error('Hosted currency conversion did not load an applicable verified rate.')
+  await apply.click()
+  const cardModal = page.locator('ion-modal.show-modal')
+  await cardModal.waitFor({ state: 'visible' })
+  await cardModal.getByRole('heading', { name: 'Convert existing activity to EUR?', exact: true }).waitFor({ state: 'visible' })
+  if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted currency conversion did not use the Ionic iOS card modal.')
+  await cardModal.locator('[data-testid="confirm-conversion"]').click()
+  await cardModal.waitFor({ state: 'hidden', timeout: 120_000 })
+  await page.getByText('Existing group activity now uses EUR. New expenses keep the currency entered until you convert again.', { exact: true }).waitFor({ state: 'visible' })
+  await page.getByLabel('Active conversion').getByText('EUR', { exact: true }).waitFor({ state: 'visible' })
+  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (overflow > 1) throw new Error(`Hosted currency-conversion screen overflowed the 390px mobile viewport by ${overflow}px.`)
+  await page.goto(deepUrl, { waitUntil: 'domcontentloaded' })
+  await page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)').getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
 }
 
 async function verifySwipeBackGesture(context, page) {

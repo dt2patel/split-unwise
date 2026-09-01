@@ -510,6 +510,9 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
     case 'group.default-split': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'defaultSplit'])
       && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision)
       && (value.defaultSplit === null || isDefaultSplit(value.defaultSplit))
+    case 'group.currency-conversion': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'targetCurrency', 'rates'])
+      && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision) && isCurrencyCode(value.targetCurrency)
+      && isFxRates(value.rates, value.targetCurrency)
     case 'group.delete': return onlyOperationFields(value, ['kind', 'operationId', 'groupId']) && isNonEmptyString(value.groupId)
     case 'group.simplify-debts': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'simplifyDebtsEnabled'])
       && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision) && typeof value.simplifyDebtsEnabled === 'boolean'
@@ -541,6 +544,7 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
     case 'settlement.void': return isSavedSettlementVoid(value, envelope)
     case 'profile.update': return isNonEmptyString(value.resourceId)
     case 'group.default-split': return value.resourceId === envelope.groupId
+    case 'group.currency-conversion': return value.resourceId === envelope.groupId
     case 'group.delete': return value.resourceId === envelope.groupId
     case 'group.simplify-debts': return value.resourceId === envelope.groupId
     case 'group.member-remove': return value.resourceId === envelope.targetMemberId
@@ -845,6 +849,21 @@ function isNumberRecord(value: unknown): value is Readonly<Record<string, number
 function isSyncState(value: unknown): value is SyncState { return typeof value === 'string' && ['fresh', 'stale', 'pending', 'failed', 'conflicted'].includes(value) }
 function isIsoDate(value: unknown): value is string { if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false; const parsed = new Date(`${value}T00:00:00.000Z`); return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value }
 function isIsoTimestamp(value: unknown): value is string { if (typeof value !== 'string') return false; const parsed = new Date(value); return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value }
+function isCurrencyCode(value: unknown): value is Money['currency'] {
+  if (typeof value !== 'string') return false
+  try { assertCurrencyCode(value); return true } catch { return false }
+}
+function isFxRates(value: unknown, targetCurrency: Money['currency']): boolean {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 16) return false
+  const sources = new Set<string>()
+  return value.every((rate) => {
+    if (!isRecord(rate) || !onlyOperationFields(rate, ['baseCurrency', 'quoteCurrency', 'numerator', 'denominator', 'authority', 'effectiveDate', 'observedAt'])) return false
+    if (!isCurrencyCode(rate.baseCurrency) || rate.baseCurrency === targetCurrency || rate.quoteCurrency !== targetCurrency || sources.has(rate.baseCurrency)) return false
+    if (!isPositiveInteger(rate.numerator) || !isPositiveInteger(rate.denominator) || !isNonEmptyString(rate.authority) || !isIsoDate(rate.effectiveDate) || !isIsoTimestamp(rate.observedAt)) return false
+    sources.add(rate.baseCurrency)
+    return true
+  })
+}
 function checkedNow(now: (() => string) | undefined): string {
   const value = (now ?? (() => new Date().toISOString()))()
   if (!isIsoTimestamp(value)) throw new CommandFailedError('validation', 'Queue submission time must be a strict ISO timestamp', false)

@@ -128,6 +128,50 @@ describe('Firebase Spark two-account flow', () => {
     await signOut(auth)
     await signInWithEmailAndPassword(auth, ownerEmail, password)
     await expect(ownerRepository.groups.setDefaultSplit({ ...defaultCommand, operationId: `stale-default-${suffix}`, expectedRevision: 2 })).rejects.toThrow(/changed remotely/i)
+
+    const originalExpense = await ownerRepository.expenses.add({
+      kind: 'expense.add', operationId: `conversion-source-${suffix}`, groupId: created.groupId, description: 'Euro preview dinner', date: '2026-09-01',
+      total: { currency: 'USD', minorAmount: 10_000 },
+      payments: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 10_000 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 5_000 } },
+        { participantId: friend.user.uid, money: { currency: 'USD', minorAmount: 5_000 } },
+      ],
+      category: 'Food', splitMethod: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+    })
+    if (originalExpense.status !== 'saved') throw new Error(originalExpense.reason)
+    const conversionCommand = {
+      kind: 'group.currency-conversion' as const, operationId: `currency-${suffix}`, groupId: created.groupId, expectedRevision: 3, targetCurrency: 'EUR' as const,
+      rates: [{
+        baseCurrency: 'USD' as const, quoteCurrency: 'EUR' as const, numerator: 1, denominator: 2,
+        authority: 'European Central Bank via Frankfurter', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z',
+      }],
+    }
+    const converted = await ownerRepository.groups.convertCurrencies(conversionCommand).catch((reason) => { throw new Error(`Conversion command failed: ${String(reason)}`) })
+    await expect(ownerRepository.groups.convertCurrencies(conversionCommand)).resolves.toEqual(converted)
+    await expect(ownerRepository.groups.getSettings(created.groupId)).resolves.toMatchObject({ revision: 4, currencyConversion: { targetCurrency: 'EUR', rates: conversionCommand.rates } })
+    await expect(ownerRepository.expenses.getById(created.groupId, originalExpense.expense.id)).resolves.toMatchObject({
+      total: { currency: 'EUR', minorAmount: 5_000 }, currencyConversion: { sourceMoney: { currency: 'USD', minorAmount: 10_000 } },
+    })
+
+    const laterExpense = await ownerRepository.expenses.add({
+      kind: 'expense.add', operationId: `conversion-later-${suffix}`, groupId: created.groupId, description: 'Later USD taxi', date: '2026-09-02',
+      total: { currency: 'USD', minorAmount: 2_000 },
+      payments: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2_000 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1_000 } },
+        { participantId: friend.user.uid, money: { currency: 'USD', minorAmount: 1_000 } },
+      ],
+      category: 'Transport', splitMethod: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+    }).catch((reason) => { throw new Error(`Post-conversion expense failed: ${String(reason)}`) })
+    if (laterExpense.status !== 'saved') throw new Error(laterExpense.reason)
+    await expect(ownerRepository.expenses.getById(created.groupId, laterExpense.expense.id)).resolves.toMatchObject({ total: { currency: 'USD', minorAmount: 2_000 } })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const friendConvertedRepository = createFirebaseRepository(configuration, friend.user.uid)
+    await expect(friendConvertedRepository.expenses.getById(created.groupId, originalExpense.expense.id)).resolves.toMatchObject({ total: { currency: 'EUR', minorAmount: 5_000 } })
+    await expect(friendConvertedRepository.groups.convertCurrencies({ ...conversionCommand, operationId: `friend-currency-${suffix}`, expectedRevision: 4 })).rejects.toThrow(/manager/i)
   }, 30_000)
 
   emulatorIt('soft-removes an uninvolved member as one replay-safe group bundle', async () => {

@@ -1,14 +1,15 @@
 import { getAuth, type User } from 'firebase/auth'
 import { arrayUnion, doc, getDoc, getFirestore, runTransaction, serverTimestamp, Timestamp, updateDoc, writeBatch, type DocumentData } from 'firebase/firestore'
 import { assertCurrencyCode } from '../domain/money'
-import { decodeDefaultSplit, updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
+import { applyGroupCurrencyConversion, decodeDefaultSplit, updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
+import { assertGroupCurrencyConversion, type GroupCurrencyConversion } from '../domain/currencyConversion'
 import { assessGroupMemberRemoval, type GroupMemberRemovalAssessmentInput } from '../domain/groupMembership'
 import { canonicalHttpsOrigin, generateInvitationSecret, hashInvitationSecret, type PreparedInvitation } from '../features/invitations/invitations'
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
@@ -78,6 +79,9 @@ export interface SparkCommentRecord {
 export interface SparkGroupSettingsRecord {
   readonly settingsDocument: Readonly<Record<string, unknown>>
   readonly balanceDocument?: Readonly<Record<string, unknown>>
+  readonly currencyConversionId?: string
+  readonly currencyConversionDocument?: Readonly<Record<string, unknown>>
+  readonly currencyRateDocuments?: readonly { readonly id: string; readonly document: Readonly<Record<string, unknown>> }[]
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }
@@ -472,7 +476,7 @@ export function buildSparkSettlementVoidRecord(
 
 /** Versions one shared group setting and binds it to immutable activity. */
 export function buildSparkGroupSettingsRecord(
-  command: GroupDefaultSplitCommand | GroupSimplifyDebtsCommand,
+  command: GroupCurrencyConversionCommand | GroupDefaultSplitCommand | GroupSimplifyDebtsCommand,
   current: Readonly<Record<string, unknown>>,
   currentBalance: Readonly<Record<string, unknown>> | undefined,
   members: readonly Member[],
@@ -481,30 +485,57 @@ export function buildSparkGroupSettingsRecord(
   committedAt: unknown,
 ): SparkGroupSettingsRecord {
   const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
-  if (parsed.kind !== 'group.default-split' && parsed.kind !== 'group.simplify-debts') throw new Error('Spark group settings command is invalid.')
+  if (parsed.kind !== 'group.currency-conversion' && parsed.kind !== 'group.default-split' && parsed.kind !== 'group.simplify-debts') throw new Error('Spark group settings command is invalid.')
   const token = assertSparkOperationIdentity(parsed, actor, identity)
   const normalizedCurrentActor = normalizedActor(actor)
   const actorMember = members.find(({ id }) => id === actor.id)
   if (!actorMember || actorMember.displayName !== normalizedCurrentActor.displayName) throw new Error('Only an active group member can change group settings.')
   const currentSettings = decodeSparkGroupSettings(parsed.groupId, current)
+  if (parsed.kind === 'group.currency-conversion' && parsed.rates.length > 6) throw new Error('Spark currency conversion currently supports at most six source currencies.')
   const updated = parsed.kind === 'group.default-split'
     ? updateGroupSettings(currentSettings, { expectedRevision: parsed.expectedRevision, defaultSplit: parsed.defaultSplit }, members, actor.id)
-    : updateGroupSettings(currentSettings, { expectedRevision: parsed.expectedRevision, simplifyDebtsEnabled: parsed.simplifyDebtsEnabled }, members, actor.id)
+    : parsed.kind === 'group.simplify-debts'
+      ? updateGroupSettings(currentSettings, { expectedRevision: parsed.expectedRevision, simplifyDebtsEnabled: parsed.simplifyDebtsEnabled }, members, actor.id)
+      : applyGroupCurrencyConversion(currentSettings, parsed.expectedRevision, {
+        schemaVersion: 1, operationId: parsed.operationId, targetCurrency: parsed.targetCurrency,
+        convertedAt: '1970-01-01T00:00:00.000Z', rates: parsed.rates,
+      }, members, actor.id)
   if (updated.defaultSplit && updated.defaultSplit.participantIds.length > 6) throw new Error('Spark default splits currently support at most six active members.')
   const label = parsed.kind === 'group.default-split'
     ? parsed.defaultSplit ? 'Default split updated' : 'Default split cleared'
-    : `Simplify debts ${parsed.simplifyDebtsEnabled ? 'enabled' : 'disabled'}`
+    : parsed.kind === 'group.simplify-debts'
+      ? `Simplify debts ${parsed.simplifyDebtsEnabled ? 'enabled' : 'disabled'}`
+      : `Currencies converted to ${parsed.targetCurrency}`
   const activityId = `activity-${token}`
   const settingsDocument: Record<string, unknown> = {
     schemaVersion: 1, groupId: parsed.groupId, revision: updated.revision,
     ...(updated.defaultSplit ? { defaultSplit: updated.defaultSplit } : {}),
     ...(updated.simplifyDebtsEnabled !== undefined ? { simplifyDebtsEnabled: updated.simplifyDebtsEnabled } : {}),
+    ...(parsed.kind === 'group.currency-conversion'
+      ? { currencyConversion: {
+        schemaVersion: 1, operationId: parsed.operationId, targetCurrency: parsed.targetCurrency, convertedAt: committedAt,
+      } }
+      : current.currencyConversion !== undefined ? { currencyConversion: current.currencyConversion } : {}),
     lastCommandKind: parsed.kind, lastOperationId: parsed.operationId,
     lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
     updatedAt: committedAt, updatedBy: normalizedCurrentActor,
   }
   const base: SparkGroupSettingsRecord = {
     settingsDocument,
+    ...(parsed.kind === 'group.currency-conversion' ? {
+      currencyConversionId: `conversion-${token}`,
+      currencyConversionDocument: {
+        schemaVersion: 1, groupId: parsed.groupId, operationId: parsed.operationId, targetCurrency: parsed.targetCurrency, convertedAt: committedAt,
+        sourceCurrencies: parsed.rates.map(({ baseCurrency }) => baseCurrency),
+      },
+      currencyRateDocuments: parsed.rates.map((rate) => ({
+        id: rate.baseCurrency,
+        document: {
+          schemaVersion: 1, groupId: parsed.groupId, conversionId: `conversion-${token}`, operationId: parsed.operationId,
+          ...rate,
+        },
+      })),
+    } : {}),
     activityId,
     activityDocument: {
       groupId: parsed.groupId, operationId: parsed.operationId, kind: 'group.event',
@@ -517,7 +548,7 @@ export function buildSparkGroupSettingsRecord(
     ...base,
     balanceDocument: {
       groupId: parsed.groupId, balanceRevision: balance.balanceRevision + 1,
-      simplifyDebtsEnabled: parsed.simplifyDebtsEnabled, pairwise: balance.pairwise, simplified: balance.simplified,
+      simplifyDebtsEnabled: updated.simplifyDebtsEnabled !== false, pairwise: balance.pairwise, simplified: balance.simplified,
     },
   }
 }
@@ -582,6 +613,7 @@ export function buildSparkMemberRemovalRecord(
       revision: currentSettings.revision + 1,
       ...(defaultSplit ? { defaultSplit } : {}),
       ...(currentSettings.simplifyDebtsEnabled !== undefined ? { simplifyDebtsEnabled: currentSettings.simplifyDebtsEnabled } : {}),
+      ...(settings.currencyConversion !== undefined ? { currencyConversion: settings.currencyConversion } : {}),
       ...membershipIdentity,
       updatedAt: committedAt,
       updatedBy: actor,
@@ -757,11 +789,40 @@ function decodeSparkGroupSettings(groupId: string, value: Readonly<Record<string
   if (value.defaultSplit !== undefined) {
     try { defaultSplit = decodeDefaultSplit(value.defaultSplit) } catch { throw new Error('Stored group settings are invalid.') }
   }
+  let currencyConversion: GroupCurrencyConversion | undefined
+  if (value.currencyConversion !== undefined) {
+    const stored = value.currencyConversion
+    if (!isRecord(stored) || stored.schemaVersion !== 1 || typeof stored.operationId !== 'string' || typeof stored.targetCurrency !== 'string') throw new Error('Stored group settings are invalid.')
+    const convertedAt = sparkIsoTimestamp(stored.convertedAt)
+    // Production Spark settings hold an immutable manifest pointer. Legacy/full
+    // values can still be decoded for deterministic builder tests and migration.
+    if (Array.isArray(stored.rates)) {
+      currencyConversion = {
+        schemaVersion: 1, operationId: stored.operationId, targetCurrency: stored.targetCurrency as GroupCurrencyConversion['targetCurrency'], convertedAt,
+        rates: stored.rates.map((rate) => {
+          if (!isRecord(rate)) throw new Error('Stored group settings are invalid.')
+          return { ...rate } as unknown as GroupCurrencyConversion['rates'][number]
+        }),
+      }
+      try { assertGroupCurrencyConversion(currencyConversion) } catch { throw new Error('Stored group settings are invalid.') }
+    }
+  }
   return {
     schemaVersion: 1, groupId, revision: Number(value.revision),
     ...(defaultSplit ? { defaultSplit } : {}),
     ...(value.simplifyDebtsEnabled !== undefined ? { simplifyDebtsEnabled: value.simplifyDebtsEnabled } : {}),
+    ...(currencyConversion ? { currencyConversion } : {}),
   }
+}
+
+function sparkIsoTimestamp(value: unknown): string {
+  const date = typeof value === 'string'
+    ? new Date(value)
+    : value !== null && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function'
+      ? (value as { toDate(): Date }).toDate()
+      : undefined
+  if (!date || Number.isNaN(date.getTime())) throw new Error('Stored group settings are invalid.')
+  return date.toISOString()
 }
 
 function decodeSparkSettingsBalance(groupId: string, settings: GroupSettings, value: Readonly<Record<string, unknown>> | undefined): { readonly balanceRevision: number; readonly pairwise: readonly unknown[]; readonly simplified: readonly unknown[] } {

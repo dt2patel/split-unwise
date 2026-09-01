@@ -1,6 +1,7 @@
 import { computeBalancePlans, computeBalances } from '../domain/balances'
 import { computeAllocations } from '../domain/splits'
-import { updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
+import { applyGroupCurrencyConversion, updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
+import { applyCurrencyConversionToExpense, applyCurrencyConversionToSettlement, assertGroupCurrencyConversion } from '../domain/currencyConversion'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
 import { assessGroupMemberRemoval } from '../domain/groupMembership'
 import { CommandConflictError } from './commandQueue'
@@ -114,14 +115,22 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
 
   const groupExpenses = (groupId: string): ExpenseRow[] => {
     assertLakeHouseGroup(groupId)
-    return expenses.filter((expense) => expense.groupId === groupId && expense.deletedAt === undefined).sort(byDateThenId)
+    return expenses
+      .filter((expense) => expense.groupId === groupId && expense.deletedAt === undefined)
+      .map((expense) => groupSettings.currencyConversion ? applyCurrencyConversionToExpense(expense, groupSettings.currencyConversion) : expense)
+      .sort(byDateThenId)
   }
+
+  const projectedSettlement = (settlement: SettlementRecord): SettlementRecord => groupSettings.currencyConversion
+    ? applyCurrencyConversionToSettlement(settlement, groupSettings.currencyConversion)
+    : settlement
 
   const groupBalanceSnapshot = (groupId: string): GroupBalanceSnapshot => {
     const plans = computeBalancePlans(
       groupExpenses(groupId),
       settlements
         .filter((settlement) => settlement.groupId === groupId)
+        .map(projectedSettlement)
         .map((settlement) => ({
           id: settlement.settlementId,
           senderId: settlement.senderId,
@@ -480,6 +489,27 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         })
         return saved(command, command.groupId)
       }
+      case 'group.currency-conversion': {
+        assertLakeHouseGroup(command.groupId)
+        assertActiveMembership()
+        if (command.expectedRevision !== groupSettings.revision) throw new CommandConflictError('Group settings changed remotely.', { remote: clone(groupSettings) })
+        assertBalanceRevisionCanAdvance(balanceRevision)
+        const convertedAt = checkedNow(now)
+        groupSettings = applyGroupCurrencyConversion(groupSettings, command.expectedRevision, {
+          schemaVersion: 1,
+          operationId: command.operationId,
+          targetCurrency: command.targetCurrency,
+          convertedAt,
+          rates: command.rates.map((rate) => ({ ...rate })),
+        }, activeMembers(), currentUser.id)
+        activity.push({
+          id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'group.event',
+          subject: { kind: 'group', id: command.groupId, label: `Currencies converted to ${command.targetCurrency}` },
+          actor: actorSnapshot(currentUser), createdAt: convertedAt, syncState: 'fresh',
+        })
+        balanceRevision += 1
+        return saved(command, command.groupId)
+      }
       case 'group.simplify-debts': {
         assertLakeHouseGroup(command.groupId)
         assertActiveMembership()
@@ -686,6 +716,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         return { occurrences, moreRemain }
       },
       setDefaultSplit: execute,
+      convertCurrencies: execute,
       removeMember: execute,
       setSimplifyDebts: execute,
     },
@@ -694,7 +725,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       async getById(groupId, expenseId) {
         assertLakeHouseGroup(groupId)
         const expense = expenses.find((item) => item.groupId === groupId && item.id === expenseId)
-        return expense ? cloneExpense(expense) : undefined
+        return expense ? cloneExpense(groupSettings.currencyConversion ? applyCurrencyConversionToExpense(expense, groupSettings.currencyConversion) : expense) : undefined
       },
       async add(command): Promise<ExpenseAddResult> { const result = await execute(command); if (result.kind !== 'expense.add') throw new Error('Unexpected expense result'); return result },
       async edit(command): Promise<ExpenseEditResult> { const result = await execute(command); if (result.kind !== 'expense.edit') throw new Error('Unexpected expense edit result'); return result },
@@ -715,12 +746,12 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     settlements: {
       async listForGroup(groupId) {
         assertLakeHouseGroup(groupId)
-        return settlements.filter((settlement) => settlement.groupId === groupId).sort(oldestSettlementFirst).map(clone)
+        return settlements.filter((settlement) => settlement.groupId === groupId).map(projectedSettlement).sort(oldestSettlementFirst).map(clone)
       },
       async getById(groupId, settlementId) {
         assertLakeHouseGroup(groupId)
         const settlement = settlements.find((item) => item.groupId === groupId && item.settlementId === settlementId)
-        return settlement ? clone(settlement) : undefined
+        return settlement ? clone(projectedSettlement(settlement)) : undefined
       },
       async record(command): Promise<SettlementRecordResult> {
         const result = await execute(command)
@@ -749,7 +780,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   }
 }
 
-function saved(command: Extract<CommandEnvelope, { kind: 'group.default-split' | 'group.delete' | 'group.member-remove' | 'group.restore' | 'group.simplify-debts' | 'profile.update' }>, resourceId: string): CommandResult {
+function saved(command: Extract<CommandEnvelope, { kind: 'group.currency-conversion' | 'group.default-split' | 'group.delete' | 'group.member-remove' | 'group.restore' | 'group.simplify-debts' | 'profile.update' }>, resourceId: string): CommandResult {
   return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId } as CommandResult
 }
 
@@ -927,10 +958,13 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
 
 function isDemoGroupSettings(value: unknown): value is GroupSettings {
   if (!isRecord(value) || value.schemaVersion !== 1 || value.groupId !== LAKE_HOUSE_GROUP_ID || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1) return false
-  if (Object.keys(value).some((key) => !['schemaVersion', 'groupId', 'revision', 'defaultSplit', 'simplifyDebtsEnabled'].includes(key))) return false
+  if (Object.keys(value).some((key) => !['schemaVersion', 'groupId', 'revision', 'defaultSplit', 'simplifyDebtsEnabled', 'currencyConversion'].includes(key))) return false
   if (value.simplifyDebtsEnabled !== undefined && typeof value.simplifyDebtsEnabled !== 'boolean') return false
-  if (value.defaultSplit === undefined) return true
-  try { updateGroupSettings({ schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }, { expectedRevision: 1, defaultSplit: value.defaultSplit as never }, lakeHouseMembers, lakeHouseCurrentUser.id); return true } catch { return false }
+  try {
+    if (value.currencyConversion !== undefined) assertGroupCurrencyConversion(value.currencyConversion as never)
+    if (value.defaultSplit !== undefined) updateGroupSettings({ schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }, { expectedRevision: 1, defaultSplit: value.defaultSplit as never }, lakeHouseMembers, lakeHouseCurrentUser.id)
+    return true
+  } catch { return false }
 }
 
 function decodeDemoSettlement(value: unknown): SettlementRecord {
@@ -1049,7 +1083,7 @@ function sameActor(left: ActorSnapshot, right: ActorSnapshot): boolean { return 
 function sameMoney(left: SettlementRecord['money'], right: SettlementRecord['money']): boolean { return left.currency === right.currency && left.minorAmount === right.minorAmount }
 function isDemoOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
 function isCommandKind(value: unknown): value is CommandEnvelope['kind'] {
-  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'group.delete', 'group.member-remove', 'group.restore', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
+  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.currency-conversion', 'group.default-split', 'group.delete', 'group.member-remove', 'group.restore', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }

@@ -465,4 +465,51 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   await expect(restoredFriendRepository.groups.list()).resolves.toContainEqual(expect.objectContaining({ id: ledgerGroupId }))
   await expect(restoredFriendRepository.expenses.listForGroup(ledgerGroupId)).resolves.toEqual(lifecycleExpenses)
   await expect(restoredFriendRepository.settlements.listForGroup(ledgerGroupId)).resolves.toEqual(lifecycleSettlements)
+
+  ;({ auth } = await restartHostedClient(configuration))
+  await signInWithEmailAndPassword(auth, ownerEmail, password)
+  const conversionOwnerRepository = createFirebaseRepository(configuration, ownerUid)
+  const conversionCommand = {
+    kind: 'group.currency-conversion' as const, operationId: `live-currency-${suffix}`, groupId: ledgerGroupId,
+    expectedRevision: 1, targetCurrency: 'EUR' as const,
+    rates: [{
+      baseCurrency: 'USD' as const, quoteCurrency: 'EUR' as const, numerator: 1, denominator: 2,
+      authority: 'European Central Bank via Frankfurter', effectiveDate: '2026-08-29', observedAt: '2026-09-01T22:00:00.000Z',
+    }],
+  }
+  const converted = await conversionOwnerRepository.groups.convertCurrencies(conversionCommand)
+  await expect(conversionOwnerRepository.groups.convertCurrencies(conversionCommand)).resolves.toEqual(converted)
+  expect(converted).toEqual({ kind: conversionCommand.kind, operationId: conversionCommand.operationId, status: 'saved', resourceId: ledgerGroupId })
+  await expect(conversionOwnerRepository.groups.getSettings(ledgerGroupId)).resolves.toMatchObject({
+    revision: 2, currencyConversion: { targetCurrency: 'EUR', rates: conversionCommand.rates },
+  })
+  await expect(conversionOwnerRepository.expenses.getById(ledgerGroupId, added.expense.id)).resolves.toMatchObject({
+    total: { currency: 'EUR', minorAmount: 1500 },
+    currencyConversion: { sourceMoney: { currency: 'USD', minorAmount: 3000 }, targetCurrency: 'EUR' },
+  })
+
+  ;({ auth } = await restartHostedClient(configuration))
+  await signInWithEmailAndPassword(auth, friendEmail, password)
+  const conversionFriendRepository = createFirebaseRepository(configuration, friendUid)
+  await expect(conversionFriendRepository.expenses.getById(ledgerGroupId, added.expense.id)).resolves.toMatchObject({
+    total: { currency: 'EUR', minorAmount: 1500 }, currencyConversion: { sourceMoney: { currency: 'USD', minorAmount: 3000 } },
+  })
+  await expect(conversionFriendRepository.groups.convertCurrencies({
+    ...conversionCommand, operationId: `live-currency-friend-${suffix}`, expectedRevision: 2,
+  })).rejects.toThrow(/manager|permission/i)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const laterExpense = await conversionFriendRepository.expenses.add({
+    kind: 'expense.add', operationId: `live-currency-later-${suffix}`, groupId: ledgerGroupId,
+    description: 'Hosted later USD taxi', date: '2026-09-02', total: { currency: 'USD', minorAmount: 1000 },
+    payments: [{ participantId: friendUid, money: { currency: 'USD', minorAmount: 1000 } }],
+    allocations: [
+      { participantId: ownerUid, money: { currency: 'USD', minorAmount: 500 } },
+      { participantId: friendUid, money: { currency: 'USD', minorAmount: 500 } },
+    ],
+    category: 'Transport', splitMethod: { type: 'equal', participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+  })
+  if (laterExpense.status !== 'saved') throw new Error('Expected the post-conversion hosted expense to save')
+  await expect(conversionFriendRepository.expenses.getById(ledgerGroupId, laterExpense.expense.id)).resolves.toMatchObject({
+    total: { currency: 'USD', minorAmount: 1000 },
+  })
 }, 300_000)

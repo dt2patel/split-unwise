@@ -81,4 +81,41 @@ describe('demo group settings repository', () => {
     await expect(restored.groups.getSettings(groupId)).resolves.toEqual({ schemaVersion: 1, groupId, revision: 1 })
     expect(quarantined).toEqual([malformed])
   })
+
+  it('applies one replay-safe manager conversion to every existing expense projection and balance', async () => {
+    let persisted: unknown
+    const stateStorage = { load: () => persisted, save: (_scope: string, document: unknown) => { persisted = structuredClone(document) } }
+    const repository = createDemoRepository({ now: () => '2026-09-01T12:00:00.000Z', stateStorage })
+    const before = await repository.expenses.listForGroup(groupId)
+    const command = {
+      kind: 'group.currency-conversion' as const, operationId: 'convert-demo-usd-eur', groupId, expectedRevision: 1, targetCurrency: 'EUR' as const,
+      rates: [{ baseCurrency: 'USD' as const, quoteCurrency: 'EUR' as const, numerator: 1, denominator: 2, authority: 'ECB', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z' }],
+    }
+
+    const first = await repository.groups.convertCurrencies(command)
+    const replay = await repository.groups.convertCurrencies(command)
+    const after = await repository.expenses.listForGroup(groupId)
+
+    expect(replay).toEqual(first)
+    expect(after).toHaveLength(before.length)
+    expect(after.every(({ total }) => total.currency === 'EUR')).toBe(true)
+    expect(after[0]?.currencyConversion).toMatchObject({ operationId: command.operationId, sourceMoney: before[0]?.total, targetCurrency: 'EUR' })
+    await expect(repository.groups.getBalanceSnapshot(groupId)).resolves.toMatchObject({ pairwise: expect.arrayContaining([expect.objectContaining({ money: expect.objectContaining({ currency: 'EUR' }) })]) })
+    await expect(repository.activity.listForGroup(groupId)).resolves.toContainEqual(expect.objectContaining({
+      kind: 'group.event', operationId: command.operationId, subject: expect.objectContaining({ label: 'Currencies converted to EUR' }),
+    }))
+    const restored = createDemoRepository({ now: () => '2026-09-01T12:00:00.000Z', stateStorage })
+    await expect(restored.groups.getSettings(groupId)).resolves.toMatchObject({ revision: 2, currencyConversion: { operationId: command.operationId, targetCurrency: 'EUR' } })
+    expect((await restored.expenses.listForGroup(groupId)).every(({ total }) => total.currency === 'EUR')).toBe(true)
+  })
+
+  it('rejects a group conversion from a non-manager without changing the ledger', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r', now: () => '2026-09-01T12:00:00.000Z' })
+    const before = await repository.expenses.listForGroup(groupId)
+    await expect(repository.groups.convertCurrencies({
+      kind: 'group.currency-conversion', operationId: 'convert-without-authority', groupId, expectedRevision: 1, targetCurrency: 'EUR',
+      rates: [{ baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 1, denominator: 2, authority: 'ECB', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z' }],
+    })).rejects.toThrow('manager')
+    await expect(repository.expenses.listForGroup(groupId)).resolves.toEqual(before)
+  })
 })

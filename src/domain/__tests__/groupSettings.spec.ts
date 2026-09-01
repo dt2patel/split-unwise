@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Member } from '../../data/repositories'
-import { clearInvalidDefaultSplit, decodeDefaultSplit, seedDefaultSplit, updateGroupSettings, type GroupSettings } from '../groupSettings'
+import { applyGroupCurrencyConversion, clearInvalidDefaultSplit, decodeDefaultSplit, seedDefaultSplit, updateGroupSettings, type GroupSettings } from '../groupSettings'
+import type { GroupCurrencyConversion } from '../currencyConversion'
 
 const members: readonly Member[] = [
   { id: 'maya', displayName: 'Maya', initials: 'MP', isCurrentUser: true, canManage: true },
@@ -53,5 +54,44 @@ describe('versioned shared split defaults', () => {
       revision: 5,
       simplifyDebtsEnabled: false,
     })
+  })
+
+  it('versions one manager-authorized applied currency conversion while preserving other shared settings', () => {
+    const configured: GroupSettings = {
+      schemaVersion: 1, groupId: 'lake', revision: 4, simplifyDebtsEnabled: false,
+      defaultSplit: { type: 'shares', participantIds: ['maya', 'alex'], shares: { maya: 1, alex: 2 } },
+    }
+    const conversion: GroupCurrencyConversion = {
+      schemaVersion: 1, operationId: 'convert-1', targetCurrency: 'EUR', convertedAt: '2026-09-01T12:00:00.000Z',
+      rates: [{ baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 86_237, denominator: 100_000, authority: 'ECB', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z' }],
+    }
+
+    expect(() => applyGroupCurrencyConversion(configured, 4, conversion, members, 'alex')).toThrow('manager')
+    expect(() => applyGroupCurrencyConversion(configured, 3, conversion, members, 'maya')).toThrow('changed remotely')
+    expect(applyGroupCurrencyConversion(configured, 4, conversion, members, 'maya')).toEqual({
+      ...configured,
+      revision: 5,
+      currencyConversion: conversion,
+    })
+  })
+
+  it('rejects ambiguous, indirect, or oversized conversion rate sets', () => {
+    const base: GroupCurrencyConversion = {
+      schemaVersion: 1, operationId: 'convert-1', targetCurrency: 'EUR', convertedAt: '2026-09-01T12:00:00.000Z',
+      rates: [{ baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 86_237, denominator: 100_000, authority: 'ECB', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z' }],
+    }
+    expect(() => applyGroupCurrencyConversion(initial, 1, { ...base, rates: [...base.rates, ...base.rates] }, members, 'maya')).toThrow('unique')
+    expect(() => applyGroupCurrencyConversion(initial, 1, { ...base, rates: [{ ...base.rates[0]!, quoteCurrency: 'JPY' }] }, members, 'maya')).toThrow('direct')
+    expect(() => applyGroupCurrencyConversion(initial, 1, { ...base, rates: Array.from({ length: 17 }, (_, index) => ({ ...base.rates[0]!, baseCurrency: index === 0 ? 'USD' : 'CAD' })) }, members, 'maya')).toThrow('16')
+  })
+
+  it('rejects unverified or malformed conversion-rate metadata', () => {
+    const base: GroupCurrencyConversion = {
+      schemaVersion: 1, operationId: 'convert-1', targetCurrency: 'EUR', convertedAt: '2026-09-01T12:00:00.000Z',
+      rates: [{ baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 86_237, denominator: 100_000, authority: 'ECB', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z' }],
+    }
+    expect(() => applyGroupCurrencyConversion(initial, 1, { ...base, rates: [{ ...base.rates[0]!, authority: '   ' }] }, members, 'maya')).toThrow('authority')
+    expect(() => applyGroupCurrencyConversion(initial, 1, { ...base, rates: [{ ...base.rates[0]!, effectiveDate: '08/29/2026' }] }, members, 'maya')).toThrow('effective date')
+    expect(() => applyGroupCurrencyConversion(initial, 1, { ...base, rates: [{ ...base.rates[0]!, observedAt: 'yesterday' }] }, members, 'maya')).toThrow('observation')
   })
 })

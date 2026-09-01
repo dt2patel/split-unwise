@@ -62,6 +62,20 @@ describe('strict shared ledger protocol', () => {
     expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, privateState: true } })).toThrow()
   })
 
+  it('accepts only a strict bounded group currency-conversion command', () => {
+    const rate = {
+      baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 86_237, denominator: 100_000,
+      authority: 'European Central Bank via Frankfurter', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z',
+    }
+    const request = {
+      schemaVersion: 1,
+      command: { kind: 'group.currency-conversion', operationId: 'convert-group', groupId: 'group-a', expectedRevision: 3, targetCurrency: 'EUR', rates: [rate] },
+    }
+    expect(() => parseExecuteCommandRequest(request)).not.toThrow()
+    expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, privateState: true } })).toThrow()
+    expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, rates: Array.from({ length: 17 }, () => rate) } })).toThrow()
+  })
+
   it('accepts only a strict member-removal command with a target distinct from the actor', () => {
     const request = {
       schemaVersion: 1,

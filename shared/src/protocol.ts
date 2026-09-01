@@ -38,6 +38,15 @@ const expenseDraft = {
 } as const
 const base = { operationId }
 const defaultSplit = z.discriminatedUnion('type', [equalSplit, percentageSplit, sharesSplit])
+const fxRate = z.strictObject({
+  baseCurrency: currency,
+  quoteCurrency: currency,
+  numerator: z.number().int().safe().positive(),
+  denominator: z.number().int().safe().positive(),
+  authority: z.string().trim().min(1).max(200),
+  effectiveDate: z.iso.date(),
+  observedAt: z.iso.datetime({ offset: true }),
+})
 const cursor = z.strictObject({ createdAt: z.iso.datetime({ offset: true }), id })
 const basis = z.strictObject({ kind: z.enum(['pairwise', 'simplified']), senderId: id, recipientId: id, currency, debtMinor: positiveMinor })
 
@@ -53,6 +62,7 @@ export const commandEnvelopeSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('settlement.record'), ...base, groupId: id, expectedBalanceRevision: z.number().int().nonnegative(), basis, money: positiveMoney, method: z.enum(['cash', 'bank-transfer', 'payment-app', 'other']), occurredOn: z.iso.date(), note: z.string().max(2000).optional(), outsidePaymentConfirmed: z.literal(true) }),
   z.strictObject({ kind: z.literal('settlement.void'), ...base, groupId: id, settlementId: id, expectedRevision: z.number().int().positive(), expectedBalanceRevision: z.number().int().nonnegative(), reason: z.string().trim().min(1).max(1000) }),
   z.strictObject({ kind: z.literal('group.default-split'), ...base, groupId: id, expectedRevision: z.number().int().positive(), defaultSplit: defaultSplit.nullable() }),
+  z.strictObject({ kind: z.literal('group.currency-conversion'), ...base, groupId: id, expectedRevision: z.number().int().positive(), targetCurrency: currency, rates: z.array(fxRate).min(1).max(16) }),
   z.strictObject({ kind: z.literal('group.delete'), ...base, groupId: id }),
   z.strictObject({ kind: z.literal('group.simplify-debts'), ...base, groupId: id, expectedRevision: z.number().int().positive(), simplifyDebtsEnabled: z.boolean() }),
   z.strictObject({ kind: z.literal('group.member-remove'), ...base, groupId: id, targetMemberId: id }),

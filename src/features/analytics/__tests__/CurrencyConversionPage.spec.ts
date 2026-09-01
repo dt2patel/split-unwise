@@ -12,8 +12,11 @@ const stubs = {
   IonToolbar: { template: '<div><slot /></div>' }, IonTitle: { template: '<div><slot /></div>' }, IonButtons: { template: '<div><slot /></div>' },
   IonBackButton: { props: ['defaultHref', 'text'], template: '<a data-testid="back" :href="defaultHref">{{ text }}</a>' },
   IonContent: { template: '<section><slot /></section>' }, IonButton: { template: '<button type="button"><slot /></button>' },
+  IonModal: { name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement', 'initialBreakpoint', 'breakpoints'], emits: ['didDismiss'], template: '<aside v-if="isOpen" data-testid="conversion-modal"><slot /></aside>' },
   IonIcon: { template: '<span aria-hidden="true" />' },
 }
+
+let session: ReturnType<typeof createAppSession>
 
 beforeEach(() => {
   const values = new Map<string, string>()
@@ -23,12 +26,12 @@ beforeEach(() => {
     removeItem: (key: string) => values.delete(key),
     clear: () => values.clear(),
   })
-  setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
+  installSession()
 })
 afterEach(() => vi.unstubAllGlobals())
 
-describe('reference currency conversion page', () => {
-  it('shows a dated ECB preview in the first useful preferred currency without changing the ledger', async () => {
+describe('applied currency conversion page', () => {
+  it('shows a dated ECB preview in the first useful preferred currency', async () => {
     const providerFetch = vi.fn(async () => new Response(JSON.stringify({ date: '2026-08-29', base: 'USD', quote: 'EUR', rate: 0.86237 }), { status: 200 }))
     vi.stubGlobal('fetch', providerFetch)
     const wrapper = await mountPage()
@@ -40,8 +43,8 @@ describe('reference currency conversion page', () => {
     expect(wrapper.get('[data-testid="conversion-USD"]').text()).toContain('€654.54')
     expect(wrapper.get('[data-testid="conversion-USD"]').text()).toContain('Aug 29, 2026')
     expect(wrapper.text()).toContain('European Central Bank via Frankfurter')
-    expect(wrapper.text()).toContain('reference preview only')
-    expect(wrapper.text()).toContain('never changes or combines your saved currencies')
+    expect(wrapper.text()).toContain('rate snapshot')
+    expect(wrapper.text()).toContain('original amounts stay in the audit history')
     expect(providerFetch).toHaveBeenCalledTimes(1)
   })
 
@@ -62,7 +65,49 @@ describe('reference currency conversion page', () => {
     expect(wrapper.get('[data-testid="conversion-USD"]').text()).toContain('Same currency')
     expect(providerFetch).toHaveBeenCalledTimes(2)
   })
+
+  it('uses an Ionic card modal and applies one manager-only conversion command', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ date: '2026-08-29', base: 'USD', quote: 'EUR', rate: 0.86237 }), { status: 200 })))
+    const wrapper = await mountPage()
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="apply-conversion"]').attributes('disabled')).toBeUndefined())
+
+    await wrapper.get('[data-testid="apply-conversion"]').trigger('click')
+    const modal = wrapper.getComponent({ name: 'IonModal' })
+    expect(modal.props('isOpen')).toBe(true)
+    expect(wrapper.get('[data-testid="apply-modal-title"]').text()).toBe('Apply')
+    expect(modal.props('presentingElement')).toBe(wrapper.get('.ion-page').element)
+    expect(modal.props('initialBreakpoint')).toBeUndefined()
+    expect(modal.props('breakpoints')).toBeUndefined()
+    expect(modal.props('canDismiss')).toBeTypeOf('function')
+
+    await wrapper.get('[data-testid="confirm-conversion"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Existing group activity now uses EUR'))
+    const settings = await session.repository.groups.getSettings('lake-house-weekend')
+    expect(settings.currencyConversion).toMatchObject({ targetCurrency: 'EUR', rates: [{ baseCurrency: 'USD', quoteCurrency: 'EUR' }] })
+    expect((await session.repository.expenses.getById('lake-house-weekend', 'dinner'))?.total.currency).toBe('EUR')
+  })
+
+  it('keeps apply controls manager-only', async () => {
+    installSession('jordan-k')
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ date: '2026-08-29', base: 'USD', quote: 'EUR', rate: 0.86237 }), { status: 200 })))
+    const wrapper = await mountPage()
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="conversion-USD"]').exists()).toBe(true))
+    expect(wrapper.find('[data-testid="apply-conversion"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Only a group manager can apply')
+  })
+
+  it('disables applying when a required rate is unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 503 })))
+    const wrapper = await mountPage()
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="conversion-USD"]').text()).toContain('Unavailable'))
+    expect(wrapper.get('[data-testid="apply-conversion"]').attributes('disabled')).toBeDefined()
+  })
 })
+
+function installSession(currentUserId?: string): void {
+  session = createAppSession({ repository: createDemoRepository({ currentUserId }), commandStorage: createMemoryCommandStorage() })
+  setAppSessionForTesting(session)
+}
 
 async function mountPage() {
   const router = createAppRouter(); await router.push('/tabs/groups/lake-house-weekend/convert'); await router.isReady()

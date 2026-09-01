@@ -639,6 +639,44 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(setDoc(doc(friend, `groups/group-a/activity/activity-${'8'.repeat(48)}`), sparkSettingsActivity('8'.repeat(48), 'standalone-activity-8', { id: 'friend', displayName: 'Friend' }, 'Simplify debts enabled')))
     await assertFails(deleteDoc(doc(friend, 'groups/group-a/settings/defaults')))
   })
+
+  emulatorIt('applies a manager-only currency conversion with one server cutoff, immutable activity, and atomic balance invalidation', async () => {
+    const manager = environment.authenticatedContext('active').firestore()
+    const friend = environment.authenticatedContext('friend').firestore()
+    const defaultSplit = { type: 'percentage', participantIds: ['active', 'friend'], percentages: { active: 60, friend: 40 } }
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'groups/group-a/settings/defaults'), {
+        schemaVersion: 1, groupId: 'group-a', revision: 1, defaultSplit, simplifyDebtsEnabled: true, updatedAt: Timestamp.fromMillis(0),
+      })
+    })
+    const operationId = 'currency-conversion-eur'
+    const token = '9'.repeat(48)
+    const rate = {
+      baseCurrency: 'USD', quoteCurrency: 'EUR', numerator: 86_237, denominator: 100_000,
+      authority: 'European Central Bank via Frankfurter', effectiveDate: '2026-08-29', observedAt: '2026-09-01T11:59:00.000Z',
+    }
+    const conversion = { schemaVersion: 1, groupId: 'group-a', operationId, targetCurrency: 'EUR', convertedAt: serverTimestamp(), sourceCurrencies: ['USD'], rates: [rate] }
+    const pointer = { schemaVersion: 1, operationId, targetCurrency: 'EUR', convertedAt: serverTimestamp() }
+    const settings = sparkSettings(2, 'group.currency-conversion', operationId, token, { id: 'active', displayName: 'Active Member' }, { defaultSplit, currencyConversion: pointer })
+    const activity = sparkSettingsActivity(token, operationId, { id: 'active', displayName: 'Active Member' }, 'Currencies converted to EUR')
+    const balance = { groupId: 'group-a', balanceRevision: 1, simplifyDebtsEnabled: true, pairwise: [], simplified: [] }
+
+    await assertFails(commitSparkSettings(manager, token, settings, activity))
+    await assertFails(commitSparkSettings(friend, token, { ...settings, updatedBy: { id: 'friend', displayName: 'Friend' } }, { ...activity, actor: { id: 'friend', displayName: 'Friend' } }, balance, conversion))
+    await assertFails(commitSparkSettings(manager, token, settings, activity, balance, { ...conversion, convertedAt: Timestamp.fromMillis(0) }))
+    await assertFails(commitSparkSettings(manager, token, settings, activity, balance, { ...conversion, rates: [{ ...rate, quoteCurrency: 'GBP' }] }))
+    await assertFails(commitSparkSettings(manager, token, settings, activity, balance, { ...conversion, admin: true }))
+    await assertFails(commitSparkSettings(manager, token, {
+      ...settings, defaultSplit: { type: 'equal', participantIds: ['active'] },
+    }, activity, balance, conversion))
+
+    await assertSucceeds(commitSparkSettings(manager, token, settings, activity, balance, conversion))
+    const saved = (await getDoc(doc(manager, 'groups/group-a/settings/defaults'))).data()!
+    expect(saved).toMatchObject({ revision: 2, lastCommandKind: 'group.currency-conversion', currencyConversion: { operationId, targetCurrency: 'EUR' } })
+    expect(saved.currencyConversion.convertedAt).toBeInstanceOf(Timestamp)
+    expect((await getDoc(doc(manager, `groups/group-a/currencyConversions/conversion-${token}`))).data()).toMatchObject({ operationId, targetCurrency: 'EUR', sourceCurrencies: ['USD'] })
+    expect((await getDoc(doc(manager, `groups/group-a/currencyConversions/conversion-${token}/rates/USD`))).data()).toMatchObject(rate)
+  })
 })
 
 function profile(displayName: string, initials: string): Record<string, unknown> {
@@ -1003,7 +1041,7 @@ function commitSparkSettlement(source: unknown, settlementId: string, activityTo
   return batch.commit()
 }
 
-function sparkSettings(revision: number, lastCommandKind: 'group.default-split' | 'group.simplify-debts', operationId: string, token: string, actor: Record<string, unknown>, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function sparkSettings(revision: number, lastCommandKind: 'group.currency-conversion' | 'group.default-split' | 'group.simplify-debts', operationId: string, token: string, actor: Record<string, unknown>, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     schemaVersion: 1, groupId: 'group-a', revision, simplifyDebtsEnabled: true,
     lastCommandKind, lastOperationId: operationId, lastRequestFingerprint: token[0]!.repeat(64), lastResourceToken: token,
@@ -1017,12 +1055,23 @@ function sparkSettingsActivity(token: string, operationId: string, actor: Record
   }
 }
 
-function commitSparkSettings(source: unknown, token: string, settings: Record<string, unknown>, activity: Record<string, unknown>, balance?: Record<string, unknown>): Promise<void> {
+function commitSparkSettings(source: unknown, token: string, settings: Record<string, unknown>, activity: Record<string, unknown>, balance?: Record<string, unknown>, conversion?: Record<string, unknown>): Promise<void> {
   const db = source as Firestore
   const batch = writeBatch(db)
   batch.set(doc(db, 'groups/group-a/settings/defaults'), settings)
   batch.set(doc(db, `groups/group-a/activity/activity-${token}`), activity)
   if (balance) batch.set(doc(db, 'groups/group-a/balance/current'), balance)
+  if (conversion) {
+    const { rates, ...manifest } = conversion
+    const conversionId = `conversion-${token}`
+    batch.set(doc(db, `groups/group-a/currencyConversions/${conversionId}`), manifest)
+    if (Array.isArray(rates)) for (const candidate of rates) {
+      const rate = candidate as Record<string, unknown>
+      batch.set(doc(db, `groups/group-a/currencyConversions/${conversionId}/rates/${String(rate.baseCurrency)}`), {
+        schemaVersion: 1, groupId: 'group-a', conversionId, operationId: conversion.operationId, ...rate,
+      })
+    }
+  }
   return batch.commit()
 }
 

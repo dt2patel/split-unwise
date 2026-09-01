@@ -1,4 +1,5 @@
 import type { Member } from '../data/repositories'
+import { assertGroupCurrencyConversion, type GroupCurrencyConversion } from './currencyConversion'
 import type { EqualSplit, PercentageSplit, SharesSplit, SplitMethod } from './model'
 import { computeAllocations } from './splits'
 
@@ -11,6 +12,7 @@ export interface GroupSettings {
   readonly defaultSplit?: DefaultSplit
   /** Missing legacy values are interpreted as enabled. */
   readonly simplifyDebtsEnabled?: boolean
+  readonly currencyConversion?: GroupCurrencyConversion
 }
 
 export interface GroupSettingsUpdate {
@@ -39,7 +41,23 @@ export function updateGroupSettings(current: GroupSettings, update: GroupSetting
     revision: current.revision + 1,
     ...(nextDefault ? { defaultSplit: nextDefault } : {}),
     ...(nextSimplification !== undefined ? { simplifyDebtsEnabled: nextSimplification } : {}),
+    ...(current.currencyConversion ? { currencyConversion: cloneCurrencyConversion(current.currencyConversion) } : {}),
   }
+}
+
+export function applyGroupCurrencyConversion(
+  current: GroupSettings,
+  expectedRevision: number,
+  conversion: GroupCurrencyConversion,
+  members: readonly Member[],
+  actorId: string,
+): GroupSettings {
+  const actor = members.find(({ id }) => id === actorId)
+  if (!actor || actor.canManage !== true) throw new Error('Only an active group manager can convert shared currencies')
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== current.revision) throw new Error('Group settings changed remotely')
+  if (!Number.isSafeInteger(current.revision) || current.revision < 1 || current.revision >= Number.MAX_SAFE_INTEGER) throw new Error('Group settings revision cannot advance')
+  assertGroupCurrencyConversion(conversion)
+  return { ...current, revision: current.revision + 1, currencyConversion: cloneCurrencyConversion(conversion) }
 }
 
 export function validateDefaultSplit(value: SplitMethod, members: readonly Member[]): DefaultSplit {
@@ -90,6 +108,9 @@ function cloneDefault(value: DefaultSplit): DefaultSplit {
   if (value.type === 'equal') return { type: 'equal', participantIds: [...value.participantIds] }
   if (value.type === 'percentage') return { type: 'percentage', participantIds: [...value.participantIds], percentages: { ...value.percentages } }
   return { type: 'shares', participantIds: [...value.participantIds], shares: { ...value.shares } }
+}
+function cloneCurrencyConversion(value: GroupCurrencyConversion): GroupCurrencyConversion {
+  return { ...value, rates: value.rates.map((rate) => ({ ...rate })) }
 }
 function sameKeys(expected: readonly string[], actual: readonly string[]): boolean {
   const sortedExpected = [...expected].sort()

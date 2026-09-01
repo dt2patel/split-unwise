@@ -1,5 +1,7 @@
 import type { Allocation, Debt, Expense, Money, ParticipantId, Recurrence, SplitMethod } from '../domain/model'
 import type { DefaultSplit, GroupSettings } from '../domain/groupSettings'
+import type { CurrencyConversionProvenance } from '../domain/currencyConversion'
+import type { VerifiedFxRate } from '../domain/premiumProviders'
 
 /** A persisted command or document synchronization state. */
 export type SyncState = 'fresh' | 'stale' | 'pending' | 'failed' | 'conflicted'
@@ -51,6 +53,8 @@ export interface ExpenseRow extends Expense {
   readonly deletedAt?: string
   readonly createdBy?: ActorSnapshot
   readonly updatedBy?: ActorSnapshot
+  /** Read-time projection metadata; never persisted inside an expense document. */
+  readonly currencyConversion?: CurrencyConversionProvenance
 }
 
 export interface ExpenseDraft {
@@ -233,6 +237,8 @@ export interface SettlementRecord {
   readonly revision: number
   readonly syncState: SyncState
   readonly void?: SettlementVoid
+  /** Read-time projection metadata; never persisted inside a settlement document. */
+  readonly currencyConversion?: CurrencyConversionProvenance
 }
 
 /** Every mutable operation owns a stable, caller-created client operation ID. */
@@ -276,6 +282,13 @@ export interface GroupDefaultSplitCommand extends OperationRequest {
   /** `null` is an explicit versioned clear. */
   readonly defaultSplit: DefaultSplit | null
 }
+export interface GroupCurrencyConversionCommand extends OperationRequest {
+  readonly kind: 'group.currency-conversion'
+  readonly groupId: string
+  readonly expectedRevision: number
+  readonly targetCurrency: Money['currency']
+  readonly rates: readonly VerifiedFxRate[]
+}
 export interface GroupSimplifyDebtsCommand extends OperationRequest {
   readonly kind: 'group.simplify-debts'
   readonly groupId: string
@@ -303,7 +316,7 @@ export interface RecurrenceCancelCommand extends OperationRequest {
 }
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
-export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | GroupDeleteCommand | GroupMemberRemoveCommand | GroupRestoreCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
+export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupCurrencyConversionCommand | GroupDefaultSplitCommand | GroupDeleteCommand | GroupMemberRemoveCommand | GroupRestoreCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
 export type CommandKind = CommandEnvelope['kind']
 
 export interface SavedExpenseAddResult { readonly kind: 'expense.add'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
@@ -334,7 +347,7 @@ export type SettlementRecordResult = SavedSettlementRecordResult | NotSupportedC
 export type SettlementVoidResult = SavedSettlementVoidResult | NotSupportedCommandResult<'settlement.void'>
 export type RecurrenceMaterializeResult = SavedRecurrenceMaterializeResult | NotSupportedCommandResult<'recurrence.materialize'>
 export type RecurrenceCancelResult = SavedRecurrenceCancelResult | NotSupportedCommandResult<'recurrence.cancel'>
-export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.delete'> | SavedCommandResult<'group.member-remove'> | SavedCommandResult<'group.restore'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'group.delete' | 'group.member-remove' | 'group.restore' | 'group.simplify-debts' | 'profile.update'>
+export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.currency-conversion'> | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.delete'> | SavedCommandResult<'group.member-remove'> | SavedCommandResult<'group.restore'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.currency-conversion' | 'group.default-split' | 'group.delete' | 'group.member-remove' | 'group.restore' | 'group.simplify-debts' | 'profile.update'>
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'
@@ -361,6 +374,7 @@ export interface GroupRepository {
   getCharts(groupId: string): Promise<GroupCharts>
   listRecurring(groupId: string): Promise<readonly RecurringExpense[]>
   materializeDue(groupId: string, throughDate: string, maxOccurrences?: number): Promise<MaterializeDueResult>
+  convertCurrencies(command: GroupCurrencyConversionCommand): Promise<CommandResult>
   setDefaultSplit(command: GroupDefaultSplitCommand): Promise<CommandResult>
   removeMember(command: GroupMemberRemoveCommand): Promise<CommandResult>
   setSimplifyDebts(command: GroupSimplifyDebtsCommand): Promise<CommandResult>
