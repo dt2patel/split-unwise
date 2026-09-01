@@ -39,6 +39,7 @@ const cancellingTemplateId = ref('')
 const operationNotice = ref('')
 const operationError = ref('')
 let loadRequest = 0
+let entryRevision = 0
 let entryFlight: { readonly groupId: string; readonly promise: Promise<void> } | undefined
 let catchUpFlight: { readonly groupId: string; readonly promise: Promise<void> } | undefined
 let skipInitialIonicEntry = true
@@ -65,6 +66,8 @@ onIonViewWillEnter(() => {
 })
 
 function enterPage(id = groupId.value): Promise<void> {
+  entryRevision += 1
+  resetOperationState()
   if (entryFlight?.groupId === id) return entryFlight.promise
   let pending!: Promise<void>
   pending = loadPage(id).finally(() => {
@@ -76,10 +79,6 @@ function enterPage(id = groupId.value): Promise<void> {
 
 async function loadPage(id: string): Promise<void> {
   const request = ++loadRequest
-  cancellationTarget.value = undefined
-  cancellingTemplateId.value = ''
-  operationNotice.value = ''
-  operationError.value = ''
   isLoading.value = true
   loadError.value = ''
   catchUpError.value = ''
@@ -124,6 +123,13 @@ async function loadPage(id: string): Promise<void> {
   } finally {
     if (request === loadRequest) isLoading.value = false
   }
+}
+
+function resetOperationState(): void {
+  cancellationTarget.value = undefined
+  cancellingTemplateId.value = ''
+  operationNotice.value = ''
+  operationError.value = ''
 }
 
 function catchUp(id: string, request = loadRequest): Promise<void> {
@@ -213,7 +219,7 @@ async function cancelRecurrence(): Promise<void> {
   if (!template || !canCancel(template) || !isStrictId(groupId.value)) return
   const submittedGroupId = groupId.value
   const submittedTemplateId = template.id
-  const submittedEntry = loadRequest
+  const submittedEntry = entryRevision
   cancellingTemplateId.value = submittedTemplateId
   operationError.value = ''
   operationNotice.value = `Stopping future expenses for ${template.description}…`
@@ -258,7 +264,7 @@ async function refreshSeries(id: string, entry: number): Promise<void> {
 }
 
 function isCurrentEntry(id: string, entry: number): boolean {
-  return groupId.value === id && loadRequest === entry
+  return groupId.value === id && entryRevision === entry
 }
 
 function canCancel(template: RecurringExpense): boolean {

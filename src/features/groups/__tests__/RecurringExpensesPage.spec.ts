@@ -625,6 +625,78 @@ describe('recurring catch-up and cancellation', () => {
     expect(wrapper.find('[data-testid="recurrence-operation-error"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('Ski Trip')
   })
+
+  it('invalidates an earlier cancellation on same-group re-entry while coalescing the pending load', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    const active = recurringTemplate({ revision: 7 })
+    const stopped: RecurringExpense = { ...active, status: 'cancelled', revision: 8 }
+    const source = recurringSourceExpense()
+    let releaseCatchUp!: (result: MaterializeDueResult) => void
+    const catchUpGate = new Promise<MaterializeDueResult>((resolveGate) => { releaseCatchUp = resolveGate })
+    let releaseSave!: () => void
+    const saveGate = new Promise<void>((resolveGate) => { releaseSave = resolveGate })
+    const getById = vi.fn(repository.groups.getById)
+    const listRecurring = vi.fn(async () => [active])
+    const listForGroup = vi.fn(async () => [source])
+    const materializeDue = vi.fn(async () => catchUpGate)
+    const execute = vi.fn(async (command: CommandEnvelope): Promise<CommandResult> => {
+      if (command.kind !== 'recurrence.cancel') return repository.commands.execute(command)
+      await saveGate
+      return { kind: command.kind, operationId: command.operationId, status: 'saved', template: stopped }
+    })
+    setSession({
+      ...repository,
+      groups: { ...repository.groups, getById, listRecurring, materializeDue },
+      expenses: { ...repository.expenses, listForGroup },
+      commands: { execute },
+    })
+
+    const wrapper = await mountRecurring(false)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="recurring-loading"]').exists()).toBe(false)
+    expect(materializeDue).toHaveBeenCalledTimes(1)
+
+    const willEnter = ionicLifecycle.willEnter[0]
+    expect(willEnter).toBeTypeOf('function')
+    willEnter?.()
+
+    await wrapper.get('[data-action="cancel-recurrence"]').trigger('click')
+    const alert = wrapper.getComponent({ name: 'IonAlert' })
+    const stopButton = (alert.props('buttons') as Array<{ role?: string; handler?: () => Promise<void> }>).find(({ role }) => role === 'destructive')
+    const saving = stopButton?.handler?.()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="recurrence-operation"]').text()).toContain('Stopping future expenses')
+
+    const callsBeforeReentry = {
+      group: getById.mock.calls.length,
+      recurring: listRecurring.mock.calls.length,
+      expenses: listForGroup.mock.calls.length,
+      catchUp: materializeDue.mock.calls.length,
+    }
+    willEnter?.()
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="recurrence-operation"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="recurrence-operation-error"]').exists()).toBe(false)
+    expect(wrapper.get('[data-action="cancel-recurrence"]').attributes('disabled')).toBeUndefined()
+    expect(getById).toHaveBeenCalledTimes(callsBeforeReentry.group)
+    expect(listRecurring).toHaveBeenCalledTimes(callsBeforeReentry.recurring)
+    expect(listForGroup).toHaveBeenCalledTimes(callsBeforeReentry.expenses)
+    expect(materializeDue).toHaveBeenCalledTimes(callsBeforeReentry.catchUp)
+
+    releaseSave()
+    await saving
+    await flushPromises()
+
+    expect(listRecurring).toHaveBeenCalledTimes(callsBeforeReentry.recurring)
+    expect(listForGroup).toHaveBeenCalledTimes(callsBeforeReentry.expenses)
+    expect(wrapper.find('[data-testid="recurrence-operation"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="recurrence-operation-error"]').exists()).toBe(false)
+    expect(wrapper.get('[data-template-id="cabin-deposit-monthly"]').text()).toContain('Active')
+
+    releaseCatchUp({ occurrences: [], moreRemain: false })
+    await flushPromises()
+  })
 })
 
 describe('recurring page mobile contract', () => {
