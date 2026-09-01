@@ -18,7 +18,7 @@ Date: 2026-08-31 (America/Chicago)
 | Reference-rate provider | Pass | Live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS |
 | Capacitor synchronization | Pass | `pnpm exec cap sync ios`; local `dist` copied with no production `server.url` |
 | Native compile | Pass | `pnpm ios:build`; unsigned Debug build for a generic iOS simulator |
-| Simulator package | Pass | `artifacts/Split-Unwise-968fa0c-Simulator.zip`; embedded source commit `968fa0c2ee7bb367de8518e5b4e2a4445ef34c14`; SHA-256 `bc13d2c975b436c988ed48a334c8837f825b4bb296f110d911b2bf872fb3a613` |
+| Simulator package | Pass | `artifacts/Split-Unwise-212fb17-Simulator.zip`; embedded source commit `212fb1751a0ad38ae5e5f96dbbb6931c8bf03351`; SHA-256 `7cbcc96dc3b2c39f22b84c91e834db0d8c1b37fe1a5e077155693460f0a47432` |
 | Firebase Hosting | Pass | Both production domains serve the exact release; root, deep link, manifest, service worker, build metadata, security headers, and hashed-asset cache policy were checked live |
 | Whitespace integrity | Pass | `git diff --check` and `git diff --cached --check` |
 
@@ -39,7 +39,7 @@ The compiled `App.app` was installed and launched, not inferred from a web build
 
 The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`; the iPad simulator identifier was `348D09B8-FC5D-4936-8ED8-69FC1D92AF5C`. Both ran the Apple iOS 26.5 simulator runtime installed through Xcode.
 
-The prior P1 native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the real Firebase Email/Password sign-in surface at 390 × 844 points. The new `968fa0c2ee7bb367de8518e5b4e2a4445ef34c14` native build compiled for the generic simulator and its packaged `App.app` contains that exact source identifier; this release did not repeat interactive simulator installation. Native Auth uses explicit local persistence without a browser popup resolver, avoiding the WKWebView OAuth-helper startup hang caught during release verification.
+The prior P1 native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the real Firebase Email/Password sign-in surface at 390 × 844 points. The new `212fb1751a0ad38ae5e5f96dbbb6931c8bf03351` native build compiled for the generic simulator and its packaged `App.app` contains that exact source identifier; this release did not repeat interactive simulator installation. Native Auth uses explicit local persistence without a browser popup resolver, avoiding the WKWebView OAuth-helper startup hang caught during release verification.
 
 ## PWA, offline, and update behavior
 
