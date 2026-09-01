@@ -28,7 +28,7 @@ beforeEach(async () => {
     await setDoc(doc(db, 'users/active'), { displayName: 'Active Member', initials: 'AM' })
     await setDoc(doc(db, 'users/outsider'), { displayName: 'Outsider', initials: 'O' })
     await setDoc(doc(db, 'users/friend'), { displayName: 'Friend', initials: 'F' })
-    await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'friend', 'removed'] })
+    await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'friend'] })
     await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', canManage: true, displayName: 'Active Member' })
     await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', canManage: false, displayName: 'Friend' })
     await setDoc(doc(db, 'groups/group-a/members/removed'), { status: 'removed' })
@@ -102,6 +102,7 @@ describe('Firestore rules in the emulator', () => {
   emulatorIt('allows only self-private and active-member bounded reads', async () => {
     await environment.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(context.firestore(), 'groups/group-a/members/outsider'), { status: 'active', canManage: false, displayName: 'Outsider' })
+      await setDoc(doc(context.firestore(), 'users/outsider/groups/group-a'), { groupId: 'group-a', status: 'active' })
     })
     const active = environment.authenticatedContext('active').firestore()
     const outsider = environment.authenticatedContext('outsider').firestore()

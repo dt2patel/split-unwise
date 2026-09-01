@@ -58,7 +58,10 @@ service cloud.firestore {
         && data.lastResourceToken != resource.data.lastResourceToken;
     }
     function activeMember(groupId) {
-      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)/groups/$(groupId)).data.status == 'active';
+      return signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+    }
+    function activeMemberOfGroup(data) {
+      return signedIn() && data.memberIds is list && request.auth.uid in data.memberIds;
     }
     function activeManager(groupId) {
       let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
@@ -567,7 +570,7 @@ service cloud.firestore {
     }
 
     match /groups/{groupId} {
-      allow get: if activeMember(groupId);
+      allow get: if activeMemberOfGroup(resource.data);
       allow list, delete: if false;
       allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId);
       allow update: if validGroupJoin(groupId);
