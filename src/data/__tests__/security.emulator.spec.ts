@@ -28,12 +28,15 @@ beforeEach(async () => {
     await setDoc(doc(db, 'users/active'), { displayName: 'Active Member', initials: 'AM' })
     await setDoc(doc(db, 'users/outsider'), { displayName: 'Outsider', initials: 'O' })
     await setDoc(doc(db, 'users/friend'), { displayName: 'Friend', initials: 'F' })
-    await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'friend'] })
+    await setDoc(doc(db, 'users/manager'), { displayName: 'Series Manager', initials: 'SM' })
+    await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'friend', 'manager'] })
     await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', canManage: true, displayName: 'Active Member' })
     await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', canManage: false, displayName: 'Friend' })
+    await setDoc(doc(db, 'groups/group-a/members/manager'), { status: 'active', canManage: true, displayName: 'Series Manager' })
     await setDoc(doc(db, 'groups/group-a/members/removed'), { status: 'removed' })
     await setDoc(doc(db, 'users/active/groups/group-a'), { groupId: 'group-a', status: 'active' })
     await setDoc(doc(db, 'users/friend/groups/group-a'), { groupId: 'group-a', status: 'active' })
+    await setDoc(doc(db, 'users/manager/groups/group-a'), { groupId: 'group-a', status: 'active' })
     await setDoc(doc(db, 'users/removed/groups/group-a'), { groupId: 'group-a', status: 'removed' })
     await setDoc(doc(db, 'groups/group-a/settings/defaults'), { schemaVersion: 1, groupId: 'group-a', revision: 1, simplifyDebtsEnabled: true, updatedAt: Timestamp.fromMillis(0) })
     await setDoc(doc(db, 'groups/group-a/balance/current'), { groupId: 'group-a', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
@@ -207,8 +210,18 @@ describe('Firestore rules in the emulator', () => {
         { participantId: 'active', money: { currency: 'USD', minorAmount: 400 } },
         { participantId: 'removed', money: { currency: 'USD', minorAmount: 600 } },
       ],
+      splitMethod: { type: 'exact', allocations: [
+        { participantId: 'active', money: { currency: 'USD', minorAmount: 400 } },
+        { participantId: 'removed', money: { currency: 'USD', minorAmount: 600 } },
+      ] },
+    })
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'groups/group-a'), { memberIds: ['active', 'friend', 'manager', 'removed'] })
     })
     await assertFails(setDoc(doc(active, `groups/group-a/expenses/${removedParticipant.id}`), removedParticipant))
+
+    const inflatedInvolvedMembers = sparkExpense('4', { involvedMemberIds: ['active', 'friend', 'manager'] })
+    await assertFails(setDoc(doc(active, `groups/group-a/expenses/${inflatedInvolvedMembers.id}`), inflatedInvolvedMembers))
   })
 
   emulatorIt('requires an authorized head advance plus an immutable full version and keeps physical deletes denied', async () => {
@@ -326,6 +339,68 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(commitSparkRecurringMaterialization(active, sparkRecurringMaterialization(cancelled, '6', '2026-11-01', '2026-12-01')))
   })
 
+  emulatorIt('authorizes cancellation independently for the creator or a manager at the current revision', async () => {
+    const creator = environment.authenticatedContext('active').firestore()
+    const manager = environment.authenticatedContext('manager').firestore()
+    const nonManager = environment.authenticatedContext('friend').firestore()
+    const creatorActor = { id: 'active', displayName: 'Active Member' }
+    const managerActor = { id: 'manager', displayName: 'Series Manager' }
+    const nonManagerActor = { id: 'friend', displayName: 'Friend' }
+
+    const creatorSource = sparkRecurringSource('a', creatorActor)
+    const creatorTemplate = sparkRecurringTemplate(creatorSource, '2026-10-01')
+    await assertSucceeds(commitSparkRecurringCreation(creator, creatorSource, creatorTemplate))
+    const savedCreatorTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${creatorTemplate.id}`))).data()!
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'groups/group-a/members/active'), { canManage: false })
+    })
+    await assertSucceeds(setDoc(
+      doc(creator, `groups/group-a/recurringTemplates/${creatorTemplate.id}`),
+      sparkRecurringCancellation(savedCreatorTemplate, '1', 1, creatorActor),
+    ))
+
+    const managerSource = sparkRecurringSource('b', creatorActor)
+    const managerTemplate = sparkRecurringTemplate(managerSource, '2026-10-01')
+    await assertSucceeds(commitSparkRecurringCreation(creator, managerSource, managerTemplate))
+    const savedManagerTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${managerTemplate.id}`))).data()!
+    await assertSucceeds(setDoc(
+      doc(manager, `groups/group-a/recurringTemplates/${managerTemplate.id}`),
+      sparkRecurringCancellation(savedManagerTemplate, '2', 1, managerActor),
+    ))
+
+    const deniedSource = sparkRecurringSource('c', creatorActor)
+    const deniedTemplate = sparkRecurringTemplate(deniedSource, '2026-10-01')
+    await assertSucceeds(commitSparkRecurringCreation(creator, deniedSource, deniedTemplate))
+    const savedDeniedTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${deniedTemplate.id}`))).data()!
+    await assertFails(setDoc(
+      doc(nonManager, `groups/group-a/recurringTemplates/${deniedTemplate.id}`),
+      sparkRecurringCancellation(savedDeniedTemplate, '3', 1, nonManagerActor),
+    ))
+  })
+
+  emulatorIt('audits an occurrence date edit while preserving its immutable materialization provenance', async () => {
+    const active = environment.authenticatedContext('active').firestore()
+    const source = sparkRecurringSource('d')
+    const template = sparkRecurringTemplate(source, '2026-10-01')
+    await assertSucceeds(commitSparkRecurringCreation(active, source, template))
+    const createdTemplate = (await getDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+    const materialized = sparkRecurringMaterialization(createdTemplate, 'e', '2026-10-01', '2026-11-01')
+    await assertSucceeds(commitSparkRecurringMaterialization(active, materialized))
+    const occurrenceId = String(materialized.occurrence.id)
+    const occurrence = (await getDoc(doc(active, `groups/group-a/expenses/${occurrenceId}`))).data()!
+
+    const forged = sparkOccurrenceEdit(occurrence, 'f', '2026-10-02', `recurring-${'1'.repeat(48)}`)
+    await assertFails(commitSparkExpenseMutation(active, occurrenceId, String(forged.expense.lastResourceToken), forged.head, forged.revision))
+
+    const valid = sparkOccurrenceEdit(occurrence, '6', '2026-10-02', String(template.id))
+    await assertSucceeds(commitSparkExpenseMutation(active, occurrenceId, String(valid.expense.lastResourceToken), valid.head, valid.revision))
+    expect((await getDoc(doc(active, `groups/group-a/expenses/${occurrenceId}`))).data()).toMatchObject({
+      id: occurrenceId,
+      date: '2026-10-01',
+      current: { id: occurrenceId, date: '2026-10-02', recurringTemplateId: template.id, occurrenceEditScope: 'occurrence' },
+    })
+  })
+
   emulatorIt('updates future recurrence only with the linked audited frontier revision', async () => {
     const active = environment.authenticatedContext('active').firestore()
     const source = sparkRecurringSource('7')
@@ -353,6 +428,32 @@ describe('Firestore rules in the emulator', () => {
       head: { ...future.head, current: broadExpense },
       revision: { ...future.revision, expense: broadExpense },
     }, future.template))
+
+    const malformedDescription = patchSparkFutureRecurringEdit(future, { description: '' })
+    await assertFails(commitSparkFutureRecurringEdit(active, malformedDescription, malformedDescription.template))
+    const malformedCategory = patchSparkFutureRecurringEdit(future, { category: '' })
+    await assertFails(commitSparkFutureRecurringEdit(active, malformedCategory, malformedCategory.template))
+    const malformedDate = patchSparkFutureRecurringEdit(
+      future,
+      { date: '2026-02-30' },
+      { nextDate: '2026-03-14' },
+    )
+    await assertFails(commitSparkFutureRecurringEdit(active, malformedDate, malformedDate.template))
+    const nonLeapDate = patchSparkFutureRecurringEdit(
+      future,
+      {
+        date: '2026-02-29',
+        recurrence: { frequency: 'yearly', anchor: { month: 2, day: 29 }, timeZone: 'UTC' },
+      },
+      { nextDate: '2027-02-28' },
+    )
+    await assertFails(commitSparkFutureRecurringEdit(active, nonLeapDate, nonLeapDate.template))
+    const mismatchedAnchor = patchSparkFutureRecurringEdit(future, {
+      recurrence: { frequency: 'fortnightly', anchor: { month: 9, day: 14 }, timeZone: 'UTC' },
+    })
+    await assertFails(commitSparkFutureRecurringEdit(active, mismatchedAnchor, mismatchedAnchor.template))
+    const malformedNextDate = patchSparkFutureRecurringEdit(future, {}, { nextDate: '2026-09-31' })
+    await assertFails(commitSparkFutureRecurringEdit(active, malformedNextDate, malformedNextDate.template))
     await assertSucceeds(commitSparkFutureRecurringEdit(active, future, future.template))
 
     const savedHead = (await getDoc(doc(active, `groups/group-a/expenses/${source.id}`))).data()!
@@ -599,6 +700,40 @@ function commitSparkExpenseMutation(source: unknown, expenseId: string, revision
   return batch.commit()
 }
 
+function sparkOccurrenceEdit(
+  source: Record<string, unknown>, token: string, date: string, recurringTemplateId: string,
+): { expense: Record<string, unknown>; head: Record<string, unknown>; revision: Record<string, unknown> } {
+  const actor = { id: 'active', displayName: 'Active Member' }
+  const resourceToken = token.repeat(48)
+  const expense: Record<string, unknown> = {
+    ...source,
+    date,
+    recurringTemplateId,
+    occurrenceEditScope: 'occurrence',
+    lastOperationId: `occurrence-edit-${token}`,
+    lastRequestFingerprint: token.repeat(64),
+    lastResourceToken: resourceToken,
+    updatedAt: serverTimestamp(),
+    updatedBy: actor,
+    revision: Number(source.revision) + 1,
+  }
+  delete expense.recurrence
+  const head = {
+    ...source,
+    lastOperationId: expense.lastOperationId,
+    lastRequestFingerprint: expense.lastRequestFingerprint,
+    lastResourceToken: resourceToken,
+    headRevision: expense.revision,
+    headDeleted: false,
+    current: expense,
+  }
+  return {
+    expense,
+    head,
+    revision: sparkExpenseVersion(expense, String(expense.lastOperationId), 'updated', actor),
+  }
+}
+
 function sparkRecurringSource(token: string, actor: Record<string, unknown> = { id: 'active', displayName: 'Active Member' }): Record<string, unknown> {
   const resourceToken = token.repeat(48)
   return sparkExpense(token, {
@@ -704,6 +839,32 @@ function sparkFutureRecurringEdit(
     updatedAt: serverTimestamp(), updatedBy: actor,
   }
   return { expense, head, revision, template: updatedTemplate }
+}
+
+function patchSparkFutureRecurringEdit(
+  record: { expense: Record<string, unknown>; head: Record<string, unknown>; revision: Record<string, unknown>; template: Record<string, unknown> },
+  expensePatch: Record<string, unknown>,
+  templatePatch: Record<string, unknown> = {},
+): { expense: Record<string, unknown>; head: Record<string, unknown>; revision: Record<string, unknown>; template: Record<string, unknown> } {
+  const expense = { ...record.expense, ...expensePatch }
+  const head = { ...record.head, current: expense }
+  const revision = { ...record.revision, expense }
+  const template = {
+    ...record.template,
+    description: expense.description,
+    total: expense.total,
+    payments: expense.payments,
+    allocations: expense.allocations,
+    payerIds: expense.payerIds,
+    participantIds: expense.participantIds,
+    involvedMemberIds: expense.involvedMemberIds,
+    category: expense.category,
+    splitMethod: expense.splitMethod,
+    recurrence: expense.recurrence,
+    anchorDate: expense.date,
+    ...templatePatch,
+  }
+  return { expense, head, revision, template }
 }
 
 function commitSparkFutureRecurringEdit(

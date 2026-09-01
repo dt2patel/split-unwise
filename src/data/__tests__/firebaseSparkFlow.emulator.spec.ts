@@ -560,9 +560,13 @@ describe('Firebase Spark two-account flow', () => {
     expect(catchUp).toMatchObject({ occurrences: [{ id: `occ_${templateId}_2026-09-29` }], moreRemain: false })
     const occurrence = catchUp.occurrences[0]!
     const beforeOccurrenceEdit = (await repository.groups.listRecurring(created.groupId))[0]!
-    await repository.expenses.edit({
+    const occurrenceEdit = await repository.expenses.edit({
       kind: 'expense.edit', operationId: `one-occurrence-${suffix}`, groupId: created.groupId, expenseId: occurrence.id, expectedRevision: 1,
-      draft: { ...baseDraft, date: occurrence.date, description: 'One-off discounted storage', recurrence: undefined, occurrenceEditScope: 'occurrence' },
+      draft: { ...baseDraft, date: '2026-09-30', description: 'One-off discounted storage', recurrence: undefined, occurrenceEditScope: 'occurrence' },
+    })
+    expect(occurrenceEdit).toMatchObject({
+      status: 'saved',
+      expense: { id: `occ_${templateId}_2026-09-29`, date: '2026-09-30', occurrenceEditScope: 'occurrence' },
     })
     await expect(repository.groups.listRecurring(created.groupId)).resolves.toEqual([beforeOccurrenceEdit])
 

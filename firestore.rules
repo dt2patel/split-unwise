@@ -162,10 +162,18 @@ service cloud.firestore {
               && validSparkAllocationAt(values, ids, currency, 4) && validSparkAllocationAt(values, ids, currency, 5)
               && sparkAllocationSum(values) == totalMinor)));
     }
+    function activeSparkMemberAt(groupId, ids, index) {
+      return ids.size() <= index
+        || get(/databases/$(database)/documents/groups/$(groupId)/members/$(ids[index])).data.status == 'active';
+    }
     function validSparkInvolvedMembers(groupId, ids) {
-      let group = get(/databases/$(database)/documents/groups/$(groupId)).data;
-      return validSparkIdList(ids, 6) && group.memberIds is list
-        && ids.toSet().difference(group.memberIds.toSet()).size() == 0;
+      return validSparkIdList(ids, 6)
+        && activeSparkMemberAt(groupId, ids, 0)
+        && activeSparkMemberAt(groupId, ids, 1)
+        && activeSparkMemberAt(groupId, ids, 2)
+        && activeSparkMemberAt(groupId, ids, 3)
+        && activeSparkMemberAt(groupId, ids, 4)
+        && activeSparkMemberAt(groupId, ids, 5);
     }
     function validSparkSplitType(value) {
       return value == 'equal' || value == 'exact' || value == 'percentage'
@@ -184,6 +192,23 @@ service cloud.firestore {
           : (value.anchor.month == 4 || value.anchor.month == 6 || value.anchor.month == 9 || value.anchor.month == 11) ? 30 : 31)
         && value.timeZone is string && value.timeZone.size() > 0 && value.timeZone.size() <= 80;
     }
+    function validSparkIsoDate(value) {
+      return value is string && value[0:4] != '0000'
+        && (value.matches(
+            '^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-8]))$'
+          )
+          || value.matches(
+            '^([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[48]|[2468][048]|[13579][26])00)-02-29$'
+          ));
+    }
+    function sparkTwoDigits(value) {
+      return value < 10 ? '0' + string(value) : string(value);
+    }
+    function validSparkRecurrenceAnchor(date, recurrence) {
+      return validSparkIsoDate(date) && validSparkRecurrence(recurrence)
+        && date[5:7] == sparkTwoDigits(recurrence.anchor.month)
+        && date[8:10] == sparkTwoDigits(recurrence.anchor.day);
+    }
     function validSparkRecurringTemplateId(value) {
       return value is string && value.matches('^recurring-[a-f0-9]{48}$');
     }
@@ -199,10 +224,11 @@ service cloud.firestore {
         && data.id == expenseId && data.groupId == groupId
         && data.resourceToken is string && data.resourceToken.matches('^[a-f0-9]{48}$')
         && (expenseId == 'expense-' + data.resourceToken
-          || ('recurringTemplateId' in data && expenseId == 'occ_' + data.recurringTemplateId + '_' + data.date))
+          || ('recurringTemplateId' in data
+            && expenseId.matches('^occ_recurring-[a-f0-9]{48}_[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
         && data.operationId is string && data.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
         && data.requestFingerprint is string && data.requestFingerprint.matches('^[a-f0-9]{64}$')
-        && validName(data.description) && data.date is string && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && validName(data.description) && validSparkIsoDate(data.date)
         && data.category is string && data.category.size() > 0 && data.category.size() <= 80
         && (!('notes' in data) || (data.notes is string && data.notes.size() > 0 && data.notes.size() <= 5000))
         && validSparkSplitType(data.splitType)
@@ -220,7 +246,7 @@ service cloud.firestore {
     function validSparkExpenseAllocationLedger(groupId, data) {
       return validSparkAllocations(data.allocations, data.participantIds, data.total.currency, data.total.minorAmount)
         && validSparkInvolvedMembers(groupId, data.involvedMemberIds)
-        && data.participantIds.toSet().difference(data.involvedMemberIds.toSet()).size() == 0
+        && data.involvedMemberIds.toSet() == data.payerIds.toSet().union(data.participantIds.toSet())
         && data.splitMethod.allocations == data.allocations;
     }
     function validSparkExpenseShape(groupId, expenseId, data) {
@@ -295,9 +321,15 @@ service cloud.firestore {
         && (before.get('lastOccurrenceId', before.sourceExpenseId) == expenseId)
         && after.revision == before.revision + 1 && after.lastResourceToken == token;
     }
+    function validSparkRecurringExpenseProvenance(expenseId, expense) {
+      return !expenseId.matches('^occ_.*$')
+        || (expense.recurringTemplateId == resource.data.recurringTemplateId
+          && expenseId == 'occ_' + resource.data.recurringTemplateId + '_' + resource.data.date);
+    }
     function validSparkExpenseRecurrenceRevision(groupId, expenseId, data, expense) {
       return ('recurringTemplateId' in resource.data)
         ? (expense.recurringTemplateId == resource.data.recurringTemplateId
+          && validSparkRecurringExpenseProvenance(expenseId, expense)
           && (data.headDeleted || expense.occurrenceEditScope == 'occurrence'
             || (expense.occurrenceEditScope == 'future'
               && 'recurrence' in expense
@@ -360,8 +392,6 @@ service cloud.firestore {
       let nextRevision = sparkHeadRevision(resource.data) + 1;
       let version = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)/revisions/$(data.lastResourceToken)).data;
       let expense = version.expense;
-      let templateBefore = get(/databases/$(database)/documents/groups/$(groupId)/recurringTemplates/$(expense.recurringTemplateId)).data;
-      let templateAfter = getAfter(/databases/$(database)/documents/groups/$(groupId)/recurringTemplates/$(expense.recurringTemplateId)).data;
       return !sparkHeadDeleted(resource.data)
         && data.diff(resource.data).affectedKeys().hasOnly([
           'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'headRevision', 'headDeleted', 'current'
@@ -377,10 +407,8 @@ service cloud.firestore {
         && version.revision == nextRevision && version.operationId == data.lastOperationId
         && version.action == 'updated' && version.createdAt == request.time
         && validSparkCurrentActor(groupId, version.actor)
-        && (expense.keys().size() == 28
-          || (expense.keys().size() == 29 && 'notes' in expense
-            && expense.notes is string && expense.notes.size() > 0 && expense.notes.size() <= 5000))
-        && expense.id == expenseId && expense.groupId == groupId
+        && validSparkExpenseStructure(groupId, expenseId, expense)
+        && validSparkRecurringExpenseProvenance(expenseId, expense)
         && expense.operationId == resource.data.operationId
         && expense.requestFingerprint == resource.data.requestFingerprint
         && expense.resourceToken == resource.data.resourceToken
@@ -391,29 +419,8 @@ service cloud.firestore {
         && expense.updatedAt == request.time && expense.updatedBy == version.actor
         && expense.revision == nextRevision && !('deletedAt' in expense)
         && expense.recurringTemplateId == resource.data.recurringTemplateId
-        && expense.occurrenceEditScope == 'future' && validSparkRecurrence(expense.recurrence)
-        && validSparkSplitType(expense.splitType)
-        && expense.splitMethod.keys().hasOnly(['type', 'allocations']) && expense.splitMethod.type == 'exact'
-        && expense.attachmentRefs == []
-        && templateBefore.status == 'active'
-        && templateBefore.get('lastOccurrenceId', templateBefore.sourceExpenseId) == expenseId
-        && templateAfter != templateBefore && templateAfter.status == 'active'
-        && templateAfter.keys().size() == templateBefore.keys().size()
-        && templateAfter.id == templateBefore.id && templateAfter.groupId == templateBefore.groupId
-        && templateAfter.sourceExpenseId == templateBefore.sourceExpenseId
-        && templateAfter.operationId == templateBefore.operationId
-        && templateAfter.requestFingerprint == templateBefore.requestFingerprint
-        && templateAfter.resourceToken == templateBefore.resourceToken
-        && templateAfter.createdAt == templateBefore.createdAt && templateAfter.createdBy == templateBefore.createdBy
-        && templateAfter.get('lastOccurrenceId', null) == templateBefore.get('lastOccurrenceId', null)
-        && templateAfter.get('lastOccurrenceDate', null) == templateBefore.get('lastOccurrenceDate', null)
-        && templateAfter.revision == templateBefore.revision + 1
-        && templateAfter.lastOperationId == data.lastOperationId
-        && templateAfter.lastRequestFingerprint == data.lastRequestFingerprint
-        && templateAfter.lastResourceToken == data.lastResourceToken
-        && templateAfter.updatedAt == request.time && templateAfter.updatedBy == version.actor
-        && templateAfter.anchorDate == expense.date && templateAfter.nextDate > templateAfter.anchorDate
-        && validSparkTemplatePayloadMatchesExpense(templateAfter, expense);
+        && expense.occurrenceEditScope == 'future' && 'recurrence' in expense
+        && validSparkFutureTemplateCoupling(groupId, expenseId, data.lastResourceToken, expense);
     }
     function validSparkFutureExpenseVersionCreate(groupId, expenseId, revisionId, data) {
       let before = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)).data;
@@ -498,7 +505,8 @@ service cloud.firestore {
         && expense.operationId == data.operationId && expense.requestFingerprint == data.requestFingerprint
         && expense.resourceToken == data.resourceToken && expense.createdBy == data.createdBy
         && validSparkExpenseAllocationLedger(groupId, expense)
-        && data.nextDate is string && data.nextDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && validSparkRecurrenceAnchor(data.anchorDate, data.recurrence)
+        && validSparkIsoDate(data.nextDate)
         && data.nextDate > data.anchorDate
         && data.anchorDate == expense.date
         && validSparkTemplatePayloadMatchesExpense(data, expense);
@@ -512,6 +520,7 @@ service cloud.firestore {
         ])
         && data.revision == resource.data.revision + 1
         && data.lastResourceToken != resource.data.lastResourceToken
+        && validSparkIsoDate(data.nextDate)
         && data.nextDate > resource.data.nextDate
         && data.lastOccurrenceDate == resource.data.nextDate
         && data.lastOccurrenceId == 'occ_' + templateId + '_' + resource.data.nextDate
@@ -532,15 +541,27 @@ service cloud.firestore {
       let frontierId = resource.data.get('lastOccurrenceId', resource.data.sourceExpenseId);
       let beforeHead = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(frontierId)).data;
       let head = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(frontierId)).data;
+      let expense = head.current;
       return resource.data.status == 'active' && data.status == 'active'
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'description', 'total', 'payments', 'allocations', 'payerIds', 'participantIds', 'involvedMemberIds',
+          'category', 'splitMethod', 'recurrence', 'anchorDate', 'nextDate',
+          'revision', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
+        ])
         && data.revision == resource.data.revision + 1
         && data.lastResourceToken != resource.data.lastResourceToken
         && head != beforeHead && head.lastResourceToken == data.lastResourceToken
         && head.lastOperationId == data.lastOperationId
         && head.lastRequestFingerprint == data.lastRequestFingerprint
-        && head.current.recurringTemplateId == templateId
-        && head.current.occurrenceEditScope == 'future'
-        && validSparkExpenseAllocationLedger(groupId, head.current);
+        && expense.recurringTemplateId == templateId
+        && expense.occurrenceEditScope == 'future'
+        && data.updatedAt == request.time && data.updatedBy == expense.updatedBy
+        && validSparkCurrentActor(groupId, data.updatedBy)
+        && validSparkExpenseAllocationLedger(groupId, expense)
+        && validSparkRecurrenceAnchor(data.anchorDate, data.recurrence)
+        && validSparkIsoDate(data.nextDate)
+        && data.anchorDate == expense.date && data.nextDate > data.anchorDate
+        && validSparkTemplatePayloadMatchesExpense(data, expense);
     }
     function validSparkRecurringCancellation(groupId, templateId, data) {
       let frontierId = resource.data.get('lastOccurrenceId', resource.data.sourceExpenseId);

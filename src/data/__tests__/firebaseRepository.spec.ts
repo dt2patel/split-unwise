@@ -119,6 +119,7 @@ vi.mock('firebase/firestore', () => {
 })
 
 import { createFirebaseRepository } from '../firebaseRepository'
+import { OperationReplayConflictError } from '../operationIdentity'
 
 const configuration = {
   apiKey: 'test', authDomain: 'task-7-test.invalid', projectId: 'task-7-test', storageBucket: 'task-7-test.invalid', messagingSenderId: '1', appId: 'test-app',
@@ -336,6 +337,9 @@ describe('Task 7 Firebase repository query boundaries', () => {
       const value = data()
       return value.kind === 'expense.created' && value.expenseId === `occ_${templateId}_2026-09-30`
     })).toHaveLength(1)
+
+    firebase.groupActivityDocuments['groups/lake-house-weekend/activity'] = []
+    await expect(repository.commands.execute(materialize)).rejects.toBeInstanceOf(OperationReplayConflictError)
     await expect(repository.groups.getTotals('lake-house-weekend')).resolves.toEqual([
       { currency: 'USD', totalPaid: 1000, currentUserPaid: 1000, currentUserShare: 1000, currentUserNet: 0 },
     ])

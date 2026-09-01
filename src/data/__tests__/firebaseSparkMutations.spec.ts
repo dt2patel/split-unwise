@@ -166,7 +166,11 @@ describe('Firebase Spark mutations', () => {
       status: 'active', description: 'Monthly rent', total: { currency: 'USD', minorAmount: 180000 },
       payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 180000 } }],
       allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 90000 } }, { participantId: 'friend', money: { currency: 'USD', minorAmount: 90000 } }],
-      category: 'Housing', splitMethod: { type: 'equal', participantIds: ['owner', 'friend'] },
+      payerIds: ['owner'], participantIds: ['owner', 'friend'], involvedMemberIds: ['friend', 'owner'],
+      category: 'Housing', splitMethod: { type: 'exact', allocations: [
+        { participantId: 'owner', money: { currency: 'USD', minorAmount: 90000 } },
+        { participantId: 'friend', money: { currency: 'USD', minorAmount: 90000 } },
+      ] },
       recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' },
       anchorDate: '2026-09-01', nextDate: '2026-10-01', revision: 1,
       createdBy: { id: 'owner', displayName: 'Owner Account' }, updatedAt: 'created', updatedBy: { id: 'owner', displayName: 'Owner Account' },
@@ -187,6 +191,7 @@ describe('Firebase Spark mutations', () => {
     expect(record.occurrenceDocument).toMatchObject({
       id: `occ_${templateId}_2026-10-01`, date: '2026-10-01', recurringTemplateId: templateId,
       operationId: command.operationId, resourceToken: 'f'.repeat(48), createdBy: actor, revision: 1,
+      payerIds: ['owner'], participantIds: ['owner', 'friend'], involvedMemberIds: ['friend', 'owner'],
     })
     expect(record.templateDocument).toMatchObject({
       id: templateId, status: 'active', nextDate: '2026-11-01', revision: 2,
