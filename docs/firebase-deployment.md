@@ -1,6 +1,6 @@
 # Firebase deployment record
 
-Verified P1 shared-collaboration release source: `ce4920e5035abe8f1e48c11ed22fa29338d3b900`
+Verified P1 login and shared-group release source: `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041`
 
 ## Current state
 
@@ -47,16 +47,16 @@ Rollback Hosting through Firebase release history or redeploy the prior exact co
 | Firestore rules / indexes | Audited Spark expense and comment/activity rules released successfully from source `ce4920e5035abe8f1e48c11ed22fa29338d3b900`; existing indexes unchanged |
 | Auth providers | Identity Platform/Firebase Auth initialized; Email/Password and Google enabled; both Hosting domains authorized |
 | Preview URL / release | `https://split-unwise-aditya--split-unwise-rc-iy5k2wwr.web.app`; commit `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`; expires 2026-09-08T01:36:43.187899648Z |
-| Production URL / release | `https://split-unwise-aditya.web.app` and `https://split-unwise-aditya.firebaseapp.com`; source commit `ce4920e5035abe8f1e48c11ed22fa29338d3b900` |
+| Production URL / release | `https://split-unwise-aditya.web.app` and `https://split-unwise-aditya.firebaseapp.com`; source commit `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041` |
 | Production health | Root, manifest, service worker, hashed asset, build metadata, nested-route rewrite, cache policy, CSP, and security headers passed on both domains |
 | Storage | Not provisioned; deployment was rejected at project setup/billing, and local security rules were not weakened |
 | Functions | Source build and 16 emulator tests pass; production deployment blocked because Blaze is required to enable Artifact Registry/Cloud Build |
 | App Check | Not configured; enforcement is not claimed |
-| Auth/profile/group/invite P1 | Production pass with two temporary Email/Password accounts: owner created a group and private link, friend joined, both read the same two-member group, and the group persisted across sign-out/in. |
+| Auth/profile/group/invite P1 | Production pass through the real Auth service with two temporary Email/Password accounts: owner created a group and private link, friend joined, a fresh owner sign-in read the persisted group and decoded both members. The release fixes the P1 contract mismatch where the schema-valid `avatarUrl: null` for accounts without photos was rejected by the member decoder. |
 | Shared expense/balance P1 | Production pass with two fresh temporary Email/Password accounts: owner added a $24.00 expense split equally, replayed the identical operation without duplication, and both owner and friend read the same $12.00 debt. Both Auth users were deleted; the exact group, invitation, profile/projection trees, and expense were removed and confirmed not found through Firebase MCP. |
 | Authenticated edit/delete P1 | Production pass with two fresh temporary accounts: a non-author edit was denied; the author edited $24.00 to $30.00 and replayed it; both accounts read the same $15.00 debt and revision 2; delete/replay produced revision 3, an empty live ledger, empty balances, and immutable created/updated/deleted history. Both Auth users and every exact proof document were deleted; follow-up Firebase queries returned zero users, groups, and invitations. |
 | Shared comments/activity | Production pass with two fresh temporary accounts: the friend added/replayed a comment on the owner's expense; the owner read the same comment and group activity but could not delete it; the author deleted/replayed it and both immutable activity events remained readable. Both Auth users and every exact proof document were deleted; follow-up Firebase queries returned zero users, groups, and invitations. |
-| Native Auth | Capacitor uses Firebase's resolver-free Auth initialization with persistent local sessions. The final simulator build opened the real Email/Password sign-in surface; browser-based Google OAuth stays enabled on Hosting and is deliberately disabled in the native WebView. |
+| Native Auth | Capacitor uses Firebase's resolver-free Auth initialization with persistent local sessions. The `c76dde2` generic-simulator package embeds the exact P1 fix; the prior installed build opened the real Email/Password sign-in surface. Browser-based Google OAuth stays enabled on Hosting and is deliberately disabled in the native WebView. |
 | Authenticated add/replay | Production pass on the immutable Spark path; deterministic operation identity, single-document transaction replay, membership, totals, and cross-user balance visibility verified |
 | Authenticated edit/delete | Available and production-proven on the audited Spark head/version path |
 | Authenticated settlement | Not available on Spark because rules cannot verify a client-claimed aggregate balance basis; remains denied until a server-verifiable backend is deployed |

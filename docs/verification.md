@@ -1,6 +1,6 @@
 # Split Unwise release verification
 
-Verified P1 shared-collaboration release source: `ce4920e5035abe8f1e48c11ed22fa29338d3b900`
+Verified P1 login and shared-group release source: `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041`
 
 Date: 2026-08-31 (America/Chicago)
 
@@ -11,14 +11,14 @@ Date: 2026-08-31 (America/Chicago)
 | Unit and component suite | Pass | `pnpm test`: 76 files passed, 6 skipped; 698 tests passed, 33 skipped |
 | Type safety | Pass | `pnpm typecheck` |
 | Firestore rules | Pass | `pnpm test:firebase`: 11 emulator-backed rules tests, including audited expense mutations plus live-expense-coupled comment/activity add, author-only soft delete, and denied outsider, body edit, standalone activity, closed-expense comment, and physical delete writes |
-| Auth/group/invite/expense flow | Pass | Two emulator flows plus live production proof with temporary Firebase Auth accounts, replay-stable expense and comment mutations, immutable history/activity, and the same derived balance for both members |
+| Auth/group/invite/expense flow | Pass | Two emulator flows plus a live production run through the real Auth service: two temporary Email/Password accounts, sign-out/in, group creation, private invitation acceptance, owner group reload, and a decoded two-member list |
 | Functions and service behavior | Pass | `pnpm test:firebase`: 16 emulator-backed tests |
 | Production web bundle | Pass | `pnpm build`: 508 modules transformed; Workbox generated 104 precache entries |
 | Artifact policy | Pass | 106 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
 | Reference-rate provider | Pass | Live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS |
 | Capacitor synchronization | Pass | `pnpm exec cap sync ios`; local `dist` copied with no production `server.url` |
 | Native compile | Pass | `pnpm ios:build`; unsigned Debug build for a generic iOS simulator |
-| Simulator package | Pass | `artifacts/Split-Unwise-ce4920e-Simulator.zip`; embedded source commit `ce4920e5035abe8f1e48c11ed22fa29338d3b900`; SHA-256 `ed7007b8592aba6fce2b342263762b69099b78bd6556c5a05de10c885debfba7` |
+| Simulator package | Pass | `artifacts/Split-Unwise-c76dde2-Simulator.zip`; embedded source commit `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041`; SHA-256 `5dbadcf2a281ba9c3b383e4425a9b381b6111462399984c23c761d4645dc8bf9` |
 | Firebase Hosting | Pass | Both production domains serve the exact release; root, deep link, manifest, service worker, build metadata, security headers, and hashed-asset cache policy were checked live |
 | Whitespace integrity | Pass | `git diff --check` and `git diff --cached --check` |
 
@@ -39,7 +39,7 @@ The compiled `App.app` was installed and launched, not inferred from a web build
 
 The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`; the iPad simulator identifier was `348D09B8-FC5D-4936-8ED8-69FC1D92AF5C`. Both ran the Apple iOS 26.5 simulator runtime installed through Xcode.
 
-The prior P1 native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the real Firebase Email/Password sign-in surface at 390 × 844 points. The new `ce4920e5035abe8f1e48c11ed22fa29338d3b900` native build compiled for the generic simulator and its packaged `App.app` contains that exact source identifier; this release did not repeat interactive simulator installation. Native Auth uses explicit local persistence without a browser popup resolver, avoiding the WKWebView OAuth-helper startup hang caught during release verification.
+The prior P1 native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the real Firebase Email/Password sign-in surface at 390 × 844 points. The new `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041` native build compiled for the generic simulator and its packaged `App.app` contains that exact source identifier; this release did not repeat interactive simulator installation. Native Auth uses explicit local persistence without a browser popup resolver, avoiding the WKWebView OAuth-helper startup hang caught during release verification.
 
 ## PWA, offline, and update behavior
 
@@ -81,6 +81,7 @@ The prior P1 native build was installed on the iPhone simulator, launched as bun
 - A second live production SDK run created two fresh temporary Auth accounts. The owner added a $24.00 immutable expense split equally with the friend, retried the identical operation, and observed one saved expense. Both accounts independently read the same $12.00 friend-to-owner pairwise and simplified debt derived from the immutable ledger; no writable balance projection was involved.
 - A third live production SDK run exercised the deployed `212fb1751a0ad38ae5e5f96dbbb6931c8bf03351` rules and client. The friend could read but not edit the owner's expense. The owner changed the total from $24.00 to $30.00, replayed the same edit without another revision, and both accounts independently read revision 2 and the same $15.00 debt. Delete/replay produced revision 3, removed the item from the live journal, reduced both balance plans to empty, and retained created/updated/deleted immutable history.
 - A fourth live production SDK run exercised the deployed `ce4920e5035abe8f1e48c11ed22fa29338d3b900` comment path. The friend added and replayed a comment on the owner's live expense. The owner read the same comment and immutable group activity but was denied author-only deletion. The friend soft-deleted and replayed the comment; its tombstone plus both added/deleted activity events remained readable.
+- A fifth live production run reproduced the login blocker through the real Firebase Auth service. Firestore correctly persisted `avatarUrl: null` for accounts without a photo, but the member decoder incorrectly required a non-empty string, causing authenticated session and member-list initialization to fail. Source `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041` treats the schema-valid null as no avatar. The rerun created two accounts, signed out and back in, created a group, accepted its invitation as the second user, and decoded both members from a fresh owner repository session.
 - The raw 256-bit invitation token stays in the URL fragment and is stripped immediately. Only its SHA-256-derived document ID is stored; the share URL uses the fixed `/invite/join` path so the capability is not placed in request logs.
 - All temporary Auth accounts, profiles, group trees, projections, invitation documents, expense roots, and immutable versions were deleted after verification. Follow-up Firebase MCP queries returned zero matching Auth users, proof groups, and invitations.
 
@@ -96,4 +97,4 @@ The prior P1 native build was installed on the iPhone simulator, launched as bun
 
 The iPad split-pane/master-detail contract is component-tested, but the iPad screenshot proves the home shell only; no tap automation was authorized for this pass. VoiceOver traversal, Full Keyboard Access, Switch Control, physical-device haptics/camera, landscape tablet master/detail, keyboard-driven sheets, and same-viewport reference-image comparison still require an interactive device session. They are not claimed as passed.
 
-Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase sign-in, profile persistence, group creation, invitation acceptance, two-user visibility, sign-out/in persistence, expense add/edit/delete replay, immutable revision history, shared comment add/delete replay, immutable comment activity, and shared derived balances are production-proven. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so settlement, receipt attachment/OCR, recurrence materialization, and account-level activity projection remain unavailable in production. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved because browser interaction was not authorized for this pass.
+Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase account creation, sign-in, profile persistence with and without an avatar, group creation, invitation acceptance, two-user visibility, sign-out/in persistence, expense add/edit/delete replay, immutable revision history, shared comment add/delete replay, immutable comment activity, and shared derived balances are production-proven. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so settlement, receipt attachment/OCR, recurrence materialization, and account-level activity projection remain unavailable in production. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved because browser interaction was not authorized for this pass.
