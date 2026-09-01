@@ -160,9 +160,14 @@ async function verifySwipeBackGesture(context, page) {
       const restoredGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
       await restoredGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
       await restoredGroup.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
-      const visibleSiblingPages = await restoredGroup.evaluate((groupPage) => Array.from(groupPage.parentElement?.children ?? [])
-        .filter((candidate) => candidate.classList.contains('ion-page') && !candidate.classList.contains('ion-page-hidden')).length)
-      if (visibleSiblingPages !== 1) {
+      try {
+        await page.waitForFunction(() => {
+          const groupPage = document.querySelector('[data-testid="group-detail"]:not(.ion-page-hidden)')
+          if (!groupPage) return false
+          return Array.from(groupPage.parentElement?.children ?? [])
+            .filter((candidate) => candidate.classList.contains('ion-page') && !candidate.classList.contains('ion-page-hidden')).length === 1
+        }, undefined, { polling: 50, timeout: 2_000 })
+      } catch {
         throw new Error(`Hosted swipe-back attempt ${attempt} did not leave exactly one visible Ionic page.`)
       }
     }
