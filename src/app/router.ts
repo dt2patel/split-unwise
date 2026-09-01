@@ -18,6 +18,7 @@ const ChartsPage = () => import('../features/analytics/ChartsPage.vue')
 const CurrencyConversionPage = () => import('../features/analytics/CurrencyConversionPage.vue')
 const SearchPage = () => import('../features/search/SearchPage.vue')
 const GroupSettingsPage = () => import('../features/groups/GroupSettingsPage.vue')
+const RecurringExpensesPage = () => import('../features/groups/RecurringExpensesPage.vue')
 const ExportPage = () => import('../features/exports/ExportPage.vue')
 const AuthPage = () => import('../features/auth/AuthPage.vue')
 const AccountPage = () => import('../features/account/AccountPage.vue')
@@ -54,6 +55,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'groups/:groupId/search', name: 'group-search', component: SearchPage, meta: { pageTitle: 'Search', pageDescription: 'Search confirmed expenses in this group.', hideAppChrome: true } },
       { path: 'groups/:groupId/totals', name: 'group-totals', component: TotalsPage, meta: { pageTitle: 'Totals', pageDescription: 'Review paid, shared, and net totals.', hideAppChrome: true } },
       { path: 'groups/:groupId/charts', name: 'group-charts', component: ChartsPage, meta: { pageTitle: 'Charts', pageDescription: 'Explore spending over time and by category.', hideAppChrome: true } },
+      { path: 'groups/:groupId/recurring', name: 'group-recurring', component: RecurringExpensesPage, meta: { pageTitle: 'Recurring expenses', pageDescription: 'Manage future recurring expenses for this group.', hideAppChrome: true } },
       { path: 'groups/:groupId/convert', name: 'group-convert', component: CurrencyConversionPage, meta: { pageTitle: 'Convert', pageDescription: 'Preview group totals using dated reference rates.', hideAppChrome: true } },
       { path: 'groups/:groupId/export', name: 'group-export', component: ExportPage, meta: { pageTitle: 'Export', pageDescription: 'Download this group as CSV or JSON.', hideAppChrome: true } },
       { path: 'groups/:groupId/invite', name: 'group-invite', component: InviteSheet, meta: { pageTitle: 'Invite people', hideAppChrome: true } },

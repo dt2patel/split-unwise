@@ -26,12 +26,14 @@ import ActionRail from './components/ActionRail.vue'
 import GroupHero from './components/GroupHero.vue'
 import { useGroupStore } from './groupStore'
 import { activityDestination, activityText } from '../activity/activityStore'
+import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
 
 type GroupView = 'expenses' | 'activity'
 
 const route = useRoute()
 const store = useGroupStore()
+const session = getAppSession()
 const { activeGroup, currentUserNets, error, isActivityLoading, isLoading, journalExpenses, members, recentActivity } = storeToRefs(store)
 const selectedView = ref<GroupView>('expenses')
 const isCollapsed = ref(false)
@@ -56,15 +58,45 @@ const groupedActivity = computed(() => {
   }
   return groups
 })
+let recurringCatchUp: { readonly groupId: string; readonly promise: Promise<void> } | undefined
+let skipInitialIonicEntry = true
 
 watch(groupId, (id) => {
-  if (id) void store.loadGroup(id)
+  if (id) void loadGroupForEntry(id)
 }, { immediate: true })
-onIonViewWillEnter(() => { void refreshOnViewEntry() })
+onIonViewWillEnter(() => {
+  if (skipInitialIonicEntry) {
+    skipInitialIonicEntry = false
+    return
+  }
+  void refreshOnViewEntry()
+})
 
 async function refreshOnViewEntry(): Promise<void> {
-  if (isStrictId(groupId.value)) await store.loadGroup(groupId.value)
+  if (isStrictId(groupId.value)) await loadGroupForEntry(groupId.value)
   if (selectedView.value === 'activity' && isStrictId(groupId.value)) await store.loadActivity(groupId.value, true)
+}
+
+async function loadGroupForEntry(id: string): Promise<void> {
+  await store.loadGroup(id)
+  if (activeGroup.value?.id === id) void startRecurringCatchUp(id)
+}
+
+function startRecurringCatchUp(id: string): Promise<void> {
+  if (recurringCatchUp?.groupId === id) return recurringCatchUp.promise
+  let pending!: Promise<void>
+  pending = (async () => {
+    const result = await session.repository.groups.materializeDue(id, localToday(), 24)
+    if (result.occurrences.length > 0 && groupId.value === id) await store.loadGroup(id)
+  })().catch(() => undefined).finally(() => {
+    if (recurringCatchUp?.promise === pending) recurringCatchUp = undefined
+  })
+  recurringCatchUp = { groupId: id, promise: pending }
+  return pending
+}
+
+function localToday(value = new Date()): string {
+  return `${String(value.getFullYear()).padStart(4, '0')}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
 }
 
 function selectView(view: GroupView): void {

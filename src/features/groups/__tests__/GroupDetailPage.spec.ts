@@ -4,16 +4,26 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import type { Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { repeatOutline } from 'ionicons/icons'
 import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import type { ExpenseRow } from '../../../data/repositories'
+import type { ExpenseRow, MaterializeDueResult } from '../../../data/repositories'
 import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
 import { lakeHouseGroup } from '../../../demo/lakeHouse'
 
 const ORIGIN_UID = 'maya-p'
 const PRINCIPAL_KEY = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: ORIGIN_UID })
 const groupDetailSource = readFileSync(resolve(process.cwd(), 'src/features/groups/GroupDetailPage.vue'), 'utf8')
+const ionicLifecycle = vi.hoisted(() => ({ willEnter: [] as Array<() => void> }))
+
+vi.mock('@ionic/vue', async () => {
+  const actual = await vi.importActual<typeof import('@ionic/vue')>('@ionic/vue')
+  return {
+    ...actual,
+    onIonViewWillEnter(callback: () => void) { ionicLifecycle.willEnter.push(callback) },
+  }
+})
 
 const ionicStubs = {
   IonPage: { template: '<main class="ion-page"><slot /></main>' },
@@ -44,7 +54,7 @@ const ionicStubs = {
     props: ['routerLink', 'ariaLabel', 'disabled'],
     template: '<a :href="routerLink" :aria-label="ariaLabel" :aria-disabled="disabled || undefined"><slot /></a>',
   },
-  IonIcon: { props: ['icon'], template: '<span data-testid="ion-icon" aria-hidden="true" />' },
+  IonIcon: { name: 'IonIcon', props: ['icon'], template: '<span data-testid="ion-icon" aria-hidden="true" />' },
   IonFab: { template: '<div><slot /></div>' },
   IonFabButton: {
     props: ['routerLink'],
@@ -54,6 +64,7 @@ const ionicStubs = {
 }
 
 beforeEach(() => {
+  ionicLifecycle.willEnter.length = 0
   setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
 })
 afterEach(() => { vi.unstubAllGlobals() })
@@ -185,6 +196,9 @@ describe('Lake House group journal', () => {
     await wrapper.get('[data-action="more"]').trigger('click')
     expect(wrapper.get('[data-action="totals"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/totals')
     expect(wrapper.get('[data-action="charts"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/charts')
+    const recurring = wrapper.get('[data-action="recurring"]')
+    expect(recurring.attributes('href')).toBe('/tabs/groups/lake-house-weekend/recurring')
+    expect(recurring.getComponent({ name: 'IonIcon' }).props('icon')).toBe(repeatOutline)
     expect(wrapper.get('[data-action="convert"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/convert')
     expect(wrapper.get('[data-action="export"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/export')
     expect(wrapper.get('[aria-label="Add expense"]').attributes('href')).toBe('/tabs/groups/expenses/new?groupId=lake-house-weekend')
@@ -244,6 +258,92 @@ describe('Lake House group journal', () => {
     expect(groupDetailSource).toContain('onIonViewWillEnter')
     expect(groupDetailSource).toContain('class="activity-list__body"')
     expect(groupDetailSource).toMatch(/\.activity-list__body\s*\{[^}]*min-height:\s*44px/s)
+  })
+
+  it('starts one non-blocking coalesced catch-up and does not reload the journal when nothing posts', async () => {
+    let releaseCatchUp!: (result: MaterializeDueResult) => void
+    const catchUpGate = new Promise<MaterializeDueResult>((resolveGate) => { releaseCatchUp = resolveGate })
+    const repository = createDemoRepository()
+    const listForGroup = vi.fn(repository.expenses.listForGroup)
+    const materializeDue = vi.fn((_groupId: string, _throughDate: string, _maxOccurrences?: number) => catchUpGate)
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...repository,
+        groups: { ...repository.groups, materializeDue },
+        expenses: { ...repository.expenses, listForGroup },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+
+    expect(wrapper.find('[data-testid="group-cover"]').exists()).toBe(true)
+    await vi.waitFor(() => expect(materializeDue).toHaveBeenCalledTimes(1))
+    expect(materializeDue.mock.calls[0]?.[1]).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(materializeDue.mock.calls[0]?.[2]).toBe(24)
+
+    const enter = ionicLifecycle.willEnter.at(-1)
+    expect(enter).toBeTypeOf('function')
+    enter?.()
+    enter?.()
+    await flushPromises()
+    expect(materializeDue).toHaveBeenCalledTimes(1)
+
+    const callsBeforeCatchUpFinishes = listForGroup.mock.calls.length
+    releaseCatchUp({ occurrences: [], moreRemain: false })
+    await flushPromises()
+    expect(listForGroup).toHaveBeenCalledTimes(callsBeforeCatchUpFinishes)
+  })
+
+  it('does not replay the initial catch-up when Ionic reports the first view entry after a fast load', async () => {
+    const repository = createDemoRepository()
+    const materializeDue = vi.fn(async (_groupId: string, _throughDate: string, _maxOccurrences?: number): Promise<MaterializeDueResult> => ({
+      occurrences: [],
+      moreRemain: false,
+    }))
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...repository,
+        groups: { ...repository.groups, materializeDue },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+
+    await mountRoute('/tabs/groups/lake-house-weekend')
+    await vi.waitFor(() => expect(materializeDue).toHaveBeenCalledTimes(1))
+
+    const enter = ionicLifecycle.willEnter.at(-1)
+    expect(enter).toBeTypeOf('function')
+    enter?.()
+    await flushPromises()
+
+    expect(materializeDue).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads the group journal after background catch-up posts an occurrence', async () => {
+    let releaseCatchUp!: (result: MaterializeDueResult) => void
+    const catchUpGate = new Promise<MaterializeDueResult>((resolveGate) => { releaseCatchUp = resolveGate })
+    const repository = createDemoRepository()
+    const posted = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!posted) throw new Error('Missing posted fixture')
+    const listForGroup = vi.fn(repository.expenses.listForGroup)
+    const materializeDue = vi.fn((_groupId: string, _throughDate: string, _maxOccurrences?: number) => catchUpGate)
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...repository,
+        groups: { ...repository.groups, materializeDue },
+        expenses: { ...repository.expenses, listForGroup },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+
+    await mountRoute('/tabs/groups/lake-house-weekend')
+    await vi.waitFor(() => expect(materializeDue).toHaveBeenCalledTimes(1))
+    const callsBeforeCatchUpFinishes = listForGroup.mock.calls.length
+
+    releaseCatchUp({ occurrences: [posted], moreRemain: false })
+
+    await vi.waitFor(() => expect(listForGroup).toHaveBeenCalledTimes(callsBeforeCatchUpFinishes + 1))
   })
 
   it('keeps the routed Ionic page as the native navigation root', () => {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { IonButton, IonIcon } from '@ionic/vue'
-import { analyticsOutline, cashOutline, ellipsisHorizontal, peopleOutline, personAddOutline, searchOutline, shareOutline, statsChartOutline, swapHorizontalOutline } from 'ionicons/icons'
+import { analyticsOutline, cashOutline, ellipsisHorizontal, peopleOutline, personAddOutline, repeatOutline, searchOutline, shareOutline, statsChartOutline, swapHorizontalOutline } from 'ionicons/icons'
 
 import type { ExpenseContextKind } from '../../../data'
 
@@ -19,6 +19,7 @@ const moreActions = [
   { id: 'search', label: 'Search', icon: searchOutline, suffix: 'search', primary: false },
   { id: 'totals', label: 'Totals', icon: analyticsOutline, suffix: 'totals', primary: false },
   { id: 'charts', label: 'Charts', icon: statsChartOutline, suffix: 'charts', primary: false },
+  { id: 'recurring', label: 'Recurring', icon: repeatOutline, suffix: 'recurring', primary: false },
   { id: 'convert', label: 'Convert', icon: swapHorizontalOutline, suffix: 'convert', primary: false },
   { id: 'export', label: 'Export', icon: shareOutline, suffix: 'export', primary: false },
 ] as const

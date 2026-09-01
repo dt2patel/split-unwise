@@ -26,6 +26,7 @@ describe('application routes', () => {
     ['/tabs/groups/lake-house-weekend/search', 'group-search'],
     ['/tabs/groups/lake-house-weekend/totals', 'group-totals'],
     ['/tabs/groups/lake-house-weekend/charts', 'group-charts'],
+    ['/tabs/groups/lake-house-weekend/recurring', 'group-recurring'],
     ['/tabs/groups/lake-house-weekend/convert', 'group-convert'],
     ['/tabs/groups/lake-house-weekend/export', 'group-export'],
     ['/tabs/groups/lake-house-weekend/settings', 'group-settings'],
@@ -102,6 +103,7 @@ describe('application routes', () => {
     '/tabs/groups/lake-house-weekend/search',
     '/tabs/groups/lake-house-weekend/totals',
     '/tabs/groups/lake-house-weekend/charts',
+    '/tabs/groups/lake-house-weekend/recurring',
     '/tabs/groups/lake-house-weekend/convert',
     '/tabs/groups/lake-house-weekend/settings',
     '/tabs/groups/lake-house-weekend/export',
@@ -109,5 +111,13 @@ describe('application routes', () => {
     '/tabs/account/transactions/import',
   ])('hides global app chrome for the premium tool route %s', (path) => {
     expect(createAppRouter().resolve(path).meta.hideAppChrome).toBe(true)
+  })
+
+  it('keeps the recurring management screen lazy inside the Groups stack', () => {
+    const resolved = createAppRouter().resolve('/tabs/groups/lake-house-weekend/recurring')
+    const component = resolved.matched.at(-1)?.components?.default
+
+    expect(resolved.name).toBe('group-recurring')
+    expect(typeof component).toBe('function')
   })
 })
