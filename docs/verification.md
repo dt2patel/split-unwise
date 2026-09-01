@@ -1,6 +1,6 @@
 # Split Unwise release verification
 
-Verified P1 release source: `888984fcf0541c1dd95a9f099c2ab8a8aee36eff`
+Verified P1 shared-ledger release source: `968fa0c2ee7bb367de8518e5b4e2a4445ef34c14`
 
 Date: 2026-08-31 (America/Chicago)
 
@@ -8,17 +8,17 @@ Date: 2026-08-31 (America/Chicago)
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Unit and component suite | Pass | `pnpm test`: 73 files passed, 6 skipped; 681 tests passed, 29 skipped |
+| Unit and component suite | Pass | `pnpm test`: 76 files passed, 6 skipped; 694 tests passed, 32 skipped |
 | Type safety | Pass | `pnpm typecheck` |
-| Firestore rules | Pass | `pnpm test:firebase`: 8 emulator-backed rules tests |
-| Auth/group/invite flow | Pass | One emulator flow plus one live production flow with two temporary Firebase Auth accounts and separate client sessions |
+| Firestore rules | Pass | `pnpm test:firebase`: 10 emulator-backed rules tests, including valid immutable create and denied outsider, mismatch, removed-member, overwrite, revision, and activity writes |
+| Auth/group/invite/expense flow | Pass | Two emulator flows plus live production proof with two temporary Firebase Auth accounts, one replay-stable expense, and the same derived balance for both members |
 | Functions and service behavior | Pass | `pnpm test:firebase`: 16 emulator-backed tests |
-| Production web bundle | Pass | `pnpm build`: 503 modules transformed; Workbox generated 99 precache entries |
-| Artifact policy | Pass | 103 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
+| Production web bundle | Pass | `pnpm build`: 508 modules transformed; Workbox generated 104 precache entries |
+| Artifact policy | Pass | 106 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
 | Reference-rate provider | Pass | Live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS |
 | Capacitor synchronization | Pass | `pnpm exec cap sync ios`; local `dist` copied with no production `server.url` |
 | Native compile | Pass | `pnpm ios:build`; unsigned Debug build for a generic iOS simulator |
-| Simulator package | Pass | `artifacts/Split-Unwise-Simulator.zip`; embedded source commit `888984fcf0541c1dd95a9f099c2ab8a8aee36eff`; SHA-256 `0afef898bd04c340fca30c1c00579fd3c1c4ac565200d12b5138546abdc23eb0` |
+| Simulator package | Pass | `artifacts/Split-Unwise-968fa0c-Simulator.zip`; embedded source commit `968fa0c2ee7bb367de8518e5b4e2a4445ef34c14`; SHA-256 `bc13d2c975b436c988ed48a334c8837f825b4bb296f110d911b2bf872fb3a613` |
 | Firebase Hosting | Pass | Both production domains serve the exact release; root, deep link, manifest, service worker, build metadata, security headers, and hashed-asset cache policy were checked live |
 | Whitespace integrity | Pass | `git diff --check` and `git diff --cached --check` |
 
@@ -39,7 +39,7 @@ The compiled `App.app` was installed and launched, not inferred from a web build
 
 The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`; the iPad simulator identifier was `348D09B8-FC5D-4936-8ED8-69FC1D92AF5C`. Both ran the Apple iOS 26.5 simulator runtime installed through Xcode.
 
-The final `888984fcf0541c1dd95a9f099c2ab8a8aee36eff` native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the real Firebase Email/Password sign-in surface at 390 × 844 points. The packaged `App.app` contains the same source identifier. Native Auth uses explicit local persistence without a browser popup resolver, avoiding the WKWebView OAuth-helper startup hang caught during release verification.
+The prior P1 native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the real Firebase Email/Password sign-in surface at 390 × 844 points. The new `968fa0c2ee7bb367de8518e5b4e2a4445ef34c14` native build compiled for the generic simulator and its packaged `App.app` contains that exact source identifier; this release did not repeat interactive simulator installation. Native Auth uses explicit local persistence without a browser popup resolver, avoiding the WKWebView OAuth-helper startup hang caught during release verification.
 
 ## PWA, offline, and update behavior
 
@@ -78,8 +78,9 @@ The final `888984fcf0541c1dd95a9f099c2ab8a8aee36eff` native build was installed 
 
 - Firebase Authentication was initialized remotely and verified as Identity Platform subtype with Email/Password enabled, passwords required, Google enabled, and both production domains authorized.
 - A live production SDK run created an owner and a friend as temporary Auth accounts in separate Firebase app sessions. The owner bootstrapped a profile, created a complete group bundle, and generated a fragment-only invitation capability. The friend bootstrapped a profile, inspected the invitation, accepted it atomically, and read the two-member group. A fresh owner session then read the same persisted group.
+- A second live production SDK run created two fresh temporary Auth accounts. The owner added a $24.00 immutable expense split equally with the friend, retried the identical operation, and observed one saved expense. Both accounts independently read the same $12.00 friend-to-owner pairwise and simplified debt derived from the immutable ledger; no writable balance projection was involved.
 - The raw 256-bit invitation token stays in the URL fragment and is stripped immediately. Only its SHA-256-derived document ID is stored; the share URL uses the fixed `/invite/join` path so the capability is not placed in request logs.
-- All temporary Auth accounts, profiles, group trees, projections, and invitation documents were deleted after verification. Follow-up Auth and Firestore queries returned empty results for every live-flow marker.
+- All temporary Auth accounts, profiles, group trees, projections, invitation documents, and the temporary expense were deleted after verification. Auth export found zero matching test users, and fully qualified Firebase MCP reads returned not found for every exact live-flow root.
 
 ## Accessibility and interaction evidence
 
@@ -93,4 +94,4 @@ The final `888984fcf0541c1dd95a9f099c2ab8a8aee36eff` native build was installed 
 
 The iPad split-pane/master-detail contract is component-tested, but the iPad screenshot proves the home shell only; no tap automation was authorized for this pass. VoiceOver traversal, Full Keyboard Access, Switch Control, physical-device haptics/camera, landscape tablet master/detail, keyboard-driven sheets, and same-viewport reference-image comparison still require an interactive device session. They are not claimed as passed.
 
-Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase sign-in, profile persistence, group creation, invitation acceptance, two-user visibility, and sign-out/in persistence are production-proven. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so durable add/edit/settle/replay proof is not claimed. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved because browser interaction was not authorized for this pass.
+Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase sign-in, profile persistence, group creation, invitation acceptance, two-user visibility, sign-out/in persistence, immutable expense add/replay, and shared derived balances are production-proven. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so expense edit/delete, settlement, receipt attachment/OCR, recurrence materialization, and server activity projection remain unavailable in production. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved because browser interaction was not authorized for this pass.
