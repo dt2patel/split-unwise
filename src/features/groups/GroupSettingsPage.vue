@@ -168,7 +168,7 @@ function isConflict(reason: unknown, failure: string): boolean {
             </header>
             <ion-note v-if="!canManage" class="permission-note">Only an active group manager can remove people.</ion-note>
             <ion-list inset lines="full" class="settings-list manage-member-list">
-              <ion-item v-for="member in snapshot.members" :key="`manage-${member.id}`" class="settings-row manage-member-row">
+              <ion-item v-for="member in snapshot.members" :key="`manage-${member.id}`" class="settings-row manage-member-row" :data-member-id="member.id">
                 <member-avatar slot="start" :member="member" size="compact" />
                 <ion-label class="manage-member-copy">
                   <strong>{{ member.displayName }}</strong>

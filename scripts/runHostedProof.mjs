@@ -126,6 +126,7 @@ async function assertFixturesAvailable() {
 const createdAuthUids = new Set()
 let adminClient
 let ownerFixtureUid
+let thirdFixtureUid
 let testFailure
 const cleanupFailures = []
 
@@ -147,11 +148,13 @@ try {
     const fixture = await identityRequest(configuration.apiKey, 'accounts:signUp', { email, password, returnSecureToken: false })
     createdAuthUids.add(fixture.localId)
     if (email === ownerEmail) ownerFixtureUid = fixture.localId
+    if (email === thirdEmail) thirdFixtureUid = fixture.localId
     if (email !== unverifiedEmail) await adminClient.post('/v1/accounts:update', { localId: fixture.localId, emailVerified: true, targetProjectId: projectId })
     throwIfTerminated()
   }
 
   try {
+    if (!thirdFixtureUid) throw new Error('Hosted proof third-account fixture is unavailable.')
     const proofEnvironment = {
       ...process.env,
       EXPECTED_HOSTED_COMMIT: expectedHostedCommit,
@@ -159,6 +162,7 @@ try {
       LIVE_PROOF_PASSWORD: password,
       LIVE_PREVERIFIED_ACCOUNTS: '1',
       LIVE_PROOF_EXTERNAL_CLEANUP: '1',
+      LIVE_PROOF_THIRD_UID: thirdFixtureUid,
     }
     await run(process.execPath, [vitestEntrypoint, 'run', 'src/data/__tests__/productionHosted.spec.ts'], {
       stdio: ['ignore', 'pipe', 'pipe'], killProcessGroup: true, env: proofEnvironment,

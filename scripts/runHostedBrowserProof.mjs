@@ -7,10 +7,12 @@ import { assertExpectedHostedCommit, collectHashedStartupAssets } from './hosted
 const hostedOrigin = 'https://split-unwise-aditya.web.app'
 const suffix = process.env.LIVE_PROOF_SUFFIX
 const password = process.env.LIVE_PROOF_PASSWORD
+const thirdUid = process.env.LIVE_PROOF_THIRD_UID
 const expectedCommit = assertExpectedHostedCommit(process.env.EXPECTED_HOSTED_COMMIT)
 
 if (!suffix || !/^[a-z0-9-]{10,80}$/.test(suffix)) throw new Error('Hosted browser proof requires a valid LIVE_PROOF_SUFFIX.')
 if (!password || process.env.LIVE_PREVERIFIED_ACCOUNTS !== '1') throw new Error('Hosted browser proof requires preverified disposable accounts from runHostedProof.')
+if (!thirdUid || !/^[A-Za-z0-9_-]{1,128}$/.test(thirdUid)) throw new Error('Hosted browser proof requires the exact disposable third-account UID.')
 
 const ownerEmail = `live-owner-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
@@ -272,19 +274,24 @@ async function verifyMemberRemoval(browser) {
     await page.goto(`${deepUrl}/settings`, { waitUntil: 'domcontentloaded' })
     await page.getByRole('heading', { name: 'Group settings', exact: true }).waitFor({ state: 'visible' })
     await page.getByText('3 active people', { exact: true }).waitFor({ state: 'visible' })
-    const removalAction = page.locator('ion-button[aria-label="Remove Live Third Person from group"]')
+    const targetRow = page.locator(`.manage-member-row[data-member-id="${thirdUid}"]`)
+    await targetRow.waitFor({ state: 'visible' })
+    const targetName = (await targetRow.locator('strong').textContent())?.trim()
+    if (!targetName) throw new Error('Hosted member-removal target did not expose a display name.')
+    const removalAction = targetRow.locator('ion-button')
     await removalAction.waitFor({ state: 'visible' })
     await removalAction.click()
 
     const cardModal = page.locator('ion-modal.show-modal')
     await cardModal.waitFor({ state: 'visible' })
     await cardModal.getByRole('heading', { name: 'Remove member', exact: true }).waitFor({ state: 'visible' })
+    await cardModal.getByRole('heading', { name: `Remove ${targetName}?`, exact: true }).waitFor({ state: 'visible' })
     if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted member removal did not use the Ionic iOS card modal.')
-    await cardModal.getByRole('button', { name: 'Remove Live Third Person', exact: true }).click()
+    await cardModal.getByRole('button', { name: `Remove ${targetName}`, exact: true }).click()
     await cardModal.waitFor({ state: 'hidden' })
-    await page.getByText('Live Third Person was removed from the group.', { exact: true }).waitFor({ state: 'visible' })
+    await page.getByText(`${targetName} was removed from the group.`, { exact: true }).waitFor({ state: 'visible' })
     await page.getByText('2 active people', { exact: true }).waitFor({ state: 'visible' })
-    if (await removalAction.count()) {
+    if (await targetRow.count()) {
       throw new Error('Hosted member list still exposed the removed account.')
     }
     assertPageClean()
