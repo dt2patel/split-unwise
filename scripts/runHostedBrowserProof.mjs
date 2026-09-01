@@ -174,7 +174,7 @@ async function verifyReimbursementWorkflow(page) {
   const reimbursementRow = restoredGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: description })
   await reimbursementRow.getByText(description, { exact: true }).waitFor({ state: 'visible' })
   await reimbursementRow.getByText('Refund received by Live Renamed Owner', { exact: true }).waitFor({ state: 'visible' })
-  await reimbursementRow.getByText('Reimbursed to 2 of you', { exact: true }).waitFor({ state: 'visible' })
+  if (!(await reimbursementRow.textContent())?.includes('Reimbursed to 2 of you')) throw new Error('Hosted reimbursement row did not retain its allocation summary.')
   await reimbursementRow.locator('.expense-row__amount--balance .money-amount__direction').getByText('You owe', { exact: true }).waitFor({ state: 'visible' })
   await reimbursementRow.locator('.expense-row__amount--balance .money-amount__value').getByText('$10.00', { exact: true }).waitFor({ state: 'visible' })
 

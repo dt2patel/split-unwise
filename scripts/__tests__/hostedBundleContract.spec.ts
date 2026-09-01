@@ -68,6 +68,7 @@ describe('hosted bundle proof contract', () => {
     expect(browser).toContain('verifyReimbursementWorkflow')
     expect(browser).toContain('[data-method="reimbursement"]')
     expect(browser).toContain('Refund received by Live Renamed Owner')
+    expect(browser).toContain('reimbursementRow.textContent()')
     expect(browser).toContain("locator('ion-title').getByText('Reimbursement', { exact: true })")
     expect(browser).toContain("getByRole('heading', { name: 'Refund received by', exact: true })")
     expect(browser).toContain("getByRole('heading', { name: 'Reimbursement owed to', exact: true })")
