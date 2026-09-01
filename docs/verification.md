@@ -1,28 +1,30 @@
 # Split Unwise release verification
 
-Verified Firebase load and mobile-group feature source: `3ba53c1e6b716ba8b01265e540b044d4d1ac7b3f`
+Current hosted Firebase load and mobile-group feature source: `3ba53c1e6b716ba8b01265e540b044d4d1ac7b3f`
+
+The recurring-expense work described below is a local release candidate. Task 5 intentionally did not deploy or mutate the Firebase project, so hosted recurrence is not claimed until the new rules and Hosting build are deployed and `pnpm test:hosted` passes against that exact release.
 
 Date: 2026-09-01 (America/Chicago)
 
-## Automated release gate
+## Task 5 local release gate
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Unit and component suite | Pass | `pnpm test`: 79 files passed, 7 skipped; 720 tests passed, 41 skipped |
+| Unit and component suite | Pass | `pnpm test`: 83 files passed, 7 skipped; 788 tests passed, 54 skipped |
 | Type safety | Pass | `pnpm typecheck` |
-| Firestore rules | Pass | `pnpm test:firebase`: 15 emulator-backed rules tests, including audited expense/comment/settlement mutations plus owner-private immutable notification receipts, monotonic read-all state, and denied outsider/invalid/physical-delete writes |
-| Auth/group/invite/expense flow | Pass | Five emulator-backed Spark flows plus a live production run through the real Auth service: two temporary Email/Password accounts, sign-out/in, group creation, private invitation acceptance, profile/preferences, expense edit/replay, parallel group reads, manual settlement record/replay/void/replay, cross-account notifications, individual/read-all replay, and a decoded two-member list |
-| Functions and service behavior | Pass | `pnpm test:firebase`: 16 emulator-backed Functions tests; 36 total Firebase emulator checks |
-| Production web bundle | Pass | `pnpm build`: 508 modules transformed; Workbox generated 104 precache entries |
-| Artifact policy | Pass | 106 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
-| Reference-rate provider | Pass | Live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS |
-| Capacitor synchronization | Pass | `pnpm exec cap sync ios`; local `dist` copied with no production `server.url` |
-| Native compile | Pass | `pnpm ios:build`; unsigned Debug build for a generic iOS simulator |
-| Simulator package | Pass | `artifacts/Split-Unwise-c76dde2-Simulator.zip`; embedded source commit `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041`; SHA-256 `5dbadcf2a281ba9c3b383e4425a9b381b6111462399984c23c761d4645dc8bf9` |
-| Firebase Hosting | Pass | Both production domains serve the exact release; root, deep link, manifest, service worker, build metadata, security headers, and hashed-asset cache policy were checked live |
+| Firestore rules | Pass | `pnpm test:firebase`: 22 emulator-backed rules tests, including deterministic recurrence, removed-participant denial, exact-frontier edits, revision-checked cancellation, and the existing expense/comment/settlement/notification boundaries |
+| Spark Auth/group/ledger flows | Pass | `pnpm test:firebase`: 7 emulator-backed flows, including recurrence concurrency/replay and occurrence/future/cancellation semantics |
+| Functions and service behavior | Pass | `pnpm test:firebase`: 18 Functions/service tests; 47 total Firebase emulator checks across rules, Spark flows, and Functions |
+| Disposable hosted proof | Prepared, not executed | `pnpm exec vitest run src/data/__tests__/productionHosted.spec.ts`: one test intentionally skipped without fixture credentials. Run `pnpm test:hosted` only after the matching rules and Hosting deployment. |
+| Production web bundle and artifact policy | Post-commit gate | Run `VITE_BUILD_COMMIT=$(git rev-parse HEAD) pnpm build` from the release commit; the ignored Task 5 report records the exact output. |
+| Reference-rate provider | Prior hosted evidence, not rerun | The prior live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS. |
+| Capacitor synchronization | Post-commit gate | Run `pnpm exec cap sync ios` after the exact-commit web build. |
+| Native compile | Post-commit gate | Run `pnpm ios:build`; unsigned Debug build for a generic iOS simulator. |
+| Simulator package | Prior release evidence | `artifacts/Split-Unwise-c76dde2-Simulator.zip`; embedded source commit `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041`; SHA-256 `5dbadcf2a281ba9c3b383e4425a9b381b6111462399984c23c761d4645dc8bf9` |
+| Firebase Hosting | Unchanged | No deployment in Task 5. The production domains and build metadata still represent the hosted source identified above. |
 | Whitespace integrity | Pass | `git diff --check` and `git diff --cached --check` |
 
-The largest natural framework chunk is 1,133,240 bytes raw and about 242 KB gzip, below the enforced 1.2 MB raw / 300 KB gzip ceilings. Manually partitioning Ionic/Vue vendor cycles caused runtime failures in JavaScriptCore, so the release keeps Vite's valid framework graph while retaining route-level lazy loading.
+In the prior release, the largest natural framework chunk was 1,133,240 bytes raw and about 242 KB gzip, below the enforced 1.2 MB raw / 300 KB gzip ceilings. Manually partitioning Ionic/Vue vendor cycles caused runtime failures in JavaScriptCore, so the project keeps Vite's valid framework graph while retaining route-level lazy loading. Task 5 rechecks the current committed bundle through the enforced artifact policy after commit.
 
 ## Native runtime evidence
 
@@ -40,6 +42,18 @@ The compiled `App.app` was installed and launched, not inferred from a web build
 The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`; the iPad simulator identifier was `348D09B8-FC5D-4936-8ED8-69FC1D92AF5C`. Both ran the Apple iOS 26.5 simulator runtime installed through Xcode.
 
 The prior P1 native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the real Firebase Email/Password sign-in surface at 390 × 844 points. The new `c76dde21e688bc4b7063b6487fc2ab3e6a7cb041` native build compiled for the generic simulator and its packaged `App.app` contains that exact source identifier; this release did not repeat interactive simulator installation. Native Auth uses explicit local persistence without a browser popup resolver, avoiding the WKWebView OAuth-helper startup hang caught during release verification.
+
+## Add Expense and recurring mobile evidence
+
+The local demo was inspected at 390 × 844 after the Add Expense polish and recurring-management work:
+
+| Surface | Observed evidence | Boundary |
+| --- | --- | --- |
+| Compact Add Expense editor | [Screenshot](../.artifacts/design-audit/add-expense-2026-09-01/04-add-expense-polished.png) | Visible hierarchy, inline rows, disclosure affordances, and no observed horizontal clipping |
+| Ionic recurrence card modal | [Screenshot](../.artifacts/design-audit/add-expense-2026-09-01/05-recurrence-card-modal.png) | Visible card-modal presentation and controls; swipe physics and dirty-dismiss behavior were not proven by the image |
+| Recurring management screen | [Screenshot](../.artifacts/design-audit/add-expense-2026-09-01/06-recurring-expenses-mobile.png) | Visible status, amount, schedule, next date, edit, and stop actions; no hosted transaction behavior is inferred |
+
+The complete before/after notes are in the [design audit](../.artifacts/design-audit/add-expense-2026-09-01/audit.md). These are static local-demo screenshots, not hosted Firebase or installed-native runtime evidence. Keyboard movement, VoiceOver, Dynamic Type on these specific screens, file-picker behavior, swipe dismissal, and physical-device interaction remain outside their proof boundary.
 
 ## PWA, offline, and update behavior
 
@@ -64,6 +78,16 @@ The prior P1 native build was installed on the iPhone simulator, launched as bun
 - A toggle is a versioned, replay-safe `group.simplify-debts` command. It atomically advances settings and balance revisions, preserves the saved default split and both pairwise/simplified plans, and records deterministic group activity.
 - Balances open the group's saved plan by default while keeping both plans inspectable. The behavior remains per-currency and never nets unlike currencies together.
 - Domain, demo persistence/quarantine, strict queue hydration, Firebase decoding, UI permissions, saved-plan selection, transaction replay, and stale-revision conflict behavior are covered by the release suites.
+
+## Recurring expenses
+
+- Add Expense can create weekly, fortnightly, monthly, or yearly recurrence. On Spark, the source expense and active template are created atomically and replay to the same records.
+- An authorized client catches up when the group detail or Recurring screen opens. A visit materializes at most 24 due occurrences; the Recurring screen reports when more work remains and exposes an explicit retry.
+- Each occurrence ID is derived from the template ID and ISO due date. Firestore advances the template and writes the occurrence/activity atomically, so concurrent clients converge on one ledger entry.
+- An occurrence-only edit leaves the template unchanged. A future-series edit must target the exact current source/occurrence frontier and is authorized for that expense's author or a group manager. Cancellation requires the exact template revision and leaves the source plus every posted occurrence intact.
+- Rules revalidate all template payers and split participants for every materialization. If an involved participant is removed, later occurrences stop posting; historical expenses remain readable ledger history.
+- Spark has no unattended scheduler. Catch-up happens only after an authorized client opens the relevant screen. True background scheduling requires the Functions scheduler on a billed Firebase project.
+- Unit, emulator, rules, and UI tests cover these semantics. The disposable hosted proof now exercises a past-due two-user series, concurrent catch-up, cross-user semantic replay, occurrence/future edits, manager cancellation, retained history, no post-cancellation catch-up, and the additional activity-derived notifications. It was compiled in its disabled/skipped mode during local preparation but was not executed because this task did not deploy the required client and rules.
 
 ## Hosted release evidence
 
@@ -102,4 +126,4 @@ The prior P1 native build was installed on the iPhone simulator, launched as bun
 
 The iPad screenshot proves the home shell only; the group detail now deliberately uses a single routed Ionic page on every viewport, so a separate group master/detail presentation is not claimed. VoiceOver traversal, Full Keyboard Access, Switch Control, physical-device haptics/camera, landscape tablet behavior, keyboard-driven sheets, and same-viewport reference-image comparison still require an interactive device session. They are not claimed as passed.
 
-Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase account creation, sign-in, profile persistence with and without an avatar, group creation, invitation acceptance, two-user visibility, sign-out/in persistence, expense add/edit/delete replay, immutable revision history, shared comment add/delete replay, group/account activity aggregation, shared derived balances, audited manual settlement record/replay/void/replay, cross-account in-app notifications, and individual/read-all notification replay are production-proven. The settlement repository validates the current derived debt basis before writing; Firestore rules validate the participants, amount, replay identity, atomic activity, and authorized void but do not independently aggregate the entire ledger. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so provider-confirmed transfers, receipt attachment/OCR, recurrence materialization, server-maintained account projections, and email/push notification delivery remain unavailable in production. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved.
+Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase account creation, sign-in, profile persistence with and without an avatar, group creation, invitation acceptance, two-user visibility, sign-out/in persistence, expense add/edit/delete replay, immutable revision history, shared comment add/delete replay, group/account activity aggregation, shared derived balances, audited manual settlement record/replay/void/replay, cross-account in-app notifications, and individual/read-all notification replay are production-proven for the currently hosted source. The settlement repository validates the current derived debt basis before writing; Firestore rules validate the participants, amount, replay identity, atomic activity, and authorized void but do not independently aggregate the entire ledger. The Spark recurrence path is implemented and emulator-proven in the local release candidate, but it is not production-proven because Task 5 did not deploy or run the live proof. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so provider-confirmed transfers, receipt attachment/OCR, server-maintained account projections, email/push delivery, and truly unattended recurring scheduling remain unavailable. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved.

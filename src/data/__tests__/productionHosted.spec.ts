@@ -31,7 +31,7 @@ afterAll(async () => {
   resetFirebaseBootstrapForTesting()
 })
 
-hostedIt('proves the deployed verified-friendship and private-account paths', async () => {
+hostedIt('proves deployed verified friendship, private accounts, and recurring Spark ledger paths', async () => {
   if (process.env.LIVE_PREVERIFIED_ACCOUNTS !== '1' || !password || (!externalCleanup && !keepLiveProof)) {
     throw new Error('Hosted proof requires verified disposable accounts. Run `pnpm test:hosted` so the fixture runner can provision and clean them.')
   }
@@ -197,30 +197,175 @@ hostedIt('proves the deployed verified-friendship and private-account paths', as
     expect.objectContaining({ kind: 'settlement.created', operationId: settlementCommand.operationId, settlementId: settlement.settlement.settlementId }),
     expect.objectContaining({ kind: 'settlement.voided', operationId: voidCommand.operationId, settlementId: settlement.settlement.settlementId }),
   ]))
+
+  const recurringGroupId = group.groupId
+  const recurringSourceDate = '2026-08-18'
+  const recurringDueDate = '2026-08-25'
+  const recurringNextDate = '2026-09-01'
+  const recurringCommand = {
+    kind: 'expense.add' as const, operationId: `live-recurring-${suffix}`, groupId: recurringGroupId,
+    description: 'Hosted recurring utilities', date: recurringSourceDate,
+    total: { currency: 'USD' as const, minorAmount: 2000 },
+    payments: [{ participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 2000 } }],
+    allocations: [
+      { participantId: ownerUid, money: { currency: 'USD' as const, minorAmount: 1000 } },
+      { participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 1000 } },
+    ],
+    category: 'Utilities', splitMethod: { type: 'equal' as const, participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+    recurrence: { frequency: 'weekly' as const, anchor: { month: 8, day: 18 }, timeZone: 'America/Chicago' },
+  }
+  const recurringSource = await friendRepository.expenses.add(recurringCommand)
+  await expect(friendRepository.expenses.add(recurringCommand)).resolves.toEqual(recurringSource)
+  if (recurringSource.status !== 'saved' || !recurringSource.expense.recurringTemplateId) {
+    throw new Error('Expected hosted recurring source creation to save')
+  }
+  const templateId = recurringSource.expense.recurringTemplateId
+  const expectedOccurrenceId = `occ_${templateId}_${recurringDueDate}`
+  await expect(friendRepository.groups.listRecurring(recurringGroupId)).resolves.toEqual([
+    expect.objectContaining({
+      id: templateId, status: 'active', createdBy: expect.objectContaining({ id: friendUid }),
+      anchorDate: recurringSourceDate, nextDate: recurringDueDate, revision: 1,
+    }),
+  ])
+
+  const [firstCatchUp, secondCatchUp] = await Promise.all([
+    friendRepository.groups.materializeDue(recurringGroupId, recurringDueDate, 24),
+    friendRepository.groups.materializeDue(recurringGroupId, recurringDueDate, 24),
+  ])
+  for (const result of [firstCatchUp, secondCatchUp]) {
+    expect(result.moreRemain).toBe(false)
+    expect(result.occurrences.every(({ id }) => id === expectedOccurrenceId)).toBe(true)
+  }
+  expect([...firstCatchUp.occurrences, ...secondCatchUp.occurrences].map(({ id }) => id)).toContain(expectedOccurrenceId)
+  const afterConcurrentCatchUp = await friendRepository.groups.listRecurring(recurringGroupId)
+  expect(afterConcurrentCatchUp).toEqual([
+    expect.objectContaining({
+      id: templateId, status: 'active', nextDate: recurringNextDate, revision: 2,
+      lastOccurrenceId: expectedOccurrenceId, lastOccurrenceDate: recurringDueDate,
+    }),
+  ])
+  expect((await friendRepository.expenses.listForGroup(recurringGroupId)).filter(({ recurringTemplateId }) => recurringTemplateId === templateId)).toEqual([
+    expect.objectContaining({ id: recurringSource.expense.id, date: recurringSourceDate, revision: 1 }),
+    expect.objectContaining({ id: expectedOccurrenceId, date: recurringDueDate, revision: 1, createdBy: expect.objectContaining({ id: friendUid }) }),
+  ])
+  expect((await friendRepository.activity.listForGroup(recurringGroupId)).filter(({ expenseId }) => expenseId === expectedOccurrenceId)).toHaveLength(1)
+
+  await signInWithEmailAndPassword(auth, ownerEmail, password)
+  const recurringOwnerRepository = createFirebaseRepository(configuration, ownerUid)
+  await expect(recurringOwnerRepository.commands.execute({
+    kind: 'recurrence.materialize', operationId: `live-recurring-owner-replay-${suffix}`,
+    groupId: recurringGroupId, templateId, occurrenceDate: recurringDueDate,
+  })).resolves.toMatchObject({
+    status: 'saved', occurrence: { id: expectedOccurrenceId, createdBy: { id: friendUid } },
+    template: { id: templateId, nextDate: recurringNextDate, revision: 2 },
+  })
+  expect((await recurringOwnerRepository.activity.listForGroup(recurringGroupId)).filter(({ expenseId }) => expenseId === expectedOccurrenceId)).toHaveLength(1)
+
+  await signInWithEmailAndPassword(auth, friendEmail, password)
+  const templateBeforeOccurrenceEdit = (await friendRepository.groups.listRecurring(recurringGroupId))[0]!
+  const occurrenceBeforeEdit = await friendRepository.expenses.getById(recurringGroupId, expectedOccurrenceId)
+  expect(occurrenceBeforeEdit).toMatchObject({ revision: 1, createdBy: { id: friendUid } })
+  const occurrenceEditCommand = {
+    kind: 'expense.edit' as const, operationId: `live-recurring-occurrence-edit-${suffix}`,
+    groupId: recurringGroupId, expenseId: expectedOccurrenceId, expectedRevision: 1,
+    draft: {
+      groupId: recurringGroupId, description: 'Hosted utilities one-time discount', date: recurringDueDate,
+      total: { currency: 'USD' as const, minorAmount: 1800 },
+      payments: [{ participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 1800 } }],
+      allocations: [
+        { participantId: ownerUid, money: { currency: 'USD' as const, minorAmount: 900 } },
+        { participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 900 } },
+      ],
+      category: 'Utilities', splitMethod: { type: 'equal' as const, participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+      occurrenceEditScope: 'occurrence' as const,
+    },
+  }
+  await expect(friendRepository.expenses.edit(occurrenceEditCommand)).resolves.toMatchObject({
+    status: 'saved', expense: {
+      id: expectedOccurrenceId, description: occurrenceEditCommand.draft.description,
+      recurringTemplateId: templateId, occurrenceEditScope: 'occurrence', revision: 2,
+    },
+  })
+  await expect(friendRepository.groups.listRecurring(recurringGroupId)).resolves.toEqual([templateBeforeOccurrenceEdit])
+
+  const futureEditCommand = {
+    kind: 'expense.edit' as const, operationId: `live-recurring-future-edit-${suffix}`,
+    groupId: recurringGroupId, expenseId: expectedOccurrenceId, expectedRevision: 2,
+    draft: {
+      groupId: recurringGroupId, description: 'Hosted utilities future plan', date: recurringDueDate,
+      total: { currency: 'USD' as const, minorAmount: 2400 },
+      payments: [{ participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 2400 } }],
+      allocations: [
+        { participantId: ownerUid, money: { currency: 'USD' as const, minorAmount: 1200 } },
+        { participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 1200 } },
+      ],
+      category: 'Utilities', splitMethod: { type: 'equal' as const, participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+      recurrence: { frequency: 'weekly' as const, anchor: { month: 8, day: 25 }, timeZone: 'America/Chicago' },
+      occurrenceEditScope: 'future' as const,
+    },
+  }
+  await expect(friendRepository.expenses.edit(futureEditCommand)).resolves.toMatchObject({
+    status: 'saved', expense: {
+      id: expectedOccurrenceId, description: futureEditCommand.draft.description,
+      recurringTemplateId: templateId, occurrenceEditScope: 'future', revision: 3,
+    },
+  })
+  const exactCancellationTemplate = (await friendRepository.groups.listRecurring(recurringGroupId))[0]!
+  expect(exactCancellationTemplate).toMatchObject({
+    id: templateId, status: 'active', description: futureEditCommand.draft.description,
+    total: futureEditCommand.draft.total, nextDate: recurringNextDate, revision: 3,
+    lastOccurrenceId: expectedOccurrenceId, lastOccurrenceDate: recurringDueDate,
+  })
+
+  await signInWithEmailAndPassword(auth, ownerEmail, password)
+  expect((await recurringOwnerRepository.groups.listMembers(recurringGroupId)).find(({ id }) => id === ownerUid)).toMatchObject({ canManage: true })
+  const cancelCommand = {
+    kind: 'recurrence.cancel' as const, operationId: `live-recurring-cancel-${suffix}`,
+    groupId: recurringGroupId, templateId, expectedRevision: exactCancellationTemplate.revision,
+  }
+  const cancelled = await recurringOwnerRepository.commands.execute(cancelCommand)
+  await expect(recurringOwnerRepository.commands.execute(cancelCommand)).resolves.toEqual(cancelled)
+  expect(cancelled).toMatchObject({
+    status: 'saved', template: { id: templateId, status: 'cancelled', revision: exactCancellationTemplate.revision + 1 },
+  })
+  const historicalSeriesExpenses = (await recurringOwnerRepository.expenses.listForGroup(recurringGroupId))
+    .filter(({ recurringTemplateId }) => recurringTemplateId === templateId)
+  expect(historicalSeriesExpenses).toEqual([
+    expect.objectContaining({ id: recurringSource.expense.id, date: recurringSourceDate, revision: 1 }),
+    expect.objectContaining({ id: expectedOccurrenceId, date: recurringDueDate, revision: 3 }),
+  ])
+  await expect(recurringOwnerRepository.groups.materializeDue(recurringGroupId, '2027-12-31', 24)).resolves.toEqual({ occurrences: [], moreRemain: false })
+  expect((await recurringOwnerRepository.expenses.listForGroup(recurringGroupId)).filter(({ recurringTemplateId }) => recurringTemplateId === templateId)).toEqual(historicalSeriesExpenses)
+
+  await signInWithEmailAndPassword(auth, friendEmail, password)
   await expect(friendRepository.notifications.list({ limit: 100 })).resolves.toEqual({ items: [] })
 
   ;({ auth, db } = await restartHostedClient(configuration))
   await signInWithEmailAndPassword(auth, ownerEmail, password)
   const ownerNotificationRepository = createFirebaseRepository(configuration, ownerUid)
   const notificationPage = await ownerNotificationRepository.notifications.list({ limit: 100 })
-  expect(notificationPage.items).toHaveLength(4)
+  expect(notificationPage.items).toHaveLength(8)
   expect(notificationPage.items).toEqual(expect.arrayContaining([
     expect.objectContaining({ principalId: ownerUid, groupId: ledgerGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.created' }),
     expect.objectContaining({ principalId: ownerUid, groupId: ledgerGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.updated' }),
     expect.objectContaining({ principalId: ownerUid, groupId: ledgerGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'settlement.created' }),
     expect.objectContaining({ principalId: ownerUid, groupId: ledgerGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'settlement.voided' }),
+    expect.objectContaining({ principalId: ownerUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.created', subject: expect.objectContaining({ id: recurringSource.expense.id }) }),
+    expect.objectContaining({ principalId: ownerUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.created', subject: expect.objectContaining({ id: expectedOccurrenceId }) }),
+    expect.objectContaining({ principalId: ownerUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.updated', subject: expect.objectContaining({ id: expectedOccurrenceId, label: occurrenceEditCommand.draft.description }) }),
+    expect.objectContaining({ principalId: ownerUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.updated', subject: expect.objectContaining({ id: expectedOccurrenceId, label: futureEditCommand.draft.description }) }),
   ]))
   await expect(ownerNotificationRepository.groups.getTotals(ledgerGroupId)).resolves.toEqual([{
     currency: 'USD', totalPaid: 3000, currentUserPaid: 0, currentUserShare: 1500, currentUserNet: -1500,
   }])
-  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(4)
+  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(8)
 
   const individual = notificationPage.items.at(-1)!
   const readCommand = { kind: 'notification.read' as const, operationId: `live-notification-read-${suffix}`, notificationId: individual.notificationId }
   const read = await ownerNotificationRepository.notifications.markRead(readCommand)
   await expect(ownerNotificationRepository.notifications.markRead(readCommand)).resolves.toEqual(read)
   expect(read).toMatchObject({ status: 'saved', notification: { notificationId: individual.notificationId, readAt: expect.any(String) } })
-  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(3)
+  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(7)
 
   const latest = notificationPage.items[0]!
   const cutoff = { createdAt: latest.createdAt, id: latest.notificationId }
