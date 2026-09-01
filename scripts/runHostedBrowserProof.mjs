@@ -21,7 +21,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense recurrence, and recurring-series routes loaded.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, default-transport Add Expense save, recurrence card modal, and recurring-series routes loaded.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -98,10 +98,20 @@ async function verifyAuthenticatedMobileJourney() {
     if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted recurrence editor did not use the Ionic iOS card modal.')
     await cardModal.getByRole('button', { name: 'Cancel', exact: true }).click()
     await cardModal.waitFor({ state: 'hidden' })
-    await page.locator('[data-action="cancel-expense"]').click()
+    const browserExpenseDescription = `Hosted browser transport ${suffix}`
+    await page.locator('#expense-description').fill(browserExpenseDescription)
+    await page.locator('#expense-amount').fill('13.37')
+    await page.locator('#expense-category').selectOption({ label: 'Food' })
+    const offlineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
+    if (await offlineReadyDismiss.isVisible()) await offlineReadyDismiss.click()
+    await page.locator('[data-action="save-expense"]').click()
 
-    await page.waitForURL(deepUrl)
+    await page.waitForURL(deepUrl, { timeout: 120_000 })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     const restoredGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+    await restoredGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+    const persistedExpense = restoredGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: browserExpenseDescription })
+    await persistedExpense.getByText(browserExpenseDescription, { exact: true }).waitFor({ state: 'visible' })
     await restoredGroup.getByRole('button', { name: 'More', exact: true }).click()
     await restoredGroup.getByRole('link', { name: 'Recurring', exact: true }).click()
     await page.waitForURL(`${deepUrl}/recurring`)

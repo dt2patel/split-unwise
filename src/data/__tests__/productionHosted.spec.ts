@@ -2,7 +2,7 @@
 import { afterAll, expect, it } from 'vitest'
 import { getAuth, signInWithEmailAndPassword, updateProfile } from 'firebase/auth'
 import { deleteApp, initializeApp, type FirebaseApp } from 'firebase/app'
-import { collection, doc, getDoc, getDocs, getFirestore, limit, query } from 'firebase/firestore'
+import { collection, doc, getDoc, getDocs, initializeFirestore, limit, query } from 'firebase/firestore'
 import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkFriendship, createSparkGroup, createSparkInvitation, inspectSparkInvitation, synchronizeFirebaseProfile } from '../firebaseSparkMutations'
 import { getSplitUnwiseFirebaseApp, resetFirebaseBootstrapForTesting } from '../firebaseBootstrap'
 import { createFirebaseRepository } from '../firebaseRepository'
@@ -30,7 +30,11 @@ async function restartHostedClient(configuration: FirebaseConfiguration) {
   if (app) await deleteApp(app)
   resetFirebaseBootstrapForTesting()
   app = await getSplitUnwiseFirebaseApp(configuration)
-  return { auth: getAuth(app), db: getFirestore(app) }
+  return {
+    auth: getAuth(app),
+    // Match the browser transport and tolerate transient production stream retries.
+    db: initializeFirestore(app, { experimentalForceLongPolling: true }),
+  }
 }
 
 afterAll(async () => {
@@ -238,6 +242,8 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
 
   const firstMaterializerApp = initializeApp(configuration, `split-unwise-recurrence-proof-a-${suffix}`)
   const secondMaterializerApp = initializeApp(configuration, `split-unwise-recurrence-proof-b-${suffix}`)
+  initializeFirestore(firstMaterializerApp, { experimentalForceLongPolling: true })
+  initializeFirestore(secondMaterializerApp, { experimentalForceLongPolling: true })
   isolatedApps.add(firstMaterializerApp).add(secondMaterializerApp)
   const firstMaterializerAuth = getAuth(firstMaterializerApp)
   const secondMaterializerAuth = getAuth(secondMaterializerApp)
@@ -420,4 +426,4 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   expect(readAll).toMatchObject({ status: 'saved', cutoff, readNotificationIds: expect.arrayContaining(notificationPage.items.slice(0, -1).map(({ notificationId }) => notificationId)) })
   await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(0)
   expect((await ownerNotificationRepository.notifications.list({ limit: 100 })).items.every(({ readAt }) => typeof readAt === 'string')).toBe(true)
-}, 90_000)
+}, 300_000)
