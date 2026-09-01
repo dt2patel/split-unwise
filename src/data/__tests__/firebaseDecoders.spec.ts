@@ -50,6 +50,8 @@ describe('Firebase boundary decoders', () => {
       splitMethod: { type: 'equal', participantIds: ['maya-p', 'alex-r'] }, attachmentRefs: ['local-receipt:receipt-1'],
     }
     expect(decodeExpense('lake-house-weekend', 'cabin', raw)).toMatchObject({ revision: 3, payments: raw.payments, attachmentRefs: raw.attachmentRefs })
+    expect(decodeExpense('lake-house-weekend', 'cabin-refund', { ...raw, reimbursement: true })).toMatchObject({ reimbursement: true })
+    expect(() => decodeExpense('lake-house-weekend', 'ambiguous-refund', { ...raw, reimbursement: false })).toThrow('reimbursement')
     expect(() => decodeExpense('lake-house-weekend', 'bad-payments', { ...raw, payments: raw.payments.slice(0, 1) })).toThrow('payment total must equal total')
     expect(() => decodeExpense('lake-house-weekend', 'duplicate-payer', { ...raw, payments: [raw.payments[0], raw.payments[0], { participantId: 'alex-r', money: { currency: 'USD', minorAmount: -200 } }] })).toThrow(DocumentDecodeError)
   })
@@ -88,6 +90,7 @@ describe('Firebase boundary decoders', () => {
         { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 60000 } },
       ],
       category: 'Home', splitMethod: { type: 'equal', participantIds: ['maya-p', 'alex-r'] },
+      reimbursement: true,
       recurrence: { frequency: 'monthly', anchor: { month: 8, day: 1 }, timeZone: 'America/Chicago' },
       anchorDate: '2026-08-01', nextDate: '2026-09-01', revision: 3,
       createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
@@ -99,7 +102,7 @@ describe('Firebase boundary decoders', () => {
         { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 60000 } },
         { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 60000 } },
       ],
-      splitMethod: { type: 'equal', participantIds: ['maya-p', 'alex-r'] }, createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
+      splitMethod: { type: 'equal', participantIds: ['maya-p', 'alex-r'] }, reimbursement: true, createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
     })
   })
 

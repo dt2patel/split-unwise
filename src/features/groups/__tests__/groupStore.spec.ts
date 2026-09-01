@@ -185,6 +185,17 @@ describe('group load identity', () => {
 })
 
 describe('per-currency group balances', () => {
+  it('reverses both the group balance and row position for a reimbursement', async () => {
+    const refund = { ...expense('refund', 'refund', 'USD', 10000, maya.id, 0, 10000), reimbursement: true as const }
+    repositoryHarness.current = repositoryFor({ refund: Promise.resolve(snapshot('refund', 'Refund trip', [refund])) })
+
+    const wrapper = await mountRoute('/tabs/groups/refund')
+
+    expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('You owe')
+    expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$100.00')
+    expect(wrapper.text()).toContain('you borrowed')
+  })
+
   it('renders USD and EUR nets separately without an implicit conversion', async () => {
     repositoryHarness.current = repositoryFor({ mixed: Promise.resolve(snapshot('mixed', 'Mixed trip', mixedCurrencyExpenses('mixed'))) })
     const wrapper = await mountRoute('/tabs/groups/mixed')

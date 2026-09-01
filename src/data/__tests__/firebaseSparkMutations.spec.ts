@@ -95,6 +95,25 @@ describe('Firebase Spark mutations', () => {
     })
   })
 
+  it('preserves the reimbursement marker in immutable Spark expense records', () => {
+    const command: ExpenseAddCommand = {
+      kind: 'expense.add', operationId: 'refund-operation', groupId: 'group-a', description: 'Flight refund', date: '2026-09-01',
+      total: { currency: 'USD', minorAmount: 30000 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 30000 } }],
+      allocations: [{ participantId: 'friend', money: { currency: 'USD', minorAmount: 30000 } }], category: 'Travel',
+      splitMethod: { type: 'exact', allocations: [{ participantId: 'friend', money: { currency: 'USD', minorAmount: 30000 } }] }, reimbursement: true, attachmentRefs: [],
+      recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' },
+    }
+    const identity: OperationIdentity = {
+      userId: 'owner', operationId: command.operationId, kind: command.kind, groupId: command.groupId,
+      requestFingerprint: '7'.repeat(64), resourceId: `operation-${'8'.repeat(48)}`,
+    }
+
+    const record = buildSparkExpenseRecord(command, { id: 'owner', displayName: 'Owner Account' }, identity, 'now')
+
+    expect(record.expenseDocument).toMatchObject({ reimbursement: true })
+    expect(record.templateDocument).toMatchObject({ reimbursement: true })
+  })
+
   it('rejects Spark expense bundles that cannot be verified by the bounded rules path', () => {
     const base: ExpenseAddCommand = {
       kind: 'expense.add', operationId: 'expense-operation-2', groupId: 'group-a', description: 'Dinner', date: '2026-09-01',
@@ -170,7 +189,7 @@ describe('Firebase Spark mutations', () => {
       category: 'Housing', splitMethod: { type: 'exact', allocations: [
         { participantId: 'owner', money: { currency: 'USD', minorAmount: 90000 } },
         { participantId: 'friend', money: { currency: 'USD', minorAmount: 90000 } },
-      ] },
+      ] }, reimbursement: true,
       recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' },
       anchorDate: '2026-09-01', nextDate: '2026-10-01', revision: 1,
       createdBy: { id: 'owner', displayName: 'Owner Account' }, updatedAt: 'created', updatedBy: { id: 'owner', displayName: 'Owner Account' },
@@ -188,6 +207,7 @@ describe('Firebase Spark mutations', () => {
     const record = sparkMutations.buildSparkRecurrenceMaterializationRecord(command, template, { actor, canManage: true }, identity, committedAt)
 
     expect(record.occurrenceId).toBe(`${templateId.startsWith('recurring-') ? 'occ_' : ''}${templateId}_2026-10-01`)
+    expect(record.occurrenceDocument).toMatchObject({ reimbursement: true })
     expect(record.occurrenceDocument).toMatchObject({
       id: `occ_${templateId}_2026-10-01`, date: '2026-10-01', recurringTemplateId: templateId,
       operationId: command.operationId, resourceToken: 'f'.repeat(48),
@@ -226,7 +246,7 @@ describe('Firebase Spark mutations', () => {
     const template = {
       id: templateId, groupId: 'group-a', sourceExpenseId: 'expense-rent', status: 'active', description: 'Rent',
       total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }],
-      allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing',
+      allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing', reimbursement: true,
       splitMethod: { type: 'equal', participantIds: ['owner'] }, recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'UTC' },
       anchorDate: '2026-09-01', nextDate: '2026-10-01', revision: 2, createdBy: { id: 'owner', displayName: 'Owner' },
     } as const
@@ -253,7 +273,7 @@ describe('Firebase Spark mutations', () => {
     const template = {
       id: templateId, groupId: 'group-a', sourceExpenseId: 'expense-rent', status: 'active', description: 'Rent',
       total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }],
-      allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing',
+      allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing', reimbursement: true,
       splitMethod: { type: 'equal', participantIds: ['owner'] }, recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'UTC' },
       anchorDate: '2026-09-01', nextDate: '2026-11-01', revision: 2, createdBy: { id: 'owner', displayName: 'Owner' },
       lastOccurrenceId: occurrenceId, lastOccurrenceDate: '2026-10-01',
@@ -279,6 +299,7 @@ describe('Firebase Spark mutations', () => {
       description: 'Rent plus parking', total: { currency: 'USD', minorAmount: 1200 }, recurrence: command.draft.recurrence,
       anchorDate: '2026-10-15', nextDate: '2026-10-29', revision: 3, lastOperationId: command.operationId, updatedBy: { id: 'owner' },
     })
+    expect(changed).not.toHaveProperty('reimbursement')
     expect(() => sparkMutations.buildSparkFutureRecurringTemplateRecord(
       { ...command, expenseId: 'expense-rent' }, { id: 'expense-rent', recurringTemplateId: templateId }, template,
       { actor: { id: 'owner', displayName: 'Owner' }, canManage: false }, identity, 'now',

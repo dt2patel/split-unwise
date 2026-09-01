@@ -49,6 +49,21 @@ suite('ledger against the Firestore emulator', () => {
     expect(operations.docs[0].data()).not.toHaveProperty('expiresAt')
   }, 30_000)
 
+  it('persists reimbursements and reverses their balance direction', async () => {
+    const request = addRequest('reimbursement-operation')
+    request.command.description = 'Deposit refund'
+    request.command.reimbursement = true
+
+    const result = await executeLedgerCommand(db, 'owner', request, new Date('2026-08-31T13:00:00.000Z'))
+
+    expect(result).toMatchObject({ expense: { reimbursement: true } })
+    expect((await db.collection('groups/group-a/expenses').get()).docs[0]?.data()).toMatchObject({ reimbursement: true })
+    expect((await db.doc('groups/group-a/balance/current').get()).data()).toMatchObject({
+      balanceRevision: 1,
+      simplified: [{ fromParticipantId: 'owner', toParticipantId: 'member', money: { currency: 'USD', minorAmount: 500 } }],
+    })
+  })
+
   it('rejects changed-payload collisions and removed-member replay', async () => {
     const request = addRequest('collision-operation')
     await executeLedgerCommand(db, 'owner', request)

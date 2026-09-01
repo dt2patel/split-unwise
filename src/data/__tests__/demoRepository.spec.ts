@@ -149,6 +149,55 @@ describe('demo repository', () => {
     )
   })
 
+  it('persists reimbursements and reverses their pairwise balance direction', async () => {
+    const repository = createDemoRepository()
+    const result = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'add-refund', groupId: 'lake-house-weekend', description: 'Deposit refund', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 1000 },
+      payments: [{ participantId: 'sam-d', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+      category: 'Lodging', splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }] },
+      reimbursement: true, attachmentRefs: [],
+    })
+
+    expect(result).toMatchObject({ status: 'saved', expense: { reimbursement: true } })
+    await expect(repository.groups.getBalanceSnapshot('lake-house-weekend')).resolves.toMatchObject({
+      pairwise: expect.arrayContaining([
+        { fromParticipantId: 'sam-d', toParticipantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } },
+      ]),
+    })
+  })
+
+  it('clears the reimbursement marker when an edit becomes a normal expense', async () => {
+    const repository = createDemoRepository()
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'add-refund-to-edit', groupId: 'lake-house-weekend', description: 'Deposit refund', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'sam-d', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Lodging',
+      splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }] }, reimbursement: true, attachmentRefs: [],
+    })
+    if (added.status !== 'saved') throw new Error('Expected reimbursement to save')
+
+    const edited = await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'refund-becomes-expense', groupId: 'lake-house-weekend', expenseId: added.expense.id, expectedRevision: added.expense.revision,
+      draft: {
+        groupId: 'lake-house-weekend', description: 'Replacement deposit', date: '2026-08-31', total: { currency: 'USD', minorAmount: 1000 },
+        payments: [{ participantId: 'sam-d', money: { currency: 'USD', minorAmount: 1000 } }],
+        allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Lodging',
+        splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }] }, attachmentRefs: [],
+      },
+    })
+
+    expect(edited).toMatchObject({ status: 'saved', expense: { description: 'Replacement deposit' } })
+    if (edited.status !== 'saved') throw new Error('Expected expense edit to save')
+    expect(edited.expense.reimbursement).toBeUndefined()
+    await expect(repository.groups.getBalanceSnapshot('lake-house-weekend')).resolves.toMatchObject({
+      pairwise: expect.arrayContaining([
+        { fromParticipantId: 'maya-p', toParticipantId: 'sam-d', money: { currency: 'USD', minorAmount: 1000 } },
+      ]),
+    })
+  })
+
   it('creates, catches up, and cancels a recurring series without duplicating ledger effects', async () => {
     const repository = createDemoRepository()
     const draft = firewoodDraft()
@@ -181,6 +230,56 @@ describe('demo repository', () => {
     expect(cancellation).toMatchObject({ status: 'saved', template: { id: advanced.id, status: 'cancelled', revision: 4 } })
     const afterCancellation = await repository.groups.materializeDue('lake-house-weekend', '2027-12-31')
     expect(afterCancellation.occurrences.filter(({ recurringTemplateId }) => recurringTemplateId === advanced.id)).toEqual([])
+  })
+
+  it('retains reimbursement direction on recurring templates and materialized occurrences', async () => {
+    const repository = createDemoRepository()
+    const recurrence = { frequency: 'monthly' as const, anchor: { month: 8, day: 31 }, timeZone: 'America/Chicago' }
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'add-recurring-refund', groupId: 'lake-house-weekend', description: 'Monthly rebate', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'sam-d', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Other',
+      splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }] },
+      reimbursement: true, attachmentRefs: [], recurrence,
+    })
+    if (added.status !== 'saved' || !added.expense.recurringTemplateId) throw new Error('Expected recurring reimbursement to save')
+
+    await expect(repository.groups.listRecurring('lake-house-weekend')).resolves.toContainEqual(expect.objectContaining({
+      id: added.expense.recurringTemplateId, reimbursement: true,
+    }))
+    const materialized = await repository.groups.materializeDue('lake-house-weekend', '2026-09-30')
+    expect(materialized.occurrences).toContainEqual(expect.objectContaining({
+      id: `occ_${added.expense.recurringTemplateId}_2026-09-30`, reimbursement: true,
+    }))
+  })
+
+  it('clears reimbursement from future recurrences when the latest occurrence becomes an expense', async () => {
+    const repository = createDemoRepository()
+    const recurrence = { frequency: 'monthly' as const, anchor: { month: 8, day: 31 }, timeZone: 'America/Chicago' }
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'add-refund-series-to-edit', groupId: 'lake-house-weekend', description: 'Monthly rebate', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'sam-d', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Other',
+      splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }] }, reimbursement: true, attachmentRefs: [], recurrence,
+    })
+    if (added.status !== 'saved' || !added.expense.recurringTemplateId) throw new Error('Expected recurring reimbursement to save')
+    const occurrence = (await repository.groups.materializeDue('lake-house-weekend', '2026-09-30')).occurrences
+      .find(({ recurringTemplateId }) => recurringTemplateId === added.expense.recurringTemplateId)
+    if (!occurrence) throw new Error('Expected reimbursement occurrence')
+
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'refund-series-becomes-expense', groupId: 'lake-house-weekend', expenseId: occurrence.id, expectedRevision: occurrence.revision,
+      draft: {
+        groupId: 'lake-house-weekend', description: 'Monthly charge', date: occurrence.date, total: { currency: 'USD', minorAmount: 1000 },
+        payments: [{ participantId: 'sam-d', money: { currency: 'USD', minorAmount: 1000 } }],
+        allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Other',
+        splitMethod: { type: 'exact', allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }] },
+        attachmentRefs: [], recurrence: { ...recurrence, anchor: { month: 9, day: 30 } }, occurrenceEditScope: 'future',
+      },
+    })
+
+    const template = (await repository.groups.listRecurring('lake-house-weekend')).find(({ id }) => id === added.expense.recurringTemplateId)
+    expect(template?.reimbursement).toBeUndefined()
   })
 
   it('caps recurrence catch-up and reports remaining due work', async () => {

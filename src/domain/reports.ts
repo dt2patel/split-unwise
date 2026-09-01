@@ -83,24 +83,25 @@ export function buildReport(input: ReportInput): ReportModel {
 
   for (const expense of input.expenses) {
     const currency = expense.total.currency
+    const direction = expense.reimbursement ? -1 : 1
     const total = mutableTotals(totals, currency)
-    total.expenseTotal = add(total.expenseTotal, expense.total.minorAmount)
-    addKey(categories, currency, expense.category, expense.total.minorAmount)
-    addKey(days, currency, expense.date, expense.total.minorAmount)
-    addKey(months, currency, expense.date.slice(0, 7), expense.total.minorAmount)
+    total.expenseTotal = add(total.expenseTotal, direction * expense.total.minorAmount)
+    addKey(categories, currency, expense.category, direction * expense.total.minorAmount)
+    addKey(days, currency, expense.date, direction * expense.total.minorAmount)
+    addKey(months, currency, expense.date.slice(0, 7), direction * expense.total.minorAmount)
     let userPaid = 0n
     let userShare = 0n
     for (const payment of expense.payments) {
       requireSameCurrency(payment.money.currency, currency)
       const row = mutableContribution(contributions, currency, payment.participantId)
-      row.paid = add(row.paid, payment.money.minorAmount)
-      if (payment.participantId === input.currentUserId) userPaid = add(userPaid, payment.money.minorAmount)
+      row.paid = add(row.paid, direction * payment.money.minorAmount)
+      if (payment.participantId === input.currentUserId) userPaid = add(userPaid, direction * payment.money.minorAmount)
     }
     for (const allocation of expense.allocations) {
       requireSameCurrency(allocation.money.currency, currency)
       const row = mutableContribution(contributions, currency, allocation.participantId)
-      row.share = add(row.share, allocation.money.minorAmount)
-      if (allocation.participantId === input.currentUserId) userShare = add(userShare, allocation.money.minorAmount)
+      row.share = add(row.share, direction * allocation.money.minorAmount)
+      if (allocation.participantId === input.currentUserId) userShare = add(userShare, direction * allocation.money.minorAmount)
     }
     total.currentUserPaid += userPaid
     total.currentUserShare += userShare

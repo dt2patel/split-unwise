@@ -16,7 +16,7 @@ export interface PaymentInput { readonly participantId: string; readonly amountT
 export interface ReceiptItemInput { readonly description: string; readonly amountText: string; readonly participantIds: readonly string[] }
 export type SplitInput =
   | { readonly type: 'equal' }
-  | { readonly type: 'exact' | 'percentage' | 'shares' | 'adjustment'; readonly values: Readonly<Record<string, string>> }
+  | { readonly type: 'exact' | 'percentage' | 'shares' | 'adjustment' | 'reimbursement'; readonly values: Readonly<Record<string, string>> }
   | { readonly type: 'itemized'; readonly items: readonly ReceiptItemInput[] }
 
 export interface ExpenseEditorInput {
@@ -119,6 +119,7 @@ export function validateExpenseInput(input: ExpenseEditorInput, members: readonl
       allocations,
       category,
       splitMethod,
+      ...(input.split.type === 'reimbursement' ? { reimbursement: true as const } : {}),
       attachmentRefs: [...input.attachmentRefs],
       ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
       ...(input.recurrence ? { recurrence: input.recurrence } : {}),
@@ -547,7 +548,7 @@ function editorInputFromExpense(expense: ExpenseRow): ExpenseEditorInput {
     category: expense.category,
     participants: expense.allocations.map(({ participantId }) => participantId),
     payments: expense.payments.map(({ participantId, money }) => ({ participantId, amountText: fromMinorUnits(money.minorAmount, money.currency) })),
-    split: splitInputFromMethod(expense.splitMethod, expense.total.currency),
+    split: splitInputFromMethod(expense.splitMethod, expense.total.currency, expense.reimbursement === true),
     notes: expense.notes ?? '',
     attachmentRefs: [...expense.attachmentRefs],
     recurrence: expense.recurrence,
@@ -577,13 +578,13 @@ export function splitMethodFromInput(input: SplitInput, participantIds: readonly
   if (input.type === 'percentage') return { type: input.type, participantIds, percentages: Object.fromEntries(keyed.map(([id, value]) => [id, parseFinite(value)])) }
   if (input.type === 'shares') return { type: input.type, participantIds, shares: Object.fromEntries(keyed.map(([id, value]) => [id, parseFinite(value)])) }
   const allocations = keyed.map(([participantId, value]) => ({ participantId, money: { currency, minorAmount: toMinorUnits(value, currency) } }))
-  if (input.type === 'exact') return { type: input.type, allocations }
+  if (input.type === 'exact' || input.type === 'reimbursement') return { type: 'exact', allocations }
   return { type: input.type, participantIds, adjustments: Object.fromEntries(allocations.map(({ participantId, money }) => [participantId, money.minorAmount])) }
 }
 
-export function splitInputFromMethod(method: SplitMethod, currency: CurrencyCode): SplitInput {
+export function splitInputFromMethod(method: SplitMethod, currency: CurrencyCode, reimbursement = false): SplitInput {
   if (method.type === 'equal') return { type: method.type }
-  if (method.type === 'exact') return { type: method.type, values: Object.fromEntries(method.allocations.map(({ participantId, money }) => [participantId, fromMinorUnits(money.minorAmount, money.currency)])) }
+  if (method.type === 'exact') return { type: reimbursement ? 'reimbursement' : method.type, values: Object.fromEntries(method.allocations.map(({ participantId, money }) => [participantId, fromMinorUnits(money.minorAmount, money.currency)])) }
   if (method.type === 'percentage') return { type: method.type, values: Object.fromEntries(Object.entries(method.percentages).map(([id, value]) => [id, String(value)])) }
   if (method.type === 'shares') return { type: method.type, values: Object.fromEntries(Object.entries(method.shares).map(([id, value]) => [id, String(value)])) }
   if (method.type === 'adjustment') return { type: method.type, values: Object.fromEntries(Object.entries(method.adjustments).map(([id, value]) => [id, fromMinorUnits(value, currency)])) }

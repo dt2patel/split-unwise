@@ -28,6 +28,12 @@ describe('strict shared ledger protocol', () => {
     expect(() => validateLedgerExpense({ ...command, id: 'expense', total: { currency: 'USD', minorAmount: 0 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 0 } }], allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 0 } }] })).toThrow('positive')
   })
 
+  it('accepts only the explicit reimbursement marker on expense commands', () => {
+    expect(parseExecuteCommandRequest({ schemaVersion: 1, command: { ...command, reimbursement: true } }).command)
+      .toMatchObject({ kind: 'expense.add', reimbursement: true })
+    expect(() => parseExecuteCommandRequest({ schemaVersion: 1, command: { ...command, reimbursement: false } })).toThrow()
+  })
+
   it('rejects allocation totals or split intent that do not exactly match', () => {
     expect(() => validateLedgerExpense({ ...command, id: 'expense', allocations: [{ participantId: 'member', money: { currency: 'USD', minorAmount: 999 } }] })).toThrow('equal its total')
     expect(() => assertSplitMatchesAllocations(command.total, command.splitMethod, [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 400 } }, { participantId: 'member', money: { currency: 'USD', minorAmount: 600 } }])).toThrow('selected split')

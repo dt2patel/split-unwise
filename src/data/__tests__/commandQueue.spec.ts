@@ -71,6 +71,25 @@ function createWebStorage(): Storage {
 }
 
 describe('CommandQueue', () => {
+  it('accepts only the literal reimbursement marker in queued expense drafts', async () => {
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.add': async (command) => {
+        if (command.kind !== 'expense.add') throw new Error('Unexpected command')
+        return { ...savedExpense(command.operationId), expense: { ...savedExpense(command.operationId).expense, ...(command.reimbursement ? { reimbursement: true as const } : {}) } }
+      } },
+    })
+
+    await expect(queue.submit({ ...addExpense('valid-reimbursement'), reimbursement: true }).result()).resolves.toMatchObject({ status: 'saved' })
+    await expect(queue.submit({ ...addExpense('invalid-reimbursement'), reimbursement: false } as never).result()).rejects.toMatchObject({ code: 'validation' })
+
+    const dropped = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.add': async (command) => savedExpense(command.operationId) },
+    })
+    await expect(dropped.submit({ ...addExpense('dropped-reimbursement'), reimbursement: true }).result()).rejects.toMatchObject({ code: 'validation' })
+  })
+
   it('rejects recurrence commands with a template ID outside the strict document-ID grammar', async () => {
     const queue = createBoundQueue({ storage: createMemoryCommandStorage(), handlers: {} })
     const command: RecurrenceMaterializeCommand = {

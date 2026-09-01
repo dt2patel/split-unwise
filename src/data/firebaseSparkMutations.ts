@@ -152,6 +152,7 @@ export function buildSparkExpenseRecord(command: ExpenseAddCommand, actor: Actor
     allocations: parsed.allocations.map(({ participantId, money }) => ({ participantId, money: { ...money } })),
     payerIds: expenseDocument.payerIds, participantIds: expenseDocument.participantIds, involvedMemberIds: expenseDocument.involvedMemberIds,
     category: parsed.category.trim(), splitMethod: structuredClone(expenseDocument.splitMethod), recurrence: structuredClone(parsed.recurrence),
+    ...(parsed.reimbursement ? { reimbursement: true } : {}),
     anchorDate: parsed.date, nextDate: nextOccurrence(parsed.date, parsed.recurrence), revision: 1,
     createdAt: committedAt, createdBy: normalized, updatedAt: committedAt, updatedBy: normalized,
   } : undefined
@@ -281,6 +282,7 @@ export function buildSparkRecurrenceMaterializationRecord(
     groupId: parsed.groupId, description: template.description, date: parsed.occurrenceDate,
     total: template.total, payments: template.payments, allocations: template.allocations, category: template.category,
     splitMethod: template.splitMethod, attachmentRefs: [], recurrence: template.recurrence,
+    ...(template.reimbursement ? { reimbursement: true as const } : {}),
   }, identity.resourceId, parsed.templateId)
   const normalizedActorValue = normalizedActor(authorization.actor)
   const seriesCreator = normalizedActor(template.createdBy)
@@ -357,13 +359,16 @@ export function buildSparkFutureRecurringTemplateRecord(
   assertSparkRecurrenceAnchor(parsed.draft.date, parsed.draft.recurrence)
   const normalized = normalizeSparkExpenseDraft(parsed.draft, identity.resourceId, template.id)
   const normalizedActorValue = normalizedActor(authorization.actor)
+  const templateWithoutReimbursement = { ...currentTemplate }
+  Reflect.deleteProperty(templateWithoutReimbursement, 'reimbursement')
   return {
-    ...currentTemplate,
+    ...templateWithoutReimbursement,
     description: normalized.description, total: { ...parsed.draft.total },
     payments: parsed.draft.payments.map(({ participantId, money }) => ({ participantId, money: { ...money } })),
     allocations: parsed.draft.allocations.map(({ participantId, money }) => ({ participantId, money: { ...money } })),
     payerIds: normalized.payerIds, participantIds: normalized.participantIds, involvedMemberIds: normalized.involvedMemberIds,
     category: normalized.category, splitMethod: structuredClone(normalized.splitMethod), recurrence: structuredClone(parsed.draft.recurrence),
+    ...(parsed.draft.reimbursement ? { reimbursement: true } : {}),
     anchorDate: parsed.draft.date, nextDate: nextOccurrence(parsed.draft.date, parsed.draft.recurrence), revision: template.revision + 1,
     lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
     updatedAt: committedAt, updatedBy: normalizedActorValue,
@@ -848,6 +853,7 @@ function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string, rec
     payments: draft.payments.map(({ participantId, money }) => ({ participantId, money: { ...money } })), allocations: exactAllocations,
     payerIds, participantIds, involvedMemberIds, category: draft.category.trim(), splitType: draft.splitMethod.type,
     splitMethod: { type: 'exact', allocations: exactAllocations }, attachmentRefs: [], ...(notes ? { notes } : {}),
+    ...(draft.reimbursement ? { reimbursement: true } : {}),
     ...(draft.recurrence ? { recurrence: structuredClone(draft.recurrence) } : {}),
     ...(draft.occurrenceEditScope ? { occurrenceEditScope: draft.occurrenceEditScope } : {}),
     ...(recurringTemplateId ? { recurringTemplateId } : {}),

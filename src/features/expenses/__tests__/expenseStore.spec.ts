@@ -40,6 +40,26 @@ describe('expense input validation', () => {
     expect(result.draft?.allocations.reduce((sum, item) => sum + item.money.minorAmount, 0)).toBe(minorAmount)
   })
 
+  it('builds a reimbursement draft from exact amounts each participant should receive', () => {
+    const result = validateExpenseInput({
+      groupId: 'lake-house-weekend', description: 'Flight refund', date: '2026-08-30', currency: 'USD', amountText: '300.00', category: 'Transport',
+      participants: ['maya-p', 'alex-r'], payments: [{ participantId: 'maya-p', amountText: '300.00' }],
+      split: { type: 'reimbursement', values: { 'maya-p': '100.00', 'alex-r': '200.00' } }, attachmentRefs: [],
+    }, members)
+
+    expect(result).toMatchObject({
+      valid: true,
+      draft: {
+        reimbursement: true,
+        splitMethod: { type: 'exact' },
+        allocations: [
+          { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 10000 } },
+          { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 20000 } },
+        ],
+      },
+    })
+  })
+
   it('returns field errors for invalid context, date, people, payments, and allocation inputs', () => {
     const result = validateExpenseInput({
       groupId: '', description: ' ', date: '2026-02-30', currency: 'USD', amountText: '0', category: '',

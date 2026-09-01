@@ -29,14 +29,18 @@ const pageTitle = computed(() => store.mode === 'edit' ? 'Edit expense' : 'Add e
 const totalMinorAmount = computed(() => {
   try { return Math.max(0, toMinorUnits(store.editor.amountText || '0', store.editor.currency)) } catch { return 0 }
 })
+const isReimbursement = computed(() => store.editor.split.type === 'reimbursement')
 const payerSummary = computed(() => {
   if (!store.editor.payments.length) return 'Choose who paid'
   const names = store.editor.payments.map((payment) => store.members.find(({ id }) => id === payment.participantId)?.displayName ?? 'Unknown')
-  return names.length === 1 ? `Paid by ${names[0]}` : `Paid by ${names.length} people`
+  const prefix = isReimbursement.value ? 'Refund received by' : 'Paid by'
+  return names.length === 1 ? `${prefix} ${names[0]}` : `${prefix} ${names.length} people`
 })
 const splitSummary = computed(() => {
-  const labels: Record<SplitInput['type'], string> = { equal: 'equally', exact: 'by exact amounts', percentage: 'by percentage', shares: 'by shares', adjustment: 'with adjustments', itemized: 'by receipt items' }
-  return `split ${labels[store.editor.split.type]}`
+  const type = store.editor.split.type
+  if (type === 'reimbursement') return 'distributed as a reimbursement'
+  const labels: Record<Exclude<SplitInput['type'], 'reimbursement'>, string> = { equal: 'equally', exact: 'by exact amounts', percentage: 'by percentage', shares: 'by shares', adjustment: 'with adjustments', itemized: 'by receipt items' }
+  return `split ${labels[type]}`
 })
 const recurrenceSummary = computed(() => store.editor.recurrence ? `${store.editor.recurrence.frequency} · ${store.editor.recurrence.timeZone}` : 'Does not repeat')
 const hasReceipt = computed(() => store.editor.attachmentRefs.length > 0)
@@ -105,7 +109,14 @@ async function canDismissSheet(_data?: unknown, role?: string): Promise<boolean>
 }
 async function applyContext(groupId: string): Promise<void> { if (await store.selectContext(groupId)) await closeSheet() }
 async function applyPayers(value: readonly PaymentInput[]): Promise<void> { store.editor.payments = value.map((item) => ({ ...item })); await closeSheet() }
-async function applyParticipants(value: readonly string[]): Promise<void> { store.editor.participants = [...value]; store.editor.split = { type: 'equal' }; await closeSheet() }
+async function applyParticipants(value: readonly string[]): Promise<void> {
+  const previous = store.editor.split
+  store.editor.participants = [...value]
+  store.editor.split = previous.type === 'reimbursement'
+    ? { type: 'reimbursement', values: Object.fromEntries(value.map((id) => [id, previous.values[id] ?? '0'])) }
+    : { type: 'equal' }
+  await closeSheet()
+}
 async function applySplit(value: { readonly input: SplitInput }): Promise<void> { store.editor.split = value.input; await closeSheet() }
 async function applyRecurrence(value: { recurrence: typeof store.editor.recurrence; occurrenceEditScope?: 'occurrence' | 'future' }): Promise<void> {
   store.editor.recurrence = value.recurrence
@@ -197,7 +208,7 @@ async function selectReceipt(event: Event): Promise<void> {
       <ion-modal :is-open="Boolean(store.activeSheet)" :presenting-element="presentingElement" :can-dismiss="modalCanDismiss" @input="markSheetDirty" @change="markSheetDirty" @did-dismiss="closeSheet">
         <ion-content class="expense-sheet-host">
           <context-sheet v-if="store.activeSheet === 'context'" class="expense-sheet--ionic-content" :model-value="store.editor.groupId" :groups="store.availableGroups" @apply="applyContext" @cancel="closeSheet" />
-          <payer-sheet v-else-if="store.activeSheet === 'payers'" class="expense-sheet--ionic-content" :model-value="store.editor.payments" :members="store.members" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" @apply="applyPayers" @cancel="closeSheet" />
+          <payer-sheet v-else-if="store.activeSheet === 'payers'" class="expense-sheet--ionic-content" :model-value="store.editor.payments" :members="store.members" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" :reimbursement="isReimbursement" @apply="applyPayers" @cancel="closeSheet" />
           <participant-sheet v-else-if="store.activeSheet === 'participants'" class="expense-sheet--ionic-content" :model-value="store.editor.participants" :members="store.members" @apply="applyParticipants" @cancel="closeSheet" />
           <split-editor v-else-if="store.activeSheet === 'split'" class="expense-sheet--ionic-content" :model-value="store.editor.split" :participants="store.members.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" @apply="applySplit" @cancel="closeSheet" @dirty="markSheetDirty" />
           <recurrence-sheet v-else-if="store.activeSheet === 'recurrence'" class="expense-sheet--ionic-content" :model-value="store.editor.recurrence" :occurrence-edit-scope="store.editor.occurrenceEditScope" :is-recurring-instance="Boolean(store.recurringTemplateId)" :date="store.editor.date" @apply="applyRecurrence" @cancel="closeSheet" @dirty="markSheetDirty" />

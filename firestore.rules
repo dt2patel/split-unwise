@@ -235,7 +235,7 @@ service cloud.firestore {
           'id', 'groupId', 'operationId', 'requestFingerprint', 'resourceToken',
           'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
           'description', 'date', 'total', 'payments', 'allocations', 'payerIds', 'participantIds', 'involvedMemberIds',
-          'category', 'splitType', 'splitMethod', 'attachmentRefs', 'notes',
+          'category', 'splitType', 'splitMethod', 'attachmentRefs', 'notes', 'reimbursement',
           'recurrence', 'occurrenceEditScope', 'recurringTemplateId',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'revision', 'deletedAt'
         ])
@@ -249,6 +249,7 @@ service cloud.firestore {
         && validName(data.description) && validSparkIsoDate(data.date)
         && data.category is string && data.category.size() > 0 && data.category.size() <= 80
         && (!('notes' in data) || (data.notes is string && data.notes.size() > 0 && data.notes.size() <= 5000))
+        && (!('reimbursement' in data) || data.reimbursement == true)
         && validSparkSplitType(data.splitType)
         && data.splitMethod.keys().hasOnly(['type', 'allocations']) && data.splitMethod.type == 'exact'
         && (!('recurrence' in data) || validSparkRecurrence(data.recurrence))
@@ -298,14 +299,15 @@ service cloud.firestore {
         && expenseId == 'expense-' + data.resourceToken
         && data.recurringTemplateId == 'recurring-' + data.resourceToken
         && template.id == data.recurringTemplateId && template.sourceExpenseId == expenseId
-        && template.operationId == data.operationId && template.resourceToken == data.resourceToken;
+        && template.operationId == data.operationId && template.requestFingerprint == data.requestFingerprint
+        && template.resourceToken == data.resourceToken;
     }
     function validSparkRecurringOccurrenceCreate(groupId, expenseId, data) {
       let before = get(/databases/$(database)/documents/groups/$(groupId)/recurringTemplates/$(data.recurringTemplateId)).data;
       let after = getAfter(/databases/$(database)/documents/groups/$(groupId)/recurringTemplates/$(data.recurringTemplateId)).data;
       let activityId = 'activity-' + data.resourceToken;
       let activity = getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
-      return data.keys().size() == 27
+      return (data.keys().size() == 27 || (data.keys().size() == 28 && data.reimbursement == true))
         && data.id == expenseId && data.groupId == groupId
         && data.operationId is string && data.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
         && data.requestFingerprint is string && data.requestFingerprint.matches('^[a-f0-9]{64}$')
@@ -499,16 +501,16 @@ service cloud.firestore {
         && template.payerIds == expense.payerIds && template.participantIds == expense.participantIds
         && template.involvedMemberIds == expense.involvedMemberIds
         && template.category == expense.category && template.splitMethod == expense.splitMethod
+        && template.get('reimbursement', false) == expense.get('reimbursement', false)
         && template.recurrence == expense.recurrence;
     }
     function validSparkRecurringTemplateCreate(groupId, templateId, data) {
       let expense = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(data.sourceExpenseId)).data;
-      return expense.id == data.sourceExpenseId && expense.groupId == groupId
-        && data.keys().hasOnly([
+      return data.keys().hasOnly([
           'id', 'groupId', 'sourceExpenseId',
           'operationId', 'requestFingerprint', 'resourceToken',
           'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
-          'status', 'description', 'total', 'payments', 'allocations', 'category', 'splitMethod',
+          'status', 'description', 'total', 'payments', 'allocations', 'category', 'splitMethod', 'reimbursement',
           'payerIds', 'participantIds', 'involvedMemberIds',
           'recurrence', 'anchorDate', 'nextDate', 'revision',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
@@ -518,14 +520,14 @@ service cloud.firestore {
         && templateId == 'recurring-' + data.resourceToken
         && data.sourceExpenseId == 'expense-' + data.resourceToken
         && data.status == 'active' && data.revision == 1
+        && (!('reimbursement' in data) || data.reimbursement == true)
         && data.operationId == data.lastOperationId
         && data.requestFingerprint == data.lastRequestFingerprint
         && data.resourceToken == data.lastResourceToken
         && data.createdAt == request.time && data.updatedAt == request.time
         && validSparkCurrentActor(groupId, data.createdBy) && data.updatedBy == data.createdBy
         && expense.recurringTemplateId == templateId
-        && expense.operationId == data.operationId && expense.requestFingerprint == data.requestFingerprint
-        && expense.resourceToken == data.resourceToken && expense.createdBy == data.createdBy
+        && expense.createdBy == data.createdBy
         && validSparkExpenseAllocationLedger(groupId, expense)
         && validSparkRecurrenceAnchor(data.anchorDate, data.recurrence)
         && validSparkIsoDate(data.nextDate)
@@ -570,7 +572,7 @@ service cloud.firestore {
         && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
         && data.diff(resource.data).affectedKeys().hasOnly([
           'description', 'total', 'payments', 'allocations', 'payerIds', 'participantIds', 'involvedMemberIds',
-          'category', 'splitMethod', 'recurrence', 'anchorDate', 'nextDate',
+          'category', 'splitMethod', 'reimbursement', 'recurrence', 'anchorDate', 'nextDate',
           'revision', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
         ])
         && data.revision == resource.data.revision + 1

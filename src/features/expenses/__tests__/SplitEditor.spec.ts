@@ -123,9 +123,9 @@ describe('SplitEditor', () => {
     expect(document.activeElement).toBe(exact.element)
 
     await exact.trigger('keydown', { key: 'End' })
-    const itemized = wrapper.get<HTMLButtonElement>('[data-method="itemized"]')
-    expect(itemized.attributes('aria-checked')).toBe('true')
-    expect(document.activeElement).toBe(itemized.element)
+    const reimbursement = wrapper.get<HTMLButtonElement>('[data-method="reimbursement"]')
+    expect(reimbursement.attributes('aria-checked')).toBe('true')
+    expect(document.activeElement).toBe(reimbursement.element)
     wrapper.unmount()
   })
 

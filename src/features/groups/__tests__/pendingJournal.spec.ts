@@ -54,7 +54,7 @@ describe('pending journal projection', () => {
         },
       },
     }
-    const pending: CommandOperation = { originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending', envelope: command('hydrated-pending') }
+    const pending: CommandOperation = { originPrincipalKey: PRINCIPAL_KEY, submittedAt: '2026-08-31T20:00:00.000Z', status: 'pending', envelope: { ...command('hydrated-pending'), reimbursement: true } }
     const queue = new CommandQueue({ storage: storageWith([pending]), handlers: {}, })
     let releaseIdentity!: () => void
     const ready = new Promise<void>((resolve) => {
@@ -70,7 +70,7 @@ describe('pending journal projection', () => {
 
     releaseIdentity()
     await loading
-    expect(store.journalExpenses[0]).toMatchObject({ description: 'Ice', syncState: 'pending', clientOperationId: 'hydrated-pending' })
+    expect(store.journalExpenses[0]).toMatchObject({ description: 'Ice', reimbursement: true, syncState: 'pending', clientOperationId: 'hydrated-pending' })
   })
 
   it('survives a store reload and reconciles the same row after save', async () => {

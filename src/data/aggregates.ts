@@ -3,13 +3,14 @@ import type { CurrencyTotals, ExpenseRow, GroupCharts } from './repositories'
 export function buildCurrencyTotals(rows: readonly ExpenseRow[], currentUserId: string): readonly CurrencyTotals[] {
   const amounts = new Map<string, { totalPaid: bigint; currentUserPaid: bigint; currentUserShare: bigint }>()
   for (const row of rows) {
+    const direction = row.reimbursement ? -1 : 1
     const current = amounts.get(row.total.currency) ?? { totalPaid: 0n, currentUserPaid: 0n, currentUserShare: 0n }
-    current.totalPaid = checkedAdd(current.totalPaid, row.total.minorAmount)
+    current.totalPaid = checkedAdd(current.totalPaid, direction * row.total.minorAmount)
     for (const payment of row.payments) {
-      if (payment.participantId === currentUserId) current.currentUserPaid = checkedAdd(current.currentUserPaid, payment.money.minorAmount)
+      if (payment.participantId === currentUserId) current.currentUserPaid = checkedAdd(current.currentUserPaid, direction * payment.money.minorAmount)
     }
     const allocation = row.allocations.find(({ participantId }) => participantId === currentUserId)
-    if (allocation) current.currentUserShare = checkedAdd(current.currentUserShare, allocation.money.minorAmount)
+    if (allocation) current.currentUserShare = checkedAdd(current.currentUserShare, direction * allocation.money.minorAmount)
     amounts.set(row.total.currency, current)
   }
   return [...amounts].sort(([left], [right]) => left.localeCompare(right)).map(([currency, amount]) => ({
@@ -30,7 +31,7 @@ function sum(rows: readonly ExpenseRow[], key: (row: ExpenseRow) => string, sort
   const amounts = new Map<string, bigint>()
   for (const row of rows) {
     const id = `${row.total.currency}\u0000${key(row)}`
-    amounts.set(id, checkedAdd(amounts.get(id) ?? 0n, row.total.minorAmount))
+    amounts.set(id, checkedAdd(amounts.get(id) ?? 0n, (row.reimbursement ? -1 : 1) * row.total.minorAmount))
   }
   return [...amounts].map(([id, amount]) => { const [currency, name] = id.split('\u0000'); return [currency as ExpenseRow['total']['currency'], name, amount] as const })
     .sort(([leftCurrency, leftName, leftAmount], [rightCurrency, rightName, rightAmount]) => leftCurrency.localeCompare(rightCurrency) || (sortByAmount && rightAmount > leftAmount ? 1 : sortByAmount && rightAmount < leftAmount ? -1 : leftName.localeCompare(rightName)))

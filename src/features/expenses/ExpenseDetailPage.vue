@@ -309,6 +309,7 @@ function revisionDiff(revision: ExpenseRevision, index: number): string {
   if (previous.date !== revision.expense.date) changed.push('date')
   if (previous.category !== revision.expense.category) changed.push('category')
   if ((previous.notes ?? '') !== (revision.expense.notes ?? '')) changed.push('notes')
+  if (Boolean(previous.reimbursement) !== Boolean(revision.expense.reimbursement)) changed.push('type')
   if (JSON.stringify(previous.payments) !== JSON.stringify(revision.expense.payments)) changed.push('payers')
   if (JSON.stringify(previous.allocations) !== JSON.stringify(revision.expense.allocations) || JSON.stringify(previous.splitMethod) !== JSON.stringify(revision.expense.splitMethod)) changed.push('split')
   if (JSON.stringify(previous.attachmentRefs) !== JSON.stringify(revision.expense.attachmentRefs)) changed.push('attachments')
@@ -319,7 +320,7 @@ function formatMoney(row: ExpenseRow): string { return formatMoneyValue(row.tota
 function allocationLabel(row: ExpenseRow, participantId: string, minorAmount: number): string {
   return `${payerName(participantId)} ${formatMoneyValue({ currency: row.total.currency, minorAmount })}`
 }
-function splitLabel(row: ExpenseRow): string { return `${row.splitMethod.type} split` }
+function splitLabel(row: ExpenseRow): string { return row.reimbursement ? 'reimbursement' : `${row.splitMethod.type} split` }
 function recurrenceLabel(row: ExpenseRow): string {
   if (!row.recurrence) return 'Not recurring'
   return `${row.recurrence.frequency[0].toUpperCase()}${row.recurrence.frequency.slice(1)} · ${row.recurrence.timeZone}`
@@ -337,7 +338,7 @@ function message(reason: unknown, fallback: string): string { return reason inst
     <ion-header translucent>
       <ion-toolbar>
         <ion-buttons slot="start"><ion-back-button :default-href="returnPath" text="Back" /></ion-buttons>
-        <ion-title>Expense</ion-title>
+        <ion-title>{{ expense?.reimbursement ? 'Reimbursement' : 'Expense' }}</ion-title>
         <ion-buttons v-if="canMutate" slot="end">
           <ion-button data-action="edit-expense" :router-link="editPath">Edit</ion-button>
         </ion-buttons>
@@ -355,7 +356,7 @@ function message(reason: unknown, fallback: string): string { return reason inst
           <header class="expense-detail__hero">
             <p>{{ expense.category }}</p>
             <h1>{{ expense.description }}</h1>
-            <money-amount data-testid="expense-total" :money="expense.total" label="Expense total" :show-direction="false" />
+            <money-amount data-testid="expense-total" :money="expense.total" :label="expense.reimbursement ? 'Reimbursement total' : 'Expense total'" :show-direction="false" />
             <p v-if="expense.deletedAt" data-testid="deleted-state">This expense was deleted. Its audit history and prior comments are retained.</p>
           </header>
 
@@ -365,6 +366,7 @@ function message(reason: unknown, fallback: string): string { return reason inst
                 <h2 id="details-title">Details</h2>
                 <dl>
                   <div><dt>Date</dt><dd><time :datetime="expense.date">{{ formatDate(expense.date) }}</time></dd></div>
+                  <div><dt>Type</dt><dd>{{ expense.reimbursement ? 'Reimbursement' : 'Expense' }}</dd></div>
                   <div><dt>Category</dt><dd>{{ expense.category }}</dd></div>
                   <div><dt>Notes</dt><dd>{{ expense.notes || 'No notes' }}</dd></div>
                   <div><dt>Recurrence</dt><dd>{{ recurrenceLabel(expense) }}</dd></div>
@@ -377,7 +379,7 @@ function message(reason: unknown, fallback: string): string { return reason inst
               </section>
 
               <section aria-labelledby="payers-title">
-                <h2 id="payers-title">Paid by</h2>
+                <h2 id="payers-title">{{ expense.reimbursement ? 'Refund received by' : 'Paid by' }}</h2>
                 <ul aria-labelledby="payers-title">
                   <li v-for="payment in expense.payments" :key="payment.participantId">
                     <span>{{ payerName(payment.participantId) }}</span><money-amount :money="payment.money" :show-direction="false" />
@@ -386,7 +388,7 @@ function message(reason: unknown, fallback: string): string { return reason inst
               </section>
 
               <section aria-labelledby="allocations-title">
-                <h2 id="allocations-title">Allocated to</h2>
+                <h2 id="allocations-title">{{ expense.reimbursement ? 'Reimbursement owed to' : 'Allocated to' }}</h2>
                 <ul aria-labelledby="allocations-title">
                   <li v-for="allocation in expense.allocations" :key="allocation.participantId">
                     <span>{{ payerName(allocation.participantId) }}</span><money-amount :money="allocation.money" :show-direction="false" />
@@ -422,8 +424,8 @@ function message(reason: unknown, fallback: string): string { return reason inst
                       <div><dt>Date</dt><dd>{{ formatDate(revision.expense.date) }}</dd></div>
                       <div><dt>Category</dt><dd>{{ revision.expense.category }}</dd></div>
                       <div><dt>Notes</dt><dd>{{ revision.expense.notes || 'No notes' }}</dd></div>
-                      <div><dt>Paid by</dt><dd>{{ revision.expense.payments.map((payment) => allocationLabel(revision.expense, payment.participantId, payment.money.minorAmount)).join(', ') }}</dd></div>
-                      <div><dt>Allocated to</dt><dd>{{ revision.expense.allocations.map((allocation) => allocationLabel(revision.expense, allocation.participantId, allocation.money.minorAmount)).join(', ') }}</dd></div>
+                      <div><dt>{{ revision.expense.reimbursement ? 'Refund received by' : 'Paid by' }}</dt><dd>{{ revision.expense.payments.map((payment) => allocationLabel(revision.expense, payment.participantId, payment.money.minorAmount)).join(', ') }}</dd></div>
+                      <div><dt>{{ revision.expense.reimbursement ? 'Reimbursement owed to' : 'Allocated to' }}</dt><dd>{{ revision.expense.allocations.map((allocation) => allocationLabel(revision.expense, allocation.participantId, allocation.money.minorAmount)).join(', ') }}</dd></div>
                       <div><dt>Split</dt><dd>{{ splitLabel(revision.expense) }}</dd></div>
                       <div><dt>Recurrence</dt><dd>{{ recurrenceLabel(revision.expense) }}</dd></div>
                       <div><dt>Attachments</dt><dd>{{ revision.expense.attachmentRefs.length ? revision.expense.attachmentRefs.map(attachmentLabel).join(', ') : 'No attachments' }}</dd></div>

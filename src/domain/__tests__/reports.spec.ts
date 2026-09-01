@@ -58,6 +58,28 @@ describe('authoritative premium reports', () => {
     expect(report.balanceOverTime.filter(({ currency }) => currency === 'USD').at(-1)).toMatchObject({ occurredOn: '2026-08-03', minorAmount: 150 })
   })
 
+  it('nets reimbursements out of spending and reverses report balance events', () => {
+    const refund = expense('refund', 1000, {
+      reimbursement: true,
+      payments: [{ participantId: 'maya', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'alex', money: { currency: 'USD', minorAmount: 1000 } }],
+      category: 'Travel',
+    })
+
+    const report = buildReport(selectReportInput({
+      currentUserId: 'maya', members, expenses: [refund], settlements: [],
+      coverage: { status: 'complete', scannedGroups: 1, scannedExpenses: 1 },
+    }))
+
+    expect(report.totals).toEqual([{ currency: 'USD', expenseTotal: -1000, currentUserPaid: -1000, currentUserShare: 0, settlementSent: 0, settlementReceived: 0, periodNet: -1000 }])
+    expect(report.category).toEqual([{ currency: 'USD', category: 'Travel', minorAmount: -1000 }])
+    expect(report.memberContributions).toEqual([
+      { currency: 'USD', participantId: 'alex', paidMinor: 0, shareMinor: -1000 },
+      { currency: 'USD', participantId: 'maya', paidMinor: -1000, shareMinor: 0 },
+    ])
+    expect(report.balanceOverTime).toEqual([{ currency: 'USD', occurredOn: '2026-08-02', id: 'expense:refund', minorAmount: -1000 }])
+  })
+
   it('uses checked BigInt intermediates and rejects safe-integer overflow', () => {
     expect(() => buildReport(selectReportInput({
       currentUserId: 'maya', members,

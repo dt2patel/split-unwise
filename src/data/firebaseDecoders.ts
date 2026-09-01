@@ -134,10 +134,12 @@ export function decodeExpense(groupId: string, id: string, value: unknown): Expe
   if (!sameAllocations(computed, allocations)) throw new DocumentDecodeError(`expense ${id}`, 'allocations do not match split method')
   const createdAt = isoTimestamp(data.createdAt, `expense ${id}.createdAt`)
   const updatedAt = isoTimestamp(data.updatedAt, `expense ${id}.updatedAt`)
+  const reimbursement = optionalLiteralTrue(data.reimbursement, `expense ${id}.reimbursement`)
   return {
     id, groupId, description: requiredString(data.description, `expense ${id}.description`), date: isoDate(data.date, `expense ${id}.date`), total,
     payments, allocations, category: requiredString(data.category, `expense ${id}.category`), createdAt, updatedAt,
     revision: positiveInteger(data.revision, `expense ${id}.revision`), splitMethod, attachmentRefs: requiredStringArray(data.attachmentRefs, `expense ${id}.attachmentRefs`), syncState: 'fresh',
+    ...(reimbursement ? { reimbursement } : {}),
     ...(data.notes === undefined ? {} : { notes: requiredString(data.notes, `expense ${id}.notes`) }),
     ...(data.recurrence === undefined ? {} : { recurrence: recurrenceValue(data.recurrence, `expense ${id}.recurrence`) }),
     ...(data.occurrenceEditScope === undefined ? {} : { occurrenceEditScope: occurrenceScope(data.occurrenceEditScope, `expense ${id}.occurrenceEditScope`) }),
@@ -258,6 +260,7 @@ export function decodeRecurringExpense(groupId: string, id: string, value: unkno
   if (lastOccurrenceId !== undefined && lastOccurrenceId !== recurringOccurrenceId(id, lastOccurrenceDate!)) throw new DocumentDecodeError(`recurring ${id}.lastOccurrenceId`, 'last occurrence ID must match the template ID and last occurrence date')
   const recurrence = recurrenceValue(data.recurrence, `recurring ${id}.recurrence`)
   const anchorDate = isoDate(data.anchorDate, `recurring ${id}.anchorDate`)
+  const reimbursement = optionalLiteralTrue(data.reimbursement, `recurring ${id}.reimbursement`)
   const anchorMonthDay = `${String(recurrence.anchor.month).padStart(2, '0')}-${String(recurrence.anchor.day).padStart(2, '0')}`
   if (anchorDate.slice(5) !== anchorMonthDay) throw new DocumentDecodeError(`recurring ${id}.anchorDate`, 'anchor date must match recurrence anchor month and day')
   return {
@@ -265,6 +268,7 @@ export function decodeRecurringExpense(groupId: string, id: string, value: unkno
     category: requiredString(data.category, `recurring ${id}.category`), splitMethod,
     recurrence, anchorDate, nextDate: isoDate(data.nextDate, `recurring ${id}.nextDate`),
     revision: positiveInteger(data.revision, `recurring ${id}.revision`), createdBy: actorSnapshot(data.createdBy, `recurring ${id}.createdBy`), syncState: 'fresh',
+    ...(reimbursement ? { reimbursement } : {}),
     ...(lastOccurrenceId === undefined ? {} : { lastOccurrenceId, lastOccurrenceDate: lastOccurrenceDate! }),
   }
 }
@@ -466,6 +470,7 @@ function requiredArray(value: unknown, path: string): readonly unknown[] { if (!
 function requiredStringArray(value: unknown, path: string): readonly string[] { return requiredArray(value, path).map((item, index) => requiredString(item, `${path}[${index}]`)) }
 function requiredString(value: unknown, path: string): string { if (typeof value !== 'string' || !value.trim()) throw new DocumentDecodeError(path, 'must be a non-empty string'); return value }
 function requiredBoolean(value: unknown, path: string): boolean { if (typeof value !== 'boolean') throw new DocumentDecodeError(path, 'must be a boolean'); return value }
+function optionalLiteralTrue(value: unknown, path: string): true | undefined { if (value === undefined) return undefined; if (value !== true) throw new DocumentDecodeError(path, 'must be true when present'); return true }
 function nonNegativeSafeInteger(value: unknown, path: string): number { if (!Number.isSafeInteger(value) || (value as number) < 0) throw new DocumentDecodeError(path, 'must be a non-negative safe integer'); return value as number }
 function positiveSafeInteger(value: unknown, path: string): number { if (!Number.isSafeInteger(value) || (value as number) < 1) throw new DocumentDecodeError(path, 'must be a positive safe integer'); return value as number }
 function positiveInteger(value: unknown, path: string): number { if (!Number.isInteger(value) || (value as number) < 1) throw new DocumentDecodeError(path, 'must be a positive integer'); return value as number }

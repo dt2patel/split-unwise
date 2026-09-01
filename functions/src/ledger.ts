@@ -295,7 +295,7 @@ async function executeExpenseCommand(context: GroupContext, actor: Actor): Promi
   const draft = command.kind === 'expense.edit' ? command.draft : command.kind === 'expense.add' ? command : undefined
   if (draft) {
     try {
-      validateLedgerExpense({ id: expenseId, total: draft.total, payments: draft.payments, allocations: draft.allocations })
+      validateLedgerExpense({ id: expenseId, total: draft.total, payments: draft.payments, allocations: draft.allocations, ...(draft.reimbursement ? { reimbursement: true } : {}) })
       assertSplitMatchesAllocations(draft.total, draft.splitMethod, draft.allocations)
     } catch (error) { throw new LedgerError('invalid-argument', message(error)) }
     await assertMembersActive(db, transaction, groupId, [...draft.payments, ...draft.allocations].map(({ participantId }) => participantId))
@@ -310,6 +310,7 @@ async function executeExpenseCommand(context: GroupContext, actor: Actor): Promi
         id: expenseId, groupId, description: draft!.description, date: draft!.date, total: draft!.total,
         payments: draft!.payments, allocations: draft!.allocations, category: draft!.category, splitMethod: draft!.splitMethod,
         attachmentRefs: draft!.attachmentRefs, ...(draft!.notes ? { notes: draft!.notes } : {}),
+        ...(draft!.reimbursement ? { reimbursement: true } : {}),
         ...(draft!.recurrence ? { recurrence: draft!.recurrence } : {}), ...(draft!.occurrenceEditScope ? { occurrenceEditScope: draft!.occurrenceEditScope } : {}),
         createdAt: existing?.createdAt ?? isoNow, createdBy: existing?.createdBy ?? actor, updatedAt: isoNow, updatedBy: actor, revision,
       }
@@ -327,7 +328,7 @@ async function executeExpenseCommand(context: GroupContext, actor: Actor): Promi
 
   if (draft?.recurrence && command.kind === 'expense.add') {
     const templateId = deterministicId('rec', command.operationId)
-    transaction.set(db.doc(`groups/${groupId}/recurringTemplates/${templateId}`), { schemaVersion: 1, id: templateId, groupId, status: 'active', description: draft.description, total: draft.total, payments: draft.payments, allocations: draft.allocations, category: draft.category, splitMethod: draft.splitMethod, attachmentRefs: [], recurrence: draft.recurrence, anchorDate: draft.date, nextDate: nextOccurrence(draft.date, draft.recurrence), revision: 1, createdAt: isoNow, createdBy: actor })
+    transaction.set(db.doc(`groups/${groupId}/recurringTemplates/${templateId}`), { schemaVersion: 1, id: templateId, groupId, status: 'active', description: draft.description, total: draft.total, payments: draft.payments, allocations: draft.allocations, category: draft.category, splitMethod: draft.splitMethod, attachmentRefs: [], ...(draft.reimbursement ? { reimbursement: true } : {}), recurrence: draft.recurrence, anchorDate: draft.date, nextDate: nextOccurrence(draft.date, draft.recurrence), revision: 1, createdAt: isoNow, createdBy: actor })
   }
 
   if (command.kind === 'expense.delete') return { kind: command.kind, operationId: command.operationId, status: 'saved', tombstone: { id: expenseId, groupId, revision, deletedAt: isoNow } }
@@ -406,7 +407,7 @@ async function calculateBalanceWithMutation(db: Firestore, transaction: Transact
 }
 
 function toLedgerExpense(value: DocumentData) {
-  return { id: String(value.id), total: value.total, payments: value.payments, allocations: value.allocations }
+  return { id: String(value.id), total: value.total, payments: value.payments, allocations: value.allocations, ...(value.reimbursement === true ? { reimbursement: true as const } : {}) }
 }
 function mapDocuments(documents: readonly QueryDocumentSnapshot[]): DocumentData[] { return documents.map((document) => ({ id: document.id, ...document.data() })) }
 function replaceDocument(documents: DocumentData[], id: string, document: DocumentData): void { const index = documents.findIndex((item) => item.id === id); if (index >= 0) documents[index] = { id, ...document }; else documents.push({ id, ...document }) }

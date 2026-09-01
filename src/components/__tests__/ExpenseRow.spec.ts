@@ -97,6 +97,24 @@ describe('ExpenseRow', () => {
     expect(wrapper.get('.expense-row__category').text()).toContain('Category: Supplies')
   })
 
+  it('uses reimbursement language in the mobile journal', () => {
+    const wrapper = mount(ExpenseRow, {
+      props: {
+        expense: { ...expense, reimbursement: true },
+        balance: { currency: 'USD', minorAmount: 600 },
+        balanceDirection: 'owing',
+        journal: true,
+        payerName: 'Maya P.',
+        participantCount: 2,
+      },
+    })
+
+    expect(wrapper.text()).toContain('Refund received by Maya P.')
+    expect(wrapper.text()).toContain('Reimbursed to 2 of you')
+    expect(wrapper.get('.expense-row__amount--paid .money-amount__context').text()).toContain('Reimbursement total')
+    expect(wrapper.text()).not.toContain('Paid by')
+  })
+
   it('shows pending state in a journal row and exposes Retry/Discard only for failed drafts', async () => {
     const pending = mount(ExpenseRow, { props: { expense: { ...expense, syncState: 'pending' }, balance: { currency: 'USD', minorAmount: 0 }, balanceDirection: 'settled', journal: true } })
     expect(pending.text()).toContain('Saving')

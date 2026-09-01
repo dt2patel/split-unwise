@@ -24,6 +24,22 @@ describe('typed premium exports', () => {
     ])
   })
 
+  it('exports reimbursements as refunds with reversed impacts and a durable backup marker', () => {
+    const refund: ExpenseRow = {
+      ...expense(),
+      id: 'refund-a',
+      description: 'Deposit refund',
+      reimbursement: true,
+    }
+    const csv = buildTransactionCsv({ groups: [group], membersByGroup: new Map([[group.id, members]]), expenses: [refund], settlements: [] })
+    const backup = buildAccountBackup({
+      exportedAt: '2026-08-31T20:00:00.000Z', groups: [group], membersByGroup: new Map([[group.id, members]]), expenses: [refund], settlements: [],
+    })
+
+    expect(csv.content.split('\n')[1]).toBe('reimbursement,refund-a,lake,2026-08-01,Deposit refund,Food,,,USD,1000,600,-600')
+    expect(JSON.parse(backup.content)).toMatchObject({ expenses: [{ id: 'refund-a', reimbursement: true }] })
+  })
+
   it('protects every user-controlled CSV text cell from formula injection', () => {
     const malicious = { ...expense(), description: ' =SUM(A1:A2)', notes: '\t@payload', category: '-cmd' }
     const content = buildTransactionCsv({ groups: [group], membersByGroup: new Map([[group.id, members]]), expenses: [malicious], settlements: [] }).content

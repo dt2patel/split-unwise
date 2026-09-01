@@ -75,6 +75,29 @@ describe('ExpenseEditorPage', () => {
     expect(wrapper.get('#recurrence-sheet-trigger').get('[data-ionic-note]').text()).toBe('Does not repeat')
   })
 
+  it('switches the mobile sentence and payer card to refund-recipient language', async () => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    store.editor.split = { type: 'reimbursement', values: Object.fromEntries(store.editor.participants.map((id) => [id, '0'])) }
+    await flushPromises()
+
+    expect(wrapper.get('#payer-sheet-trigger').text()).toContain('Refund received by Maya P.')
+    expect(wrapper.get('#split-sheet-trigger').text()).toBe('distributed as a reimbursement')
+
+    await wrapper.get('#payer-sheet-trigger').trigger('click')
+    expect(wrapper.get('[data-testid="active-sheet"] h2').text()).toBe('Refund received by')
+  })
+
+  it('keeps reimbursement semantics when its recipient list changes', async () => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    store.editor.split = { type: 'reimbursement', values: Object.fromEntries(store.editor.participants.map((id) => [id, id === 'alex-r' ? '10.00' : '0'])) }
+    await wrapper.get('#participant-sheet-trigger').trigger('click')
+
+    wrapper.getComponent({ name: 'ParticipantSheet' }).vm.$emit('apply', ['maya-p', 'alex-r'])
+    await flushPromises()
+
+    expect(store.editor.split).toEqual({ type: 'reimbursement', values: { 'maya-p': '0', 'alex-r': '10.00' } })
+  })
+
   it('uses deterministic direct-load Cancel and protects a dirty dismissal', async () => {
     const { wrapper, router } = await mountRoute('/tabs/home/expenses/new')
     await wrapper.get('#expense-description').setValue('Coffee')

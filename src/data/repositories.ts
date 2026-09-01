@@ -66,6 +66,7 @@ export interface ExpenseDraft {
   readonly allocations: Expense['allocations']
   readonly category: string
   readonly splitMethod: SplitMethod
+  readonly reimbursement?: true
   readonly notes?: string
   readonly attachmentRefs: readonly string[]
   readonly recurrence?: Recurrence
@@ -180,6 +181,7 @@ export interface RecurringExpense {
   readonly allocations: readonly Allocation[]
   readonly category: string
   readonly splitMethod: SplitMethod
+  readonly reimbursement?: true
   readonly recurrence: Recurrence
   readonly anchorDate: string
   readonly nextDate: string

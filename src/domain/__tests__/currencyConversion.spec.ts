@@ -66,6 +66,12 @@ describe('applied group currency conversion', () => {
     expect(expense.total).toEqual({ currency: 'USD', minorAmount: 1001 })
   })
 
+  it('preserves reimbursement semantics while projecting currencies', () => {
+    const projected = applyCurrencyConversionToExpense({ ...expense, reimbursement: true }, conversion)
+
+    expect(projected).toMatchObject({ reimbursement: true, total: { currency: 'JPY', minorAmount: 1502 } })
+  })
+
   it('converts settlement money and its balance basis together', () => {
     const projected = applyCurrencyConversionToSettlement(settlement, conversion)
 

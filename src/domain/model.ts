@@ -20,6 +20,8 @@ export interface Expense {
   readonly total: Money
   readonly payments: readonly Allocation[]
   readonly allocations: readonly Allocation[]
+  /** A refund received by the payers and owed back to the allocated participants. */
+  readonly reimbursement?: true
 }
 
 export interface ExactSplit {

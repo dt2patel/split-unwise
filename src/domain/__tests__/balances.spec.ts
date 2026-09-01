@@ -53,6 +53,26 @@ describe('balances', () => {
     ])
   })
 
+  it('reverses the ledger effect when a refund recipient owes the reimbursement shares', () => {
+    const reimbursement = {
+      id: 'flight-refund',
+      description: 'Cancelled flights',
+      date: '2026-08-05',
+      total: { currency: 'USD', minorAmount: 30000 },
+      payments: [{ participantId: 'alex', money: { currency: 'USD', minorAmount: 30000 } }],
+      allocations: [
+        { participantId: 'blair', money: { currency: 'USD', minorAmount: 15000 } },
+        { participantId: 'casey', money: { currency: 'USD', minorAmount: 15000 } },
+      ],
+      reimbursement: true,
+    } as Expense
+
+    expect(simplifyDebts(computeBalances([reimbursement]))).toEqual([
+      { fromParticipantId: 'alex', toParticipantId: 'blair', money: { currency: 'USD', minorAmount: 15000 } },
+      { fromParticipantId: 'alex', toParticipantId: 'casey', money: { currency: 'USD', minorAmount: 15000 } },
+    ])
+  })
+
   it('rejects duplicate payers and payment totals that do not equal the expense', () => {
     const base = {
       id: 'invalid-payments',

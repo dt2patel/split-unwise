@@ -7,6 +7,7 @@ import ParticipantSheet from '../components/ParticipantSheet.vue'
 import PayerSheet from '../components/PayerSheet.vue'
 import ReceiptReview from '../components/ReceiptReview.vue'
 import RecurrenceSheet from '../components/RecurrenceSheet.vue'
+import SplitEditor from '../components/SplitEditor.vue'
 
 const members = [
   { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true },
@@ -48,6 +49,35 @@ describe('staged expense sheets', () => {
       { participantId: 'maya-p', amountText: '6.00' },
       { participantId: 'alex-r', amountText: '4.00' },
     ])
+  })
+
+  it('stages exact reimbursement amounts each participant should receive', async () => {
+    const wrapper = mount(SplitEditor, { props: {
+      modelValue: { type: 'equal' }, participants: members, currency: 'USD', totalMinorAmount: 1000,
+    } })
+
+    await wrapper.get('[data-method="reimbursement"]').trigger('click')
+    await wrapper.get('[data-participant-id="maya-p"]').setValue('4.00')
+    await wrapper.get('[data-participant-id="alex-r"]').setValue('6.00')
+    await wrapper.get('[data-action="apply-split"]').trigger('click')
+
+    expect(wrapper.emitted('apply')?.[0]?.[0]).toEqual({
+      input: { type: 'reimbursement', values: { 'maya-p': '4.00', 'alex-r': '6.00' } },
+      allocations: [
+        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 400 } },
+        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 600 } },
+      ],
+    })
+  })
+
+  it('labels refund recipients distinctly from expense payers', () => {
+    const wrapper = mount(PayerSheet, { props: {
+      modelValue: [{ participantId: 'maya-p', amountText: '10.00' }], members, currency: 'USD', totalMinorAmount: 1000, reimbursement: true,
+    } })
+
+    expect(wrapper.get('h2').text()).toBe('Refund received by')
+    expect(wrapper.get('.expense-sheet > p').text()).toContain('what each received')
+    expect(wrapper.get('[data-payer-id="maya-p"]').attributes('aria-label')).toBe('Maya P. received amount')
   })
 
   it('keeps participant toggles staged when Cancel is chosen', async () => {

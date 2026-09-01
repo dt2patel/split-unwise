@@ -201,6 +201,11 @@ describe('Firestore rules in the emulator', () => {
     await assertSucceeds(setDoc(doc(active, `groups/group-a/activity/activity-${valid.lastResourceToken}`), sparkExpenseActivity(valid, 'expense.created', (await getDoc(doc(active, `groups/group-a/expenses/${valid.id}`))).data()!.createdAt)))
     await assertSucceeds(getDoc(doc(active, 'groups/group-a/expenses/expense-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')))
 
+    const reimbursement = sparkExpense('5', { reimbursement: true })
+    await assertSucceeds(setDoc(doc(active, `groups/group-a/expenses/${reimbursement.id}`), reimbursement))
+    const invalidReimbursement = sparkExpense('6', { reimbursement: false })
+    await assertFails(setDoc(doc(active, `groups/group-a/expenses/${invalidReimbursement.id}`), invalidReimbursement))
+
     const outsiderExpense = sparkExpense('b')
     await assertFails(setDoc(doc(outsider, `groups/group-a/expenses/${outsiderExpense.id}`), outsiderExpense))
     const mismatchedLedger = sparkExpense('c', { allocations: [
@@ -310,6 +315,21 @@ describe('Firestore rules in the emulator', () => {
       recurringTemplateId: `recurring-${'3'.repeat(48)}`,
     }, template))
     await assertSucceeds(commitSparkRecurringCreation(active, source, template))
+  })
+
+  emulatorIt('preserves the reimbursement marker through recurring creation and materialization', async () => {
+    const active = environment.authenticatedContext('active').firestore()
+    const source: Record<string, unknown> = { ...sparkRecurringSource('7'), reimbursement: true }
+    const template: Record<string, unknown> = { ...sparkRecurringTemplate(source, '2026-10-01'), reimbursement: true }
+
+    await assertSucceeds(commitSparkRecurringCreation(active, source, template))
+    const savedTemplate = (await getDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+    expect(savedTemplate).toMatchObject({ reimbursement: true })
+    const materialized = sparkRecurringMaterialization(savedTemplate, '8', '2026-10-01', '2026-11-01')
+    materialized.occurrence.reimbursement = true
+
+    await assertSucceeds(commitSparkRecurringMaterialization(active, materialized))
+    expect((await getDoc(doc(active, `groups/group-a/expenses/${materialized.occurrence.id}`))).data()).toMatchObject({ reimbursement: true })
   })
 
   emulatorIt('materializes only the active current date with deterministic identity, then cancels by exact revision', async () => {
@@ -468,8 +488,8 @@ describe('Firestore rules in the emulator', () => {
 
   emulatorIt('updates future recurrence only with the linked audited frontier revision', async () => {
     const active = environment.authenticatedContext('active').firestore()
-    const source = sparkRecurringSource('7')
-    const template = sparkRecurringTemplate(source, '2026-10-01')
+    const source: Record<string, unknown> = { ...sparkRecurringSource('7'), reimbursement: true }
+    const template: Record<string, unknown> = { ...sparkRecurringTemplate(source, '2026-10-01'), reimbursement: true }
     await assertSucceeds(commitSparkRecurringCreation(active, source, template))
     const savedSource = (await getDoc(doc(active, `groups/group-a/expenses/${source.id}`))).data()!
     const createdTemplate = (await getDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`))).data()!
@@ -519,10 +539,22 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(commitSparkFutureRecurringEdit(active, mismatchedAnchor, mismatchedAnchor.template))
     const malformedNextDate = patchSparkFutureRecurringEdit(future, {}, { nextDate: '2026-09-31' })
     await assertFails(commitSparkFutureRecurringEdit(active, malformedNextDate, malformedNextDate.template))
-    await assertSucceeds(commitSparkFutureRecurringEdit(active, future, future.template))
+    const ordinaryExpense = { ...future.expense }
+    const ordinaryTemplate = { ...future.template }
+    delete ordinaryExpense.reimbursement
+    delete ordinaryTemplate.reimbursement
+    const ordinaryFuture = {
+      ...future,
+      expense: ordinaryExpense,
+      head: { ...future.head, current: ordinaryExpense },
+      revision: { ...future.revision, expense: ordinaryExpense },
+    }
+    await assertSucceeds(commitSparkFutureRecurringEdit(active, ordinaryFuture, ordinaryTemplate))
 
     const savedHead = (await getDoc(doc(active, `groups/group-a/expenses/${source.id}`))).data()!
     const savedTemplate = (await getDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+    expect(savedHead.current).not.toHaveProperty('reimbursement')
+    expect(savedTemplate).not.toHaveProperty('reimbursement')
     await environment.withSecurityRulesDisabled(async (context) => {
       await updateDoc(doc(context.firestore(), `groups/group-a/recurringTemplates/${template.id}`), {
         lastOccurrenceId: `occ_${template.id}_2026-09-15`, lastOccurrenceDate: '2026-09-15',

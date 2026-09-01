@@ -24,6 +24,7 @@ const methods = [
   ['shares', 'Shares'],
   ['adjustment', 'Adjust'],
   ['itemized', 'Items'],
+  ['reimbursement', 'Reimburse'],
 ] as const
 const draft = ref<SplitInput>(clone(props.modelValue))
 const error = ref('')
@@ -89,7 +90,7 @@ function malformedParticipantId(): string | undefined {
   for (const { id } of props.participants) {
     const value = current.values[id] ?? ''
     try {
-      if (current.type === 'exact' || current.type === 'adjustment') {
+      if (current.type === 'exact' || current.type === 'adjustment' || current.type === 'reimbursement') {
         if (toMinorUnits(value, props.currency) < 0) return id
       } else {
         const numeric = Number(value)
@@ -147,14 +148,15 @@ function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
     </div>
 
     <p v-if="draft.type === 'equal'" class="split-editor__hint">The total is shared equally, with any minor-unit remainder assigned in participant order.</p>
-    <div v-else-if="draft.type === 'itemized'" class="split-editor__items">
+    <p v-else-if="draft.type === 'reimbursement'" class="split-editor__hint">Enter the amount each person should receive from this refund. The person who received the refund will owe these amounts back.</p>
+    <div v-if="draft.type === 'itemized'" class="split-editor__items">
       <p v-if="draft.items.length === 0">Add and assign receipt items from Receipt review.</p>
       <article v-for="(item, index) in draft.items" :key="`${item.description}-${index}`">
         <strong>{{ item.description }}</strong>
         <span>{{ item.amountText }} {{ currency }} · {{ item.participantIds.map((id) => memberById.get(id)?.displayName ?? id).join(', ') }}</span>
       </article>
     </div>
-    <div v-else class="split-editor__values">
+    <div v-else-if="draft.type !== 'equal'" class="split-editor__values">
       <label v-for="member in participants" :key="member.id">
         <span>{{ member.displayName }}</span>
         <input

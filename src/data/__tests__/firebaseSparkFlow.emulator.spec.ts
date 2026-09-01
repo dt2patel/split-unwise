@@ -402,32 +402,32 @@ describe('Firebase Spark two-account flow', () => {
         { participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 1200 } },
         { participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 1200 } },
       ],
-      category: 'Food', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+      category: 'Food', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, reimbursement: true as const, attachmentRefs: [],
     }
     const first = await ownerRepository.expenses.add(command)
     const replay = await ownerRepository.expenses.add(command)
 
-    expect(first).toMatchObject({ kind: 'expense.add', operationId, status: 'saved', expense: { description: 'Shared dinner', revision: 1 } })
+    expect(first).toMatchObject({ kind: 'expense.add', operationId, status: 'saved', expense: { description: 'Shared dinner', reimbursement: true, revision: 1 } })
     expect(replay).toEqual(first)
     if (first.status !== 'saved') throw new Error('Expected Spark expense creation to save')
     expect(await ownerRepository.expenses.listForGroup(created.groupId)).toHaveLength(1)
     expect(await ownerRepository.groups.getBalanceSnapshot(created.groupId)).toMatchObject({
       groupId: created.groupId, balanceRevision: 1,
-      pairwise: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
-      simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
+      pairwise: [{ fromParticipantId: owner.user.uid, toParticipantId: friend.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
+      simplified: [{ fromParticipantId: owner.user.uid, toParticipantId: friend.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
     })
 
     await signOut(auth)
     await signInWithEmailAndPassword(auth, friendEmail, password)
     const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
     await expect(friendRepository.expenses.listForGroup(created.groupId)).resolves.toEqual([
-      expect.objectContaining({ description: 'Shared dinner', total: { currency: 'USD', minorAmount: 2400 } }),
+      expect.objectContaining({ description: 'Shared dinner', reimbursement: true, total: { currency: 'USD', minorAmount: 2400 } }),
     ])
     await expect(friendRepository.activity.listForAccount({ filter: 'expenses', limit: 20 })).resolves.toMatchObject({
       items: [{ kind: 'expense.created', operationId, expenseId: first.expense.id, revision: 1, subject: { kind: 'expense', id: first.expense.id, label: 'Shared dinner' } }],
     })
     await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
-      simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
+      simplified: [{ fromParticipantId: owner.user.uid, toParticipantId: friend.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
     })
 
     const editCommand = {
@@ -450,6 +450,7 @@ describe('Firebase Spark two-account flow', () => {
     const edited = await ownerRepository.expenses.edit(editCommand)
     const editReplay = await ownerRepository.expenses.edit(editCommand)
     expect(edited).toMatchObject({ status: 'saved', expense: { id: first.expense.id, description: 'Shared dinner and dessert', revision: 2 } })
+    expect(edited.status === 'saved' ? edited.expense : undefined).not.toHaveProperty('reimbursement')
     expect(editReplay).toEqual(edited)
     await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
       balanceRevision: 2,

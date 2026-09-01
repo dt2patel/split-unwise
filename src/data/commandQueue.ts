@@ -532,8 +532,10 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
   if (!isRecord(value) || value.kind !== envelope.kind || value.operationId !== envelope.operationId || value.status !== 'saved') return false
   switch (envelope.kind) {
     case 'expense.add': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId && value.expense.revision === 1 && value.expense.deletedAt === undefined
+      && Boolean(value.expense.reimbursement) === Boolean(envelope.reimbursement)
     case 'expense.edit': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId && value.expense.id === envelope.expenseId
       && value.expense.revision === envelope.expectedRevision + 1 && value.expense.deletedAt === undefined
+      && Boolean(value.expense.reimbursement) === Boolean(envelope.draft.reimbursement)
     case 'expense.delete': return isTombstone(value.tombstone, envelope)
     case 'comment.add': return isSavedComment(value, envelope, false)
     case 'comment.delete': return isSavedComment(value, envelope, true)
@@ -558,6 +560,7 @@ function isExpenseDraft(value: unknown): value is ExpenseDraft {
   if (!isRecord(value) || !isNonEmptyString(value.groupId) || !isNonEmptyString(value.description) || !isIsoDate(value.date) || !isMoney(value.total)
     || !isAllocations(value.payments, value.total.currency) || !isAllocations(value.allocations, value.total.currency) || !isNonEmptyString(value.category)
     || !isSplitMethod(value.splitMethod, value.total.currency) || !isStringArray(value.attachmentRefs) || (value.notes !== undefined && typeof value.notes !== 'string')
+    || (value.reimbursement !== undefined && value.reimbursement !== true)
     || (value.recurrence !== undefined && !isRecurrence(value.recurrence)) || (value.occurrenceEditScope !== undefined && value.occurrenceEditScope !== 'occurrence' && value.occurrenceEditScope !== 'future')) return false
   if (value.payments.length === 0 || hasDuplicateParticipants(value.payments) || hasDuplicateParticipants(value.allocations)) return false
   if (sumAllocations(value.payments) !== BigInt(value.total.minorAmount) || sumAllocations(value.allocations) !== BigInt(value.total.minorAmount)) return false
@@ -580,6 +583,7 @@ function isSavedRecurrenceMaterialization(value: Record<string, unknown>, envelo
     && occurrence.id === recurringOccurrenceId(envelope.templateId, envelope.occurrenceDate)
     && occurrence.groupId === envelope.groupId
     && occurrence.recurringTemplateId === envelope.templateId
+    && Boolean(occurrence.reimbursement) === Boolean(template.reimbursement)
 }
 
 function isSavedRecurrenceCancellation(value: Record<string, unknown>, envelope: Extract<CommandEnvelope, { kind: 'recurrence.cancel' }>): boolean {
@@ -594,6 +598,7 @@ function isRecurringExpense(value: unknown): value is import('./repositories').R
     || !isAllocations(value.allocations, value.total.currency) || value.payments.length === 0
     || sumAllocations(value.payments) !== BigInt(value.total.minorAmount) || sumAllocations(value.allocations) !== BigInt(value.total.minorAmount)
     || !isNonEmptyString(value.category) || !isSplitMethod(value.splitMethod, value.total.currency) || !isRecurrence(value.recurrence)
+    || (value.reimbursement !== undefined && value.reimbursement !== true)
     || !isIsoDate(value.anchorDate) || !isIsoDate(value.nextDate) || !isPositiveInteger(value.revision)
     || !isActorSnapshot(value.createdBy) || value.syncState !== 'fresh') return false
   try {

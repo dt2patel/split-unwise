@@ -86,6 +86,31 @@ describe('expense detail route context', () => {
 })
 
 describe('expense detail financial and destructive states', () => {
+  it('labels reimbursements consistently in the detail and audit snapshots', async () => {
+    const repository = createDemoRepository({ now: () => '2026-08-31T19:00:00.000Z' })
+    const added = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'detail-refund', groupId: 'lake-house-weekend', description: 'Cabin deposit refund', date: '2026-08-31',
+      total: { currency: 'USD', minorAmount: 10000 },
+      payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 10000 } }],
+      allocations: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 10000 } }],
+      category: 'Lodging', splitMethod: { type: 'exact', allocations: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 10000 } }] },
+      reimbursement: true, attachmentRefs: [],
+    })
+    if (added.status !== 'saved') throw new Error('Expected demo save')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute(`/tabs/groups/expenses/${added.expense.id}?groupId=lake-house-weekend`)
+
+    expect(wrapper.text()).toContain('Reimbursement')
+    expect(wrapper.get('#payers-title').text()).toBe('Refund received by')
+    expect(wrapper.get('#allocations-title').text()).toBe('Reimbursement owed to')
+    expect(wrapper.get('[data-testid="expense-total"] .money-amount__context').text()).toContain('Reimbursement total')
+    const snapshot = wrapper.get('[data-testid="revision-snapshot"]').text()
+    expect(snapshot).toContain('Refund received by')
+    expect(snapshot).toContain('Reimbursement owed to')
+    expect(snapshot).toContain('reimbursement')
+  })
+
   it('renders plural payments, attribution, recurrence, notes, and durable attachments', async () => {
     const repository = createDemoRepository({ now: () => '2026-08-31T19:00:00.000Z' })
     const added = await repository.expenses.add({

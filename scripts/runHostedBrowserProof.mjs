@@ -26,7 +26,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -114,6 +114,7 @@ async function verifyAuthenticatedMobileJourney() {
     await persistedExpense.getByText(browserExpenseDescription, { exact: true }).waitFor({ state: 'visible' })
     const restoredOfflineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
     if (await restoredOfflineReadyDismiss.isVisible()) await restoredOfflineReadyDismiss.click()
+    await verifyReimbursementWorkflow(page)
     await verifySwipeBackGesture(context, page)
     await verifyCurrencyConversion(page)
     await restoredGroup.getByRole('button', { name: 'More', exact: true }).click()
@@ -139,6 +140,58 @@ async function verifyAuthenticatedMobileJourney() {
   } finally {
     await browser.close()
   }
+}
+
+async function verifyReimbursementWorkflow(page) {
+  const group = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+  await group.getByRole('link', { name: 'Add expense', exact: true }).click()
+  await page.waitForURL(new RegExp(`/tabs/groups/expenses/new\\?groupId=${escapeRegExp(groupId)}$`))
+
+  const description = `Hosted reimbursement ${suffix}`
+  await page.locator('#expense-description').fill(description)
+  await page.locator('#expense-amount').fill('10.00')
+  await page.locator('#expense-category').selectOption({ label: 'Other' })
+  await page.locator('#split-sheet-trigger').click()
+
+  const cardModal = page.locator('ion-modal.show-modal')
+  await cardModal.waitFor({ state: 'visible' })
+  await cardModal.getByRole('heading', { name: 'Split expense', exact: true }).waitFor({ state: 'visible' })
+  if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted reimbursement editor did not use the Ionic iOS card modal.')
+  await cardModal.locator('[data-method="reimbursement"]').click()
+  await cardModal.getByLabel('Live Renamed Owner reimbursement', { exact: true }).fill('0.00')
+  await cardModal.getByLabel('Live Proof Friend reimbursement', { exact: true }).fill('10.00')
+  await cardModal.locator('[data-action="apply-split"]').click()
+  await cardModal.waitFor({ state: 'hidden' })
+  await page.getByText('Refund received by Live Renamed Owner', { exact: true }).waitFor({ state: 'visible' })
+  await page.getByText('distributed as a reimbursement', { exact: true }).waitFor({ state: 'visible' })
+  await dismissAppStatus(page)
+  await page.locator('[data-action="save-expense"]').click()
+
+  await page.waitForURL(deepUrl, { timeout: 120_000 })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  const restoredGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+  await restoredGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+  const reimbursementRow = restoredGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: description })
+  await reimbursementRow.getByText(description, { exact: true }).waitFor({ state: 'visible' })
+  await reimbursementRow.getByText('Refund received by Live Renamed Owner', { exact: true }).waitFor({ state: 'visible' })
+  await reimbursementRow.getByText('Reimbursed to 2 of you', { exact: true }).waitFor({ state: 'visible' })
+  await reimbursementRow.locator('.expense-row__amount--balance .money-amount__direction').getByText('You owe', { exact: true }).waitFor({ state: 'visible' })
+  await reimbursementRow.locator('.expense-row__amount--balance .money-amount__value').getByText('$10.00', { exact: true }).waitFor({ state: 'visible' })
+
+  await reimbursementRow.locator('a.expense-row__body').click()
+  await page.waitForURL(new RegExp(`/tabs/groups/expenses/[^/?]+\\?groupId=${escapeRegExp(groupId)}$`))
+  const detail = page.locator('ion-page.expense-detail:not(.ion-page-hidden)')
+  await detail.locator('ion-title').getByText('Reimbursement', { exact: true }).waitFor({ state: 'visible' })
+  await detail.getByRole('heading', { name: description, exact: true }).waitFor({ state: 'visible' })
+  await detail.getByRole('heading', { name: 'Refund received by', exact: true }).waitFor({ state: 'visible' })
+  await detail.getByRole('heading', { name: 'Reimbursement owed to', exact: true }).waitFor({ state: 'visible' })
+  const accessibleTotal = (await detail.getByTestId('expense-total').locator('.money-amount__context').textContent())?.trim()
+  if (accessibleTotal !== 'Reimbursement total $10.00') throw new Error(`Hosted reimbursement detail exposed an unexpected total label: ${accessibleTotal ?? 'missing'}.`)
+  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (overflow > 1) throw new Error(`Hosted reimbursement detail overflowed the 390px mobile viewport by ${overflow}px.`)
+
+  await page.goto(deepUrl, { waitUntil: 'domcontentloaded' })
+  await page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)').getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
 }
 
 async function verifyCurrencyConversion(page) {

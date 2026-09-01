@@ -61,6 +61,7 @@ watch(
     props.expense.syncState,
     props.expense.total.currency,
     props.expense.total.minorAmount,
+    props.expense.reimbursement,
     props.balance.currency,
     props.balance.minorAmount,
     props.balanceDirection,
@@ -110,8 +111,8 @@ watch(
           <strong>{{ expense.description }}</strong>
         </template>
         <template v-if="journal && !(expense.syncState === 'conflicted' && conflictRemote)">
-          <span>Paid by {{ payerName }}</span>
-          <span>Split between {{ participantCount }} of you<span v-if="expense.recurringTemplateId"> · Recurring</span></span>
+          <span>{{ expense.reimbursement ? 'Refund received by' : 'Paid by' }} {{ payerName }}</span>
+          <span>{{ expense.reimbursement ? 'Reimbursed to' : 'Split between' }} {{ participantCount }} of you<span v-if="expense.recurringTemplateId"> · Recurring</span></span>
           <sync-status v-if="expense.syncState !== 'fresh'" :state="expense.syncState" />
         </template>
         <template v-else-if="!journal">
@@ -119,7 +120,7 @@ watch(
           <sync-status :state="expense.syncState" />
         </template>
       </div>
-      <money-amount class="expense-row__amount expense-row__amount--paid expense-row__amount--aligned" :money="expense.total" label="Expense total" :show-direction="false" />
+      <money-amount class="expense-row__amount expense-row__amount--paid expense-row__amount--aligned" :money="expense.total" :label="expense.reimbursement ? 'Reimbursement total' : 'Expense total'" :show-direction="false" />
       <money-amount class="expense-row__amount expense-row__amount--balance expense-row__amount--aligned" :money="balance" :direction="balanceDirection" :label="balanceLabel" />
     </component>
     <span v-if="journal && expense.syncState === 'conflicted' && conflictRemote" class="expense-row__sync-actions expense-row__sync-actions--conflict">

@@ -343,7 +343,8 @@ function netsByCurrency(rows: readonly ExpenseRow[], currentUserId: string, grou
 function signedPosition(expense: ExpenseRow, participantId: string): number {
   const share = expense.allocations.find((allocation) => allocation.participantId === participantId)?.money.minorAmount ?? 0
   const paid = expense.payments.filter((payment) => payment.participantId === participantId).reduce((sum, payment) => sum + BigInt(payment.money.minorAmount), 0n)
-  const position = paid - BigInt(share)
+  const ordinaryPosition = paid - BigInt(share)
+  const position = expense.reimbursement ? -ordinaryPosition : ordinaryPosition
   const maximum = BigInt(Number.MAX_SAFE_INTEGER)
   if (position < -maximum || position > maximum) throw new Error('Money addition exceeds safe integer range')
   return Number(position)
@@ -462,6 +463,7 @@ function projectJournal(
       splitMethod: JSON.parse(JSON.stringify(draft.splitMethod)),
       attachmentRefs: [...draft.attachmentRefs],
       ...(draft.notes ? { notes: draft.notes } : {}),
+      ...(draft.reimbursement ? { reimbursement: true } : {}),
       ...(draft.recurrence ? { recurrence: JSON.parse(JSON.stringify(draft.recurrence)) } : {}),
       ...(draft.occurrenceEditScope ? { occurrenceEditScope: draft.occurrenceEditScope } : {}),
       ...(existing?.recurringTemplateId ? { recurringTemplateId: existing.recurringTemplateId } : {}),

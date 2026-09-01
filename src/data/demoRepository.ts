@@ -239,6 +239,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
           revision: 1,
           syncState: 'fresh',
           splitMethod: clone(command.splitMethod),
+          ...(command.reimbursement ? { reimbursement: true as const } : {}),
           attachmentRefs: [...command.attachmentRefs],
           createdBy: actor,
           updatedBy: actor,
@@ -256,6 +257,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
           id: templateId, groupId: command.groupId, status: 'active', description: expense.description,
           total: { ...expense.total }, payments: expense.payments.map(cloneAllocation), allocations: expense.allocations.map(cloneAllocation),
           category: expense.category, splitMethod: clone(command.splitMethod), recurrence: clone(command.recurrence),
+          ...(expense.reimbursement ? { reimbursement: true as const } : {}),
           anchorDate: command.date, nextDate: nextOccurrence(command.date, command.recurrence), revision: 1,
           createdBy: actor, syncState: 'fresh',
         })
@@ -280,7 +282,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         }
         const updatedAt = checkedNow(now)
         const actor = actorSnapshot(currentUser)
-        const { notes: _notes, recurrence: _recurrence, occurrenceEditScope: _scope, updatedBy: _updatedBy, ...retained } = previous
+        const { notes: _notes, recurrence: _recurrence, occurrenceEditScope: _scope, reimbursement: _reimbursement, updatedBy: _updatedBy, ...retained } = previous
         const updated: ExpenseRow = {
           ...retained,
           ...command.draft,
@@ -304,11 +306,13 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         activity.push(event)
         revisions.push(revision)
         if (template && command.draft.occurrenceEditScope === 'future' && command.draft.recurrence) {
+          const { reimbursement: _templateReimbursement, ...retainedTemplate } = template
           recurring[recurring.indexOf(template)] = {
-            ...template, description: updated.description, total: { ...updated.total }, payments: updated.payments.map(cloneAllocation),
+            ...retainedTemplate, description: updated.description, total: { ...updated.total }, payments: updated.payments.map(cloneAllocation),
             allocations: updated.allocations.map(cloneAllocation), category: updated.category, splitMethod: clone(command.draft.splitMethod),
             recurrence: clone(command.draft.recurrence), anchorDate: command.draft.date,
             nextDate: nextOccurrence(command.draft.date, command.draft.recurrence), revision: template.revision + 1,
+            ...(updated.reimbursement ? { reimbursement: true as const } : {}),
           }
         }
         balanceRevision += 1
@@ -604,6 +608,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
           id: occurrenceId, groupId: command.groupId, description: template.description, date: command.occurrenceDate,
           total: { ...template.total }, payments: template.payments.map(cloneAllocation), allocations: template.allocations.map(cloneAllocation),
           category: template.category, splitMethod: clone(template.splitMethod), attachmentRefs: [], recurrence: clone(template.recurrence),
+          ...(template.reimbursement ? { reimbursement: true as const } : {}),
           recurringTemplateId: template.id, createdAt, updatedAt: createdAt, createdBy: seriesCreator, updatedBy: actor,
           revision: 1, syncState: 'fresh',
         }

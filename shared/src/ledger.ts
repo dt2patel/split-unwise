@@ -2,7 +2,7 @@ import { assertCurrencyCode, type CurrencyCode } from './money.js'
 
 export interface LedgerMoney { readonly currency: CurrencyCode; readonly minorAmount: number }
 export interface LedgerAllocation { readonly participantId: string; readonly money: LedgerMoney }
-export interface LedgerExpense { readonly id: string; readonly total: LedgerMoney; readonly payments: readonly LedgerAllocation[]; readonly allocations: readonly LedgerAllocation[] }
+export interface LedgerExpense { readonly id: string; readonly total: LedgerMoney; readonly payments: readonly LedgerAllocation[]; readonly allocations: readonly LedgerAllocation[]; readonly reimbursement?: true }
 export interface LedgerSettlement { readonly id: string; readonly senderId: string; readonly recipientId: string; readonly money: LedgerMoney; readonly voided?: boolean }
 export interface LedgerDebt { readonly fromParticipantId: string; readonly toParticipantId: string; readonly money: LedgerMoney }
 export interface SignedLedgerBalance extends LedgerDebt {}
@@ -38,8 +38,9 @@ export function computeSignedBalances(expenses: readonly LedgerExpense[]): reado
   for (const expense of expenses) {
     validateLedgerExpense(expense)
     const nets = new Map<string, bigint>()
-    for (const item of expense.payments) nets.set(item.participantId, (nets.get(item.participantId) ?? 0n) + BigInt(item.money.minorAmount))
-    for (const item of expense.allocations) nets.set(item.participantId, (nets.get(item.participantId) ?? 0n) - BigInt(item.money.minorAmount))
+    const direction = expense.reimbursement ? -1n : 1n
+    for (const item of expense.payments) nets.set(item.participantId, (nets.get(item.participantId) ?? 0n) + direction * BigInt(item.money.minorAmount))
+    for (const item of expense.allocations) nets.set(item.participantId, (nets.get(item.participantId) ?? 0n) - direction * BigInt(item.money.minorAmount))
     const debtors = [...nets].filter(([, amount]) => amount < 0n).map(([participantId, amount]) => ({ participantId, remaining: -amount })).sort(byParticipant)
     const creditors = [...nets].filter(([, amount]) => amount > 0n).map(([participantId, amount]) => ({ participantId, remaining: amount })).sort(byParticipant)
     let debtor = 0; let creditor = 0

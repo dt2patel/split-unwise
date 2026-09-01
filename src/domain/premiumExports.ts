@@ -36,7 +36,7 @@ export function buildTransactionCsv(source: ExportSource): BuiltExport {
   for (const expense of confirmedExpenses(source.expenses).filter(({ groupId }) => groupIds.has(groupId))) {
     const impacts = Object.fromEntries(memberIds.map((id) => [`${id}_impact_minor`, expenseImpact(expense, id)]))
     rows.push({
-      type: 'expense', id: safeText(expense.id), group_id: safeText(expense.groupId), date: expense.date,
+      type: expense.reimbursement ? 'reimbursement' : 'expense', id: safeText(expense.id), group_id: safeText(expense.groupId), date: expense.date,
       description: safeText(expense.description), category: safeText(expense.category), method: '', note: safeText(expense.notes ?? ''),
       currency: expense.total.currency, amount_minor: expense.total.minorAmount, ...impacts,
     })
@@ -94,7 +94,7 @@ export function buildAccountBackup(source: AccountBackupSource): BuiltExport {
     id: item.id, groupId: item.groupId, expenseId: item.expenseId, revision: item.revision, operationId: item.operationId, action: item.action, actor: { ...item.actor }, createdAt: item.createdAt, expense: backupExpense(item.expense, []),
   }))
   const recurring = (source.recurring ?? []).filter((item) => groupIds.has(item.groupId) && item.syncState === 'fresh').sort((left, right) => compare(left.groupId, right.groupId) || compare(left.id, right.id)).map((item) => ({
-    id: item.id, groupId: item.groupId, description: item.description, total: { ...item.total }, payments: item.payments.map(cloneAllocation), recurrence: { ...item.recurrence, anchor: { ...item.recurrence.anchor } }, nextDate: item.nextDate,
+    id: item.id, groupId: item.groupId, description: item.description, total: { ...item.total }, payments: item.payments.map(cloneAllocation), ...(item.reimbursement ? { reimbursement: true } : {}), recurrence: { ...item.recurrence, anchor: { ...item.recurrence.anchor } }, nextDate: item.nextDate,
   }))
   const settings = (source.settings ?? []).filter((item) => groupIds.has(item.groupId)).sort((left, right) => compare(left.groupId, right.groupId)).map((item) => ({ schemaVersion: item.schemaVersion, groupId: item.groupId, revision: item.revision, ...(item.defaultSplit ? { defaultSplit: cloneSplit(item.defaultSplit) } : {}) }))
   return {
@@ -107,7 +107,7 @@ function backupExpense(expense: ExpenseRow, descriptors: readonly DurableReceipt
   return {
     id: expense.id, groupId: expense.groupId, description: expense.description, date: expense.date, total: { ...expense.total },
     payments: expense.payments.map(cloneAllocation), allocations: expense.allocations.map(cloneAllocation), category: expense.category, notes: expense.notes ?? '',
-    splitMethod: cloneSplit(expense.splitMethod), ...(expense.recurrence ? { recurrence: { ...expense.recurrence, anchor: { ...expense.recurrence.anchor } } } : {}),
+    splitMethod: cloneSplit(expense.splitMethod), ...(expense.reimbursement ? { reimbursement: true } : {}), ...(expense.recurrence ? { recurrence: { ...expense.recurrence, anchor: { ...expense.recurrence.anchor } } } : {}),
     ...(expense.occurrenceEditScope ? { occurrenceEditScope: expense.occurrenceEditScope } : {}), ...(expense.recurringTemplateId ? { recurringTemplateId: expense.recurringTemplateId } : {}),
     revision: expense.revision, createdAt: expense.createdAt, updatedAt: expense.updatedAt, ...(expense.deletedAt ? { deletedAt: expense.deletedAt } : {}),
     ...(expense.createdBy ? { createdBy: { ...expense.createdBy } } : {}), ...(expense.updatedBy ? { updatedBy: { ...expense.updatedBy } } : {}), attachments: validatedDescriptors(descriptors),
@@ -121,7 +121,8 @@ function confirmedSettlements(settlements: readonly SettlementRecord[]): readonl
 function expenseImpact(expense: ExpenseRow, participantId: string): number {
   const paid = expense.payments.filter((row) => row.participantId === participantId).reduce((sum, row) => checkedAdd(sum, row.money.minorAmount), 0)
   const share = expense.allocations.filter((row) => row.participantId === participantId).reduce((sum, row) => checkedAdd(sum, row.money.minorAmount), 0)
-  return checkedAdd(paid, -share)
+  const impact = checkedAdd(paid, -share)
+  return expense.reimbursement ? checkedAdd(0, -impact) : impact
 }
 function settlementImpact(settlement: SettlementRecord, participantId: string): number {
   if (settlement.senderId === participantId) return settlement.money.minorAmount

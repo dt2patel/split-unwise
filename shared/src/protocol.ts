@@ -31,6 +31,7 @@ const expenseDraft = {
   allocations: z.array(allocation).min(1).max(100),
   category: z.string().trim().min(1).max(80),
   splitMethod,
+  reimbursement: z.literal(true).optional(),
   notes: z.string().max(5000).optional(),
   attachmentRefs: z.array(id).max(20),
   recurrence: recurrence.optional(),
