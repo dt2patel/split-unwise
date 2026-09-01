@@ -55,6 +55,11 @@ export function assertMatchingFirebaseConfiguration(existing: FirebaseConfigurat
   if (mismatch) throw new Error(`The existing Split Unwise Firebase app has different ${mismatch} configuration`)
 }
 
+/** Validates caller-owned app contexts before a repository binds Auth, Firestore, or Functions to them. */
+export function assertFirebaseAppMatchesConfiguration(app: Pick<FirebaseApp, 'options'>, requested: FirebaseConfiguration): void {
+  assertMatchingFirebaseConfiguration(configurationFromOptions(app.options), requested)
+}
+
 function configurationFromOptions(options: FirebaseOptions): FirebaseConfiguration {
   if (!options.apiKey || !options.authDomain || !options.projectId || !options.appId) throw new Error('The existing Split Unwise Firebase app is missing core options')
   return {

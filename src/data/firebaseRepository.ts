@@ -1,5 +1,6 @@
+import type { FirebaseApp } from 'firebase/app'
 import type { FirebaseConfiguration } from './firebase'
-import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebaseBootstrap'
+import { assertFirebaseAppMatchesConfiguration, getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebaseBootstrap'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement, type DecodedGroupProjection } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
@@ -19,14 +20,14 @@ type FirebaseClient = { readonly auth: ReturnType<AuthModule['getAuth']>; readon
 type FirebaseContext = FirebaseClient & { readonly userId: string }
 
 /** Firebase facade: SDK modules are loaded only on the first actual repository call. */
-export function createFirebaseRepository(configuration: FirebaseConfiguration, expectedUserId?: string, functionsRegion?: string): AppRepository {
+export function createFirebaseRepository(configuration: FirebaseConfiguration, expectedUserId?: string, functionsRegion?: string, firebaseApp?: FirebaseApp): AppRepository {
   let clientPromise: Promise<FirebaseClient> | undefined
   let callablePromise: Promise<(request: unknown) => Promise<{ readonly data: unknown }>> | undefined
   let currentUserPromise: Promise<Member> | undefined
   const groupCache = new Map<string, Group>()
   const groupRequests = new Map<string, Promise<Group | undefined>>()
   const sparkActivityRequests = new Map<string, Promise<ActivityPage>>()
-  const client = () => clientPromise ??= connect(configuration)
+  const client = () => clientPromise ??= connect(configuration, firebaseApp)
 
   async function context(): Promise<FirebaseContext> {
     const firebase = await client()
@@ -868,7 +869,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     }
     await context()
     const request = parseExecuteCommandRequest({ schemaVersion: 1, command })
-    callablePromise ??= connectExecuteCommand(configuration, functionsRegion)
+    callablePromise ??= connectExecuteCommand(configuration, functionsRegion, firebaseApp)
     const response = await (await callablePromise)(request)
     return decodeCommandResult(command, response.data)
   }
@@ -1161,13 +1162,19 @@ function activityFilterConstraints(firestore: FirestoreModule, filter: ActivityF
   return [firestore.where('kind', 'in', kinds)]
 }
 
-async function connect(configuration: FirebaseConfiguration): Promise<FirebaseClient> {
+async function connect(configuration: FirebaseConfiguration, firebaseApp?: FirebaseApp): Promise<FirebaseClient> {
+  if (firebaseApp) {
+    assertFirebaseAppMatchesConfiguration(firebaseApp, configuration)
+    const [auth, firestore] = await Promise.all([import('firebase/auth'), import('firebase/firestore')])
+    return { auth: auth.getAuth(firebaseApp), db: firestore.getFirestore(firebaseApp), firestore }
+  }
   const [app, auth, firestore] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), getSplitUnwiseFirebaseAuth(configuration), import('firebase/firestore')])
   return { auth, db: firestore.getFirestore(app), firestore }
 }
 
-async function connectExecuteCommand(configuration: FirebaseConfiguration, region: string): Promise<(request: unknown) => Promise<{ readonly data: unknown }>> {
-  const [app, functions] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/functions')])
+async function connectExecuteCommand(configuration: FirebaseConfiguration, region: string, firebaseApp?: FirebaseApp): Promise<(request: unknown) => Promise<{ readonly data: unknown }>> {
+  if (firebaseApp) assertFirebaseAppMatchesConfiguration(firebaseApp, configuration)
+  const [app, functions] = await Promise.all([firebaseApp ? Promise.resolve(firebaseApp) : getSplitUnwiseFirebaseApp(configuration), import('firebase/functions')])
   const callable = functions.httpsCallable(functions.getFunctions(app, region), 'executeCommand', { limitedUseAppCheckTokens: true })
   return (request) => callable(request)
 }

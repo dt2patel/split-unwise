@@ -165,6 +165,16 @@ describe('Task 7 Firebase repository query boundaries', () => {
     firebase.documentReads.length = 0
   })
 
+  it('rejects an explicit Firebase app from a different client context before binding the repository', async () => {
+    const app = {
+      name: 'proof-other-project', automaticDataCollectionEnabled: false,
+      options: { ...configuration, projectId: 'other-project' },
+    }
+    const repository = createFirebaseRepository(configuration, 'maya-p', undefined, app)
+
+    await expect(repository.app.getCurrentUser()).rejects.toThrow('projectId')
+  })
+
   it('memoizes the authenticated profile across feature reads', async () => {
     const repository = createFirebaseRepository(configuration)
 

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterAll, expect, it } from 'vitest'
 import { getAuth, signInWithEmailAndPassword, updateProfile } from 'firebase/auth'
-import { deleteApp } from 'firebase/app'
+import { deleteApp, initializeApp, type FirebaseApp } from 'firebase/app'
 import { collection, doc, getDoc, getDocs, getFirestore, limit, query } from 'firebase/firestore'
 import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkFriendship, createSparkGroup, createSparkInvitation, inspectSparkInvitation, synchronizeFirebaseProfile } from '../firebaseSparkMutations'
 import { getSplitUnwiseFirebaseApp, resetFirebaseBootstrapForTesting } from '../firebaseBootstrap'
@@ -17,6 +17,14 @@ const ownerEmail = `live-owner-${suffix}@example.com`
 const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
 let app: Awaited<ReturnType<typeof getSplitUnwiseFirebaseApp>> | undefined
+const isolatedApps = new Set<FirebaseApp>()
+
+async function deleteIsolatedApps(...apps: readonly FirebaseApp[]) {
+  await Promise.all(apps.map(async (isolatedApp) => {
+    await deleteApp(isolatedApp)
+    isolatedApps.delete(isolatedApp)
+  }))
+}
 
 async function restartHostedClient(configuration: FirebaseConfiguration) {
   if (app) await deleteApp(app)
@@ -26,8 +34,8 @@ async function restartHostedClient(configuration: FirebaseConfiguration) {
 }
 
 afterAll(async () => {
-  if (!app) return
-  await deleteApp(app)
+  await deleteIsolatedApps(...isolatedApps)
+  if (app) await deleteApp(app)
   resetFirebaseBootstrapForTesting()
 })
 
@@ -228,15 +236,52 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
     }),
   ])
 
-  const [firstCatchUp, secondCatchUp] = await Promise.all([
-    friendRepository.groups.materializeDue(recurringGroupId, recurringDueDate, 24),
-    friendRepository.groups.materializeDue(recurringGroupId, recurringDueDate, 24),
+  const firstMaterializerApp = initializeApp(configuration, `split-unwise-recurrence-proof-a-${suffix}`)
+  const secondMaterializerApp = initializeApp(configuration, `split-unwise-recurrence-proof-b-${suffix}`)
+  isolatedApps.add(firstMaterializerApp).add(secondMaterializerApp)
+  const firstMaterializerAuth = getAuth(firstMaterializerApp)
+  const secondMaterializerAuth = getAuth(secondMaterializerApp)
+  const [firstMaterializerCredential, secondMaterializerCredential] = await Promise.all([
+    signInWithEmailAndPassword(firstMaterializerAuth, friendEmail, password),
+    signInWithEmailAndPassword(secondMaterializerAuth, friendEmail, password),
   ])
-  for (const result of [firstCatchUp, secondCatchUp]) {
-    expect(result.moreRemain).toBe(false)
-    expect(result.occurrences.every(({ id }) => id === expectedOccurrenceId)).toBe(true)
+  expect([firstMaterializerCredential.user.uid, secondMaterializerCredential.user.uid]).toEqual([friendUid, friendUid])
+  expect(firstMaterializerApp).not.toBe(secondMaterializerApp)
+  expect(firstMaterializerAuth).not.toBe(secondMaterializerAuth)
+  const firstMaterializerRepository = createFirebaseRepository(configuration, friendUid, undefined, firstMaterializerApp)
+  const secondMaterializerRepository = createFirebaseRepository(configuration, friendUid, undefined, secondMaterializerApp)
+  expect(firstMaterializerRepository).not.toBe(secondMaterializerRepository)
+  const firstMaterializeCommand = {
+    kind: 'recurrence.materialize' as const, operationId: `live-recurring-race-a-${suffix}`,
+    groupId: recurringGroupId, templateId, occurrenceDate: recurringDueDate,
   }
-  expect([...firstCatchUp.occurrences, ...secondCatchUp.occurrences].map(({ id }) => id)).toContain(expectedOccurrenceId)
+  const secondMaterializeCommand = {
+    kind: 'recurrence.materialize' as const, operationId: `live-recurring-race-b-${suffix}`,
+    groupId: recurringGroupId, templateId, occurrenceDate: recurringDueDate,
+  }
+  expect(firstMaterializeCommand.operationId).not.toBe(secondMaterializeCommand.operationId)
+  const [firstMaterialized, secondMaterialized] = await Promise.all([
+    firstMaterializerRepository.commands.execute(firstMaterializeCommand),
+    secondMaterializerRepository.commands.execute(secondMaterializeCommand),
+  ])
+  if (firstMaterialized.kind !== 'recurrence.materialize' || firstMaterialized.status !== 'saved'
+    || secondMaterialized.kind !== 'recurrence.materialize' || secondMaterialized.status !== 'saved') {
+    throw new Error('Expected both independent clients to save recurring materialization results')
+  }
+  expect(firstMaterialized).toMatchObject({
+    kind: 'recurrence.materialize', operationId: firstMaterializeCommand.operationId, status: 'saved',
+    occurrence: { id: expectedOccurrenceId, date: recurringDueDate, recurringTemplateId: templateId, revision: 1, createdBy: { id: friendUid } },
+    template: { id: templateId, nextDate: recurringNextDate, revision: 2, lastOccurrenceId: expectedOccurrenceId, lastOccurrenceDate: recurringDueDate },
+  })
+  expect(secondMaterialized).toMatchObject({
+    kind: 'recurrence.materialize', operationId: secondMaterializeCommand.operationId, status: 'saved',
+    occurrence: { id: expectedOccurrenceId, date: recurringDueDate, recurringTemplateId: templateId, revision: 1, createdBy: { id: friendUid } },
+    template: { id: templateId, nextDate: recurringNextDate, revision: 2, lastOccurrenceId: expectedOccurrenceId, lastOccurrenceDate: recurringDueDate },
+  })
+  expect({ occurrence: firstMaterialized.occurrence, template: firstMaterialized.template }).toEqual({
+    occurrence: secondMaterialized.occurrence, template: secondMaterialized.template,
+  })
+  await deleteIsolatedApps(firstMaterializerApp, secondMaterializerApp)
   const afterConcurrentCatchUp = await friendRepository.groups.listRecurring(recurringGroupId)
   expect(afterConcurrentCatchUp).toEqual([
     expect.objectContaining({
