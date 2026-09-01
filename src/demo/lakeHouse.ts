@@ -95,6 +95,7 @@ function expenseActivity(id: string, operationId: string, expenseId: string, lab
 export const lakeHouseRecurring: readonly RecurringExpense[] = [
   {
     id: 'cabin-deposit-monthly', groupId: LAKE_HOUSE_GROUP_ID, description: 'Cabin deposit', total: { currency: 'USD', minorAmount: 40000 }, payments: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 40000 } }],
-    recurrence: { frequency: 'monthly', anchor: { month: 8, day: 28 }, timeZone: 'America/Chicago' }, nextDate: '2026-09-28', syncState: 'fresh',
+    allocations: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 20000 } }, { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 20000 } }], category: 'Lodging', splitMethod: { type: 'equal', participantIds: ['alex-r', 'maya-p'] },
+    recurrence: { frequency: 'monthly', anchor: { month: 8, day: 28 }, timeZone: 'America/Chicago' }, anchorDate: '2026-08-28', nextDate: '2026-09-28', revision: 1, createdBy: alex, status: 'active', syncState: 'fresh',
   },
 ]

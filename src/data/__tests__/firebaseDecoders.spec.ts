@@ -61,11 +61,55 @@ describe('Firebase boundary decoders', () => {
 
   it('rejects missing recurrence and unknown activity types without inventing meaning', () => {
     expect(() => decodeRecurringExpense('lake-house-weekend', 'missing-rule', {
-      description: 'Cabin', total: { currency: 'USD', minorAmount: 40000 }, payments: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 40000 } }], nextDate: '2026-09-28',
+      status: 'active', description: 'Cabin', total: { currency: 'USD', minorAmount: 40000 }, payments: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 40000 } }],
+      allocations: [{ participantId: 'alex-r', money: { currency: 'USD', minorAmount: 40000 } }], category: 'Lodging', splitMethod: { type: 'equal', participantIds: ['alex-r'] },
+      anchorDate: '2026-08-28', nextDate: '2026-09-28', revision: 1, createdBy: { id: 'alex-r', displayName: 'Alex' },
     })).toThrow('recurrence')
     expect(() => decodeActivity('lake-house-weekend', 'unknown-event', {
       actorId: 'maya-p', type: 'expense-purged', createdAt: '2026-08-30T12:00:00.000Z', summary: 'Unknown',
     })).toThrow('activity type')
+  })
+
+  it('decodes an active recurring template with the immutable expense snapshot and revision metadata', () => {
+    const decoded = decodeRecurringExpense('lake-house-weekend', 'monthly-rent', {
+      status: 'active', description: 'Rent', total: { currency: 'USD', minorAmount: 120000 },
+      payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 120000 } }],
+      allocations: [
+        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 60000 } },
+        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 60000 } },
+      ],
+      category: 'Home', splitMethod: { type: 'equal', participantIds: ['maya-p', 'alex-r'] },
+      recurrence: { frequency: 'monthly', anchor: { month: 8, day: 1 }, timeZone: 'America/Chicago' },
+      anchorDate: '2026-08-01', nextDate: '2026-09-01', revision: 3,
+      createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
+    })
+
+    expect(decoded).toMatchObject({
+      id: 'monthly-rent', groupId: 'lake-house-weekend', status: 'active', category: 'Home', anchorDate: '2026-08-01', revision: 3,
+      allocations: [
+        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 60000 } },
+        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 60000 } },
+      ],
+      splitMethod: { type: 'equal', participantIds: ['maya-p', 'alex-r'] }, createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
+    })
+  })
+
+  it('decodes a cancelled template while preserving its latest materialized occurrence metadata', () => {
+    const decoded = decodeRecurringExpense('lake-house-weekend', 'monthly-rent', {
+      status: 'cancelled', description: 'Rent', total: { currency: 'USD', minorAmount: 120000 },
+      payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 120000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 120000 } }], category: 'Home',
+      splitMethod: { type: 'equal', participantIds: ['maya-p'] },
+      recurrence: { frequency: 'monthly', anchor: { month: 8, day: 1 }, timeZone: 'America/Chicago' },
+      anchorDate: '2026-08-01', nextDate: '2026-09-01', revision: 4,
+      createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
+      lastOccurrenceId: 'occ_9c14c4db1f653d44668e2dc24c1a7902', lastOccurrenceDate: '2026-08-01',
+    })
+
+    expect(decoded).toMatchObject({
+      status: 'cancelled', revision: 4,
+      lastOccurrenceId: 'occ_9c14c4db1f653d44668e2dc24c1a7902', lastOccurrenceDate: '2026-08-01',
+    })
   })
 
   it('uses occurrence or future as the only persisted recurring-instance edit scopes', () => {

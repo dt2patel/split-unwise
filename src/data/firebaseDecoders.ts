@@ -222,12 +222,35 @@ export function decodeRecurringExpense(groupId: string, id: string, value: unkno
   const data = record(value, `recurring ${id}`)
   const total = moneyValue(data.total, `recurring ${id}.total`)
   const payments = allocationArray(data.payments, `recurring ${id}.payments`, total.currency)
+  const allocations = allocationArray(data.allocations, `recurring ${id}.allocations`, total.currency)
   assertUniqueParticipants(payments, `recurring ${id}`, 'payer')
+  assertUniqueParticipants(allocations, `recurring ${id}`, 'participant')
   if (payments.length === 0 || sumAllocations(payments) !== BigInt(total.minorAmount)) throw new DocumentDecodeError(`recurring ${id}`, 'payments must equal total')
+  if (sumAllocations(allocations) !== BigInt(total.minorAmount)) throw new DocumentDecodeError(`recurring ${id}`, 'allocations must equal total')
+  const splitMethod = splitMethodValue(data.splitMethod, `recurring ${id}.splitMethod`, total)
+  if (!sameAllocations(computeAllocations(total, splitMethod), allocations)) throw new DocumentDecodeError(`recurring ${id}`, 'allocations do not match split method')
+  const status = recurringStatus(data.status, `recurring ${id}.status`)
+  const lastOccurrenceId = optionalStrictId(data.lastOccurrenceId, `recurring ${id}.lastOccurrenceId`)
+  const lastOccurrenceDate = data.lastOccurrenceDate === undefined ? undefined : isoDate(data.lastOccurrenceDate, `recurring ${id}.lastOccurrenceDate`)
+  if ((lastOccurrenceId === undefined) !== (lastOccurrenceDate === undefined)) throw new DocumentDecodeError(`recurring ${id}`, 'last occurrence ID and date must be provided together')
   return {
-    id, groupId, description: requiredString(data.description, `recurring ${id}.description`), total, payments,
-    recurrence: recurrenceValue(data.recurrence, `recurring ${id}.recurrence`), nextDate: isoDate(data.nextDate, `recurring ${id}.nextDate`), syncState: 'fresh',
+    id, groupId, status, description: requiredString(data.description, `recurring ${id}.description`), total, payments, allocations,
+    category: requiredString(data.category, `recurring ${id}.category`), splitMethod,
+    recurrence: recurrenceValue(data.recurrence, `recurring ${id}.recurrence`), anchorDate: isoDate(data.anchorDate, `recurring ${id}.anchorDate`), nextDate: isoDate(data.nextDate, `recurring ${id}.nextDate`),
+    revision: positiveInteger(data.revision, `recurring ${id}.revision`), createdBy: actorSnapshot(data.createdBy, `recurring ${id}.createdBy`), syncState: 'fresh',
+    ...(lastOccurrenceId === undefined ? {} : { lastOccurrenceId, lastOccurrenceDate: lastOccurrenceDate! }),
   }
+}
+
+function recurringStatus(value: unknown, path: string): RecurringExpense['status'] {
+  if (value === 'active' || value === 'cancelled') return value
+  throw new DocumentDecodeError(path, 'must be active or cancelled')
+}
+
+function optionalStrictId(value: unknown, path: string): string | undefined {
+  if (value === undefined) return undefined
+  if (!isStrictId(value)) throw new DocumentDecodeError(path, 'must be a valid structured ID')
+  return value
 }
 
 function recurrenceValue(value: unknown, path: string): Recurrence {

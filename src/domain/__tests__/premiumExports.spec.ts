@@ -85,8 +85,9 @@ describe('typed premium exports', () => {
     const recurring: RecurringExpense = {
       id: 'recurring-a', groupId: group.id, description: 'Rent', total: { currency: 'USD', minorAmount: 120000 },
       payments: [{ participantId: 'maya', money: { currency: 'USD', minorAmount: 120000 } }],
-      recurrence: { frequency: 'monthly', anchor: { month: 8, day: 1 }, timeZone: 'America/Chicago' },
-      nextDate: '2026-09-01', syncState: 'fresh',
+      allocations: [{ participantId: 'maya', money: { currency: 'USD', minorAmount: 60000 } }, { participantId: 'alex', money: { currency: 'USD', minorAmount: 60000 } }], category: 'Home', splitMethod: { type: 'equal', participantIds: ['maya', 'alex'] },
+      recurrence: { frequency: 'monthly', anchor: { month: 8, day: 1 }, timeZone: 'America/Chicago' }, anchorDate: '2026-08-01',
+      nextDate: '2026-09-01', revision: 1, createdBy: { id: 'maya', displayName: 'Maya' }, status: 'active', syncState: 'fresh',
     }
     const backup = buildAccountBackup({
       exportedAt: '2026-08-31T20:00:00.000Z', groups: [group], membersByGroup: new Map([[group.id, members]]), expenses: [row], settlements: [],

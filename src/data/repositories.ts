@@ -163,11 +163,20 @@ export interface GroupCharts {
 export interface RecurringExpense {
   readonly id: string
   readonly groupId: string
+  readonly status: 'active' | 'cancelled'
   readonly description: string
   readonly total: Money
   readonly payments: readonly Allocation[]
+  readonly allocations: readonly Allocation[]
+  readonly category: string
+  readonly splitMethod: SplitMethod
   readonly recurrence: Recurrence
+  readonly anchorDate: string
   readonly nextDate: string
+  readonly revision: number
+  readonly createdBy: ActorSnapshot
+  readonly lastOccurrenceId?: string
+  readonly lastOccurrenceDate?: string
   readonly syncState: SyncState
 }
 
@@ -262,9 +271,21 @@ export interface GroupSimplifyDebtsCommand extends OperationRequest {
   readonly expectedRevision: number
   readonly simplifyDebtsEnabled: boolean
 }
+export interface RecurrenceMaterializeCommand extends OperationRequest {
+  readonly kind: 'recurrence.materialize'
+  readonly groupId: string
+  readonly templateId: string
+  readonly occurrenceDate: string
+}
+export interface RecurrenceCancelCommand extends OperationRequest {
+  readonly kind: 'recurrence.cancel'
+  readonly groupId: string
+  readonly templateId: string
+  readonly expectedRevision: number
+}
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
-export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | SettlementRecordCommand | SettlementVoidCommand
+export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
 export type CommandKind = CommandEnvelope['kind']
 
 export interface SavedExpenseAddResult { readonly kind: 'expense.add'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
@@ -278,6 +299,8 @@ export interface SavedNotificationReadAllResult { readonly kind: 'notification.r
 export interface SavedNotificationPreferencesResult { readonly kind: 'notification.preferences'; readonly operationId: string; readonly status: 'saved'; readonly preferences: NotificationPreferences }
 export interface SavedSettlementRecordResult { readonly kind: 'settlement.record'; readonly operationId: string; readonly status: 'saved'; readonly settlement: SettlementRecord; readonly balanceSnapshot: GroupBalanceSnapshot; readonly activity: ActivityItem }
 export interface SavedSettlementVoidResult { readonly kind: 'settlement.void'; readonly operationId: string; readonly status: 'saved'; readonly settlement: SettlementRecord; readonly balanceSnapshot: GroupBalanceSnapshot; readonly activity: ActivityItem }
+export interface SavedRecurrenceMaterializeResult { readonly kind: 'recurrence.materialize'; readonly operationId: string; readonly status: 'saved'; readonly template: RecurringExpense; readonly occurrence: ExpenseRow }
+export interface SavedRecurrenceCancelResult { readonly kind: 'recurrence.cancel'; readonly operationId: string; readonly status: 'saved'; readonly template: RecurringExpense }
 export interface SavedCommandResult<K extends Exclude<CommandKind, 'expense.add' | 'expense.delete' | 'expense.edit'>> { readonly kind: K; readonly operationId: string; readonly status: 'saved'; readonly resourceId: string }
 export interface NotSupportedCommandResult<K extends CommandKind = CommandKind> { readonly kind: K; readonly operationId: string; readonly status: 'not-supported'; readonly reason: string }
 
@@ -291,7 +314,9 @@ export type NotificationReadAllResult = SavedNotificationReadAllResult | NotSupp
 export type NotificationPreferencesResult = SavedNotificationPreferencesResult | NotSupportedCommandResult<'notification.preferences'>
 export type SettlementRecordResult = SavedSettlementRecordResult | NotSupportedCommandResult<'settlement.record'>
 export type SettlementVoidResult = SavedSettlementVoidResult | NotSupportedCommandResult<'settlement.void'>
-export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'group.simplify-debts' | 'profile.update'>
+export type RecurrenceMaterializeResult = SavedRecurrenceMaterializeResult | NotSupportedCommandResult<'recurrence.materialize'>
+export type RecurrenceCancelResult = SavedRecurrenceCancelResult | NotSupportedCommandResult<'recurrence.cancel'>
+export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'group.simplify-debts' | 'profile.update'>
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'

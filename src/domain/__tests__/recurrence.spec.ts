@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { nextOccurrence } from '../recurrence'
+import { nextOccurrence, recurringOccurrenceId } from '../recurrence'
 
 describe('recurrence dates', () => {
+  it('derives a bounded stable ID from a strict template ID and occurrence date', () => {
+    expect(recurringOccurrenceId('monthly-rent', '2026-09-01')).toBe('occ_4552bb042b2ea0154b7cbd89417b2d8d')
+    expect(recurringOccurrenceId('monthly-rent', '2026-09-01')).toBe(recurringOccurrenceId('monthly-rent', '2026-09-01'))
+    expect(recurringOccurrenceId('monthly-rent', '2026-09-01')).toHaveLength(36)
+  })
+
+  it('rejects occurrence identities with non-strict template IDs or invalid ISO dates', () => {
+    expect(() => recurringOccurrenceId('monthly rent', '2026-09-01')).toThrow('template ID')
+    expect(() => recurringOccurrenceId('monthly-rent', '2026-02-30')).toThrow('valid calendar date')
+    expect(() => recurringOccurrenceId('monthly-rent', '2026-9-01')).toThrow('YYYY-MM-DD')
+  })
+
   it('adds weekly and fortnightly occurrences across month and year boundaries', () => {
     expect(nextOccurrence('2026-12-28', { frequency: 'weekly', anchor: { month: 12, day: 28 }, timeZone: 'UTC' })).toBe('2027-01-04')
     expect(nextOccurrence('2026-02-20', { frequency: 'fortnightly', anchor: { month: 2, day: 20 }, timeZone: 'UTC' })).toBe('2026-03-06')

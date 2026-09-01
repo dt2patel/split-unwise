@@ -446,6 +446,9 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       case 'profile.update':
         currentUser = { ...currentUser, displayName: command.displayName, initials: command.initials ?? initials(command.displayName) }
         return saved(command, currentUser.id)
+      case 'recurrence.materialize':
+      case 'recurrence.cancel':
+        return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Recurring series mutations are not available in the demo repository yet.' }
     }
   }
 
@@ -827,7 +830,7 @@ function sameActor(left: ActorSnapshot, right: ActorSnapshot): boolean { return 
 function sameMoney(left: SettlementRecord['money'], right: SettlementRecord['money']): boolean { return left.currency === right.currency && left.minorAmount === right.minorAmount }
 function isDemoOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
 function isCommandKind(value: unknown): value is CommandEnvelope['kind'] {
-  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'settlement.record', 'settlement.void'].includes(value)
+  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
