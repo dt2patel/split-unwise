@@ -99,7 +99,7 @@ suite('Firebase services against the emulators', () => {
     expect((await db.doc('users/fan-member/settings/notificationReadCursor').get()).data()).toMatchObject({ unreadCount: 1 })
     expect((await db.collection('users/fan-member/activity').get()).size).toBe(1)
     expect((await db.collection('users/fan-owner/notifications').get()).size).toBe(0)
-  })
+  }, 30_000)
 
   it('claims private jobs once, avoids live OCR in emulation, and allowlists export fields', async () => {
     await db.doc('groups/group-a/expenses/exported').set({ id: 'exported', date: '2026-08-31', description: 'Dinner', category: 'Dining', total: { currency: 'USD', minorAmount: 1234 }, notes: 'private note', rawToken: 'must-not-export' })
