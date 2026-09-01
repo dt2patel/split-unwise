@@ -203,6 +203,69 @@ service cloud.firestore {
         && (after.headDeleted ? data.expense.deletedAt == request.time : !('deletedAt' in data.expense));
     }
 
+    function validSparkCommentStructure(groupId, commentId, data) {
+      return data.keys().hasOnly([
+          'groupId', 'expenseId', 'operationId', 'requestFingerprint', 'resourceToken',
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
+          'author', 'body', 'attachmentRefs', 'createdAt', 'deletedAt'
+        ])
+        && data.groupId == groupId && strictId(data.expenseId)
+        && data.resourceToken is string && data.resourceToken.matches('^[a-f0-9]{48}$')
+        && commentId == 'comment-' + data.resourceToken
+        && data.operationId is string && data.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.requestFingerprint is string && data.requestFingerprint.matches('^[a-f0-9]{64}$')
+        && validSparkActorShape(data.author)
+        && data.body is string && data.body.size() > 0 && data.body.size() <= 5000
+        && data.attachmentRefs == [] && data.createdAt is timestamp;
+    }
+    function validSparkCommentActivityData(groupId, commentId, activityId, activity, comment, kind) {
+      return activity.keys().hasOnly(['groupId', 'operationId', 'kind', 'subject', 'actor', 'expenseId', 'commentId', 'createdAt'])
+        && activityId == 'activity-' + comment.lastResourceToken
+        && activity.groupId == groupId && activity.operationId == comment.lastOperationId && activity.kind == kind
+        && activity.subject.keys().hasOnly(['kind', 'id', 'label'])
+        && activity.subject.kind == 'comment' && activity.subject.id == commentId && activity.subject.label == comment.body
+        && activity.actor == comment.author && activity.expenseId == comment.expenseId && activity.commentId == commentId
+        && activity.createdAt == request.time;
+    }
+    function validSparkCommentCreate(groupId, commentId, data) {
+      let expense = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(data.expenseId));
+      let activityId = 'activity-' + data.lastResourceToken;
+      let activity = getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
+      return validSparkCommentStructure(groupId, commentId, data)
+        && !('deletedAt' in data)
+        && data.lastOperationId == data.operationId
+        && data.lastRequestFingerprint == data.requestFingerprint
+        && data.lastResourceToken == data.resourceToken
+        && validSparkCurrentActor(groupId, data.author) && data.createdAt == request.time
+        && exists(/databases/$(database)/documents/groups/$(groupId)/expenses/$(data.expenseId))
+        && !sparkHeadDeleted(expense.data)
+        && validSparkCommentActivityData(groupId, commentId, activityId, activity, data, 'comment.added');
+    }
+    function validSparkCommentDelete(groupId, commentId, data) {
+      let activityId = 'activity-' + data.lastResourceToken;
+      let activity = getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
+      return !('deletedAt' in resource.data)
+        && data.diff(resource.data).affectedKeys().hasOnly(['lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'deletedAt'])
+        && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
+        && data.lastOperationId != resource.data.lastOperationId && data.lastResourceToken != resource.data.lastResourceToken
+        && data.deletedAt == request.time && validSparkCurrentActor(groupId, data.author)
+        && request.auth.uid == resource.data.author.id
+        && validSparkCommentActivityData(groupId, commentId, activityId, activity, data, 'comment.deleted');
+    }
+    function validSparkCommentActivityCreate(groupId, activityId, data) {
+      let comment = getAfter(/databases/$(database)/documents/groups/$(groupId)/comments/$(data.commentId)).data;
+      return validSparkCurrentActor(groupId, data.actor)
+        && data.createdAt == request.time
+        && data.operationId == comment.lastOperationId
+        && (
+          (data.kind == 'comment.added' && !('deletedAt' in comment) && comment.createdAt == request.time && comment.operationId == data.operationId)
+          || (data.kind == 'comment.deleted' && comment.deletedAt == request.time)
+        )
+        && validSparkCommentActivityData(groupId, data.commentId, activityId, data, comment, data.kind);
+    }
+
     function validNewGroup(groupId, data) {
       return signedIn() && strictId(groupId)
         && data.keys().hasOnly(['id', 'name', 'currency', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
@@ -360,11 +423,17 @@ service cloud.firestore {
           allow update, delete: if false;
         }
       }
-      match /comments/{commentId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
+      match /comments/{commentId} {
+        allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
+        allow create: if validSparkCommentCreate(groupId, commentId, request.resource.data);
+        allow update: if validSparkCommentDelete(groupId, commentId, request.resource.data);
+        allow delete: if false;
+      }
       match /settlements/{settlementId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
       match /activity/{activityId} {
         allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
-        allow write: if false;
+        allow create: if validSparkCommentActivityCreate(groupId, activityId, request.resource.data);
+        allow update, delete: if false;
       }
       match /balance/{snapshotId} {
         allow get: if activeMember(groupId); allow list, update, delete: if false;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -164,6 +164,52 @@ describe('Firebase Spark mutations', () => {
     expect(() => buildMutation(friendCommand, current, current, { actor: { id: 'friend', displayName: 'Friend Account' }, canManage: false }, { userId: 'friend', operationId: friendCommand.operationId, kind: friendCommand.kind, groupId: 'group-a', requestFingerprint: '5'.repeat(64), resourceId: `operation-${'6'.repeat(48)}` }, 'deleted')).toThrow(/author|manager/i)
     expect(() => buildMutation({ ...friendCommand, operationId: 'manager-delete' }, current, current, { actor: { id: 'manager', displayName: 'Manager Account' }, canManage: true }, { userId: 'manager', operationId: 'manager-delete', kind: friendCommand.kind, groupId: 'group-a', requestFingerprint: '7'.repeat(64), resourceId: `operation-${'8'.repeat(48)}` }, 'deleted')).not.toThrow()
   })
+
+  it('builds replay-bound Spark comments and companion activity records', () => {
+    const command: CommentAddCommand = {
+      kind: 'comment.add', operationId: 'comment-add', groupId: 'group-a', expenseId: 'expense-a', body: '  Dessert was worth it.  ', attachmentRefs: [],
+    }
+    const actor = { id: 'friend', displayName: 'Friend Account' }
+    const identity: OperationIdentity = { userId: 'friend', operationId: command.operationId, kind: command.kind, groupId: command.groupId, requestFingerprint: 'a'.repeat(64), resourceId: `operation-${'b'.repeat(48)}` }
+    const createdAt = { kind: 'comment-created' }
+    const buildComment = (sparkMutations as unknown as { buildSparkCommentRecord: SparkCommentBuilder }).buildSparkCommentRecord
+
+    const record = buildComment(command, actor, identity, createdAt)
+
+    expect(record.commentId).toBe(`comment-${'b'.repeat(48)}`)
+    expect(record.activityId).toBe(`activity-${'b'.repeat(48)}`)
+    expect(record.commentDocument).toEqual({
+      groupId: 'group-a', expenseId: 'expense-a', operationId: 'comment-add', requestFingerprint: 'a'.repeat(64), resourceToken: 'b'.repeat(48),
+      lastOperationId: 'comment-add', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: 'b'.repeat(48),
+      author: actor, body: 'Dessert was worth it.', attachmentRefs: [], createdAt,
+    })
+    expect(record.activityDocument).toEqual({
+      groupId: 'group-a', operationId: 'comment-add', kind: 'comment.added', subject: { kind: 'comment', id: record.commentId, label: 'Dessert was worth it.' },
+      actor, expenseId: 'expense-a', commentId: record.commentId, createdAt,
+    })
+    expect(() => buildComment({ ...command, operationId: 'with-file', attachmentRefs: ['asset-a'] }, actor, { ...identity, operationId: 'with-file' }, createdAt)).toThrow(/attachment/i)
+  })
+
+  it('builds author-only replay-bound Spark comment soft deletes', () => {
+    const add: CommentAddCommand = { kind: 'comment.add', operationId: 'comment-add', groupId: 'group-a', expenseId: 'expense-a', body: 'Delete this', attachmentRefs: [] }
+    const author = { id: 'friend', displayName: 'Friend Account' }
+    const addIdentity: OperationIdentity = { userId: 'friend', operationId: add.operationId, kind: add.kind, groupId: add.groupId, requestFingerprint: 'c'.repeat(64), resourceId: `operation-${'d'.repeat(48)}` }
+    const buildComment = (sparkMutations as unknown as { buildSparkCommentRecord: SparkCommentBuilder }).buildSparkCommentRecord
+    const current = buildComment(add, author, addIdentity, { kind: 'created' }).commentDocument
+    const command: CommentDeleteCommand = { kind: 'comment.delete', operationId: 'comment-delete', groupId: 'group-a', expenseId: 'expense-a', commentId: `comment-${'d'.repeat(48)}` }
+    const identity: OperationIdentity = { userId: 'friend', operationId: command.operationId, kind: command.kind, groupId: command.groupId, requestFingerprint: 'e'.repeat(64), resourceId: `operation-${'f'.repeat(48)}` }
+    const deletedAt = { kind: 'comment-deleted' }
+    const buildDelete = (sparkMutations as unknown as { buildSparkCommentDeleteRecord: SparkCommentDeleteBuilder }).buildSparkCommentDeleteRecord
+
+    const removed = buildDelete(command, current, author, identity, deletedAt)
+
+    expect(removed.commentDocument).toEqual({
+      ...current, lastOperationId: 'comment-delete', lastRequestFingerprint: 'e'.repeat(64), lastResourceToken: 'f'.repeat(48), deletedAt,
+    })
+    expect(removed.activityId).toBe(`activity-${'f'.repeat(48)}`)
+    expect(removed.activityDocument).toMatchObject({ operationId: 'comment-delete', kind: 'comment.deleted', actor: author, expenseId: 'expense-a', commentId: command.commentId, createdAt: deletedAt })
+    expect(() => buildDelete(command, current, { id: 'owner', displayName: 'Owner Account' }, { ...identity, userId: 'owner' }, deletedAt)).toThrow(/author/i)
+  })
 })
 
 type SparkMutationBuilder = (
@@ -178,3 +224,25 @@ type SparkMutationBuilder = (
   readonly revisionId: string
   readonly revisionDocument: Readonly<Record<string, unknown>> & { readonly expense: Readonly<Record<string, unknown>> }
 }
+
+type SparkCommentBuilder = (
+  command: CommentAddCommand,
+  actor: ActorSnapshot,
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => {
+  readonly commentId: string
+  readonly commentDocument: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+type SparkCommentRecord = ReturnType<SparkCommentBuilder>
+
+type SparkCommentDeleteBuilder = (
+  command: CommentDeleteCommand,
+  current: Readonly<Record<string, unknown>>,
+  actor: ActorSnapshot,
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => SparkCommentRecord

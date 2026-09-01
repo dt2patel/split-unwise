@@ -6,7 +6,7 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand } from './repositories'
 import type { OperationIdentity } from './operationIdentity'
 import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
 
@@ -39,6 +39,13 @@ export interface SparkExpenseMutationRecord {
   readonly headDocument: Readonly<Record<string, unknown>>
   readonly revisionId: string
   readonly revisionDocument: Readonly<Record<string, unknown>> & { readonly expense: Readonly<Record<string, unknown>> }
+}
+
+export interface SparkCommentRecord {
+  readonly commentId: string
+  readonly commentDocument: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
 }
 
 /** Builds the single immutable source document authorized by the Spark rules path. */
@@ -111,6 +118,64 @@ export function buildSparkExpenseMutationRecord(
       action: parsed.kind === 'expense.delete' ? 'deleted' : 'updated', actor, createdAt: committedAt, expense,
     },
   }
+}
+
+/** Builds one immutable comment and its equally immutable group activity event. */
+export function buildSparkCommentRecord(command: CommentAddCommand, actor: ActorSnapshot, identity: OperationIdentity, committedAt: unknown): SparkCommentRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'comment.add') throw new Error('Spark comment command is invalid.')
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  if (parsed.attachmentRefs.length) throw new Error('Spark comment attachments require the secure cloud asset service.')
+  const normalizedAuthor = normalizedActor(actor)
+  const body = parsed.body.trim()
+  const commentId = `comment-${token}`
+  const activityId = `activity-${token}`
+  return {
+    commentId,
+    commentDocument: {
+      groupId: parsed.groupId, expenseId: parsed.expenseId, operationId: parsed.operationId,
+      requestFingerprint: identity.requestFingerprint, resourceToken: token,
+      lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+      author: normalizedAuthor, body, attachmentRefs: [], createdAt: committedAt,
+    },
+    activityId,
+    activityDocument: sparkCommentActivity(parsed.groupId, parsed.operationId, 'comment.added', normalizedAuthor, parsed.expenseId, commentId, body, committedAt),
+  }
+}
+
+/** Builds the sole author-owned comment transition: an immutable-body soft delete plus activity. */
+export function buildSparkCommentDeleteRecord(command: CommentDeleteCommand, current: Readonly<Record<string, unknown>>, actor: ActorSnapshot, identity: OperationIdentity, committedAt: unknown): SparkCommentRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'comment.delete') throw new Error('Spark comment delete command is invalid.')
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  if (current.deletedAt !== undefined) throw new Error('Comment is already deleted.')
+  if (current.groupId !== parsed.groupId || current.expenseId !== parsed.expenseId) throw new Error('Spark comment document identity is invalid.')
+  const creationToken = strictHex(current.resourceToken, 48, 'comment resource token')
+  if (parsed.commentId !== `comment-${creationToken}`) throw new Error('Spark comment document identity is invalid.')
+  strictInternalString(current.operationId, 'comment operation ID')
+  strictHex(current.requestFingerprint, 64, 'comment request fingerprint')
+  const author = actorFromRecord(current.author, 'comment author')
+  const normalizedCurrentActor = normalizedActor(actor)
+  if (author.id !== normalizedCurrentActor.id) throw new Error('Only the comment author may delete it.')
+  const body = strictInternalString(current.body, 'comment body')
+  if (!Array.isArray(current.attachmentRefs) || current.attachmentRefs.length) throw new Error('Spark comment attachments require the secure cloud asset service.')
+  const activityId = `activity-${token}`
+  return {
+    commentId: parsed.commentId,
+    commentDocument: {
+      ...current,
+      lastOperationId: parsed.operationId,
+      lastRequestFingerprint: identity.requestFingerprint,
+      lastResourceToken: token,
+      deletedAt: committedAt,
+    },
+    activityId,
+    activityDocument: sparkCommentActivity(parsed.groupId, parsed.operationId, 'comment.deleted', normalizedCurrentActor, parsed.expenseId, parsed.commentId, body, committedAt),
+  }
+}
+
+function sparkCommentActivity(groupId: string, operationId: string, kind: 'comment.added' | 'comment.deleted', actor: ActorSnapshot, expenseId: string, commentId: string, label: string, createdAt: unknown): Readonly<Record<string, unknown>> {
+  return { groupId, operationId, kind, subject: { kind: 'comment', id: commentId, label }, actor, expenseId, commentId, createdAt }
 }
 
 function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string): Readonly<Record<string, unknown>> {

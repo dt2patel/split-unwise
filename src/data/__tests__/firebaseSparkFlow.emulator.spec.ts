@@ -150,6 +150,44 @@ describe('Firebase Spark two-account flow', () => {
       { revision: 2, action: 'updated', expense: { description: 'Shared dinner and dessert' } },
     ])
 
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const commentCommand = {
+      kind: 'comment.add' as const, operationId: `comment-${suffix}`, groupId: created.groupId, expenseId: first.expense.id,
+      body: 'Dessert was a good call.', attachmentRefs: [],
+    }
+    const addedComment = await friendRepository.comments.add(commentCommand)
+    const commentReplay = await friendRepository.comments.add(commentCommand)
+    expect(addedComment).toMatchObject({ status: 'saved', comment: { body: 'Dessert was a good call.' }, activity: { kind: 'comment.added' } })
+    expect(commentReplay).toEqual(addedComment)
+    if (addedComment.status !== 'saved') throw new Error('Expected Spark comment creation to save')
+    await expect(friendRepository.comments.listForExpense(created.groupId, first.expense.id)).resolves.toEqual([
+      expect.objectContaining({ commentId: addedComment.comment.commentId, body: 'Dessert was a good call.' }),
+    ])
+    await expect(friendRepository.activity.listForGroup(created.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ operationId: commentCommand.operationId, kind: 'comment.added', commentId: addedComment.comment.commentId }),
+    ]))
+
+    const commentDelete = {
+      kind: 'comment.delete' as const, operationId: `comment-delete-${suffix}`, groupId: created.groupId,
+      expenseId: first.expense.id, commentId: addedComment.comment.commentId,
+    }
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    await expect(ownerRepository.comments.delete({ ...commentDelete, operationId: `owner-comment-delete-${suffix}` })).rejects.toThrow(/author/i)
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const deletedComment = await friendRepository.comments.delete(commentDelete)
+    const deleteCommentReplay = await friendRepository.comments.delete(commentDelete)
+    expect(deletedComment).toMatchObject({ status: 'saved', comment: { commentId: addedComment.comment.commentId, deletedAt: expect.any(String) }, activity: { kind: 'comment.deleted' } })
+    expect(deleteCommentReplay).toEqual(deletedComment)
+    await expect(friendRepository.comments.listForExpense(created.groupId, first.expense.id)).resolves.toEqual([
+      expect.objectContaining({ commentId: addedComment.comment.commentId, deletedAt: expect.any(String) }),
+    ])
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+
     const deleteCommand = { kind: 'expense.delete' as const, operationId: `delete-${suffix}`, groupId: created.groupId, expenseId: first.expense.id, expectedRevision: 2 }
     const removed = await ownerRepository.expenses.delete(deleteCommand)
     const deleteReplay = await ownerRepository.expenses.delete(deleteCommand)

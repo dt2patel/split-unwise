@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs'
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
-import { collection, collectionGroup, deleteDoc, doc, getDoc, getDocs, limit, query, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch, type Firestore } from 'firebase/firestore'
+import { collection, collectionGroup, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch, type Firestore } from 'firebase/firestore'
 import { deleteObject, getBytes, ref, uploadBytes } from 'firebase/storage'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
@@ -171,6 +171,42 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(setDoc(doc(active, 'groups/group-a/activity/activity-ffffffffffffffffffffffffffffffffffffffffffffffff'), { kind: 'expense.created' }))
     await assertFails(setDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/forged-revision`), { action: 'updated' }))
   })
+
+  emulatorIt('requires active-expense-coupled comments, author-only soft delete, and exact immutable activity', async () => {
+    const active = environment.authenticatedContext('active').firestore()
+    const friend = environment.authenticatedContext('friend').firestore()
+    const outsider = environment.authenticatedContext('outsider').firestore()
+    const expense = sparkExpense('9')
+    await assertSucceeds(setDoc(doc(active, `groups/group-a/expenses/${expense.id}`), expense))
+    const addToken = '2'.repeat(48)
+    const commentId = `comment-${addToken}`
+    const comment = sparkComment(addToken, expense.id as string, { id: 'friend', displayName: 'Friend' })
+    const addedActivity = sparkCommentActivity(addToken, comment, 'comment.added')
+
+    await assertFails(setDoc(doc(friend, `groups/group-a/comments/${commentId}`), comment))
+    await assertFails(commitSparkComment(outsider, commentId, addToken, comment, addedActivity))
+    await assertSucceeds(commitSparkComment(friend, commentId, addToken, comment, addedActivity))
+    await assertSucceeds(getDocs(query(collection(friend, 'groups/group-a/comments'), where('expenseId', '==', expense.id), orderBy('createdAt', 'asc'), limit(100))))
+    await assertFails(updateDoc(doc(active, `groups/group-a/comments/${commentId}`), { body: 'Manager forged body edit' }))
+
+    const deleteToken = '3'.repeat(48)
+    const deleted = {
+      ...((await getDoc(doc(friend, `groups/group-a/comments/${commentId}`))).data()!),
+      lastOperationId: 'comment-delete-3', lastRequestFingerprint: '3'.repeat(64), lastResourceToken: deleteToken, deletedAt: serverTimestamp(),
+    }
+    const deletedActivity = sparkCommentActivity(deleteToken, deleted, 'comment.deleted')
+    await assertFails(commitSparkComment(active, commentId, deleteToken, deleted, deletedActivity))
+    await assertSucceeds(commitSparkComment(friend, commentId, deleteToken, deleted, deletedActivity))
+    await assertFails(deleteDoc(doc(friend, `groups/group-a/comments/${commentId}`)))
+    await assertFails(setDoc(doc(friend, `groups/group-a/activity/activity-${'4'.repeat(48)}`), { kind: 'comment.added' }))
+
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), `groups/group-a/expenses/${expense.id}`), { headDeleted: true })
+    })
+    const closedToken = '4'.repeat(48)
+    const closedComment = sparkComment(closedToken, expense.id as string, { id: 'friend', displayName: 'Friend' })
+    await assertFails(commitSparkComment(friend, `comment-${closedToken}`, closedToken, closedComment, sparkCommentActivity(closedToken, closedComment, 'comment.added')))
+  })
 })
 
 function profile(displayName: string, initials: string): Record<string, unknown> {
@@ -241,6 +277,32 @@ function commitSparkExpenseMutation(source: unknown, expenseId: string, revision
   const batch = writeBatch(db)
   batch.set(doc(db, `groups/group-a/expenses/${expenseId}`), head)
   batch.set(doc(db, `groups/group-a/expenses/${expenseId}/revisions/${revisionId}`), revision)
+  return batch.commit()
+}
+
+function sparkComment(token: string, expenseId: string, author: Record<string, unknown>): Record<string, unknown> {
+  return {
+    groupId: 'group-a', expenseId, operationId: `comment-add-${token[0]}`, requestFingerprint: token[0]!.repeat(64), resourceToken: token,
+    lastOperationId: `comment-add-${token[0]}`, lastRequestFingerprint: token[0]!.repeat(64), lastResourceToken: token,
+    author, body: 'Shared comment', attachmentRefs: [], createdAt: serverTimestamp(),
+  }
+}
+
+function sparkCommentActivity(token: string, comment: Record<string, unknown>, kind: 'comment.added' | 'comment.deleted'): Record<string, unknown> {
+  const operationId = kind === 'comment.added' ? comment.operationId : comment.lastOperationId
+  return {
+    groupId: 'group-a', operationId, kind,
+    subject: { kind: 'comment', id: `comment-${comment.resourceToken}`, label: comment.body },
+    actor: comment.author, expenseId: comment.expenseId, commentId: `comment-${comment.resourceToken}`, createdAt: serverTimestamp(),
+    ...(kind === 'comment.deleted' ? { commentId: `comment-${'2'.repeat(48)}`, subject: { kind: 'comment', id: `comment-${'2'.repeat(48)}`, label: comment.body } } : {}),
+  }
+}
+
+function commitSparkComment(source: unknown, commentId: string, activityToken: string, comment: Record<string, unknown>, activity: Record<string, unknown>): Promise<void> {
+  const db = source as Firestore
+  const batch = writeBatch(db)
+  batch.set(doc(db, `groups/group-a/comments/${commentId}`), comment)
+  batch.set(doc(db, `groups/group-a/activity/activity-${activityToken}`), activity)
   return batch.commit()
 }
 

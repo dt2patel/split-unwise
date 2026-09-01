@@ -3,10 +3,10 @@ import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebas
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Member, NotificationItem, SettlementRecord, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Member, NotificationItem, SettlementRecord, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkExpenseMutationRecord, buildSparkExpenseRecord } from './firebaseSparkMutations'
+import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
@@ -150,10 +150,77 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     }
   }
 
+  async function executeSparkCommentAdd(command: CommentAddCommand): Promise<CommentAddResult> {
+    const { db, firestore, userId } = await context()
+    const identity = await createOperationIdentity(userId, command)
+    const memberReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
+    const expenseReference = firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId)
+    const token = identity.resourceId.slice('operation-'.length)
+    const commentId = `comment-${token}`
+    const commentReference = firestore.doc(db, 'groups', command.groupId, 'comments', commentId)
+    const activityReference = firestore.doc(db, 'groups', command.groupId, 'activity', `activity-${token}`)
+    await firestore.runTransaction(db, async (transaction) => {
+      const [member, expense, existing] = await Promise.all([
+        transaction.get(memberReference), transaction.get(expenseReference), transaction.get(commentReference),
+      ])
+      const memberData = member.data()
+      if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active' || typeof memberData.displayName !== 'string') throw new Error('Only active group members can add a comment')
+      if (existing.exists()) {
+        const data = existing.data()
+        const author = isRecord(data.author) ? data.author : undefined
+        if (data.operationId !== identity.operationId || data.requestFingerprint !== identity.requestFingerprint || data.resourceToken !== token || author?.id !== userId || data.deletedAt !== undefined) throw new OperationReplayConflictError()
+        return
+      }
+      if (!expense.exists() || expense.data().headDeleted === true) throw new Error('Cannot comment on a deleted expense')
+      const record = buildSparkCommentRecord(command, { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp())
+      transaction.set(commentReference, record.commentDocument)
+      transaction.set(activityReference, record.activityDocument)
+    })
+    const [savedComment, savedActivity] = await Promise.all([firestore.getDoc(commentReference), firestore.getDoc(activityReference)])
+    if (!savedComment.exists() || !savedActivity.exists()) throw new Error('Saved comment is unavailable')
+    return {
+      kind: 'comment.add', operationId: command.operationId, status: 'saved',
+      comment: decodeComment(command.groupId, command.expenseId, commentId, savedComment.data()),
+      activity: decodeActivity(command.groupId, activityReference.id, savedActivity.data()),
+    }
+  }
+
+  async function executeSparkCommentDelete(command: CommentDeleteCommand): Promise<CommentDeleteResult> {
+    const { db, firestore, userId } = await context()
+    const identity = await createOperationIdentity(userId, command)
+    const memberReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
+    const commentReference = firestore.doc(db, 'groups', command.groupId, 'comments', command.commentId)
+    const token = identity.resourceId.slice('operation-'.length)
+    const activityReference = firestore.doc(db, 'groups', command.groupId, 'activity', `activity-${token}`)
+    await firestore.runTransaction(db, async (transaction) => {
+      const [member, current] = await Promise.all([transaction.get(memberReference), transaction.get(commentReference)])
+      const memberData = member.data()
+      if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active' || typeof memberData.displayName !== 'string') throw new Error('Only active group members can delete a comment')
+      if (!current.exists()) throw new Error('Comment is not available')
+      const data = current.data()
+      if (data.lastOperationId === identity.operationId) {
+        if (data.lastRequestFingerprint !== identity.requestFingerprint || data.lastResourceToken !== token) throw new OperationReplayConflictError()
+        return
+      }
+      const record = buildSparkCommentDeleteRecord(command, data, { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp())
+      transaction.set(commentReference, record.commentDocument)
+      transaction.set(activityReference, record.activityDocument)
+    })
+    const [savedComment, savedActivity] = await Promise.all([firestore.getDoc(commentReference), firestore.getDoc(activityReference)])
+    if (!savedComment.exists() || !savedActivity.exists()) throw new Error('Saved comment deletion is unavailable')
+    return {
+      kind: 'comment.delete', operationId: command.operationId, status: 'saved',
+      comment: decodeComment(command.groupId, command.expenseId, command.commentId, savedComment.data()),
+      activity: decodeActivity(command.groupId, activityReference.id, savedActivity.data()),
+    }
+  }
+
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
     if (!functionsRegion) {
       if (command.kind === 'expense.add') return executeSparkExpenseAdd(command)
       if (command.kind === 'expense.edit' || command.kind === 'expense.delete') return executeSparkExpenseMutation(command)
+      if (command.kind === 'comment.add') return executeSparkCommentAdd(command)
+      if (command.kind === 'comment.delete') return executeSparkCommentDelete(command)
       return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Secure cloud writes are unavailable because Firebase Functions is not configured.' } as CommandResult
     }
     await context()
