@@ -1,6 +1,6 @@
 # Split Unwise release verification
 
-Verified P1 shared-ledger release source: `968fa0c2ee7bb367de8518e5b4e2a4445ef34c14`
+Verified P1 editable-ledger release source: `212fb1751a0ad38ae5e5f96dbbb6931c8bf03351`
 
 Date: 2026-08-31 (America/Chicago)
 
@@ -8,10 +8,10 @@ Date: 2026-08-31 (America/Chicago)
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Unit and component suite | Pass | `pnpm test`: 76 files passed, 6 skipped; 694 tests passed, 32 skipped |
+| Unit and component suite | Pass | `pnpm test`: 76 files passed, 6 skipped; 696 tests passed, 32 skipped |
 | Type safety | Pass | `pnpm typecheck` |
-| Firestore rules | Pass | `pnpm test:firebase`: 10 emulator-backed rules tests, including valid immutable create and denied outsider, mismatch, removed-member, overwrite, revision, and activity writes |
-| Auth/group/invite/expense flow | Pass | Two emulator flows plus live production proof with two temporary Firebase Auth accounts, one replay-stable expense, and the same derived balance for both members |
+| Firestore rules | Pass | `pnpm test:firebase`: 10 emulator-backed rules tests, including immutable create, authorized atomic head/version edit/delete, and denied outsider, non-author, standalone version, post-delete edit, and physical delete writes |
+| Auth/group/invite/expense flow | Pass | Two emulator flows plus live production proof with two temporary Firebase Auth accounts, replay-stable add/edit/delete, three immutable revisions, and the same derived balance for both members |
 | Functions and service behavior | Pass | `pnpm test:firebase`: 16 emulator-backed tests |
 | Production web bundle | Pass | `pnpm build`: 508 modules transformed; Workbox generated 104 precache entries |
 | Artifact policy | Pass | 106 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
@@ -79,8 +79,9 @@ The prior P1 native build was installed on the iPhone simulator, launched as bun
 - Firebase Authentication was initialized remotely and verified as Identity Platform subtype with Email/Password enabled, passwords required, Google enabled, and both production domains authorized.
 - A live production SDK run created an owner and a friend as temporary Auth accounts in separate Firebase app sessions. The owner bootstrapped a profile, created a complete group bundle, and generated a fragment-only invitation capability. The friend bootstrapped a profile, inspected the invitation, accepted it atomically, and read the two-member group. A fresh owner session then read the same persisted group.
 - A second live production SDK run created two fresh temporary Auth accounts. The owner added a $24.00 immutable expense split equally with the friend, retried the identical operation, and observed one saved expense. Both accounts independently read the same $12.00 friend-to-owner pairwise and simplified debt derived from the immutable ledger; no writable balance projection was involved.
+- A third live production SDK run exercised the deployed `212fb1751a0ad38ae5e5f96dbbb6931c8bf03351` rules and client. The friend could read but not edit the owner's expense. The owner changed the total from $24.00 to $30.00, replayed the same edit without another revision, and both accounts independently read revision 2 and the same $15.00 debt. Delete/replay produced revision 3, removed the item from the live journal, reduced both balance plans to empty, and retained created/updated/deleted immutable history.
 - The raw 256-bit invitation token stays in the URL fragment and is stripped immediately. Only its SHA-256-derived document ID is stored; the share URL uses the fixed `/invite/join` path so the capability is not placed in request logs.
-- All temporary Auth accounts, profiles, group trees, projections, invitation documents, and the temporary expense were deleted after verification. Auth export found zero matching test users, and fully qualified Firebase MCP reads returned not found for every exact live-flow root.
+- All temporary Auth accounts, profiles, group trees, projections, invitation documents, expense roots, and immutable versions were deleted after verification. Follow-up Firebase MCP queries returned zero matching Auth users, proof groups, and invitations.
 
 ## Accessibility and interaction evidence
 
@@ -94,4 +95,4 @@ The prior P1 native build was installed on the iPhone simulator, launched as bun
 
 The iPad split-pane/master-detail contract is component-tested, but the iPad screenshot proves the home shell only; no tap automation was authorized for this pass. VoiceOver traversal, Full Keyboard Access, Switch Control, physical-device haptics/camera, landscape tablet master/detail, keyboard-driven sheets, and same-viewport reference-image comparison still require an interactive device session. They are not claimed as passed.
 
-Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase sign-in, profile persistence, group creation, invitation acceptance, two-user visibility, sign-out/in persistence, immutable expense add/replay, and shared derived balances are production-proven. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so expense edit/delete, settlement, receipt attachment/OCR, recurrence materialization, and server activity projection remain unavailable in production. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved because browser interaction was not authorized for this pass.
+Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase sign-in, profile persistence, group creation, invitation acceptance, two-user visibility, sign-out/in persistence, expense add/edit/delete replay, immutable revision history, and shared derived balances are production-proven. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so settlement, receipt attachment/OCR, recurrence materialization, and server activity projection remain unavailable in production. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved because browser interaction was not authorized for this pass.
