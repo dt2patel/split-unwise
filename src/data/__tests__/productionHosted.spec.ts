@@ -146,4 +146,30 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
     expect.objectContaining({ kind: 'expense.created', operationId: expenseCommand.operationId, expenseId: added.expense.id, revision: 1 }),
     expect.objectContaining({ kind: 'expense.updated', operationId: editCommand.operationId, expenseId: added.expense.id, revision: 2 }),
   ]))
+  const beforeSettlement = await friendRepository.groups.getBalanceSnapshot(group.groupId)
+  const debt = beforeSettlement.simplified[0]
+  expect(debt).toEqual({ fromParticipantId: ownerUid, toParticipantId: friendUid, money: { currency: 'USD', minorAmount: 1500 } })
+  const settlementCommand = {
+    kind: 'settlement.record' as const, operationId: `live-settlement-${suffix}`, groupId: group.groupId,
+    expectedBalanceRevision: beforeSettlement.balanceRevision,
+    basis: { kind: 'simplified' as const, senderId: ownerUid, recipientId: friendUid, currency: 'USD' as const, debtMinor: 1500 },
+    money: { currency: 'USD' as const, minorAmount: 500 }, method: 'cash' as const, occurredOn: '2026-09-01',
+    note: 'Hosted payment proof', outsidePaymentConfirmed: true as const,
+  }
+  const settlement = await friendRepository.settlements.record(settlementCommand)
+  await expect(friendRepository.settlements.record(settlementCommand)).resolves.toEqual(settlement)
+  if (settlement.status !== 'saved') throw new Error('Expected hosted settlement creation to save')
+  expect(settlement).toMatchObject({ settlement: { revision: 1 }, balanceSnapshot: { balanceRevision: 3 }, activity: { kind: 'settlement.created' } })
+  const voidCommand = {
+    kind: 'settlement.void' as const, operationId: `live-settlement-void-${suffix}`, groupId: group.groupId,
+    settlementId: settlement.settlement.settlementId, expectedRevision: 1,
+    expectedBalanceRevision: settlement.balanceSnapshot.balanceRevision, reason: 'Hosted void proof.',
+  }
+  const voided = await friendRepository.settlements.void(voidCommand)
+  await expect(friendRepository.settlements.void(voidCommand)).resolves.toEqual(voided)
+  expect(voided).toMatchObject({ settlement: { revision: 2, void: { reason: voidCommand.reason } }, balanceSnapshot: { balanceRevision: 4 }, activity: { kind: 'settlement.voided' } })
+  await expect(friendRepository.activity.listForGroup(group.groupId)).resolves.toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'settlement.created', operationId: settlementCommand.operationId, settlementId: settlement.settlement.settlementId }),
+    expect.objectContaining({ kind: 'settlement.voided', operationId: voidCommand.operationId, settlementId: settlement.settlement.settlementId }),
+  ]))
 }, 60_000)

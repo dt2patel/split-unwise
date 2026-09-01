@@ -1,16 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { CommandConflictError, CommandQueue, COMMAND_QUEUE_STORAGE_VERSION, createBrowserCommandStorage, createMemoryCommandStorage } from '../commandQueue'
 import { createDemoRepository } from '../demoRepository'
-import { createFirebaseRepository } from '../firebaseRepository'
 import type { CommandEnvelope, SettlementRecordCommand } from '../repositories'
 import { appPrincipalKey, createAppSession } from '../session'
 
 const principal = { mode: 'demo' as const, projectId: 'split-unwise-demo', uid: 'maya-p' }
 const principalKey = appPrincipalKey(principal)
-const firebaseConfiguration = {
-  apiKey: 'key', authDomain: 'auth.example', projectId: 'split-unwise-test', storageBucket: 'bucket', messagingSenderId: 'sender', appId: 'app',
-}
-
 describe('Task 8 strict command protocol', () => {
   it('moves to schema v6 and quarantines the complete v5 financial protocol', async () => {
     const legacy = { version: 5, principalKey, operations: [] }
@@ -384,20 +379,6 @@ describe('Task 8 strict command protocol', () => {
       kind: 'settlement.void', operationId: 'session-void', groupId: 'lake-house-weekend', settlementId: recorded.settlement.settlementId,
       expectedRevision: recorded.settlement.revision, expectedBalanceRevision: recorded.balanceSnapshot.balanceRevision, reason: 'Wrong entry',
     }).result()).resolves.toMatchObject({ kind: 'settlement.void', status: 'saved' })
-  })
-
-  it('keeps Firebase settlement mutations explicitly unavailable when Functions is not configured', async () => {
-    const repository = createFirebaseRepository(firebaseConfiguration, 'maya-p')
-    const record = recordCommand('firebase-record', 5, 500)
-
-    await expect(repository.settlements.record(record)).resolves.toEqual({
-      kind: 'settlement.record', operationId: record.operationId, status: 'not-supported',
-      reason: 'Secure cloud writes are unavailable because Firebase Functions is not configured.',
-    })
-    await expect(repository.settlements.void({
-      kind: 'settlement.void', operationId: 'firebase-void', groupId: 'lake-house-weekend', settlementId: 'settlement-a',
-      expectedRevision: 1, expectedBalanceRevision: 5, reason: 'Wrong entry',
-    })).resolves.toMatchObject({ kind: 'settlement.void', operationId: 'firebase-void', status: 'not-supported' })
   })
 })
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationPreferencesCommand, ProfileUpdateCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationPreferencesCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -229,6 +229,78 @@ describe('Firebase Spark mutations', () => {
     expect(() => buildDelete(command, current, { id: 'owner', displayName: 'Owner Account' }, { ...identity, userId: 'owner' }, deletedAt)).toThrow(/author/i)
   })
 
+  it('builds a replay-bound confirmed settlement and immutable payment activity', () => {
+    const command: SettlementRecordCommand = {
+      kind: 'settlement.record', operationId: 'settlement-record', groupId: 'group-a', expectedBalanceRevision: 4,
+      basis: { kind: 'simplified', senderId: 'friend', recipientId: 'owner', currency: 'USD', debtMinor: 2400 },
+      money: { currency: 'USD', minorAmount: 1800 }, method: 'bank-transfer', occurredOn: '2026-09-01',
+      note: '  September rent  ', outsidePaymentConfirmed: true,
+    }
+    const actor = { id: 'friend', displayName: 'Friend Account' }
+    const identity: OperationIdentity = {
+      userId: actor.id, operationId: command.operationId, kind: command.kind, groupId: command.groupId,
+      requestFingerprint: '1'.repeat(64), resourceId: `operation-${'2'.repeat(48)}`,
+    }
+    const committedAt = { kind: 'settlement-created', toDate: () => new Date('2026-09-01T18:00:00.000Z') }
+    const buildSettlement = (sparkMutations as unknown as { buildSparkSettlementRecord: SparkSettlementBuilder }).buildSparkSettlementRecord
+
+    const record = buildSettlement(command, actor, identity, committedAt)
+
+    expect(record.settlementId).toBe(`settlement-${'2'.repeat(48)}`)
+    expect(record.settlementDocument).toEqual({
+      settlementId: record.settlementId, groupId: 'group-a', operationId: command.operationId,
+      requestFingerprint: '1'.repeat(64), resourceToken: '2'.repeat(48),
+      lastOperationId: command.operationId, lastRequestFingerprint: '1'.repeat(64), lastResourceToken: '2'.repeat(48),
+      senderId: 'friend', recipientId: 'owner', money: { currency: 'USD', minorAmount: 1800 }, basis: command.basis,
+      method: 'bank-transfer', occurredOn: '2026-09-01', note: 'September rent', outsidePaymentConfirmed: true,
+      createdBy: actor, createdAt: committedAt, revision: 1,
+    })
+    expect(record.activityId).toBe(`activity-${'2'.repeat(48)}`)
+    expect(record.activityDocument).toEqual({
+      groupId: 'group-a', operationId: command.operationId, kind: 'settlement.created',
+      subject: { kind: 'settlement', id: record.settlementId, label: 'Payment recorded' },
+      actor, settlementId: record.settlementId, createdAt: committedAt,
+    })
+  })
+
+  it('builds the only allowed settlement transition as an authorized revision-two void', () => {
+    const recordCommand: SettlementRecordCommand = {
+      kind: 'settlement.record', operationId: 'settlement-record', groupId: 'group-a', expectedBalanceRevision: 4,
+      basis: { kind: 'pairwise', senderId: 'friend', recipientId: 'owner', currency: 'USD', debtMinor: 2400 },
+      money: { currency: 'USD', minorAmount: 1800 }, method: 'cash', occurredOn: '2026-09-01', outsidePaymentConfirmed: true,
+    }
+    const creator = { id: 'friend', displayName: 'Friend Account' }
+    const buildSettlement = (sparkMutations as unknown as { buildSparkSettlementRecord: SparkSettlementBuilder }).buildSparkSettlementRecord
+    const current = buildSettlement(recordCommand, creator, {
+      userId: creator.id, operationId: recordCommand.operationId, kind: recordCommand.kind, groupId: recordCommand.groupId,
+      requestFingerprint: '3'.repeat(64), resourceId: `operation-${'4'.repeat(48)}`,
+    }, { toDate: () => new Date('2026-09-01T18:00:00.000Z') }).settlementDocument
+    const command: SettlementVoidCommand = {
+      kind: 'settlement.void', operationId: 'settlement-void', groupId: 'group-a', settlementId: String(current.settlementId),
+      expectedRevision: 1, expectedBalanceRevision: 5, reason: '  Entered twice by mistake.  ',
+    }
+    const identity: OperationIdentity = {
+      userId: creator.id, operationId: command.operationId, kind: command.kind, groupId: command.groupId,
+      requestFingerprint: '5'.repeat(64), resourceId: `operation-${'6'.repeat(48)}`,
+    }
+    const committedAt = { kind: 'settlement-voided', toDate: () => new Date('2026-09-02T18:00:00.000Z') }
+    const buildVoid = (sparkMutations as unknown as { buildSparkSettlementVoidRecord: SparkSettlementVoidBuilder }).buildSparkSettlementVoidRecord
+
+    const record = buildVoid(command, current, { actor: creator, canManage: false }, identity, committedAt)
+
+    expect(record.settlementDocument).toEqual({
+      ...current, lastOperationId: command.operationId, lastRequestFingerprint: '5'.repeat(64), lastResourceToken: '6'.repeat(48), revision: 2,
+      void: { operationId: command.operationId, reason: 'Entered twice by mistake.', actor: creator, createdAt: committedAt, revision: 2 },
+    })
+    expect(record.activityDocument).toEqual({
+      groupId: 'group-a', operationId: command.operationId, kind: 'settlement.voided',
+      subject: { kind: 'settlement', id: command.settlementId, label: 'Payment voided' },
+      actor: creator, settlementId: command.settlementId, createdAt: committedAt,
+    })
+    expect(() => buildVoid({ ...command, operationId: 'stale', expectedRevision: 2 }, current, { actor: creator, canManage: false }, { ...identity, operationId: 'stale' }, committedAt)).toThrow(/changed remotely/i)
+    expect(() => buildVoid(command, current, { actor: { id: 'owner', displayName: 'Owner Account' }, canManage: false }, { ...identity, userId: 'owner' }, committedAt)).toThrow(/author|manager/i)
+  })
+
   it('versions Simplify Debts with immutable activity and an unchanged-plan balance revision', () => {
     const command: GroupSimplifyDebtsCommand = { kind: 'group.simplify-debts', operationId: 'simplify-off', groupId: 'group-a', expectedRevision: 4, simplifyDebtsEnabled: false }
     const actor = { id: 'friend', displayName: 'Friend Account' }
@@ -397,3 +469,23 @@ type SparkNotificationPreferencesBuilder = (
   identity: OperationIdentity,
   committedAt: unknown,
 ) => Readonly<Record<string, unknown>>
+
+type SparkSettlementBuilder = (
+  command: SettlementRecordCommand,
+  actor: ActorSnapshot,
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => {
+  readonly settlementId: string
+  readonly settlementDocument: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+type SparkSettlementVoidBuilder = (
+  command: SettlementVoidCommand,
+  current: Readonly<Record<string, unknown>>,
+  authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => ReturnType<SparkSettlementBuilder>

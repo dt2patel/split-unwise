@@ -246,6 +246,44 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(commitSparkComment(friend, `comment-${closedToken}`, closedToken, closedComment, sparkCommentActivity(closedToken, closedComment, 'comment.added')))
   })
 
+  emulatorIt('requires participant-owned settlements, exact immutable activity, and an authorized single void', async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore()
+      await updateDoc(doc(db, 'groups/group-a'), { memberIds: ['active', 'friend', 'other'] })
+      await setDoc(doc(db, 'groups/group-a/members/other'), { status: 'active', canManage: false, displayName: 'Other Member' })
+      await setDoc(doc(db, 'users/other/groups/group-a'), { groupId: 'group-a', status: 'active' })
+    })
+    const friend = environment.authenticatedContext('friend').firestore()
+    const manager = environment.authenticatedContext('active').firestore()
+    const other = environment.authenticatedContext('other').firestore()
+    const outsider = environment.authenticatedContext('outsider').firestore()
+    const createToken = 'a'.repeat(48)
+    const settlementId = `settlement-${createToken}`
+    const settlement = sparkSettlement(createToken, { id: 'friend', displayName: 'Friend' })
+    const createdActivity = sparkSettlementActivity(createToken, settlement, 'settlement.created')
+
+    await assertFails(setDoc(doc(friend, `groups/group-a/settlements/${settlementId}`), settlement))
+    await assertFails(commitSparkSettlement(outsider, settlementId, createToken, settlement, createdActivity))
+    await assertFails(commitSparkSettlement(friend, settlementId, createToken, { ...settlement, money: { currency: 'USD', minorAmount: 601 } }, createdActivity))
+    await assertSucceeds(commitSparkSettlement(friend, settlementId, createToken, settlement, createdActivity))
+    await assertSucceeds(getDoc(doc(manager, `groups/group-a/settlements/${settlementId}`)))
+    await assertFails(updateDoc(doc(friend, `groups/group-a/settlements/${settlementId}`), { note: 'Forged edit' }))
+
+    const voidToken = 'b'.repeat(48)
+    const current = (await getDoc(doc(manager, `groups/group-a/settlements/${settlementId}`))).data()!
+    const voided = {
+      ...current, lastOperationId: 'settlement-void-b', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: voidToken, revision: 2,
+      void: { operationId: 'settlement-void-b', reason: 'Entered twice.', actor: { id: 'active', displayName: 'Active Member' }, createdAt: serverTimestamp(), revision: 2 },
+    }
+    const voidedActivity = sparkSettlementActivity(voidToken, voided, 'settlement.voided')
+    await assertFails(commitSparkSettlement(other, settlementId, voidToken, { ...voided, void: { ...(voided.void as Record<string, unknown>), actor: { id: 'other', displayName: 'Other Member' } } }, { ...voidedActivity, actor: { id: 'other', displayName: 'Other Member' } }))
+    await assertSucceeds(commitSparkSettlement(manager, settlementId, voidToken, voided, voidedActivity))
+    expect((await getDoc(doc(manager, `groups/group-a/settlements/${settlementId}`))).data()).toMatchObject({ revision: 2, void: { reason: 'Entered twice.', revision: 2 } })
+    await assertFails(commitSparkSettlement(manager, settlementId, 'c'.repeat(48), { ...voided, lastOperationId: 'second-void', lastRequestFingerprint: 'c'.repeat(64), lastResourceToken: 'c'.repeat(48) }, sparkSettlementActivity('c'.repeat(48), voided, 'settlement.voided')))
+    await assertFails(deleteDoc(doc(manager, `groups/group-a/settlements/${settlementId}`)))
+    await assertFails(setDoc(doc(manager, `groups/group-a/activity/activity-${'d'.repeat(48)}`), sparkSettlementActivity('d'.repeat(48), voided, 'settlement.voided')))
+  })
+
   emulatorIt('requires replay-bound activity for manager defaults and an atomic balance revision for debt simplification', async () => {
     const manager = environment.authenticatedContext('active').firestore()
     const friend = environment.authenticatedContext('friend').firestore()
@@ -403,6 +441,38 @@ function commitSparkComment(source: unknown, commentId: string, activityToken: s
   const db = source as Firestore
   const batch = writeBatch(db)
   batch.set(doc(db, `groups/group-a/comments/${commentId}`), comment)
+  batch.set(doc(db, `groups/group-a/activity/activity-${activityToken}`), activity)
+  return batch.commit()
+}
+
+function sparkSettlement(token: string, actor: Record<string, unknown>): Record<string, unknown> {
+  const settlementId = `settlement-${token}`
+  return {
+    settlementId, groupId: 'group-a', operationId: `settlement-create-${token[0]}`,
+    requestFingerprint: token[0]!.repeat(64), resourceToken: token,
+    lastOperationId: `settlement-create-${token[0]}`, lastRequestFingerprint: token[0]!.repeat(64), lastResourceToken: token,
+    senderId: 'friend', recipientId: 'active', money: { currency: 'USD', minorAmount: 600 },
+    basis: { kind: 'simplified', senderId: 'friend', recipientId: 'active', currency: 'USD', debtMinor: 600 },
+    method: 'cash', occurredOn: '2026-09-01', note: 'Paid in person', outsidePaymentConfirmed: true,
+    createdBy: actor, createdAt: serverTimestamp(), revision: 1,
+  }
+}
+
+function sparkSettlementActivity(token: string, settlement: Record<string, unknown>, kind: 'settlement.created' | 'settlement.voided'): Record<string, unknown> {
+  const voided = settlement.void as Record<string, unknown> | undefined
+  const actor = kind === 'settlement.created' ? settlement.createdBy : voided?.actor
+  const operationId = kind === 'settlement.created' ? settlement.operationId : voided?.operationId
+  return {
+    groupId: 'group-a', operationId, kind,
+    subject: { kind: 'settlement', id: settlement.settlementId, label: kind === 'settlement.created' ? 'Payment recorded' : 'Payment voided' },
+    actor, settlementId: settlement.settlementId, createdAt: serverTimestamp(),
+  }
+}
+
+function commitSparkSettlement(source: unknown, settlementId: string, activityToken: string, settlement: Record<string, unknown>, activity: Record<string, unknown>): Promise<void> {
+  const db = source as Firestore
+  const batch = writeBatch(db)
+  batch.set(doc(db, `groups/group-a/settlements/${settlementId}`), settlement)
   batch.set(doc(db, `groups/group-a/activity/activity-${activityToken}`), activity)
   return batch.commit()
 }

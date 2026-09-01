@@ -5,9 +5,9 @@ import { decodeDefaultSplit, updateGroupSettings, type GroupSettings } from '../
 import { canonicalHttpsOrigin, generateInvitationSecret, hashInvitationSecret, type PreparedInvitation } from '../features/invitations/invitations'
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
-import { decodeExpense } from './firebaseDecoders'
+import { decodeExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationPreferencesCommand, ProfileUpdateCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationPreferencesCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
 
@@ -61,6 +61,13 @@ export interface SparkCommentRecord {
 export interface SparkGroupSettingsRecord {
   readonly settingsDocument: Readonly<Record<string, unknown>>
   readonly balanceDocument?: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+export interface SparkSettlementRecord {
+  readonly settlementId: string
+  readonly settlementDocument: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }
@@ -238,6 +245,56 @@ export function buildSparkCommentDeleteRecord(command: CommentDeleteCommand, cur
   }
 }
 
+/** Builds a confirmed participant-owned settlement and its immutable activity event. */
+export function buildSparkSettlementRecord(command: SettlementRecordCommand, actor: ActorSnapshot, identity: OperationIdentity, committedAt: unknown): SparkSettlementRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'settlement.record') throw new Error('Spark settlement command is invalid.')
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  const normalizedActor = normalizedActorSnapshot(actor)
+  if (normalizedActor.id !== parsed.basis.senderId && normalizedActor.id !== parsed.basis.recipientId) throw new Error('Only a settlement participant can record the payment.')
+  const settlementId = `settlement-${token}`
+  const note = parsed.note?.replace(/\s+/g, ' ').trim()
+  return {
+    settlementId,
+    settlementDocument: {
+      settlementId, groupId: parsed.groupId, operationId: parsed.operationId,
+      requestFingerprint: identity.requestFingerprint, resourceToken: token,
+      lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+      senderId: parsed.basis.senderId, recipientId: parsed.basis.recipientId, money: parsed.money, basis: parsed.basis,
+      method: parsed.method, occurredOn: parsed.occurredOn, ...(note ? { note } : {}), outsidePaymentConfirmed: true,
+      createdBy: normalizedActor, createdAt: committedAt, revision: 1,
+    },
+    activityId: `activity-${token}`,
+    activityDocument: sparkSettlementActivity(parsed.groupId, parsed.operationId, 'settlement.created', normalizedActor, settlementId, 'Payment recorded', committedAt),
+  }
+}
+
+/** Builds the sole mutable settlement transition: an authorized revision-two void. */
+export function buildSparkSettlementVoidRecord(
+  command: SettlementVoidCommand,
+  current: Readonly<Record<string, unknown>>,
+  authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
+  identity: OperationIdentity,
+  committedAt: unknown,
+): SparkSettlementRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'settlement.void') throw new Error('Spark settlement void command is invalid.')
+  const token = assertSparkOperationIdentity(parsed, authorization.actor, identity)
+  const snapshot = decodeSettlement(parsed.groupId, parsed.settlementId, current)
+  if (snapshot.revision !== parsed.expectedRevision || snapshot.void) throw new Error('Settlement changed remotely. Reload it before trying again.')
+  if (snapshot.createdBy.id !== authorization.actor.id && !authorization.canManage) throw new Error('Only the settlement author or an active group manager can void it.')
+  const actor = normalizedActorSnapshot(authorization.actor)
+  return {
+    settlementId: parsed.settlementId,
+    settlementDocument: {
+      ...current, lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+      revision: 2, void: { operationId: parsed.operationId, reason: parsed.reason.trim(), actor, createdAt: committedAt, revision: 2 },
+    },
+    activityId: `activity-${token}`,
+    activityDocument: sparkSettlementActivity(parsed.groupId, parsed.operationId, 'settlement.voided', actor, parsed.settlementId, 'Payment voided', committedAt),
+  }
+}
+
 /** Versions one shared group setting and binds it to immutable activity. */
 export function buildSparkGroupSettingsRecord(
   command: GroupDefaultSplitCommand | GroupSimplifyDebtsCommand,
@@ -339,6 +396,10 @@ function sparkCommentActivity(groupId: string, operationId: string, kind: 'comme
   return { groupId, operationId, kind, subject: { kind: 'comment', id: commentId, label }, actor, expenseId, commentId, createdAt }
 }
 
+function sparkSettlementActivity(groupId: string, operationId: string, kind: 'settlement.created' | 'settlement.voided', actor: ActorSnapshot, settlementId: string, label: string, createdAt: unknown): Readonly<Record<string, unknown>> {
+  return { groupId, operationId, kind, subject: { kind: 'settlement', id: settlementId, label }, actor, settlementId, createdAt }
+}
+
 function decodeSparkGroupSettings(groupId: string, value: Readonly<Record<string, unknown>>): GroupSettings {
   if (value.schemaVersion !== 1 || value.groupId !== groupId || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) throw new Error('Stored group settings are invalid.')
   if (value.simplifyDebtsEnabled !== undefined && typeof value.simplifyDebtsEnabled !== 'boolean') throw new Error('Stored group settings are invalid.')
@@ -408,6 +469,8 @@ function normalizedActor(actor: ActorSnapshot): ActorSnapshot {
   if (!actor.id.trim() || !displayName || displayName.length > 120) throw new Error('Spark expense actor is invalid.')
   return { id: actor.id, displayName }
 }
+
+function normalizedActorSnapshot(actor: ActorSnapshot): ActorSnapshot { return normalizedActor(actor) }
 
 function actorFromRecord(value: unknown, label: string): ActorSnapshot {
   if (!isRecord(value) || typeof value.id !== 'string' || typeof value.displayName !== 'string') throw new Error(`Spark expense ${label} is invalid.`)

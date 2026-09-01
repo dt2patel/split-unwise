@@ -3,10 +3,10 @@ import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebas
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationPreferencesResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationPreferencesResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkProfileUpdateRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
+import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkProfileUpdateRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
@@ -73,6 +73,29 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const data = snapshot.data()
     if (!snapshot.exists() || !isRecord(data) || data.groupId !== groupId || !Number.isSafeInteger(data.balanceRevision) || Number(data.balanceRevision) < 0) throw new Error('Stored group balance is invalid')
     return Number(data.balanceRevision)
+  }
+  async function getSparkBalanceSnapshot(groupId: string, readyContext = context()): Promise<GroupBalanceSnapshot> {
+    const [allExpenses, settlements, settings, settingsBalanceRevision] = await Promise.all([
+      listExpenseHeads(groupId, readyContext),
+      listSettlements(groupId, readyContext),
+      getGroupSettings(groupId, readyContext),
+      getSparkSettingsBalanceRevision(groupId, readyContext),
+    ])
+    const expenses = allExpenses.filter(({ deletedAt }) => deletedAt === undefined)
+    const balances = computeBalancePlans(expenses, settlements.map((settlement) => ({
+      id: settlement.settlementId,
+      senderId: settlement.senderId,
+      recipientId: settlement.recipientId,
+      money: settlement.money,
+      voided: settlement.void !== undefined,
+    })))
+    return {
+      groupId,
+      balanceRevision: allExpenses.reduce((total, expense) => total + expense.revision, 0)
+        + settlements.reduce((total, settlement) => total + settlement.revision, 0) + settingsBalanceRevision,
+      simplifyDebtsEnabled: settings.simplifyDebtsEnabled !== false,
+      ...balances,
+    }
   }
   async function persistSparkExpenseActivity(db: FirebaseClient['db'], firestore: FirestoreModule, groupId: string, record: SparkExpenseActivityRecord): Promise<void> {
     const reference = firestore.doc(db, 'groups', groupId, 'activity', record.activityId)
@@ -265,6 +288,134 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     }
   }
 
+  async function executeSparkSettlementRecord(command: SettlementRecordCommand): Promise<SettlementRecordResult> {
+    const readyContext = context()
+    const { db, firestore, userId } = await readyContext
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const settlementId = `settlement-${token}`
+    const settlementReference = firestore.doc(db, 'groups', command.groupId, 'settlements', settlementId)
+    const activityReference = firestore.doc(db, 'groups', command.groupId, 'activity', `activity-${token}`)
+    const memberReferences = [...new Set([userId, command.basis.senderId, command.basis.recipientId])]
+      .map((memberId) => firestore.doc(db, 'groups', command.groupId, 'members', memberId))
+    const [balanceSnapshot, existingSettlement, ...memberSnapshots] = await Promise.all([
+      getSparkBalanceSnapshot(command.groupId, readyContext),
+      firestore.getDoc(settlementReference),
+      ...memberReferences.map((reference) => firestore.getDoc(reference)),
+    ])
+    if (existingSettlement.exists()) {
+      const data = existingSettlement.data()
+      const creator = isRecord(data.createdBy) ? data.createdBy : undefined
+      if (data.operationId !== identity.operationId || data.requestFingerprint !== identity.requestFingerprint
+        || data.resourceToken !== token || creator?.id !== userId) throw new OperationReplayConflictError()
+      const savedActivity = await firestore.getDoc(activityReference)
+      if (!savedActivity.exists()) throw new Error('Saved settlement activity is unavailable')
+      return {
+        kind: 'settlement.record', operationId: command.operationId, status: 'saved',
+        settlement: decodeSettlement(command.groupId, settlementId, data), balanceSnapshot,
+        activity: decodeActivity(command.groupId, activityReference.id, savedActivity.data()),
+      }
+    }
+    if (balanceSnapshot.balanceRevision !== command.expectedBalanceRevision || !settlementBasisMatches(balanceSnapshot, command)) {
+      throw new CommandConflictError('Group balance changed remotely. Reload it before recording this payment.', { remote: balanceSnapshot })
+    }
+    const actorMembership = memberSnapshots[0]
+    const actorData = actorMembership?.data()
+    if (!actorMembership?.exists() || !isRecord(actorData) || actorData.status !== 'active' || typeof actorData.displayName !== 'string') {
+      throw new Error('Only active group members can record a settlement')
+    }
+    if (memberSnapshots.some((snapshot) => !snapshot.exists() || snapshot.data().status !== 'active')) throw new Error('Settlement participants must be active group members')
+    const record = buildSparkSettlementRecord(command, { id: userId, displayName: actorData.displayName }, identity, firestore.serverTimestamp())
+    await firestore.runTransaction(db, async (transaction) => {
+      const existing = await transaction.get(settlementReference)
+      if (existing.exists()) {
+        const data = existing.data()
+        const creator = isRecord(data.createdBy) ? data.createdBy : undefined
+        if (data.operationId !== identity.operationId || data.requestFingerprint !== identity.requestFingerprint
+          || data.resourceToken !== token || creator?.id !== userId) throw new OperationReplayConflictError()
+        return
+      }
+      transaction.set(settlementReference, record.settlementDocument)
+      transaction.set(activityReference, record.activityDocument)
+    })
+    const [savedSettlement, savedActivity, savedBalance] = await Promise.all([
+      firestore.getDoc(settlementReference), firestore.getDoc(activityReference), getSparkBalanceSnapshot(command.groupId, readyContext),
+    ])
+    if (!savedSettlement.exists() || !savedActivity.exists()) throw new Error('Saved settlement is unavailable')
+    return {
+      kind: 'settlement.record', operationId: command.operationId, status: 'saved',
+      settlement: decodeSettlement(command.groupId, settlementId, savedSettlement.data()),
+      balanceSnapshot: savedBalance,
+      activity: decodeActivity(command.groupId, record.activityId, savedActivity.data()),
+    }
+  }
+
+  async function executeSparkSettlementVoid(command: SettlementVoidCommand): Promise<SettlementVoidResult> {
+    const readyContext = context()
+    const { db, firestore, userId } = await readyContext
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const memberReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
+    const settlementReference = firestore.doc(db, 'groups', command.groupId, 'settlements', command.settlementId)
+    const activityReference = firestore.doc(db, 'groups', command.groupId, 'activity', `activity-${token}`)
+    const [balanceSnapshot, existingSettlement] = await Promise.all([
+      getSparkBalanceSnapshot(command.groupId, readyContext), firestore.getDoc(settlementReference),
+    ])
+    if (existingSettlement.exists() && existingSettlement.data().lastOperationId === identity.operationId) {
+      const data = existingSettlement.data()
+      const audit = isRecord(data.void) ? data.void : undefined
+      if (data.lastRequestFingerprint !== identity.requestFingerprint || data.lastResourceToken !== token || audit?.operationId !== command.operationId) throw new OperationReplayConflictError()
+      const savedActivity = await firestore.getDoc(activityReference)
+      if (!savedActivity.exists()) throw new Error('Saved settlement void activity is unavailable')
+      return {
+        kind: 'settlement.void', operationId: command.operationId, status: 'saved',
+        settlement: decodeSettlement(command.groupId, command.settlementId, data), balanceSnapshot,
+        activity: decodeActivity(command.groupId, activityReference.id, savedActivity.data()),
+      }
+    }
+    if (balanceSnapshot.balanceRevision !== command.expectedBalanceRevision) {
+      throw new CommandConflictError('Group balance changed remotely. Reload it before voiding this payment.', { remote: balanceSnapshot })
+    }
+    await firestore.runTransaction(db, async (transaction) => {
+      const [membership, current] = await Promise.all([transaction.get(memberReference), transaction.get(settlementReference)])
+      const memberData = membership.data()
+      if (!membership.exists() || !isRecord(memberData) || memberData.status !== 'active' || typeof memberData.displayName !== 'string') {
+        throw new Error('Only active group members can void a settlement')
+      }
+      if (!current.exists()) throw new Error('Settlement was not found')
+      const data = current.data()
+      if (data.lastOperationId === identity.operationId) {
+        const audit = isRecord(data.void) ? data.void : undefined
+        if (data.lastRequestFingerprint !== identity.requestFingerprint || data.lastResourceToken !== token || audit?.operationId !== command.operationId) throw new OperationReplayConflictError()
+        return
+      }
+      try {
+        const record = buildSparkSettlementVoidRecord(
+          command, data,
+          { actor: { id: userId, displayName: memberData.displayName }, canManage: memberData.canManage === true },
+          identity, firestore.serverTimestamp(),
+        )
+        transaction.set(settlementReference, record.settlementDocument)
+        transaction.set(activityReference, record.activityDocument)
+      } catch (error) {
+        if (error instanceof Error && /changed remotely/i.test(error.message)) {
+          throw new CommandConflictError(error.message, { remote: decodeSettlement(command.groupId, command.settlementId, data) })
+        }
+        throw error
+      }
+    })
+    const [savedSettlement, savedActivity, savedBalance] = await Promise.all([
+      firestore.getDoc(settlementReference), firestore.getDoc(activityReference), getSparkBalanceSnapshot(command.groupId, readyContext),
+    ])
+    if (!savedSettlement.exists() || !savedActivity.exists()) throw new Error('Saved settlement void is unavailable')
+    return {
+      kind: 'settlement.void', operationId: command.operationId, status: 'saved',
+      settlement: decodeSettlement(command.groupId, command.settlementId, savedSettlement.data()),
+      balanceSnapshot: savedBalance,
+      activity: decodeActivity(command.groupId, activityReference.id, savedActivity.data()),
+    }
+  }
+
   async function executeSparkGroupSettings(command: GroupDefaultSplitCommand | GroupSimplifyDebtsCommand): Promise<SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>> {
     const { db, firestore, userId } = await context()
     const identity = await createOperationIdentity(userId, command)
@@ -378,6 +529,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       if (command.kind === 'expense.edit' || command.kind === 'expense.delete') return executeSparkExpenseMutation(command)
       if (command.kind === 'comment.add') return executeSparkCommentAdd(command)
       if (command.kind === 'comment.delete') return executeSparkCommentDelete(command)
+      if (command.kind === 'settlement.record') return executeSparkSettlementRecord(command)
+      if (command.kind === 'settlement.void') return executeSparkSettlementVoid(command)
       if (command.kind === 'group.default-split' || command.kind === 'group.simplify-debts') return executeSparkGroupSettings(command)
       if (command.kind === 'profile.update') return executeSparkProfileUpdate(command)
       if (command.kind === 'notification.preferences') return executeSparkNotificationPreferences(command)
@@ -430,27 +583,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           if (!snapshot.exists()) throw new Error('Authoritative group balance snapshot is unavailable')
           return decodeBalanceSnapshot(groupId, snapshot.data())
         }
-        const [allExpenses, settlements, settings, settingsBalanceRevision] = await Promise.all([
-          listExpenseHeads(groupId, readyContext),
-          listSettlements(groupId, readyContext),
-          getGroupSettings(groupId, readyContext),
-          getSparkSettingsBalanceRevision(groupId, readyContext),
-        ])
-        const expenses = allExpenses.filter(({ deletedAt }) => deletedAt === undefined)
-        const balances = computeBalancePlans(expenses, settlements.map((settlement) => ({
-          id: settlement.settlementId,
-          senderId: settlement.senderId,
-          recipientId: settlement.recipientId,
-          money: settlement.money,
-          voided: settlement.void !== undefined,
-        })))
-        return {
-          groupId,
-          balanceRevision: allExpenses.reduce((total, expense) => total + expense.revision, 0)
-            + settlements.reduce((total, settlement) => total + settlement.revision, 0) + settingsBalanceRevision,
-          simplifyDebtsEnabled: settings.simplifyDebtsEnabled !== false,
-          ...balances,
-        }
+        return getSparkBalanceSnapshot(groupId, readyContext)
       },
       getSettings: getGroupSettings,
       async getTotals(groupId) { const readyContext = context(); return buildCurrencyTotals(await listExpenses(groupId, readyContext), (await readyContext).userId) },
@@ -614,6 +747,16 @@ function sameExpenseActivity(left: ActivityItem, right: ActivityItem): boolean {
     && left.kind === right.kind && left.subject.kind === right.subject.kind && left.subject.id === right.subject.id
     && left.subject.label === right.subject.label && left.actor.id === right.actor.id && left.actor.displayName === right.actor.displayName
     && left.expenseId === right.expenseId && left.revision === right.revision && left.createdAt === right.createdAt
+}
+
+function settlementBasisMatches(snapshot: GroupBalanceSnapshot, command: SettlementRecordCommand): boolean {
+  const debts = command.basis.kind === 'pairwise' ? snapshot.pairwise : snapshot.simplified
+  return debts.some((debt) => debt.fromParticipantId === command.basis.senderId
+    && debt.toParticipantId === command.basis.recipientId
+    && debt.money.currency === command.basis.currency
+    && debt.money.minorAmount === command.basis.debtMinor
+    && command.money.currency === debt.money.currency
+    && command.money.minorAmount <= debt.money.minorAmount)
 }
 
 function descendingText(left: string, right: string): number { return left === right ? 0 : left < right ? 1 : -1 }

@@ -325,4 +325,83 @@ describe('Firebase Spark two-account flow', () => {
       { kind: 'expense.deleted', operationId: deleteCommand.operationId, expenseId: first.expense.id, revision: 3, subject: { kind: 'expense', id: first.expense.id, label: 'Shared dinner and dessert' } },
     ])
   }, 30_000)
+
+  emulatorIt('records and voids a replay-safe hosted settlement that both accounts can read', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `settlement-owner-${suffix}@example.com`
+    const friendEmail = `settlement-friend-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Settlement Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `settlement-${suffix}`, name: 'Settlement Group', currency: 'USD' })
+    const invitation = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    const token = new URL(invitation.link).hash.slice('#token='.length)
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Settlement Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, invitation.invitationId, token)
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+
+    const ownerRepository = createFirebaseRepository(configuration, owner.user.uid)
+    const expense = await ownerRepository.expenses.add({
+      kind: 'expense.add', operationId: `settlement-expense-${suffix}`, groupId: created.groupId, description: 'Cabin deposit', date: '2026-09-01',
+      total: { currency: 'USD', minorAmount: 2400 }, payments: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2400 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } },
+        { participantId: friend.user.uid, money: { currency: 'USD', minorAmount: 1200 } },
+      ],
+      category: 'Lodging', splitMethod: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+    })
+    expect(expense.status).toBe('saved')
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
+    const before = await friendRepository.groups.getBalanceSnapshot(created.groupId)
+    const basis = before.simplified[0]
+    expect(basis).toEqual({ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } })
+    const recordCommand = {
+      kind: 'settlement.record' as const, operationId: `record-${suffix}`, groupId: created.groupId, expectedBalanceRevision: before.balanceRevision,
+      basis: { kind: 'simplified' as const, senderId: basis!.fromParticipantId, recipientId: basis!.toParticipantId, currency: basis!.money.currency, debtMinor: basis!.money.minorAmount },
+      money: { currency: 'USD' as const, minorAmount: 500 }, method: 'cash' as const, occurredOn: '2026-09-01', note: 'Paid after dinner', outsidePaymentConfirmed: true as const,
+    }
+    const recorded = await friendRepository.settlements.record(recordCommand)
+    const replay = await friendRepository.settlements.record(recordCommand)
+    expect(recorded).toMatchObject({ kind: 'settlement.record', operationId: recordCommand.operationId, status: 'saved', settlement: { revision: 1, money: { currency: 'USD', minorAmount: 500 } }, activity: { kind: 'settlement.created' } })
+    expect(replay).toEqual(recorded)
+    if (recorded.status !== 'saved') throw new Error('Expected Spark settlement creation to save')
+    await expect(friendRepository.settlements.listForGroup(created.groupId)).resolves.toEqual([expect.objectContaining({ settlementId: recorded.settlement.settlementId, revision: 1 })])
+    await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
+      balanceRevision: 2,
+      simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 700 } }],
+    })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    await expect(ownerRepository.settlements.getById(created.groupId, recorded.settlement.settlementId)).resolves.toMatchObject({ revision: 1, createdBy: { id: friend.user.uid } })
+    const beforeVoid = await ownerRepository.groups.getBalanceSnapshot(created.groupId)
+    const voidCommand = {
+      kind: 'settlement.void' as const, operationId: `void-${suffix}`, groupId: created.groupId, settlementId: recorded.settlement.settlementId,
+      expectedRevision: 1, expectedBalanceRevision: beforeVoid.balanceRevision, reason: 'Entered twice by mistake.',
+    }
+    const voided = await ownerRepository.settlements.void(voidCommand)
+    const voidReplay = await ownerRepository.settlements.void(voidCommand)
+    expect(voided).toMatchObject({ kind: 'settlement.void', operationId: voidCommand.operationId, status: 'saved', settlement: { revision: 2, void: { reason: voidCommand.reason } }, activity: { kind: 'settlement.voided' } })
+    expect(voidReplay).toEqual(voided)
+    await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
+      balanceRevision: 3,
+      simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
+    })
+    await expect(ownerRepository.activity.listForGroup(created.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ operationId: recordCommand.operationId, kind: 'settlement.created', settlementId: recorded.settlement.settlementId }),
+      expect.objectContaining({ operationId: voidCommand.operationId, kind: 'settlement.voided', settlementId: recorded.settlement.settlementId }),
+    ]))
+  }, 30_000)
 })

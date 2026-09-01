@@ -353,6 +353,99 @@ service cloud.firestore {
         && validSparkCommentActivityData(groupId, data.commentId, activityId, data, comment, data.kind);
     }
 
+    function validSparkSettlementStructure(groupId, settlementId, data) {
+      return data.keys().hasOnly([
+          'settlementId', 'groupId', 'operationId', 'requestFingerprint', 'resourceToken',
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
+          'senderId', 'recipientId', 'money', 'basis', 'method', 'occurredOn', 'note', 'outsidePaymentConfirmed',
+          'createdBy', 'createdAt', 'revision', 'void'
+        ])
+        && data.keys().hasAll([
+          'settlementId', 'groupId', 'operationId', 'requestFingerprint', 'resourceToken',
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
+          'senderId', 'recipientId', 'money', 'basis', 'method', 'occurredOn', 'outsidePaymentConfirmed',
+          'createdBy', 'createdAt', 'revision'
+        ])
+        && data.settlementId == settlementId && data.groupId == groupId
+        && data.resourceToken is string && data.resourceToken.matches('^[a-f0-9]{48}$')
+        && settlementId == 'settlement-' + data.resourceToken
+        && data.operationId is string && data.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.requestFingerprint is string && data.requestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
+        && strictId(data.senderId) && strictId(data.recipientId) && data.senderId != data.recipientId
+        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(data.senderId)).data.status == 'active'
+        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(data.recipientId)).data.status == 'active'
+        && validSparkMoney(data.money, data.money.currency, true)
+        && data.basis is map && data.basis.keys().hasOnly(['kind', 'senderId', 'recipientId', 'currency', 'debtMinor'])
+        && (data.basis.kind == 'pairwise' || data.basis.kind == 'simplified')
+        && data.basis.senderId == data.senderId && data.basis.recipientId == data.recipientId
+        && data.basis.currency == data.money.currency && data.basis.debtMinor is int
+        && data.basis.debtMinor >= data.money.minorAmount && data.basis.debtMinor <= 9007199254740991
+        && (data.method == 'cash' || data.method == 'bank-transfer' || data.method == 'payment-app' || data.method == 'other')
+        && data.occurredOn is string && data.occurredOn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (!('note' in data) || (data.note is string && data.note.size() > 0 && data.note.size() <= 2000))
+        && data.outsidePaymentConfirmed == true
+        && validSparkActorShape(data.createdBy)
+        && (data.createdBy.id == data.senderId || data.createdBy.id == data.recipientId)
+        && data.createdAt is timestamp && data.revision is int && data.revision >= 1;
+    }
+    function validSparkSettlementVoid(data) {
+      return data.void is map && data.void.keys().hasOnly(['operationId', 'reason', 'actor', 'createdAt', 'revision'])
+        && data.void.operationId == data.lastOperationId
+        && data.void.reason is string && data.void.reason.size() > 0 && data.void.reason.size() <= 1000
+        && validSparkActorShape(data.void.actor) && data.void.createdAt == request.time && data.void.revision == 2;
+    }
+    function validSparkSettlementActivityData(groupId, settlementId, activityId, activity, settlement, kind) {
+      return activity.keys().hasOnly(['groupId', 'operationId', 'kind', 'subject', 'actor', 'settlementId', 'createdAt'])
+        && activityId == 'activity-' + settlement.lastResourceToken
+        && activity.groupId == groupId && activity.kind == kind && activity.settlementId == settlementId
+        && activity.subject.keys().hasOnly(['kind', 'id', 'label'])
+        && activity.subject.kind == 'settlement' && activity.subject.id == settlementId
+        && (
+          (kind == 'settlement.created' && activity.operationId == settlement.operationId
+            && activity.subject.label == 'Payment recorded' && activity.actor == settlement.createdBy
+            && activity.createdAt == settlement.createdAt)
+          || (kind == 'settlement.voided' && activity.operationId == settlement.void.operationId
+            && activity.subject.label == 'Payment voided' && activity.actor == settlement.void.actor
+            && activity.createdAt == settlement.void.createdAt)
+        );
+    }
+    function validSparkSettlementCreate(groupId, settlementId, data) {
+      let activityId = 'activity-' + data.lastResourceToken;
+      let activity = getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
+      return validSparkSettlementStructure(groupId, settlementId, data)
+        && !('void' in data) && data.revision == 1
+        && data.operationId == data.lastOperationId && data.requestFingerprint == data.lastRequestFingerprint
+        && data.resourceToken == data.lastResourceToken && data.createdAt == request.time
+        && validSparkCurrentActor(groupId, data.createdBy)
+        && validSparkSettlementActivityData(groupId, settlementId, activityId, activity, data, 'settlement.created');
+    }
+    function validSparkSettlementUpdate(groupId, settlementId, data) {
+      let activityId = 'activity-' + data.lastResourceToken;
+      let activity = getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
+      return validSparkSettlementStructure(groupId, settlementId, data)
+        && resource.data.revision == 1 && !('void' in resource.data)
+        && data.revision == 2 && validSparkSettlementVoid(data)
+        && data.diff(resource.data).affectedKeys().hasOnly(['lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'revision', 'void'])
+        && data.lastOperationId != resource.data.lastOperationId && data.lastResourceToken != resource.data.lastResourceToken
+        && validSparkCurrentActor(groupId, data.void.actor)
+        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
+        && validSparkSettlementActivityData(groupId, settlementId, activityId, activity, data, 'settlement.voided');
+    }
+    function validSparkSettlementActivityCreate(groupId, activityId, data) {
+      let settlement = getAfter(/databases/$(database)/documents/groups/$(groupId)/settlements/$(data.settlementId)).data;
+      return data.createdAt == request.time
+        && validSparkCurrentActor(groupId, data.actor)
+        && (
+          (data.kind == 'settlement.created' && settlement.revision == 1 && !('void' in settlement)
+            && validSparkSettlementActivityData(groupId, data.settlementId, activityId, data, settlement, 'settlement.created'))
+          || (data.kind == 'settlement.voided' && settlement.revision == 2 && validSparkSettlementVoid(settlement)
+            && validSparkSettlementActivityData(groupId, data.settlementId, activityId, data, settlement, 'settlement.voided'))
+        );
+    }
+
     function validSparkRatio(value) {
       return (value is int || value is float) && value > 0 && value <= 1000000;
     }
@@ -651,7 +744,12 @@ service cloud.firestore {
         allow update: if validSparkCommentDelete(groupId, commentId, request.resource.data);
         allow delete: if false;
       }
-      match /settlements/{settlementId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
+      match /settlements/{settlementId} {
+        allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
+        allow create: if validSparkSettlementCreate(groupId, settlementId, request.resource.data);
+        allow update: if validSparkSettlementUpdate(groupId, settlementId, request.resource.data);
+        allow delete: if false;
+      }
       match /activity/{activityId} {
         allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
         allow create: if (
@@ -661,6 +759,8 @@ service cloud.firestore {
             && validSparkSettingsActivityCreate(groupId, activityId, request.resource.data))
           || ((request.resource.data.kind == 'comment.added' || request.resource.data.kind == 'comment.deleted')
             && validSparkCommentActivityCreate(groupId, activityId, request.resource.data))
+          || ((request.resource.data.kind == 'settlement.created' || request.resource.data.kind == 'settlement.voided')
+            && validSparkSettlementActivityCreate(groupId, activityId, request.resource.data))
         );
         allow update, delete: if false;
       }
