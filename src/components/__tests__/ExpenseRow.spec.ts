@@ -201,6 +201,13 @@ describe('ExpenseRow', () => {
     expect(expenseRowSource).toContain('useExpenseRowLayout')
     expect(expenseRowSource).toContain("'expense-row--reflow': isReflow")
   })
+
+  it('uses a deterministic single financial column on phone widths instead of waiting for overflow', () => {
+    expect(expenseRowSource).toMatch(/@media \(max-width:\s*520px\)/)
+    expect(expenseRowSource).toContain('"date category summary balance"')
+    expect(expenseRowSource).toContain('"date category summary paid"')
+    expect(expenseRowSource).toContain('grid-template-columns: 28px 40px minmax(0, 1fr) 72px')
+  })
 })
 
 describe('SyncStatus', () => {

@@ -121,8 +121,9 @@ describe('Firebase Spark mutations', () => {
 
     expect(edit.revisionId).toBe('d'.repeat(48))
     expect(edit.headDocument).toMatchObject({
-      id: current.id, description: 'Original dinner', revision: 1, headRevision: 2, headDeleted: false,
+      id: current.id, description: current.description, revision: 1, headRevision: 2, headDeleted: false,
       lastOperationId: 'edit-expense', lastRequestFingerprint: 'c'.repeat(64), lastResourceToken: 'd'.repeat(48),
+      current: { id: current.id, description: 'Updated dinner', revision: 2 },
     })
     expect(edit.revisionDocument).toMatchObject({
       groupId: 'group-a', expenseId: current.id, revision: 2, operationId: 'edit-expense', action: 'updated',
@@ -149,8 +150,9 @@ describe('Firebase Spark mutations', () => {
     const removed = buildMutation(deleteCommand, edit.headDocument, editedExpense, { actor: creator, canManage: false }, deleteIdentity, deletedAt)
 
     expect(removed.headDocument).toMatchObject({
-      description: 'Original dinner', revision: 1, headRevision: 3, headDeleted: true,
+      description: current.description, revision: 1, headRevision: 3, headDeleted: true,
       lastOperationId: 'delete-expense', lastRequestFingerprint: 'e'.repeat(64), lastResourceToken: 'f'.repeat(48),
+      current: { description: 'Updated dinner', revision: 3, deletedAt },
     })
     expect(removed.revisionDocument).toMatchObject({ revision: 3, operationId: 'delete-expense', action: 'deleted', actor: creator, createdAt: deletedAt })
     expect(removed.revisionDocument.expense).toMatchObject({

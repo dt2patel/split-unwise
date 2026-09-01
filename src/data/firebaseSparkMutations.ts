@@ -165,6 +165,7 @@ export function buildSparkExpenseMutationRecord(
       lastResourceToken: token,
       headRevision: revision,
       headDeleted: parsed.kind === 'expense.delete',
+      current: expense,
     },
     revisionId: token,
     revisionDocument: {
@@ -598,8 +599,9 @@ export async function bootstrapFirebaseProfile(configuration: FirebaseConfigurat
   const user = authenticatedUser(app, identity)
   const profile = buildFirebaseProfile(user)
   const db = getFirestore(app)
+  const reference = doc(db, `users/${user.uid}`)
+  if ((await getDoc(reference)).exists()) return 'ready'
   return runTransaction(db, async (transaction) => {
-    const reference = doc(db, `users/${user.uid}`)
     const existing = await transaction.get(reference)
     if (existing.exists()) return 'ready'
     transaction.set(reference, { ...profile, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })

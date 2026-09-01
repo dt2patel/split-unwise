@@ -251,9 +251,10 @@ service cloud.firestore {
       let nextRevision = sparkHeadRevision(resource.data) + 1;
       return !sparkHeadDeleted(resource.data)
         && data.diff(resource.data).affectedKeys().hasOnly([
-          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'headRevision', 'headDeleted'
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'headRevision', 'headDeleted', 'current'
         ])
-        && data.headRevision is int && data.headRevision == nextRevision
+        && data.current == version.expense
+        && data.headRevision == nextRevision
         && data.headDeleted is bool
         && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
         && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')

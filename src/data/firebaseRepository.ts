@@ -3,7 +3,7 @@ import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebas
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
 import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkNotificationReadAllRecord, buildSparkNotificationReadRecord, buildSparkProfileUpdateRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
@@ -22,6 +22,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   let clientPromise: Promise<FirebaseClient> | undefined
   let callablePromise: Promise<(request: unknown) => Promise<{ readonly data: unknown }>> | undefined
   let currentUserPromise: Promise<Member> | undefined
+  const groupCache = new Map<string, Group>()
+  const groupRequests = new Map<string, Promise<Group | undefined>>()
   const sparkActivityRequests = new Map<string, Promise<ActivityPage>>()
   const client = () => clientPromise ??= connect(configuration)
 
@@ -43,6 +45,23 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     void pending.catch(() => {
       if (currentUserPromise === pending) currentUserPromise = undefined
     })
+    return pending
+  }
+  function loadGroup(groupId: string, readyContext = context()): Promise<Group | undefined> {
+    const cached = groupCache.get(groupId)
+    if (cached) return Promise.resolve(cached)
+    const existing = groupRequests.get(groupId)
+    if (existing) return existing
+    const pending = (async () => {
+      const { db, firestore } = await readyContext
+      const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
+      if (!snapshot.exists()) return undefined
+      const group = decodeGroup(snapshot.id, snapshot.data())
+      groupCache.set(group.id, group)
+      return group
+    })()
+    groupRequests.set(groupId, pending)
+    void pending.finally(() => { if (groupRequests.get(groupId) === pending) groupRequests.delete(groupId) }).catch(() => undefined)
     return pending
   }
   async function listExpenseHeads(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
@@ -263,8 +282,9 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       const headToken = typeof headData.lastResourceToken === 'string'
         ? headData.lastResourceToken
         : typeof headData.resourceToken === 'string' ? headData.resourceToken : ''
-      let currentData: Readonly<Record<string, unknown>> = headData
-      if (headRevision > root.revision) {
+      const embeddedCurrent = isRecord(headData.current) ? headData.current : undefined
+      let currentData: Readonly<Record<string, unknown>> = embeddedCurrent ?? headData
+      if (!embeddedCurrent && headRevision > root.revision) {
         const versionReference = firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId, 'revisions', headToken)
         const version = await transaction.get(versionReference)
         if (!version.exists() || !isRecord(version.data().expense)) throw new Error('Current expense version is unavailable')
@@ -711,20 +731,16 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     },
     groups: {
       async list() {
-        const { db, firestore, userId } = await context()
+        const readyContext = context()
+        const { db, firestore, userId } = await readyContext
         const projection = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
-        const groups = await Promise.all(projection.docs.map(async (membership) => {
+        const groups = await Promise.all(projection.docs.map((membership) => {
           const groupId = decodeGroupProjection(membership.id, membership.data())
-          const group = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
-          return group.exists() ? decodeGroup(group.id, group.data()) : undefined
+          return loadGroup(groupId, readyContext)
         }))
         return groups.filter((group): group is NonNullable<typeof group> => group !== undefined).sort((left, right) => left.name.localeCompare(right.name))
       },
-      async getById(groupId) {
-        const { db, firestore } = await context()
-        const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
-        return snapshot.exists() ? decodeGroup(snapshot.id, snapshot.data()) : undefined
-      },
+      getById: loadGroup,
       async listMembers(groupId) {
         const { db, firestore, userId } = await context()
         const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'members'), firestore.limit(100)))
@@ -859,6 +875,13 @@ async function resolveSparkExpenseHead(
 ): Promise<ExpenseRow> {
   const root = decodeExpense(groupId, expenseId, head)
   const headRevision = Number.isSafeInteger(head.headRevision) ? Number(head.headRevision) : root.revision
+  if (isRecord(head.current)) {
+    const current = decodeExpense(groupId, expenseId, head.current)
+    if (current.revision !== headRevision || (head.headDeleted === true) !== Boolean(current.deletedAt)) {
+      throw new Error('Expense head projection does not match its pointer')
+    }
+    return current
+  }
   if (headRevision === root.revision) return root
   if (headRevision < root.revision || typeof head.lastResourceToken !== 'string') throw new Error('Expense head pointer is invalid')
   const version = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'expenses', expenseId, 'revisions', head.lastResourceToken))

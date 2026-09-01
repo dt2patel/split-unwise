@@ -8,6 +8,7 @@ const firebase = vi.hoisted(() => ({
   settingsDocument: undefined as { data: () => Record<string, unknown> } | undefined,
   activityDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   groupProjectionDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
+  groupDocuments: {} as Record<string, { id: string; data: () => Record<string, unknown> }>,
   groupActivityDocuments: {} as Record<string, Array<{ id: string; data: () => Record<string, unknown> }>>,
   notificationDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   profileDocument: undefined as { data: () => Record<string, unknown> } | undefined,
@@ -63,6 +64,7 @@ vi.mock('firebase/firestore', () => {
   const getDoc = async (reference: { path: string; id: string }) => {
     firebase.documentReads.push(reference.path)
     const found = reference.path === 'users/maya-p' ? firebase.profileDocument
+      : reference.path.startsWith('groups/') && reference.path.split('/').length === 2 ? firebase.groupDocuments[reference.path]
       : reference.path.endsWith('/balance/current') ? firebase.balanceDocument
       : reference.path.endsWith('/settings/defaults') ? firebase.settingsDocument
       : reference.path.includes('/expenses/') ? firebase.expenseDocuments.find(({ id }) => id === reference.id)
@@ -94,6 +96,10 @@ describe('Task 7 Firebase repository query boundaries', () => {
       document('lake-house-weekend', { groupId: 'lake-house-weekend', status: 'active' }),
       document('road-trip', { groupId: 'road-trip', status: 'active' }),
     ]
+    firebase.groupDocuments = {
+      'groups/lake-house-weekend': document('lake-house-weekend', groupData('lake-house-weekend', 'Lake House Weekend')),
+      'groups/road-trip': document('road-trip', groupData('road-trip', 'Road Trip')),
+    }
     firebase.groupActivityDocuments = {
       'groups/lake-house-weekend/activity': [
         document('activity_a', activityData('expense.updated', '2026-08-31T12:00:00.000Z', 'expense-a')),
@@ -122,12 +128,39 @@ describe('Task 7 Firebase repository query boundaries', () => {
     expect(firebase.documentReads.filter((path) => path === 'users/maya-p')).toHaveLength(1)
   })
 
+  it('reuses group documents loaded for the overview when a group is opened', async () => {
+    const repository = createFirebaseRepository(configuration)
+
+    await expect(repository.groups.list()).resolves.toHaveLength(2)
+    const readsAfterOverview = firebase.documentReads.filter((path) => path === 'groups/lake-house-weekend').length
+    await expect(repository.groups.getById('lake-house-weekend')).resolves.toMatchObject({ id: 'lake-house-weekend' })
+
+    expect(firebase.documentReads.filter((path) => path === 'groups/lake-house-weekend')).toHaveLength(readsAfterOverview)
+  })
+
   it('excludes expense tombstones from live journals and aggregates while retaining direct audit lookup', async () => {
     const repository = createFirebaseRepository(configuration)
 
     await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.toHaveLength(1)
     await expect(repository.groups.getTotals('lake-house-weekend')).resolves.toHaveLength(1)
     await expect(repository.expenses.getById('lake-house-weekend', 'deleted-expense')).resolves.toMatchObject({ deletedAt: '2026-08-31T12:00:00.000Z' })
+  })
+
+  it('uses an audited current expense projection without fetching its revision document', async () => {
+    firebase.expenseDocuments = [document('edited-expense', {
+      ...expenseData(),
+      headRevision: 2,
+      headDeleted: false,
+      lastResourceToken: 'd'.repeat(48),
+      current: { ...expenseData(), description: 'Updated groceries', revision: 2 },
+    })]
+    const repository = createFirebaseRepository(configuration)
+
+    await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.toEqual([
+      expect.objectContaining({ id: 'edited-expense', description: 'Updated groceries', revision: 2 }),
+    ])
+
+    expect(firebase.documentReads.filter((path) => path.includes('/revisions/'))).toHaveLength(0)
   })
 
   it('uses server filters, stable document ordering, limit-plus-one, and cursor continuation for activity', async () => {
@@ -233,6 +266,10 @@ function expenseData() {
     total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
     allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [],
   }
+}
+
+function groupData(id: string, name: string) {
+  return { id, name, currency: 'USD', memberIds: ['maya-p'], createdByUid: 'maya-p' }
 }
 
 function activityData(kind: string, createdAt: string, expenseId?: string, commentId?: string, settlementId?: string) {

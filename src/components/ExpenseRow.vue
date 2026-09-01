@@ -181,4 +181,25 @@ watch(
 @media (prefers-reduced-motion: reduce) {
   .expense-row[data-sync-state="pending"] { animation: none; }
 }
+@media (max-width: 520px) {
+  .expense-row--journal .expense-row__body,
+  .expense-row--journal.expense-row--reflow .expense-row__body {
+    grid-template-areas:
+      "date category summary balance"
+      "date category summary paid";
+    grid-template-columns: 28px 40px minmax(0, 1fr) 72px;
+    column-gap: 7px;
+    row-gap: 4px;
+    min-height: 88px;
+    padding: 8px 0;
+  }
+  .expense-row--journal .expense-row__date { grid-area: date; }
+  .expense-row--journal .expense-row__category { grid-area: category; width: 40px; min-width: 40px; height: 40px; }
+  .expense-row--journal .expense-row__summary { grid-area: summary; align-self: center; }
+  .expense-row--journal .expense-row__amount--paid { grid-area: paid; align-self: start; color: var(--ion-color-medium); font-size: 0.72rem; }
+  .expense-row--journal .expense-row__amount--balance { grid-area: balance; align-self: end; font-size: 0.82rem; font-weight: 650; }
+  .expense-row--journal .expense-row__summary strong { font-size: 0.92rem; line-height: 1.18; }
+  .expense-row--journal .expense-row__summary > span:last-of-type { display: none; }
+  .expense-row__sync-actions { margin-left: 75px; }
+}
 </style>

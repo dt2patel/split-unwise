@@ -31,11 +31,15 @@ export const useGroupStore = defineStore('groups', () => {
   const expenses = ref<readonly ExpenseRow[]>([])
   const activity = ref<readonly ActivityItem[]>([])
   const isLoading = ref(false)
+  const isActivityLoading = ref(false)
   const error = ref<string>()
   const queueRevision = ref(0)
   const acknowledgedOperationIds = new Set<string>()
   const tombstoneWatermarks = new Map<string, Map<string, number>>()
   let latestGroupRequest = 0
+  let latestActivityRequest = 0
+  let loadedActivityGroupId: string | undefined
+  let activeActivityRequest: { readonly groupId: string; readonly promise: Promise<void> } | undefined
   const unsubscribe = queue.subscribe((operation) => {
     rememberTombstone(operation, tombstoneWatermarks)
     queueRevision.value += 1
@@ -95,7 +99,6 @@ export const useGroupStore = defineStore('groups', () => {
         repository.app.getCurrentUser(),
         repository.groups.listMembers(groupId),
         repository.expenses.listForGroup(groupId),
-        repository.activity.listForGroup(groupId),
       ])
       void journalRequest.catch(() => undefined)
       const group = await groupRequest
@@ -103,14 +106,13 @@ export const useGroupStore = defineStore('groups', () => {
       if (!group) throw new Error('This group is not available.')
       if (group.id !== groupId) throw new Error('The loaded group did not match the requested group.')
       activeGroup.value = group
-      const [user, loadedMembers, loadedExpenses, loadedActivity] = await journalRequest
+      const [user, loadedMembers, loadedExpenses] = await journalRequest
       if (request !== latestGroupRequest) return
       // Preserve deterministic load errors for malformed/overflowing repository data.
       netsByCurrency(loadedExpenses, user.id, group.currency)
       currentUser.value = user
       members.value = loadedMembers
       expenses.value = loadedExpenses
-      activity.value = loadedActivity
       for (const operation of queue.snapshot()) rememberTombstone(operation, tombstoneWatermarks)
       await acknowledgeConfirmedOperations(groupId, loadedExpenses)
     } catch (reason) {
@@ -120,6 +122,30 @@ export const useGroupStore = defineStore('groups', () => {
     } finally {
       if (request === latestGroupRequest) isLoading.value = false
     }
+  }
+
+  function loadActivity(groupId: string, force = false): Promise<void> {
+    if (!force && loadedActivityGroupId === groupId) return Promise.resolve()
+    if (!force && activeActivityRequest?.groupId === groupId) return activeActivityRequest.promise
+    const request = ++latestActivityRequest
+    isActivityLoading.value = true
+    let pending!: Promise<void>
+    pending = (async () => {
+      try {
+        await (session as typeof session & { readonly ready?: Promise<void> }).ready
+        const loaded = await repository.activity.listForGroup(groupId)
+        if (request !== latestActivityRequest || activeGroup.value?.id !== groupId) return
+        activity.value = loaded
+        loadedActivityGroupId = groupId
+      } catch (reason) {
+        if (request === latestActivityRequest && activeGroup.value?.id === groupId) error.value = messageFor(reason)
+      } finally {
+        if (request === latestActivityRequest) isActivityLoading.value = false
+        if (activeActivityRequest?.promise === pending) activeActivityRequest = undefined
+      }
+    })()
+    activeActivityRequest = { groupId, promise: pending }
+    return pending
   }
 
   function positionFor(expense: ExpenseRow): UserExpensePosition {
@@ -214,10 +240,12 @@ export const useGroupStore = defineStore('groups', () => {
     recentActivity,
     currentUserNets,
     isLoading,
+    isActivityLoading,
     error,
     loadOverview,
     loadGroupList,
     loadGroup,
+    loadActivity,
     positionFor,
     payerName,
     retryOperation,
@@ -294,6 +322,9 @@ export const useGroupStore = defineStore('groups', () => {
     members.value = []
     expenses.value = []
     activity.value = []
+    loadedActivityGroupId = undefined
+    latestActivityRequest += 1
+    isActivityLoading.value = false
   }
 })
 

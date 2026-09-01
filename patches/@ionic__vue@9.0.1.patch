@@ -1,0 +1,13 @@
+diff --git a/dist/index.js b/dist/index.js
+index 6cf2b0d88921541056308d07029d26f6b9d60d16..f17cc67a104c4bffb0c87113403a89194a9ce412 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1740,7 +1740,7 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
+                     enteringViewItem.registerCallback = undefined;
+                 };
+             }
+-            else {
++            else if (enteringViewItem.ionPageElement !== undefined) {
+                 handlePageTransition();
+             }
+             components.value = viewStacks.getChildrenToRender(id);

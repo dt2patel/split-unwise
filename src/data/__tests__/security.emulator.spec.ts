@@ -199,13 +199,13 @@ describe('Firestore rules in the emulator', () => {
     }
     const editHead = {
       ...beforeEdit, lastOperationId: 'edit-operation-f', lastRequestFingerprint: 'f'.repeat(64), lastResourceToken: editToken,
-      headRevision: 2, headDeleted: false,
+      headRevision: 2, headDeleted: false, current: editedExpense,
     }
     const editVersion = sparkExpenseVersion(editedExpense, 'edit-operation-f', 'updated', { id: 'active', displayName: 'Active Member' })
     await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, editToken, editHead, editVersion))
     const savedEditVersion = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()!
     await assertSucceeds(setDoc(doc(active, `groups/group-a/activity/activity-${editToken}`), sparkExpenseActivity(editedExpense, 'expense.updated', savedEditVersion.createdAt)))
-    expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 2, headDeleted: false })
+    expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 2, headDeleted: false, current: { description: 'Audited change', revision: 2 } })
     expect((await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense).toMatchObject({ description: 'Audited change', revision: 2 })
 
     const beforeDeniedEdit = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}`))).data()!
@@ -217,7 +217,7 @@ describe('Firestore rules in the emulator', () => {
     }
     await assertFails(commitSparkExpenseMutation(friend, expense.id as string, deniedToken, {
       ...beforeDeniedEdit, lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: deniedToken,
-      headRevision: 3, headDeleted: false,
+      headRevision: 3, headDeleted: false, current: forgedExpense,
     }, sparkExpenseVersion(forgedExpense, 'friend-edit-d', 'updated', { id: 'friend', displayName: 'Friend' })))
 
     const beforeDelete = (await getDoc(reference)).data()!
@@ -229,11 +229,11 @@ describe('Firestore rules in the emulator', () => {
     }
     await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, deleteToken, {
       ...beforeDelete, lastOperationId: 'delete-operation-1', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: deleteToken,
-      headRevision: 3, headDeleted: true,
+      headRevision: 3, headDeleted: true, current: deletedExpense,
     }, sparkExpenseVersion(deletedExpense, 'delete-operation-1', 'deleted', { id: 'active', displayName: 'Active Member' })))
     const savedDeleteVersion = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()!
     await assertSucceeds(setDoc(doc(active, `groups/group-a/activity/activity-${deleteToken}`), sparkExpenseActivity(deletedExpense, 'expense.deleted', savedDeleteVersion.createdAt)))
-    expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 3, headDeleted: true })
+    expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 3, headDeleted: true, current: { description: 'Audited change', revision: 3 } })
     expect((await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()?.expense).toMatchObject({ description: 'Audited change', revision: 3 })
     await assertFails(deleteDoc(reference))
     await assertFails(updateDoc(reference, { description: 'Edit after delete' }))

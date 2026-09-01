@@ -98,7 +98,7 @@ describe('Lake House group journal', () => {
     setAppSessionForTesting(createAppSession({
       repository: {
         ...repository,
-        activity: { ...repository.activity, async listForGroup() { return activityGate } },
+        expenses: { ...repository.expenses, async listForGroup() { return activityGate } },
       },
       commandStorage: createMemoryCommandStorage(),
     }))
@@ -118,7 +118,7 @@ describe('Lake House group journal', () => {
 
     expect(wrapper.get('h1').text()).toBe('Lake House Weekend')
     expect(wrapper.get('[data-testid="group-cover"]').attributes('src')).toBe(lakeHouseGroup.coverImageUrl)
-    expect(wrapper.find('[data-testid="group-split-pane"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="group-split-pane"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="group-monogram"]').text()).toBe('LW')
     expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('You are owed')
     expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$36.25')
@@ -155,6 +155,9 @@ describe('Lake House group journal', () => {
 
     expect(wrapper.get('[data-action="settle-up"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/settle-up')
     expect(wrapper.get('[data-action="balances"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/balances')
+    expect(wrapper.get('[data-action="invite"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/invite')
+    expect(wrapper.find('[data-action="totals"]').exists()).toBe(false)
+    await wrapper.get('[data-action="more"]').trigger('click')
     expect(wrapper.get('[data-action="totals"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/totals')
     expect(wrapper.get('[data-action="charts"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/charts')
     expect(wrapper.get('[data-action="convert"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/convert')
@@ -173,6 +176,7 @@ describe('Lake House group journal', () => {
 
     expect(wrapper.find('[data-testid="expense-journal"]').exists()).toBe(true)
     await wrapper.get('[data-view="activity"]').trigger('click')
+    await flushPromises()
     expect(wrapper.find('[data-testid="expense-journal"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="group-activity"]').text()).toContain('Maya P. added Groceries')
 
@@ -217,10 +221,16 @@ describe('Lake House group journal', () => {
     expect(groupDetailSource).toMatch(/\.activity-list__body\s*\{[^}]*min-height:\s*44px/s)
   })
 
+  it('keeps the routed Ionic page as the native navigation root', () => {
+    expect(groupDetailSource).not.toContain('<ion-split-pane')
+    expect(groupDetailSource).not.toContain('class="ion-page group-detail__detail"')
+    expect(groupDetailSource).toMatch(/<ion-page[^>]*>\s*<ion-header/s)
+  })
+
   it('marks the hero collapsed after the journal scroll threshold', async () => {
     const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
 
-    wrapper.findAllComponents({ name: 'IonContent' })[1].vm.$emit('ionScroll', { detail: { scrollTop: 96 } })
+    wrapper.findAllComponents({ name: 'IonContent' })[0].vm.$emit('ionScroll', { detail: { scrollTop: 96 } })
     await wrapper.vm.$nextTick()
     expect(wrapper.get('[data-testid="group-detail"]').classes()).toContain('group-detail--collapsed')
   })

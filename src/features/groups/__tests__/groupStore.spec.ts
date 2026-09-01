@@ -103,31 +103,35 @@ describe('group load identity', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(calls).toEqual({ group: 1, user: 1, members: 1, expenses: 1, activity: 1 })
+    expect(calls).toEqual({ group: 1, user: 1, members: 1, expenses: 1, activity: 0 })
 
     request.resolve(snapshot('a', 'Group A'))
     await Promise.all([first, second])
     expect(store.activeGroup?.id).toBe('a')
   })
 
-  it('reveals the group shell before the slower journal reads finish', async () => {
+  it('does not block the expense journal on the activity feed and loads activity on demand', async () => {
     const activity = deferred<readonly ActivityItem[]>()
     const base = repositoryFor({ a: Promise.resolve(snapshot('a', 'Group A')) })
+    const listActivity = vi.fn(() => activity.promise)
     repositoryHarness.current = {
       ...base,
-      activity: { ...base.activity, async listForGroup() { return activity.promise } },
+      activity: { ...base.activity, listForGroup: listActivity },
     }
     const store = useGroupStore()
 
-    const loading = store.loadGroup('a')
-    await flushPromises()
+    await store.loadGroup('a')
 
     expect(store.activeGroup?.id).toBe('a')
-    expect(store.isLoading).toBe(true)
-
-    activity.resolve([])
-    await loading
     expect(store.isLoading).toBe(false)
+    expect(listActivity).not.toHaveBeenCalled()
+
+    const loadingActivity = store.loadActivity('a')
+    await Promise.resolve()
+    expect(listActivity).toHaveBeenCalledOnce()
+    activity.resolve([])
+    await loadingActivity
+    expect(store.isActivityLoading).toBe(false)
   })
 
   it('keeps an already loaded group usable while refreshing it', async () => {

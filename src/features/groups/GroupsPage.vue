@@ -101,4 +101,10 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
 .group-row__copy strong { font-size: 1rem; }
 .group-row__copy small { color: var(--ion-color-medium); }
 .group-row > ion-icon { color: var(--su-accent); font-size: 1.05rem; }
+@media (max-width: 520px) {
+  .create-group { grid-template-columns: 1fr; padding: 14px; border-radius: 16px; }
+  .create-group > p,.create-group > div { grid-column: 1; }
+  .create-group > div { justify-content: stretch; }
+  .create-group > div ion-button { flex: 1; }
+}
 </style>
