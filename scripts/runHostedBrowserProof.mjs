@@ -158,8 +158,39 @@ async function verifyCurrencyConversion(page) {
   await cardModal.waitFor({ state: 'visible' })
   await cardModal.getByRole('heading', { name: 'Convert existing activity to EUR?', exact: true }).waitFor({ state: 'visible' })
   if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted currency conversion did not use the Ionic iOS card modal.')
-  await cardModal.locator('[data-testid="confirm-conversion"]').click()
-  await cardModal.waitFor({ state: 'hidden', timeout: 120_000 })
+  const confirm = cardModal.locator('[data-testid="confirm-conversion"]')
+  await confirm.click()
+  const applyFailure = cardModal.locator('[role="alert"]')
+  try {
+    const outcome = await Promise.race([
+      cardModal.waitFor({ state: 'hidden', timeout: 120_000 }).then(() => 'closed'),
+      applyFailure.waitFor({ state: 'visible', timeout: 120_000 }).then(() => 'failed'),
+    ])
+    if (outcome === 'failed') throw new Error(`Hosted currency conversion failed in the mobile UI: ${(await applyFailure.textContent())?.trim() || 'unknown error'}`)
+  } catch (cause) {
+    const diagnostic = await page.evaluate(() => ({
+      operations: Object.entries(localStorage).flatMap(([key, value]) => {
+        if (!key.startsWith('split-unwise:command-queue:')) return []
+        try {
+          const parsed = JSON.parse(value)
+          if (!Array.isArray(parsed?.operations)) return []
+          return parsed.operations
+            .filter((operation) => operation?.envelope?.kind === 'group.currency-conversion')
+            .map((operation) => ({
+              kind: operation.envelope.kind,
+              operationId: operation.envelope.operationId,
+              status: operation.status,
+              ...(operation.error ? { error: operation.error } : {}),
+            }))
+        } catch { return [] }
+      }),
+    }))
+    throw new Error(`Hosted currency conversion did not close cleanly: ${JSON.stringify({
+      ...diagnostic,
+      buttonText: (await confirm.textContent())?.trim(),
+      buttonDisabled: await confirm.isDisabled(),
+    })}`, { cause })
+  }
   await page.getByText('Existing group activity now uses EUR. New expenses keep the currency entered until you convert again.', { exact: true }).waitFor({ state: 'visible' })
   await page.getByLabel('Active conversion').getByText('EUR', { exact: true }).waitFor({ state: 'visible' })
   const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)

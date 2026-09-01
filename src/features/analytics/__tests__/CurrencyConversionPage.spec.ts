@@ -1,18 +1,37 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent, ref, watch } from 'vue'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import CurrencyConversionPage from '../CurrencyConversionPage.vue'
 
+const GuardedIonModal = defineComponent({
+  name: 'IonModal',
+  props: ['isOpen', 'canDismiss', 'presentingElement', 'initialBreakpoint', 'breakpoints'],
+  emits: ['didDismiss'],
+  setup(props, { emit }) {
+    const presented = ref(props.isOpen === true)
+    watch(() => props.isOpen, async (isOpen) => {
+      if (isOpen) presented.value = true
+      else if (!props.canDismiss || await props.canDismiss()) {
+        presented.value = false
+        emit('didDismiss')
+      }
+    })
+    return { presented }
+  },
+  template: '<aside v-if="presented" data-testid="conversion-modal"><slot /></aside>',
+})
+
 const stubs = {
   IonPage: { template: '<div class="ion-page"><slot /></div>' }, IonHeader: { template: '<header><slot /></header>' },
   IonToolbar: { template: '<div><slot /></div>' }, IonTitle: { template: '<div><slot /></div>' }, IonButtons: { template: '<div><slot /></div>' },
   IonBackButton: { props: ['defaultHref', 'text'], template: '<a data-testid="back" :href="defaultHref">{{ text }}</a>' },
   IonContent: { template: '<section><slot /></section>' }, IonButton: { template: '<button type="button"><slot /></button>' },
-  IonModal: { name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement', 'initialBreakpoint', 'breakpoints'], emits: ['didDismiss'], template: '<aside v-if="isOpen" data-testid="conversion-modal"><slot /></aside>' },
+  IonModal: GuardedIonModal,
   IonIcon: { template: '<span aria-hidden="true" />' },
 }
 
@@ -82,6 +101,7 @@ describe('applied currency conversion page', () => {
 
     await wrapper.get('[data-testid="confirm-conversion"]').trigger('click')
     await vi.waitFor(() => expect(wrapper.text()).toContain('Existing group activity now uses EUR'))
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="conversion-modal"]').exists()).toBe(false))
     const settings = await session.repository.groups.getSettings('lake-house-weekend')
     expect(settings.currencyConversion).toMatchObject({ targetCurrency: 'EUR', rates: [{ baseCurrency: 'USD', quoteCurrency: 'EUR' }] })
     expect((await session.repository.expenses.getById('lake-house-weekend', 'dinner'))?.total.currency).toBe('EUR')

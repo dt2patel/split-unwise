@@ -147,7 +147,7 @@ function closeApply(): void {
   applyOpen.value = false
   applyError.value = ''
 }
-async function canDismissApply(): Promise<boolean> { return !applying.value }
+async function canDismissApply(): Promise<boolean> { return !applyOpen.value || !applying.value }
 async function applyConversion(): Promise<void> {
   const loaded = snapshot.value
   if (!loaded || !canApply.value) return
