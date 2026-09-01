@@ -38,6 +38,9 @@ describe('Firebase security contract', () => {
     expect(firestoreRules).toContain('validSparkNotificationReadCursorUpdate(request.resource.data)')
     expect(firestoreRules).toContain('allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId)')
     expect(firestoreRules).toContain('validUsedInvitation(request.resource.data.invitationId, groupId, uid)')
+    expect(firestoreRules).toContain("data.kind in ['group', 'friendship']")
+    expect(firestoreRules).toContain("group.get('kind', 'group') != 'friendship' || ('targetEmail' in data && data.targetEmail != null && group.memberIds.size() < 2)")
+    expect(firestoreRules).toContain("resource.data.get('kind', 'group') != 'friendship' || request.resource.data.memberIds.size() == 2")
   })
 
   it('locks draft uploads to exact owner metadata, safe image types, and the inclusive 15 MiB boundary', () => {

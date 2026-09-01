@@ -32,10 +32,12 @@ type GroupView = 'expenses' | 'activity'
 
 const route = useRoute()
 const store = useGroupStore()
-const { activeGroup, currentUserNets, error, isActivityLoading, isLoading, journalExpenses, recentActivity } = storeToRefs(store)
+const { activeGroup, currentUserNets, error, isActivityLoading, isLoading, journalExpenses, members, recentActivity } = storeToRefs(store)
 const selectedView = ref<GroupView>('expenses')
 const isCollapsed = ref(false)
 const groupId = computed(() => String(route.params.groupId ?? ''))
+const isFriendship = computed(() => activeGroup.value?.kind === 'friendship')
+const canInvite = computed(() => !isFriendship.value || members.value.length < 2)
 const monthLabel = computed(() => {
   const date = journalExpenses.value[0]?.date
   if (!date) return ''
@@ -107,7 +109,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
     <ion-header class="group-detail__header" translucent>
       <ion-toolbar>
         <ion-buttons slot="start">
-          <ion-back-button default-href="/tabs/groups" text="Back" />
+          <ion-back-button :default-href="isFriendship ? '/tabs/home/friends' : '/tabs/groups'" text="Back" />
         </ion-buttons>
         <ion-title>{{ activeGroup?.name ?? 'Group' }}</ion-title>
         <ion-buttons slot="end">
@@ -115,7 +117,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
             v-if="activeGroup"
             fill="clear"
             :router-link="`/tabs/groups/${groupId}/settings`"
-            aria-label="Group settings"
+            :aria-label="isFriendship ? 'Friend settings' : 'Group settings'"
           >
             <ion-icon :icon="settingsOutline" aria-hidden="true" />
           </ion-button>
@@ -124,12 +126,12 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
     </ion-header>
 
     <ion-content class="group-detail__scroller" data-testid="group-detail-scroll" :fullscreen="true" :scroll-events="true" @ion-scroll="onScroll">
-      <p v-if="isLoading && !activeGroup" class="group-detail__status" role="status">Loading group…</p>
+      <p v-if="isLoading && !activeGroup" class="group-detail__status" role="status">Loading expenses…</p>
       <main v-else-if="activeGroup" class="group-detail__main">
         <group-hero :group="activeGroup" :balances="currentUserNets" :collapsed="isCollapsed" />
-        <action-rail :group-id="groupId" />
+        <action-rail :group-id="groupId" :context-kind="activeGroup.kind" :can-invite="canInvite" />
 
-        <section class="group-detail__ledger" aria-label="Group journal">
+        <section class="group-detail__ledger" :aria-label="isFriendship ? 'Friend expense journal' : 'Group journal'">
           <div v-if="isLoading && selectedView === 'expenses' && journalExpenses.length === 0" class="journal-loading" data-testid="journal-loading" role="status" aria-label="Loading expenses">
             <span class="su-visually-hidden">Loading expenses…</span>
             <div v-for="index in 3" :key="index" class="journal-loading__row" aria-hidden="true">
@@ -189,7 +191,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
           </transition>
         </section>
       </main>
-      <p v-else class="group-detail__status" role="alert">{{ error ?? 'This group is not available.' }}</p>
+      <p v-else class="group-detail__status" role="alert">{{ error ?? 'These shared expenses are not available.' }}</p>
 
       <app-fab
         v-if="activeGroup"

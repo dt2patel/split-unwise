@@ -76,6 +76,31 @@ async function mountRoute(path: string): Promise<VueWrapper> {
 }
 
 describe('Lake House group journal', () => {
+  it('uses friendship language and removes the invite action after the second person joins', async () => {
+    const repository = createDemoRepository()
+    const friendship = { ...lakeHouseGroup, id: 'friend-jordan', kind: 'friendship' as const, name: 'Jordan Lee', memberIds: ['maya-p', 'jordan-k'] }
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...repository,
+        groups: {
+          ...repository.groups,
+          async getById(id) { return id === friendship.id ? friendship : undefined },
+          async listMembers() { return (await repository.groups.listMembers(lakeHouseGroup.id)).slice(0, 2) },
+        },
+        expenses: { ...repository.expenses, async listForGroup() { return [] } },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+
+    const wrapper = await mountRoute('/tabs/groups/friend-jordan')
+
+    expect(wrapper.get('[data-testid="back-button"]').attributes('href')).toBe('/tabs/home/friends')
+    expect(wrapper.get('[aria-label="Friend actions"]').attributes('aria-label')).toBe('Friend actions')
+    expect(wrapper.find('[data-action="invite"]').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="Friend expense journal"]').attributes('aria-label')).toBe('Friend expense journal')
+    expect(wrapper.get('[aria-label="Friend settings"]').attributes('aria-label')).toBe('Friend settings')
+  })
+
   it('does not fetch the desktop group menu on a mobile viewport', async () => {
     const repository = createDemoRepository()
     const list = vi.fn(() => repository.groups.list())

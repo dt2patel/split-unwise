@@ -3,7 +3,7 @@ import { afterAll, expect, it } from 'vitest'
 import { createUserWithEmailAndPassword, deleteUser, getAuth, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth'
 import { deleteApp } from 'firebase/app'
 import { collection, doc, getDoc, getDocs, getFirestore, limit, query } from 'firebase/firestore'
-import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkGroup, createSparkInvitation, synchronizeFirebaseProfile } from '../firebaseSparkMutations'
+import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkGroup, createSparkInvitation, inspectSparkInvitation, synchronizeFirebaseProfile } from '../firebaseSparkMutations'
 import { getSplitUnwiseFirebaseApp, resetFirebaseBootstrapForTesting } from '../firebaseBootstrap'
 import { createFirebaseRepository } from '../firebaseRepository'
 import type { FirebaseConfiguration } from '../firebase'
@@ -61,6 +61,13 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
   await expect(getDoc(doc(db, `groups/${group.groupId}`))).resolves.toMatchObject({ exists: expect.any(Function) })
   const invitation = await createSparkInvitation(configuration, { groupId: group.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
   const token = new URL(invitation.link).hash.slice('#token='.length)
+  const friendship = await createSparkGroup(configuration, { operationId: `live-friendship-${suffix}`, kind: 'friendship', name: 'Live Proof Friend', currency: 'USD' })
+  const friendshipInvitation = await createSparkInvitation(configuration, { groupId: friendship.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app', targetEmail: friendEmail })
+  const friendshipToken = new URL(friendshipInvitation.link).hash.slice('#token='.length)
+  await expect(createFirebaseRepository(configuration, ownerUid).groups.list()).resolves.toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: group.groupId, kind: 'group' }),
+    expect.objectContaining({ id: friendship.groupId, kind: 'friendship', memberIds: [ownerUid] }),
+  ]))
 
   ;({ auth, db } = await restartHostedClient(configuration))
   const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
@@ -68,6 +75,7 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
   await updateProfile(friend.user, { displayName: 'Live Proof Friend' })
   await bootstrapFirebaseProfile(configuration, friend.user)
   await synchronizeFirebaseProfile(configuration, friend.user)
+  await expect(inspectSparkInvitation(configuration, friendshipInvitation.invitationId, friendshipToken)).rejects.toThrow(/verified email/i)
   await acceptSparkInvitation(configuration, invitation.invitationId, token)
   await expect(getDoc(doc(db, `groups/${group.groupId}`))).resolves.toMatchObject({ exists: expect.any(Function) })
 
@@ -88,7 +96,7 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
   ;({ auth, db } = await restartHostedClient(configuration))
   await signInWithEmailAndPassword(auth, friendEmail, password)
   const friendRepository = createFirebaseRepository(configuration, friendUid)
-  console.log('LIVE_PROOF_RESOURCES', JSON.stringify({ ownerUid, friendUid, groupId: group.groupId, invitationId: invitation.invitationId, ownerEmail, friendEmail }))
+  console.log('LIVE_PROOF_RESOURCES', JSON.stringify({ ownerUid, friendUid, groupId: group.groupId, invitationId: invitation.invitationId, friendshipId: friendship.groupId, friendshipInvitationId: friendshipInvitation.invitationId, ownerEmail, friendEmail }))
   await expect(getDocs(query(collection(db, `users/${friendUid}/groups`), limit(100)))).resolves.toMatchObject({ size: 1 })
   await expect(getDoc(doc(db, `groups/${group.groupId}`))).resolves.toMatchObject({ exists: expect.any(Function) })
   await expect(getDoc(doc(db, `groups/${group.groupId}/members/${friendUid}`))).resolves.toMatchObject({ exists: expect.any(Function) })
@@ -138,7 +146,7 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
   const groupReadMs = Math.round(performance.now() - readStartedAt)
   console.log('HOSTED_GROUP_READ_MS', groupReadMs)
   expect(groupReadMs).toBeLessThan(10_000)
-  expect(loadedGroup).toMatchObject({ id: group.groupId, name: 'Live Account Proof' })
+  expect(loadedGroup).toMatchObject({ id: group.groupId, kind: 'group', name: 'Live Account Proof' })
   expect(loadedProfile).toMatchObject({ id: friendUid, displayName: 'Live Proof Friend' })
   expect(loadedMembers).toHaveLength(2)
   expect(loadedExpenses).toEqual([expect.objectContaining({ id: added.expense.id, description: 'Hosted mobile dinner and dessert', revision: 2 })])

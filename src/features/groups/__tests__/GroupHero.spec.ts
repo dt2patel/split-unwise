@@ -4,6 +4,7 @@ import GroupHero from '../components/GroupHero.vue'
 
 const group = {
   id: 'live-account-proof',
+  kind: 'group' as const,
   name: 'Live Account Proof',
   currency: 'USD' as const,
   memberIds: ['owner', 'friend'],

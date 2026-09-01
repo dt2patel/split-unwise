@@ -32,6 +32,10 @@ export async function createInvitationService(db: Firestore, uid: string, raw: u
       if (stored.kind !== 'invitation.create' || stored.requestHash !== hash) throw new LedgerError('already-exists', 'This operation ID was already used.')
       return stored.result
     }
+    const groupData = group.data()!
+    if (groupData.kind === 'friendship' && (!input.targetEmail || !Array.isArray(groupData.memberIds) || groupData.memberIds.length >= 2)) {
+      throw new LedgerError('failed-precondition', 'Friend invitations require a verified email and an open two-person friendship.')
+    }
     const invitation = { schemaVersion: 1, invitationId, groupId: input.groupId, tokenHash, expiresAt, createdAt: now.toISOString(), createdByUid: uid, targetEmail: input.targetEmail ?? null, status: 'active' }
     const storedResult = { invitationId, groupId: input.groupId, expiresAt, targetEmail: input.targetEmail ?? null, groupName: group.data()?.name ?? 'Group' }
     transaction.create(db.doc(`invitations/${invitationId}`), invitation)
@@ -70,6 +74,10 @@ export async function acceptInvitationService(db: Firestore, uid: string, identi
       throw new LedgerError('failed-precondition', 'Invitation was already used.')
     }
     if (member.data()?.status === 'active') return { invitationId: input.invitationId, groupId: data.groupId, status: 'already-member' }
+    const groupData = group.data()!
+    if (groupData.kind === 'friendship' && (!Array.isArray(groupData.memberIds) || groupData.memberIds.length !== 1)) {
+      throw new LedgerError('failed-precondition', 'This friendship already has two people.')
+    }
     const profileData = profile.data()!
     const actor = { id: uid, displayName: profileData.displayName }
     const activityId = deterministicId('act', input.invitationId, uid)
@@ -119,7 +127,7 @@ export async function bootstrapProfileService(db: Firestore, uid: string, identi
   })
 }
 
-const createGroupSchema = z.strictObject({ schemaVersion: z.literal(1), operationId, name: z.string().trim().min(1).max(120), currency: z.string().length(3).toUpperCase() })
+const createGroupSchema = z.strictObject({ schemaVersion: z.literal(1), operationId, kind: z.enum(['group', 'friendship']).default('group'), name: z.string().trim().min(1).max(120), currency: z.string().length(3).toUpperCase() })
 export async function createGroupService(db: Firestore, uid: string, raw: unknown, now = new Date()): Promise<DocumentData> {
   const input = parse(createGroupSchema, raw)
   try { assertCurrencyCode(input.currency) } catch { throw new LedgerError('invalid-argument', 'Group currency must be a supported ISO 4217 code.') }
@@ -135,7 +143,7 @@ export async function createGroupService(db: Firestore, uid: string, raw: unknow
       if (data.kind !== 'group.create' || data.requestHash !== hash) throw new LedgerError('already-exists', 'This operation ID was already used.')
       return data.result
     }
-    const group = { id: groupId, name: input.name, currency: input.currency, memberIds: [uid], createdAt: now.toISOString(), createdByUid: uid, updatedAt: now.toISOString() }
+    const group = { id: groupId, kind: input.kind, name: input.name, currency: input.currency, memberIds: [uid], createdAt: now.toISOString(), createdByUid: uid, updatedAt: now.toISOString() }
     const result = { status: 'created', groupId }
     transaction.create(db.doc(`groups/${groupId}`), group)
     const profileData = profile.data()!

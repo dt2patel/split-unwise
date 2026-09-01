@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ActivityItem, ExpenseComment, ExpenseRevision, ExpenseRow, Group, Member, RecurringExpense, SettlementRecord } from '../../data/repositories'
 import { buildAccountBackup, buildTransactionCsv } from '../premiumExports'
 
-const group: Group = { id: 'lake', name: 'Lake House', currency: 'USD', memberIds: ['maya', 'alex'], syncState: 'fresh' }
+const group: Group = { id: 'lake', kind: 'group', name: 'Lake House', currency: 'USD', memberIds: ['maya', 'alex'], syncState: 'fresh' }
 const members: readonly Member[] = [
   { id: 'alex', displayName: 'Alex', initials: 'AR', isCurrentUser: false },
   { id: 'maya', displayName: 'Maya', initials: 'MP', isCurrentUser: true, canManage: true },

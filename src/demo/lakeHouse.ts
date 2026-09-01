@@ -26,6 +26,7 @@ const taylor = actor('taylor-s', 'Taylor S.')
 
 export const lakeHouseGroup: Group = {
   id: LAKE_HOUSE_GROUP_ID,
+  kind: 'group',
   name: 'Lake House Weekend',
   currency: 'USD',
   coverImageUrl: lakeHouseCoverUrl,

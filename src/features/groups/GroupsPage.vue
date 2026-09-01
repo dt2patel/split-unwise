@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
@@ -11,9 +11,11 @@ import { createClientOperationId } from '../../data/clientOperationId'
 import { loadCurrencyPreferences, SUPPORTED_CURRENCIES } from '../account/currencyPreferences'
 import { getActiveRuntimeConfiguration } from '../../data/firebase'
 import { createSparkGroup } from '../../data/firebaseSparkMutations'
+import { groupContexts } from '../../domain/expenseContexts'
 
 const store = useGroupStore()
 const { groups, error, isLoading } = storeToRefs(store)
+const visibleGroups = computed(() => groupContexts(groups.value))
 const session = getAppSession()
 const router = useRouter()
 const showingCreate = ref(false)
@@ -70,7 +72,7 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
         <p v-else-if="error" role="alert">{{ error }}</p>
         <div v-else class="groups-page__list">
           <router-link
-            v-for="group in groups"
+            v-for="group in visibleGroups"
             :key="group.id"
             class="group-row"
             data-testid="lake-house-link"

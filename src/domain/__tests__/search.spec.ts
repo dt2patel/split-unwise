@@ -63,7 +63,7 @@ describe('premium expense search', () => {
   })
 })
 
-function group(id: string, name: string): Group { return { id, name, currency: 'USD', memberIds: ['maya', 'alex'], syncState: 'fresh' } }
+function group(id: string, name: string): Group { return { id, kind: 'group', name, currency: 'USD', memberIds: ['maya', 'alex'], syncState: 'fresh' } }
 function expense(id: string, groupId: string, description: string, notes: string, category: string, participantIds: readonly string[], date: string, minorAmount: number, currency: 'USD' | 'EUR'): ExpenseRow {
   return {
     id, groupId, description, notes, category, date, total: { currency, minorAmount },

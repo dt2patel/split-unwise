@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
 import { chevronForward, searchOutline } from 'ionicons/icons'
 import { useGroupStore } from '../groups/groupStore'
+import { friendshipContexts, groupContexts } from '../../domain/expenseContexts'
 
 const store = useGroupStore()
 const { groups, currentUser, error, isLoading } = storeToRefs(store)
+const friends = computed(() => friendshipContexts(groups.value))
+const recentGroups = computed(() => groupContexts(groups.value))
 
 onMounted(() => store.loadOverview())
 </script>
@@ -27,10 +30,16 @@ onMounted(() => store.loadOverview())
 
         <p v-if="isLoading" role="status">Loading your groups…</p>
         <p v-else-if="error" role="alert">{{ error }}</p>
-        <section v-else aria-labelledby="recent-groups-title">
+        <template v-else>
+        <section class="friends-card" aria-labelledby="friends-title">
+          <div><h2 id="friends-title">Friends</h2><p>{{ friends.length ? `${friends.length} direct ${friends.length === 1 ? 'friend' : 'friends'}` : 'Add someone for direct expenses' }}</p></div>
+          <router-link data-testid="friends-link" to="/tabs/home/friends">View all <ion-icon :icon="chevronForward" aria-hidden="true" /></router-link>
+          <router-link v-for="friend in friends.slice(0, 2)" :key="friend.id" :data-testid="friend.id" class="friend-chip" :to="`/tabs/groups/${friend.id}`"><span>{{ friend.name.slice(0, 1).toUpperCase() }}</span><strong>{{ friend.name }}</strong><small>{{ friend.memberIds.length < 2 ? 'Pending' : 'Open' }}</small></router-link>
+        </section>
+        <section aria-labelledby="recent-groups-title">
           <h2 id="recent-groups-title">Recent groups</h2>
           <router-link
-            v-for="group in groups"
+            v-for="group in recentGroups"
             :key="group.id"
             class="group-link"
             data-testid="lake-house-link"
@@ -41,6 +50,7 @@ onMounted(() => store.loadOverview())
             <ion-icon class="group-link__chevron" :icon="chevronForward" aria-hidden="true" />
           </router-link>
         </section>
+        </template>
       </main>
     </ion-content>
   </ion-page>
@@ -58,4 +68,5 @@ onMounted(() => store.loadOverview())
 .group-link small { color: var(--ion-color-medium); }
 .group-link__chevron { color: var(--su-accent); font-size: 1.7rem; text-align: end; }
 .home-search-button { min-width: 44px; min-height: 44px; }
+.friends-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:0 0 28px;padding:16px;border-radius:20px;background:var(--su-lilac);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--su-divider) 18%,transparent)}.friends-card h2,.friends-card p{margin:0}.friends-card p{margin-top:4px;color:var(--ion-color-medium);font-size:.78rem}.friends-card>a{display:flex;min-height:44px;align-items:center;gap:2px;color:var(--ion-color-primary);font-size:.8rem;font-weight:700;text-decoration:none}.friend-chip{grid-column:1/-1!important;display:grid!important;grid-template-columns:38px minmax(0,1fr) auto;min-height:50px!important;padding:5px 0;border-top:1px solid color-mix(in srgb,var(--su-divider) 28%,transparent);color:inherit!important}.friend-chip>span{display:grid;width:34px;height:34px;place-items:center;border-radius:50%;background:var(--su-indigo);color:#fff}.friend-chip small{color:var(--ion-color-medium);font-weight:550}
 </style>

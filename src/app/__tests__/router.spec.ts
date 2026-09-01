@@ -9,6 +9,7 @@ describe('application routes', () => {
     ['/tabs/activity', 'activity'],
     ['/tabs/account', 'account'],
     ['/tabs/home/search', 'home-search'],
+    ['/tabs/home/friends', 'friends'],
     ['/tabs/groups/lake-house-weekend', 'group-detail'],
     ['/tabs/home/expenses/new', 'home-expense-create'],
     ['/tabs/groups/expenses/new', 'groups-expense-create'],

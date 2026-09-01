@@ -158,7 +158,7 @@ function repositoryFor(requests: Readonly<Record<string, Promise<LoadBundle>>>):
 function bundle(id: string, name: string): LoadBundle {
   const user = { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true }
   return {
-    group: { id, name, currency: 'USD', memberIds: [user.id], syncState: 'fresh' },
+    group: { id, kind: 'group', name, currency: 'USD', memberIds: [user.id], syncState: 'fresh' },
     user,
     members: [user],
     snapshot: { groupId: id, balanceRevision: 1, simplifyDebtsEnabled: true, pairwise: [], simplified: [] },

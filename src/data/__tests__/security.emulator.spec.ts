@@ -130,6 +130,26 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(setDoc(doc(attacker, 'invitations/not-a-capability'), invitation('not-a-capability', 'group-shared', 'attacker')))
   })
 
+  emulatorIt('keeps a friendship targeted and capped at exactly two people', async () => {
+    const owner = environment.authenticatedContext('friend-owner', { email: 'owner@example.com', email_verified: true }).firestore()
+    const friend = environment.authenticatedContext('friend-member', { email: 'friend@example.com', email_verified: true }).firestore()
+    const third = environment.authenticatedContext('friend-third', { email: 'third@example.com', email_verified: true }).firestore()
+    await assertSucceeds(setDoc(doc(owner, 'users/friend-owner'), profile('Friend Owner', 'FO')))
+    await assertSucceeds(setDoc(doc(friend, 'users/friend-member'), profile('Friend Member', 'FM')))
+    await assertSucceeds(setDoc(doc(third, 'users/friend-third'), profile('Third Person', 'TP')))
+    await assertSucceeds(commitGroupBundle(owner, 'friendship-shared', 'friend-owner', 'Friend Owner', 'FO', ['friend-owner'], 'friendship'))
+
+    const invitationId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    const secondInvitationId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    await assertSucceeds(setDoc(doc(owner, `invitations/${invitationId}`), invitation(invitationId, 'friendship-shared', 'friend-owner', 'friend@example.com')))
+    await assertSucceeds(setDoc(doc(owner, `invitations/${secondInvitationId}`), invitation(secondInvitationId, 'friendship-shared', 'friend-owner', 'third@example.com')))
+    await assertSucceeds(acceptInvitation(friend, invitationId, 'friendship-shared', 'friend-member', 'Friend Member', 'FM', ['friend-owner', 'friend-member']))
+
+    const fullInvitationId = 'ccccccccccccccccccccccccccccccccccccccccccc'
+    await assertFails(setDoc(doc(owner, `invitations/${fullInvitationId}`), invitation(fullInvitationId, 'friendship-shared', 'friend-owner', 'another@example.com')))
+    await assertFails(acceptInvitation(third, secondInvitationId, 'friendship-shared', 'friend-third', 'Third Person', 'TP', ['friend-owner', 'friend-member', 'friend-third']))
+  })
+
   emulatorIt('allows only self-private and active-member bounded reads', async () => {
     await environment.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(context.firestore(), 'groups/group-a/members/outsider'), { status: 'active', canManage: false, displayName: 'Outsider' })
@@ -390,14 +410,14 @@ function sparkNotificationReadCursor(revision: number, operationId: string, toke
   }
 }
 
-function group(groupId: string, ownerUid: string, memberIds: readonly string[]): Record<string, unknown> {
-  return { id: groupId, name: 'Shared group', currency: 'USD', memberIds, createdByUid: ownerUid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
+function group(groupId: string, ownerUid: string, memberIds: readonly string[], kind: 'group' | 'friendship' = 'group'): Record<string, unknown> {
+  return { id: groupId, kind, name: 'Shared group', currency: 'USD', memberIds, createdByUid: ownerUid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
 }
 
-function commitGroupBundle(source: unknown, groupId: string, ownerUid: string, displayName: string, initials: string, memberIds: readonly string[] = [ownerUid]): Promise<void> {
+function commitGroupBundle(source: unknown, groupId: string, ownerUid: string, displayName: string, initials: string, memberIds: readonly string[] = [ownerUid], kind: 'group' | 'friendship' = 'group'): Promise<void> {
   const db = source as Firestore
   const batch = writeBatch(db)
-  batch.set(doc(db, `groups/${groupId}`), group(groupId, ownerUid, memberIds))
+  batch.set(doc(db, `groups/${groupId}`), group(groupId, ownerUid, memberIds, kind))
   batch.set(doc(db, `groups/${groupId}/members/${ownerUid}`), { status: 'active', role: 'owner', canManage: true, displayName, initials, avatarUrl: null, joinedAt: serverTimestamp() })
   batch.set(doc(db, `groups/${groupId}/settings/defaults`), { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true, updatedAt: serverTimestamp() })
   batch.set(doc(db, `groups/${groupId}/balance/current`), { groupId, balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
@@ -405,10 +425,11 @@ function commitGroupBundle(source: unknown, groupId: string, ownerUid: string, d
   return batch.commit()
 }
 
-function invitation(invitationId: string, groupId: string, creatorUid: string): Record<string, unknown> {
+function invitation(invitationId: string, groupId: string, creatorUid: string, targetEmail?: string): Record<string, unknown> {
   return {
     schemaVersion: 1, invitationId, tokenHash: invitationId, groupId, groupName: 'Shared group', status: 'active', createdByUid: creatorUid,
     createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt: Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    ...(targetEmail ? { targetEmail } : {}),
   }
 }
 

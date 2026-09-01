@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { IonIcon } from '@ionic/vue'
-import { peopleOutline } from 'ionicons/icons'
+import { peopleOutline, personOutline } from 'ionicons/icons'
 import BalanceSummary from './BalanceSummary.vue'
 import type { Group } from '../../../data'
 import type { Money } from '../../../domain/model'
@@ -24,7 +24,7 @@ const initials = computed(() => {
         alt=""
       >
       <div v-else class="group-hero__cover-fallback" data-testid="group-cover-fallback" aria-hidden="true">
-        <ion-icon :icon="peopleOutline" />
+        <ion-icon :icon="group.kind === 'friendship' ? personOutline : peopleOutline" />
       </div>
     </div>
     <div class="group-hero__identity">

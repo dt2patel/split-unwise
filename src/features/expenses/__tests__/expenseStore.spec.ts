@@ -132,7 +132,7 @@ describe('expense store lifecycle', () => {
     const base = createDemoRepository()
     const slow = deferred<Group | undefined>()
     const currentUser = await base.app.getCurrentUser()
-    const fastGroup: Group = { id: 'fast-context', name: 'Fast context', currency: 'USD', memberIds: [currentUser.id], syncState: 'fresh' }
+    const fastGroup: Group = { id: 'fast-context', kind: 'group', name: 'Fast context', currency: 'USD', memberIds: [currentUser.id], syncState: 'fresh' }
     const slowGroup: Group = { ...fastGroup, id: 'slow-context', name: 'Slow context' }
     const repository: AppRepository = {
       ...base,
@@ -163,7 +163,7 @@ describe('expense store lifecycle', () => {
     const base = createDemoRepository()
     const currentUser = await base.app.getCurrentUser()
     const slowMembers = deferred<readonly Member[]>()
-    const slowGroup: Group = { id: 'slow-context', name: 'Slow context', currency: 'EUR', memberIds: [currentUser.id], syncState: 'fresh' }
+    const slowGroup: Group = { id: 'slow-context', kind: 'group', name: 'Slow context', currency: 'EUR', memberIds: [currentUser.id], syncState: 'fresh' }
     const repository: AppRepository = {
       ...base,
       groups: {
@@ -193,8 +193,8 @@ describe('expense store lifecycle', () => {
     const currentUser = await base.app.getCurrentUser()
     const firstMembers = deferred<readonly Member[]>()
     const secondMembers = deferred<readonly Member[]>()
-    const firstGroup: Group = { id: 'first-context', name: 'First context', currency: 'EUR', memberIds: [currentUser.id], syncState: 'fresh' }
-    const secondGroup: Group = { id: 'second-context', name: 'Second context', currency: 'BHD', memberIds: [currentUser.id], syncState: 'fresh' }
+    const firstGroup: Group = { id: 'first-context', kind: 'group', name: 'First context', currency: 'EUR', memberIds: [currentUser.id], syncState: 'fresh' }
+    const secondGroup: Group = { id: 'second-context', kind: 'group', name: 'Second context', currency: 'BHD', memberIds: [currentUser.id], syncState: 'fresh' }
     const repository: AppRepository = {
       ...base,
       groups: {

@@ -19,9 +19,14 @@ describe('Firebase Spark mutations', () => {
   it('normalizes a supported group and derives a replay-stable strict ID', () => {
     expect(normalizeSparkGroup({ operationId: 'group-12345678-1234-1234-1234-123456789012', name: '  Chicago Weekend  ', currency: 'usd' })).toEqual({
       groupId: 'grp-group-12345678-1234-1234-1234-123456789012',
-      name: 'Chicago Weekend', currency: 'USD',
+      kind: 'group', name: 'Chicago Weekend', currency: 'USD',
+    })
+    expect(normalizeSparkGroup({ operationId: 'friend-12345678-1234-1234-1234-123456789012', kind: 'friendship', name: '  Jordan Lee  ', currency: 'usd' })).toEqual({
+      groupId: 'grp-friend-12345678-1234-1234-1234-123456789012',
+      kind: 'friendship', name: 'Jordan Lee', currency: 'USD',
     })
     expect(() => normalizeSparkGroup({ operationId: 'bad id', name: 'Trip', currency: 'USD' })).toThrow('operation')
+    expect(() => normalizeSparkGroup({ operationId: 'bad-kind-12345678', kind: 'household' as never, name: 'Trip', currency: 'USD' })).toThrow('kind')
   })
 
   it('makes the SHA-256 capability document ID match the private fragment token', async () => {

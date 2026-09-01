@@ -26,6 +26,7 @@ const CurrencyPreferencesPage = () => import('../features/account/CurrencyPrefer
 const InviteSheet = () => import('../features/invitations/InviteSheet.vue')
 const InvitationLandingPage = () => import('../features/invitations/InvitationLandingPage.vue')
 const TransactionImportPage = () => import('../features/transactions/TransactionImportPage.vue')
+const FriendsPage = () => import('../features/friends/FriendsPage.vue')
 
 const routes: RouteRecordRaw[] = [
   { path: '/auth', name: 'auth', component: AuthPage, meta: { public: true } },
@@ -38,6 +39,7 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', name: 'tabs-index', redirect: '/tabs/home' },
       { path: 'home', name: 'home', component: HomePage },
+      { path: 'home/friends', name: 'friends', component: FriendsPage, meta: { pageTitle: 'Friends', pageDescription: 'Manage direct expenses with friends.' } },
       { path: 'groups', name: 'groups', component: GroupsPage },
       { path: 'home/search', name: 'home-search', component: SearchPage, meta: { pageTitle: 'Search', pageDescription: 'Search confirmed expenses across your authorized groups.', hideAppChrome: true } },
       ...(['home', 'groups', 'activity', 'account'] as const).flatMap((origin) => [

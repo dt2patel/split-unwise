@@ -19,8 +19,11 @@ export interface ActorSnapshot {
   readonly displayName: string
 }
 
+export type ExpenseContextKind = 'group' | 'friendship'
+
 export interface Group {
   readonly id: string
+  readonly kind: ExpenseContextKind
   readonly name: string
   readonly currency: Money['currency']
   readonly coverImageUrl?: string

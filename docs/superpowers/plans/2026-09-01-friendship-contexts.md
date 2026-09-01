@@ -34,7 +34,6 @@
 **Files:**
 
 - Modify: `src/data/firebaseSparkMutations.ts`
-- Modify: `src/data/firebaseSparkMutations.pure.ts`
 - Modify: `src/data/__tests__/firebaseSparkMutations.spec.ts`
 - Modify: `src/data/__tests__/firebaseSparkFlow.emulator.spec.ts`
 - Modify: `firestore.rules`

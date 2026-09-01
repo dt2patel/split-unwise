@@ -242,7 +242,7 @@ function repositoryFor(requests: Readonly<Record<string, Promise<GroupSnapshot>>
 
 function snapshot(id: string, name: string, expenses: readonly ExpenseRow[] = []): GroupSnapshot {
   return {
-    group: { id, name, currency: 'USD', coverImageUrl: '/assets/images/lake-house-cover.png', memberIds: [maya.id, jordan.id], syncState: 'fresh' },
+    group: { id, kind: 'group', name, currency: 'USD', coverImageUrl: '/assets/images/lake-house-cover.png', memberIds: [maya.id, jordan.id], syncState: 'fresh' },
     members: [maya, jordan],
     expenses,
     activity: [],

@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { IonButton, IonIcon } from '@ionic/vue'
 import { analyticsOutline, cashOutline, ellipsisHorizontal, peopleOutline, personAddOutline, searchOutline, shareOutline, statsChartOutline, swapHorizontalOutline } from 'ionicons/icons'
 
-const props = defineProps<{ groupId: string }>()
+import type { ExpenseContextKind } from '../../../data'
+
+const props = withDefaults(defineProps<{ groupId: string; contextKind?: ExpenseContextKind; canInvite?: boolean }>(), { contextKind: 'group', canInvite: true })
 
 const showingMore = ref(false)
 
-const primaryActions = [
+const primaryActions = computed(() => [
   { id: 'settle-up', label: 'Settle up', icon: cashOutline, suffix: 'settle-up', primary: true },
   { id: 'balances', label: 'Balances', icon: peopleOutline, suffix: 'balances', primary: false },
-  { id: 'invite', label: 'Invite', icon: personAddOutline, suffix: 'invite', primary: false },
-] as const
+  ...(props.canInvite ? [{ id: 'invite' as const, label: 'Invite', icon: personAddOutline, suffix: 'invite', primary: false }] : []),
+])
 
 const moreActions = [
   { id: 'search', label: 'Search', icon: searchOutline, suffix: 'search', primary: false },
@@ -25,8 +27,8 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
 </script>
 
 <template>
-  <section class="action-rail" aria-label="Group actions">
-    <nav class="action-rail__primary" aria-label="Common group actions">
+  <section class="action-rail" :aria-label="contextKind === 'friendship' ? 'Friend actions' : 'Group actions'">
+    <nav class="action-rail__primary" :class="{ 'action-rail__primary--three': !canInvite }" :aria-label="contextKind === 'friendship' ? 'Common friend actions' : 'Common group actions'">
       <ion-button
         v-for="action in primaryActions"
         :key="action.id"
@@ -60,7 +62,7 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
     </nav>
 
     <transition name="more-actions">
-      <nav v-if="showingMore" id="group-more-actions" class="action-rail__more" aria-label="More group actions">
+      <nav v-if="showingMore" id="group-more-actions" class="action-rail__more" :aria-label="contextKind === 'friendship' ? 'More friend actions' : 'More group actions'">
         <ion-button
           v-for="action in moreActions"
           :key="action.id"
@@ -82,6 +84,7 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
 <style scoped>
 .action-rail { display: grid; gap: 10px; padding: 0 18px 2px; }
 .action-rail__primary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.action-rail__primary--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .action-rail__button { min-width: 0; min-height: 50px; margin: 0; text-transform: none; letter-spacing: 0; font-size: 0.76rem; font-weight: 620; --border-color: color-mix(in srgb, var(--su-accent) 42%, transparent); --border-width: 1px; --border-radius: 16px; --box-shadow: none; --padding-start: 5px; --padding-end: 5px; }
 .action-rail__button-content { display: grid; min-width: 0; justify-items: center; gap: 2px; white-space: nowrap; }
 .action-rail__button ion-icon { margin: 0; font-size: 1.12rem; }

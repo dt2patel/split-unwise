@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { DocumentDecodeError, decodeActivity, decodeExpense, decodeRecurringExpense } from '../firebaseDecoders'
+import { DocumentDecodeError, decodeActivity, decodeExpense, decodeGroup, decodeRecurringExpense } from '../firebaseDecoders'
 import { readFirebaseConfiguration } from '../firebase'
 import { createRepository } from '../repositoryFactory'
 
 describe('Firebase boundary decoders', () => {
+  it('decodes explicit friendship contexts and treats legacy records as groups', () => {
+    const shared = { name: 'Jordan', currency: 'USD', memberIds: ['maya-p', 'jordan-p'] }
+    expect(decodeGroup('friend-jordan', { ...shared, kind: 'friendship' })).toMatchObject({ kind: 'friendship' })
+    expect(decodeGroup('legacy-group', shared)).toMatchObject({ kind: 'group' })
+    expect(() => decodeGroup('unknown-context', { ...shared, kind: 'household' })).toThrow('kind')
+  })
+
   it('rejects an expense with an unsupported currency instead of defaulting it', () => {
     expect(() => decodeExpense('lake-house-weekend', 'bad-money', {
       description: 'Bad', date: '2026-08-30', payments: [], category: 'Other', createdAt: '2026-08-30T12:00:00.000Z', updatedAt: '2026-08-30T12:00:00.000Z', revision: 1,

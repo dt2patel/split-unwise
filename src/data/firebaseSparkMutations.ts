@@ -7,7 +7,7 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
 import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
@@ -567,15 +567,17 @@ function profileInitials(displayName: string): string {
   return displayName.split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('').slice(0, 4) || 'SU'
 }
 
-export function normalizeSparkGroup(input: { readonly operationId: string; readonly name: string; readonly currency: string }): { readonly groupId: string; readonly name: string; readonly currency: string } {
+export function normalizeSparkGroup(input: { readonly operationId: string; readonly kind?: ExpenseContextKind; readonly name: string; readonly currency: string }): { readonly groupId: string; readonly kind: ExpenseContextKind; readonly name: string; readonly currency: string } {
   if (!isStrictId(input.operationId)) throw new Error('Group operation ID is invalid.')
   const groupId = `grp-${input.operationId}`
   if (!isStrictId(groupId)) throw new Error('Group operation ID is too long.')
   const name = input.name.trim().replace(/\s+/g, ' ')
   if (!name || name.length > 120) throw new Error('Group name must be between 1 and 120 characters.')
+  const kind = input.kind ?? 'group'
+  if (kind !== 'group' && kind !== 'friendship') throw new Error('Expense context kind is invalid.')
   const currency = input.currency.trim().toUpperCase()
   try { assertCurrencyCode(currency) } catch { throw new Error('Choose a supported group currency.') }
-  return { groupId, name, currency }
+  return { groupId, kind, name, currency }
 }
 
 export async function buildSparkInvitation(input: { readonly groupId: string; readonly canonicalOrigin: string; readonly targetEmail?: string; readonly now?: Date; readonly random?: (bytes: Uint8Array) => void }): Promise<PreparedInvitation & { readonly secret: string }> {
@@ -640,7 +642,7 @@ async function firebaseProfileSyncOperationId(uid: string, profile: FirebaseProf
   return `auth-profile-${token}`
 }
 
-export async function createSparkGroup(configuration: FirebaseConfiguration, input: { readonly operationId: string; readonly name: string; readonly currency: string }): Promise<{ readonly groupId: string }> {
+export async function createSparkGroup(configuration: FirebaseConfiguration, input: { readonly operationId: string; readonly kind?: ExpenseContextKind; readonly name: string; readonly currency: string }): Promise<{ readonly groupId: string }> {
   const normalized = normalizeSparkGroup(input)
   const app = await getSplitUnwiseFirebaseApp(configuration)
   const auth = getAuth(app)
@@ -652,7 +654,7 @@ export async function createSparkGroup(configuration: FirebaseConfiguration, inp
   const profile = requireProfile(profileSnapshot.data())
   const batch = writeBatch(db)
   batch.set(doc(db, `groups/${normalized.groupId}`), {
-    id: normalized.groupId, name: normalized.name, currency: normalized.currency, memberIds: [user.uid], createdByUid: user.uid,
+    id: normalized.groupId, kind: normalized.kind, name: normalized.name, currency: normalized.currency, memberIds: [user.uid], createdByUid: user.uid,
     createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
   })
   batch.set(doc(db, `groups/${normalized.groupId}/members/${user.uid}`), {
@@ -669,6 +671,25 @@ export async function createSparkGroup(configuration: FirebaseConfiguration, inp
   })
   await batch.commit()
   return { groupId: normalized.groupId }
+}
+
+export async function createSparkFriendship(configuration: FirebaseConfiguration, input: {
+  readonly operationId: string
+  readonly displayName: string
+  readonly email: string
+  readonly currency: string
+  readonly canonicalOrigin: string
+}): Promise<{ readonly groupId: string; readonly invitation: PreparedInvitation }> {
+  const targetEmail = normalizeEmail(input.email)
+  const app = await getSplitUnwiseFirebaseApp(configuration)
+  const user = getAuth(app).currentUser
+  if (!user) throw new Error('Sign in before adding a friend.')
+  if (user.email?.trim().toLowerCase() === targetEmail) throw new Error('Use your friend’s email, not your own.')
+  const { groupId } = await createSparkGroup(configuration, {
+    operationId: input.operationId, kind: 'friendship', name: input.displayName, currency: input.currency,
+  })
+  const invitation = await createSparkInvitation(configuration, { groupId, canonicalOrigin: input.canonicalOrigin, targetEmail })
+  return { groupId, invitation }
 }
 
 export async function createSparkInvitation(configuration: FirebaseConfiguration, input: { readonly groupId: string; readonly canonicalOrigin: string; readonly targetEmail?: string }): Promise<PreparedInvitation> {

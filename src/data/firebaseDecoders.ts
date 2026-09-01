@@ -1,7 +1,7 @@
 import { assertCurrencyCode } from '../domain/money'
 import { computeAllocations } from '../domain/splits'
 import type { Allocation, Recurrence, SplitMethod } from '../domain/model'
-import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseRevision, ExpenseRow, Group, GroupBalanceSnapshot, Member, NotificationItem, RecurringExpense, SettlementBasis, SettlementMethod, SettlementRecord, SettlementVoid } from './repositories'
+import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseContextKind, ExpenseRevision, ExpenseRow, Group, GroupBalanceSnapshot, Member, NotificationItem, RecurringExpense, SettlementBasis, SettlementMethod, SettlementRecord, SettlementVoid } from './repositories'
 import { isStrictId } from './identifiers'
 
 export class DocumentDecodeError extends Error {
@@ -12,10 +12,16 @@ export function decodeGroup(id: string, value: unknown): Group {
   const data = record(value, `group ${id}`)
   const currency = currencyValue(data.currency, `group ${id}.currency`)
   return {
-    id, name: requiredString(data.name, `group ${id}.name`), currency,
+    id, kind: expenseContextKind(data.kind, `group ${id}.kind`), name: requiredString(data.name, `group ${id}.name`), currency,
     ...(data.coverImageUrl === undefined ? {} : { coverImageUrl: requiredString(data.coverImageUrl, `group ${id}.coverImageUrl`) }),
     memberIds: requiredStringArray(data.memberIds, `group ${id}.memberIds`), syncState: 'fresh',
   }
+}
+
+function expenseContextKind(value: unknown, label: string): ExpenseContextKind {
+  if (value === undefined || value === 'group') return 'group'
+  if (value === 'friendship') return value
+  throw new DocumentDecodeError(label, 'must be group or friendship')
 }
 
 /** User-visible group projections are validated before driving a group read. */
