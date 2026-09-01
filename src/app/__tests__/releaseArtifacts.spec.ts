@@ -51,6 +51,7 @@ describe('PWA and Hosting release contracts', () => {
       expect(bySource.get(source)?.get('Cache-Control')).toContain('no-cache')
     }
     const global = bySource.get('**')
+    expect(global?.get('Cache-Control')).toContain('no-cache')
     expect(global?.get('X-Content-Type-Options')).toBe('nosniff')
     expect(global?.get('Cross-Origin-Opener-Policy')).toBe('same-origin-allow-popups')
     expect(global?.get('Content-Security-Policy')).toContain("frame-ancestors 'none'")
