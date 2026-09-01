@@ -513,6 +513,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   function reset(): void {
+    delete editor.occurrenceEditScope
     Object.assign(editor, emptyEditor())
     members.value = []
     availableGroups.value = []
@@ -551,7 +552,6 @@ function editorInputFromExpense(expense: ExpenseRow): ExpenseEditorInput {
     notes: expense.notes ?? '',
     attachmentRefs: [...expense.attachmentRefs],
     recurrence: expense.recurrence,
-    occurrenceEditScope: expense.occurrenceEditScope,
   }
 }
 

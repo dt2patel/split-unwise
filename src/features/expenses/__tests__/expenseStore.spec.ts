@@ -297,6 +297,49 @@ describe('expense store lifecycle', () => {
     expect(session.queue.get('recurring-without-scope')).toBeUndefined()
   })
 
+  it('treats a persisted future edit scope as history and requires a fresh choice when reopened', async () => {
+    const base = createDemoRepository()
+    const repository: AppRepository = {
+      ...base,
+      expenses: {
+        ...base.expenses,
+        async getById(groupId, expenseId) {
+          const expense = await base.expenses.getById(groupId, expenseId)
+          return expense?.id === 'cabin-deposit'
+            ? {
+                ...expense,
+                occurrenceEditScope: 'future',
+                recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' },
+              }
+            : expense
+        },
+      },
+    }
+    const session = createAppSession({ repository, commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    const store = useExpenseStore()
+
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
+
+    expect(await repository.expenses.getById('lake-house-weekend', 'cabin-deposit')).toMatchObject({ occurrenceEditScope: 'future' })
+    expect(store.recurringTemplateId).toBe('cabin-deposit-monthly')
+    expect(store.editor.recurrence).toEqual({ frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' })
+    expect(store.editor.occurrenceEditScope).toBeUndefined()
+    expect(await store.submit('reopened-recurring-without-scope')).toBe(false)
+    expect(store.errors.recurrence).toContain('occurrence or future')
+    expect(session.queue.get('reopened-recurring-without-scope')).toBeUndefined()
+  })
+
+  it('clears the prior editor scope when the same store reopens a recurring expense', async () => {
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
+    store.editor.occurrenceEditScope = 'future'
+
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
+
+    expect(store.editor.occurrenceEditScope).toBeUndefined()
+  })
+
   it('hydrates an existing revision for edit without losing persisted premium fields', async () => {
     const store = useExpenseStore()
     await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })

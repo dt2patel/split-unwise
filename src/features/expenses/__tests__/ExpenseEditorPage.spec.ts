@@ -297,6 +297,33 @@ describe('ExpenseEditorPage', () => {
     expect(store.editor.occurrenceEditScope).toBe('occurrence')
   })
 
+  it('reopens a previously future-edited occurrence with neither scope preselected', async () => {
+    const base = createDemoRepository()
+    const repository = {
+      ...base,
+      expenses: {
+        ...base.expenses,
+        async getById(groupId: string, expenseId: string) {
+          const expense = await base.expenses.getById(groupId, expenseId)
+          return expense?.id === 'cabin-deposit' ? { ...expense, occurrenceEditScope: 'future' as const } : expense
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/cabin-deposit/edit?groupId=lake-house-weekend')
+    await wrapper.get('#recurrence-sheet-trigger').trigger('click')
+
+    expect(store.editor.occurrenceEditScope).toBeUndefined()
+    expect(wrapper.get('[data-occurrence-scope="occurrence"]').attributes('aria-checked')).toBe('false')
+    expect(wrapper.get('[data-occurrence-scope="future"]').attributes('aria-checked')).toBe('false')
+
+    await wrapper.get('[data-action="apply-recurrence"]').trigger('click')
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('Choose whether to change this occurrence')
+    expect(store.activeSheet).toBe('recurrence')
+  })
+
   it('lets composer labels, icons, summaries, and native controls grow at Dynamic Type sizes', async () => {
     const source = readFileSync(resolve(process.cwd(), 'src/features/expenses/ExpenseEditorPage.vue'), 'utf8')
     const css = source.match(/<style scoped>([\s\S]*?)<\/style>/)?.[1]
