@@ -807,6 +807,9 @@ service cloud.firestore {
     function validSparkStoredDefault(groupId, data) {
       return !('defaultSplit' in data) || validSparkDefaultSplit(groupId, data.defaultSplit);
     }
+    function sparkDefaultIncludesMember(data, uid) {
+      return 'defaultSplit' in data && uid in data.defaultSplit.participantIds;
+    }
     function validSparkSettingsShape(groupId, data) {
       return data.keys().hasOnly([
           'schemaVersion', 'groupId', 'revision', 'defaultSplit', 'simplifyDebtsEnabled',
@@ -819,7 +822,7 @@ service cloud.firestore {
         && data.schemaVersion == 1 && data.groupId == groupId
         && data.revision is int && data.revision > 1
         && data.simplifyDebtsEnabled is bool
-        && (data.lastCommandKind == 'group.default-split' || data.lastCommandKind == 'group.simplify-debts')
+        && (data.lastCommandKind == 'group.default-split' || data.lastCommandKind == 'group.simplify-debts' || data.lastCommandKind == 'group.member-remove')
         && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
         && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
         && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
@@ -830,14 +833,20 @@ service cloud.firestore {
       return activity.keys().hasOnly(['groupId', 'operationId', 'kind', 'subject', 'actor', 'createdAt'])
         && activityId == 'activity-' + settings.lastResourceToken
         && activity.groupId == groupId && activity.operationId == settings.lastOperationId
-        && activity.kind == 'group.event' && activity.actor == settings.updatedBy && activity.createdAt == request.time
+        && activity.kind == (settings.lastCommandKind == 'group.member-remove' ? 'membership.changed' : 'group.event')
+        && activity.actor == settings.updatedBy && activity.createdAt == request.time
         && activity.subject.keys().hasOnly(['kind', 'id', 'label'])
-        && activity.subject.kind == 'group' && activity.subject.id == groupId
+        && activity.subject.kind == (settings.lastCommandKind == 'group.member-remove' ? 'membership' : 'group')
+        && activity.subject.id == (settings.lastCommandKind == 'group.member-remove'
+          ? getAfter(/databases/$(database)/documents/groups/$(groupId)).data.lastRemovedMemberId
+          : groupId)
         && (
           (settings.lastCommandKind == 'group.default-split' && 'defaultSplit' in settings && activity.subject.label == 'Default split updated')
           || (settings.lastCommandKind == 'group.default-split' && !('defaultSplit' in settings) && activity.subject.label == 'Default split cleared')
           || (settings.lastCommandKind == 'group.simplify-debts' && settings.simplifyDebtsEnabled == true && activity.subject.label == 'Simplify debts enabled')
           || (settings.lastCommandKind == 'group.simplify-debts' && settings.simplifyDebtsEnabled == false && activity.subject.label == 'Simplify debts disabled')
+          || (settings.lastCommandKind == 'group.member-remove'
+            && activity.subject.label == get(/databases/$(database)/documents/groups/$(groupId)/members/$(activity.subject.id)).data.displayName + ' removed')
         );
     }
     function validSparkSettingsBalanceAdvance(groupId, beforeSettings, afterSettings) {
@@ -849,6 +858,32 @@ service cloud.firestore {
         && after.balanceRevision == before.balanceRevision + 1
         && after.simplifyDebtsEnabled == afterSettings.simplifyDebtsEnabled
         && beforeSettings.simplifyDebtsEnabled != afterSettings.simplifyDebtsEnabled;
+    }
+    function validSparkDefaultSettingsUpdate(groupId, before, after) {
+      return after.lastCommandKind == 'group.default-split'
+        && activeManager(groupId)
+        && after.simplifyDebtsEnabled == before.simplifyDebtsEnabled
+        && after.get('defaultSplit', null) != before.get('defaultSplit', null)
+        && getAfter(/databases/$(database)/documents/groups/$(groupId)/balance/current).data == get(/databases/$(database)/documents/groups/$(groupId)/balance/current).data;
+    }
+    function validSparkSimplifySettingsUpdate(groupId, before, after) {
+      return after.lastCommandKind == 'group.simplify-debts'
+        && after.get('defaultSplit', null) == before.get('defaultSplit', null)
+        && validSparkSettingsBalanceAdvance(groupId, before, after);
+    }
+    function validSparkMemberSettingsUpdate(groupId, before, after) {
+      let group = getAfter(/databases/$(database)/documents/groups/$(groupId)).data;
+      return after.lastCommandKind == 'group.member-remove'
+        && activeManager(groupId)
+        && after.simplifyDebtsEnabled == before.simplifyDebtsEnabled
+        && (!('defaultSplit' in after) || !(group.lastRemovedMemberId in after.defaultSplit.participantIds))
+        && ((sparkDefaultIncludesMember(before, group.lastRemovedMemberId) && !('defaultSplit' in after))
+          || (!sparkDefaultIncludesMember(before, group.lastRemovedMemberId)
+            && after.get('defaultSplit', null) == before.get('defaultSplit', null)))
+        && getAfter(/databases/$(database)/documents/groups/$(groupId)/balance/current).data == get(/databases/$(database)/documents/groups/$(groupId)/balance/current).data
+        && after.lastOperationId == group.lastMembershipOperationId
+        && after.lastRequestFingerprint == group.lastMembershipRequestFingerprint
+        && after.lastResourceToken == group.lastMembershipResourceToken;
     }
     function validSparkSettingsUpdate(groupId, data) {
       let activityId = 'activity-' + data.lastResourceToken;
@@ -863,16 +898,9 @@ service cloud.firestore {
           'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
         ])
         && validSparkSettingsActivityData(groupId, activityId, activity, data)
-        && (
-          (data.lastCommandKind == 'group.default-split'
-            && activeManager(groupId)
-            && data.simplifyDebtsEnabled == resource.data.simplifyDebtsEnabled
-            && data.get('defaultSplit', null) != resource.data.get('defaultSplit', null)
-            && getAfter(/databases/$(database)/documents/groups/$(groupId)/balance/current).data == get(/databases/$(database)/documents/groups/$(groupId)/balance/current).data)
-          || (data.lastCommandKind == 'group.simplify-debts'
-            && data.get('defaultSplit', null) == resource.data.get('defaultSplit', null)
-            && validSparkSettingsBalanceAdvance(groupId, resource.data, data))
-        );
+        && (validSparkDefaultSettingsUpdate(groupId, resource.data, data)
+          || validSparkSimplifySettingsUpdate(groupId, resource.data, data)
+          || validSparkMemberSettingsUpdate(groupId, resource.data, data));
     }
     function validSparkSettingsActivityCreate(groupId, activityId, data) {
       let settings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
@@ -1005,6 +1033,68 @@ service cloud.firestore {
         && request.resource.data.memberIds.toSet() == resource.data.memberIds.toSet().union([request.auth.uid].toSet())
         && request.resource.data.updatedAt == request.time && validInvitationJoin(groupId);
     }
+    function validRemovedMemberDocument(groupId, uid, data) {
+      let group = getAfter(/databases/$(database)/documents/groups/$(groupId)).data;
+      return uid == group.lastRemovedMemberId && uid != request.auth.uid
+        && data.keys().hasOnly([
+          'status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'invitationId', 'joinedAt',
+          'removedByUid', 'removedAt', 'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+        ])
+        && data.status == 'removed' && data.role == 'member' && data.canManage == false
+        && data.removedByUid == request.auth.uid && data.removedAt == request.time
+        && data.lastCommandKind == 'group.member-remove'
+        && data.lastOperationId == group.lastMembershipOperationId
+        && data.lastRequestFingerprint == group.lastMembershipRequestFingerprint
+        && data.lastResourceToken == group.lastMembershipResourceToken;
+    }
+    function validTargetMemberRemoval(groupId, uid, data) {
+      return activeManager(groupId) && resource.data.status == 'active' && resource.data.role == 'member'
+        && resource.data.canManage == false && validRemovedMemberDocument(groupId, uid, data)
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'removedByUid', 'removedAt', 'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+        ]);
+    }
+    function validTargetProjectionRemoval(groupId, uid, data) {
+      let group = getAfter(/databases/$(database)/documents/groups/$(groupId)).data;
+      let member = getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(uid)).data;
+      return activeManager(groupId) && uid == group.lastRemovedMemberId && uid != request.auth.uid
+        && resource.data.groupId == groupId && resource.data.status == 'active'
+        && data.groupId == groupId && data.status == 'removed'
+        && data.removedByUid == request.auth.uid && data.removedAt == request.time && data.updatedAt == request.time
+        && data.diff(resource.data).affectedKeys().hasOnly(['status', 'removedByUid', 'removedAt', 'updatedAt'])
+        && validRemovedMemberDocument(groupId, uid, member);
+    }
+    function validGroupMemberRemoval(groupId) {
+      let data = request.resource.data;
+      let target = data.lastRemovedMemberId;
+      let member = getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(target)).data;
+      let projection = getAfter(/databases/$(database)/documents/users/$(target)/groups/$(groupId)).data;
+      let settings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
+      return activeManager(groupId) && strictId(target) && target != request.auth.uid && target != resource.data.createdByUid
+        && data.keys().hasOnly([
+          'id', 'kind', 'name', 'currency', 'coverImageUrl', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt',
+          'lastMembershipCommandKind', 'lastMembershipOperationId', 'lastMembershipRequestFingerprint',
+          'lastMembershipResourceToken', 'lastRemovedMemberId'
+        ])
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'memberIds', 'updatedAt', 'lastMembershipCommandKind', 'lastMembershipOperationId',
+          'lastMembershipRequestFingerprint', 'lastMembershipResourceToken', 'lastRemovedMemberId'
+        ])
+        && target in resource.data.memberIds && !(target in data.memberIds)
+        && data.memberIds.size() == resource.data.memberIds.size() - 1
+        && data.memberIds.toSet().union([target].toSet()) == resource.data.memberIds.toSet()
+        && data.updatedAt == request.time && data.lastMembershipCommandKind == 'group.member-remove'
+        && data.lastMembershipOperationId is string && data.lastMembershipOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastMembershipRequestFingerprint is string && data.lastMembershipRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastMembershipResourceToken is string && data.lastMembershipResourceToken.matches('^[a-f0-9]{48}$')
+        && validRemovedMemberDocument(groupId, target, member)
+        && projection.status == 'removed' && projection.removedByUid == request.auth.uid
+        && projection.removedAt == request.time && projection.updatedAt == request.time
+        && settings.lastCommandKind == 'group.member-remove'
+        && settings.lastOperationId == data.lastMembershipOperationId
+        && settings.lastRequestFingerprint == data.lastMembershipRequestFingerprint
+        && settings.lastResourceToken == data.lastMembershipResourceToken;
+    }
 
     match /users/{uid} {
       allow get: if owns(uid);
@@ -1022,7 +1112,8 @@ service cloud.firestore {
           || (validJoinProjection(groupId, request.resource.data, request.resource.data.invitationId)
             && validUsedInvitation(request.resource.data.invitationId, groupId, uid))
         );
-        allow update: if validFriendCounterpartProjectionUpdate(groupId, uid, request.resource.data);
+        allow update: if validFriendCounterpartProjectionUpdate(groupId, uid, request.resource.data)
+          || validTargetProjectionRemoval(groupId, uid, request.resource.data);
         allow delete: if false;
       }
       match /activity/{activityId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(100); allow write: if false; }
@@ -1055,7 +1146,7 @@ service cloud.firestore {
       allow get: if activeMemberOfGroup(resource.data);
       allow list, delete: if false;
       allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId);
-      allow update: if validGroupJoin(groupId);
+      allow update: if validGroupJoin(groupId) || validGroupMemberRemoval(groupId);
 
       match /members/{uid} {
         allow get: if activeMember(groupId);
@@ -1066,14 +1157,15 @@ service cloud.firestore {
           || (validJoinMember(request.resource.data, get(/databases/$(database)/documents/users/$(uid)).data, request.resource.data.invitationId)
             && validUsedInvitation(request.resource.data.invitationId, groupId, uid))
         );
-        allow update: if owns(uid) && resource.data.status == 'active'
-          && request.resource.data.status == 'active'
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'initials', 'avatarUrl'])
-          && request.resource.data.displayName == getAfter(/databases/$(database)/documents/users/$(uid)).data.displayName
-          && request.resource.data.initials == getAfter(/databases/$(database)/documents/users/$(uid)).data.initials
-          && request.resource.data.avatarUrl == getAfter(/databases/$(database)/documents/users/$(uid)).data.avatarUrl
-          && getAfter(/databases/$(database)/documents/users/$(uid)).data.updatedAt == request.time
-          && validSparkPrivateReplay(getAfter(/databases/$(database)/documents/users/$(uid)).data, 'profile.update');
+        allow update: if (owns(uid) && resource.data.status == 'active'
+            && request.resource.data.status == 'active'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'initials', 'avatarUrl'])
+            && request.resource.data.displayName == getAfter(/databases/$(database)/documents/users/$(uid)).data.displayName
+            && request.resource.data.initials == getAfter(/databases/$(database)/documents/users/$(uid)).data.initials
+            && request.resource.data.avatarUrl == getAfter(/databases/$(database)/documents/users/$(uid)).data.avatarUrl
+            && getAfter(/databases/$(database)/documents/users/$(uid)).data.updatedAt == request.time
+            && validSparkPrivateReplay(getAfter(/databases/$(database)/documents/users/$(uid)).data, 'profile.update'))
+          || validTargetMemberRemoval(groupId, uid, request.resource.data);
         allow delete: if false;
       }
       match /expenses/{expenseId} {
@@ -1115,7 +1207,7 @@ service cloud.firestore {
             || request.resource.data.kind == 'expense.updated'
             || request.resource.data.kind == 'expense.deleted'
           ? validSparkExpenseActivityCreate(groupId, activityId, request.resource.data)
-          : (request.resource.data.kind == 'group.event'
+          : ((request.resource.data.kind == 'group.event' || request.resource.data.kind == 'membership.changed')
             ? validSparkSettingsActivityCreate(groupId, activityId, request.resource.data)
             : ((request.resource.data.kind == 'comment.added' || request.resource.data.kind == 'comment.deleted')
               ? validSparkCommentActivityCreate(groupId, activityId, request.resource.data)

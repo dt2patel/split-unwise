@@ -23,7 +23,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence card modal, invitation acceptance, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence and member-removal card modals, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -129,6 +129,7 @@ async function verifyAuthenticatedMobileJourney() {
     await context.close()
 
     await verifyInvitationAcceptance(browser, verifiedInvitationUrl)
+    await verifyMemberRemoval(browser)
     await verifyInvitationVerificationGate(browser, unverifiedInvitationUrl)
   } finally {
     await browser.close()
@@ -256,6 +257,54 @@ async function verifyInvitationAcceptance(browser, invitationUrl) {
     assertPageClean()
   } finally {
     await context.close()
+  }
+}
+
+async function verifyMemberRemoval(browser) {
+  const ownerContext = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
+  try {
+    const page = await ownerContext.newPage()
+    const assertPageClean = monitorBrowserErrors(page, 'member removal owner journey')
+    const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
+    if (!navigation?.ok()) throw new Error(`Hosted member-removal owner navigation failed with ${navigation?.status() ?? 'no response'}.`)
+    await signIn(page, ownerEmail)
+    await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
+    await page.goto(`${deepUrl}/settings`, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('heading', { name: 'Group settings', exact: true }).waitFor({ state: 'visible' })
+    await page.getByText('3 active people', { exact: true }).waitFor({ state: 'visible' })
+    await page.getByRole('button', { name: 'Remove Live Third Person from group', exact: true }).click()
+
+    const cardModal = page.locator('ion-modal.show-modal')
+    await cardModal.waitFor({ state: 'visible' })
+    await cardModal.getByRole('heading', { name: 'Remove member', exact: true }).waitFor({ state: 'visible' })
+    if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted member removal did not use the Ionic iOS card modal.')
+    await cardModal.getByRole('button', { name: 'Remove Live Third Person', exact: true }).click()
+    await cardModal.waitFor({ state: 'hidden' })
+    await page.getByText('Live Third Person was removed from the group.', { exact: true }).waitFor({ state: 'visible' })
+    await page.getByText('2 active people', { exact: true }).waitFor({ state: 'visible' })
+    if (await page.getByRole('button', { name: 'Remove Live Third Person from group', exact: true }).count()) {
+      throw new Error('Hosted member list still exposed the removed account.')
+    }
+    assertPageClean()
+  } finally {
+    await ownerContext.close()
+  }
+
+  const removedContext = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
+  try {
+    const page = await removedContext.newPage()
+    const assertPageClean = monitorBrowserErrors(page, 'removed member journey')
+    const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
+    if (!navigation?.ok()) throw new Error(`Hosted removed-member navigation failed with ${navigation?.status() ?? 'no response'}.`)
+    await signIn(page, thirdEmail)
+    await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+    if (await page.getByRole('link', { name: /Live Account Proof/ }).count()) throw new Error('Removed account still listed the group on Home.')
+    await page.goto(deepUrl, { waitUntil: 'domcontentloaded' })
+    await page.getByText('These shared expenses are not available.', { exact: true }).waitFor({ state: 'visible' })
+    assertPageClean()
+  } finally {
+    await removedContext.close()
   }
 }
 

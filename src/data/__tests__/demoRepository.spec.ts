@@ -22,6 +22,7 @@ describe('demo repository', () => {
       expect.objectContaining({ id: 'jordan-k', displayName: 'Jordan K.' }),
       expect.objectContaining({ id: 'alex-r', displayName: 'Alex R.' }),
       expect.objectContaining({ id: 'taylor-s', displayName: 'Taylor S.' }),
+      expect.objectContaining({ id: 'sam-d', displayName: 'Sam D.' }),
     ])
     await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.toMatchObject([
       { id: 'gas-for-the-boat', date: '2026-08-26', description: 'Gas for the boat', total: { currency: 'USD', minorAmount: 5600 } },
@@ -57,6 +58,43 @@ describe('demo repository', () => {
         { currency: 'USD', date: '2026-08-30', minorAmount: 17000 },
       ],
     })
+  })
+
+  it('removes an uninvolved member once, clears an invalid default, and records membership activity', async () => {
+    const repository = createDemoRepository()
+    const participantIds = ['maya-p', 'jordan-k', 'alex-r', 'taylor-s', 'sam-d']
+    await repository.groups.setDefaultSplit({
+      kind: 'group.default-split', operationId: 'default-before-removal', groupId: 'lake-house-weekend', expectedRevision: 1,
+      defaultSplit: { type: 'equal', participantIds },
+    })
+    const command = { kind: 'group.member-remove' as const, operationId: 'remove-sam', groupId: 'lake-house-weekend', targetMemberId: 'sam-d' }
+
+    const saved = await repository.groups.removeMember(command)
+    await expect(repository.groups.removeMember(command)).resolves.toEqual(saved)
+
+    expect(saved).toEqual({ kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: 'sam-d' })
+    await expect(repository.groups.listMembers(command.groupId)).resolves.not.toContainEqual(expect.objectContaining({ id: 'sam-d' }))
+    await expect(repository.groups.getById(command.groupId)).resolves.not.toMatchObject({ memberIds: expect.arrayContaining(['sam-d']) })
+    await expect(repository.groups.getSettings(command.groupId)).resolves.toMatchObject({ revision: 3 })
+    expect((await repository.groups.getSettings(command.groupId)).defaultSplit).toBeUndefined()
+    await expect(repository.activity.listForGroup(command.groupId)).resolves.toContainEqual(expect.objectContaining({
+      operationId: command.operationId, kind: 'membership.changed', subject: { kind: 'membership', id: 'sam-d', label: 'Sam D. removed' },
+    }))
+  })
+
+  it('blocks member removal until linked group records are cleaned up and requires a manager', async () => {
+    const ownerRepository = createDemoRepository()
+    await expect(ownerRepository.groups.removeMember({
+      kind: 'group.member-remove', operationId: 'remove-jordan-too-soon', groupId: 'lake-house-weekend', targetMemberId: 'jordan-k',
+    })).rejects.toThrow(/expenses first/i)
+    await expect(ownerRepository.groups.removeMember({
+      kind: 'group.member-remove', operationId: 'remove-self', groupId: 'lake-house-weekend', targetMemberId: 'maya-p',
+    })).rejects.toThrow(/yourself/i)
+
+    const memberRepository = createDemoRepository({ currentUserId: 'alex-r' })
+    await expect(memberRepository.groups.removeMember({
+      kind: 'group.member-remove', operationId: 'member-removes-sam', groupId: 'lake-house-weekend', targetMemberId: 'sam-d',
+    })).rejects.toThrow(/manager/i)
   })
 
   it('adds an expense to the in-memory journal and emits an activity item', async () => {

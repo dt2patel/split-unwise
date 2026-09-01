@@ -2,6 +2,7 @@ import { computeBalancePlans, computeBalances } from '../domain/balances'
 import { computeAllocations } from '../domain/splits'
 import { updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
+import { assessGroupMemberRemoval } from '../domain/groupMembership'
 import { CommandConflictError } from './commandQueue'
 import {
   LAKE_HOUSE_GROUP_ID,
@@ -72,6 +73,7 @@ interface DemoRepositoryStateDocument {
   readonly recurring?: readonly RecurringExpense[]
   readonly operationLedger: readonly (readonly [string, { readonly identity: OperationIdentity; readonly result: CommandResult }])[]
   readonly groupSettings?: GroupSettings
+  readonly removedMemberIds?: readonly string[]
 }
 
 /** A fresh deterministic in-memory repository; its operation ledger prevents duplicate same-ID effects. */
@@ -99,6 +101,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   let nextExpenseNumber = restored?.nextExpenseNumber ?? 6
   let balanceRevision = restored?.balanceRevision ?? lakeHouseExpenses.length
   let groupSettings: GroupSettings = restored?.groupSettings ? clone(restored.groupSettings) : { schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }
+  const removedMemberIds = new Set(restored?.removedMemberIds ?? [])
   let executionTail: Promise<void> = Promise.resolve()
   const now = options.now ?? (() => '2026-08-30T12:00:00.000Z')
 
@@ -170,6 +173,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     recurring: recurring.map(clone),
     operationLedger: [...operationLedger.entries()].map(([id, value]) => [id, clone(value)] as const),
     groupSettings: clone(groupSettings),
+    removedMemberIds: [...removedMemberIds].sort(),
   })
 
   const restoreState = (state: DemoRepositoryStateDocument): void => {
@@ -187,6 +191,8 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     operationLedger.clear()
     state.operationLedger.forEach(([id, value]) => operationLedger.set(id, clone(value)))
     groupSettings = state.groupSettings ? clone(state.groupSettings) : { schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }
+    removedMemberIds.clear()
+    state.removedMemberIds?.forEach((id) => removedMemberIds.add(id))
   }
 
   const executeNew = (command: CommandEnvelope, identity: OperationIdentity): CommandResult => {
@@ -194,7 +200,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       case 'expense.add': {
         assertLakeHouseGroup(command.groupId)
         assertActiveMembership()
-        const allocations = validateDraft(command)
+        const allocations = validateDraft(command, activeMembers())
         const createdAt = checkedNow(now)
         const actor = actorSnapshot(currentUser)
         const expenseId = `demo-expense-${String(nextExpenseNumber).padStart(3, '0')}`
@@ -242,7 +248,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         const previous = editableExpense(command.groupId, command.expenseId)
         assertExpenseMutationPermission(previous)
         if (command.expectedRevision !== previous.revision) throw new CommandConflictError('The expense changed remotely.', { local: clone(command.draft), remote: cloneExpense(previous) })
-        const allocations = validateDraft(command.draft)
+        const allocations = validateDraft(command.draft, activeMembers())
         const template = previous.recurringTemplateId ? recurring.find(({ id }) => id === previous.recurringTemplateId) : undefined
         if (previous.recurringTemplateId && !template) throw new Error('Linked recurring template is unavailable')
         if (previous.recurringTemplateId && !command.draft.occurrenceEditScope) throw new Error('Choose whether to edit this occurrence or future expenses')
@@ -383,7 +389,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         if (currentUser.id !== command.basis.senderId && currentUser.id !== command.basis.recipientId) {
           throw new Error('The current user must be the settlement sender or recipient')
         }
-        const memberIds = new Set(lakeHouseMembers.map(({ id }) => id))
+        const memberIds = new Set(activeMembers().map(({ id }) => id))
         if (!memberIds.has(command.basis.senderId) || !memberIds.has(command.basis.recipientId)) throw new Error('Settlement participants must be active group members')
         if (!Number.isSafeInteger(command.money.minorAmount) || command.money.minorAmount <= 0) throw new Error('Settlement amount must be a positive minor-unit integer')
         if (command.money.minorAmount > command.basis.debtMinor) throw new Error('Settlement amount cannot exceed the selected debt')
@@ -429,7 +435,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         if (command.expectedRevision !== previous.revision || command.expectedBalanceRevision !== snapshot.balanceRevision) {
           throw new CommandConflictError('The settlement or balance changed remotely.', { remote: clone(previous), balanceSnapshot: snapshot })
         }
-        const member = lakeHouseMembers.find(({ id }) => id === currentUser.id)
+        const member = activeMembers().find(({ id }) => id === currentUser.id)
         if (previous.createdBy.id !== currentUser.id && member?.canManage !== true) throw new Error('Only the settlement creator or an active group manager may void it')
         const reason = normalizedPlainText(command.reason, 'Void reason', true)
         assertBalanceRevisionCanAdvance(balanceRevision)
@@ -456,7 +462,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       case 'group.default-split': {
         assertLakeHouseGroup(command.groupId)
         if (command.expectedRevision !== groupSettings.revision) throw new CommandConflictError('Group settings changed remotely.', { remote: clone(groupSettings) })
-        groupSettings = updateGroupSettings(groupSettings, { expectedRevision: command.expectedRevision, defaultSplit: command.defaultSplit }, lakeHouseMembers, currentUser.id)
+        groupSettings = updateGroupSettings(groupSettings, { expectedRevision: command.expectedRevision, defaultSplit: command.defaultSplit }, activeMembers(), currentUser.id)
         const createdAt = checkedNow(now)
         activity.push({
           id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'group.event',
@@ -470,7 +476,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         assertActiveMembership()
         if (command.expectedRevision !== groupSettings.revision) throw new CommandConflictError('Group settings changed remotely.', { remote: clone(groupSettings) })
         assertBalanceRevisionCanAdvance(balanceRevision)
-        groupSettings = updateGroupSettings(groupSettings, { expectedRevision: command.expectedRevision, simplifyDebtsEnabled: command.simplifyDebtsEnabled }, lakeHouseMembers, currentUser.id)
+        groupSettings = updateGroupSettings(groupSettings, { expectedRevision: command.expectedRevision, simplifyDebtsEnabled: command.simplifyDebtsEnabled }, activeMembers(), currentUser.id)
         const createdAt = checkedNow(now)
         activity.push({
           id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'group.event',
@@ -479,6 +485,32 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         })
         balanceRevision += 1
         return saved(command, command.groupId)
+      }
+      case 'group.member-remove': {
+        assertLakeHouseGroup(command.groupId)
+        const actor = currentMembership()
+        const target = activeMembers().find(({ id }) => id === command.targetMemberId)
+        if (!target) throw new Error('This person is not an active group member.')
+        const snapshot = groupBalanceSnapshot(command.groupId)
+        const assessment = assessGroupMemberRemoval({
+          actor,
+          target,
+          activeExpenseCount: groupExpenses(command.groupId).filter((expense) => expense.payments.some(({ participantId }) => participantId === target.id) || expense.allocations.some(({ participantId }) => participantId === target.id)).length,
+          activeRecurringCount: recurring.filter((template) => template.status === 'active' && (template.payments.some(({ participantId }) => participantId === target.id) || template.allocations.some(({ participantId }) => participantId === target.id))).length,
+          activeSettlementCount: settlements.filter((settlement) => !settlement.void && (settlement.senderId === target.id || settlement.recipientId === target.id)).length,
+          balanceCount: snapshot.pairwise.filter((debt) => debt.fromParticipantId === target.id || debt.toParticipantId === target.id).length,
+        })
+        if (!assessment.canRemove) throw new Error(assessment.reason)
+        removedMemberIds.add(target.id)
+        if (groupSettings.defaultSplit?.participantIds.includes(target.id)) {
+          groupSettings = updateGroupSettings(groupSettings, { expectedRevision: groupSettings.revision, defaultSplit: null }, activeMembers(), currentUser.id)
+        }
+        const createdAt = checkedNow(now)
+        activity.push({
+          id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'membership.changed',
+          subject: { kind: 'membership', id: target.id, label: `${target.displayName} removed` }, actor: actorSnapshot(currentUser), createdAt, syncState: 'fresh',
+        })
+        return saved(command, target.id)
       }
       case 'profile.update':
         currentUser = { ...currentUser, displayName: command.displayName, initials: command.initials ?? initials(command.displayName) }
@@ -539,9 +571,13 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   }
 
   function currentMembership(): Member {
-    const member = lakeHouseMembers.find(({ id }) => id === currentUser.id)
+    const member = activeMembers().find(({ id }) => id === currentUser.id)
     if (!member) throw new Error('You are not an active group member')
     return member
+  }
+
+  function activeMembers(): Member[] {
+    return lakeHouseMembers.filter(({ id }) => !removedMemberIds.has(id))
   }
 
   function canManageSeries(template: RecurringExpense): boolean {
@@ -555,7 +591,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
 
   function assertExpenseMutationPermission(expense: ExpenseRow): void {
     assertActiveMembership()
-    const member = lakeHouseMembers.find(({ id }) => id === currentUser.id)
+    const member = activeMembers().find(({ id }) => id === currentUser.id)
     const authorId = expense.createdBy?.id
     if (authorId !== currentUser.id && member?.canManage !== true) throw new Error('You are not allowed to change this expense')
   }
@@ -578,11 +614,11 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     projectId: 'split-unwise-demo',
     app: { async getCurrentUser(): Promise<Member> { return { ...currentUser } }, updateProfile: execute },
     groups: {
-      async list() { return [{ ...lakeHouseGroup, memberIds: [...lakeHouseGroup.memberIds] }] },
-      async getById(groupId) { return groupId === LAKE_HOUSE_GROUP_ID ? { ...lakeHouseGroup, memberIds: [...lakeHouseGroup.memberIds] } : undefined },
+      async list() { return [{ ...lakeHouseGroup, memberIds: activeMembers().map(({ id }) => id) }] },
+      async getById(groupId) { return groupId === LAKE_HOUSE_GROUP_ID ? { ...lakeHouseGroup, memberIds: activeMembers().map(({ id }) => id) } : undefined },
       async listMembers(groupId) {
         assertLakeHouseGroup(groupId)
-        return lakeHouseMembers.map((member) => ({ ...member, isCurrentUser: member.id === currentUser.id, ...(member.id === currentUser.id ? { displayName: currentUser.displayName, initials: currentUser.initials } : {}) }))
+        return activeMembers().map((member) => ({ ...member, isCurrentUser: member.id === currentUser.id, ...(member.id === currentUser.id ? { displayName: currentUser.displayName, initials: currentUser.initials } : {}) }))
       },
       async getBalanceSnapshot(groupId) { return clone(groupBalanceSnapshot(groupId)) },
       async getSettings(groupId) { assertLakeHouseGroup(groupId); return clone(groupSettings) },
@@ -612,6 +648,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         return { occurrences, moreRemain }
       },
       setDefaultSplit: execute,
+      removeMember: execute,
       setSimplifyDebts: execute,
     },
     expenses: {
@@ -674,7 +711,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   }
 }
 
-function saved(command: Extract<CommandEnvelope, { kind: 'group.default-split' | 'group.simplify-debts' | 'profile.update' }>, resourceId: string): CommandResult {
+function saved(command: Extract<CommandEnvelope, { kind: 'group.default-split' | 'group.member-remove' | 'group.simplify-debts' | 'profile.update' }>, resourceId: string): CommandResult {
   return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId } as CommandResult
 }
 
@@ -833,7 +870,8 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
     || !Array.isArray(value.expenses) || !Array.isArray(value.settlements) || !Array.isArray(value.activity) || !Array.isArray(value.comments) || !Array.isArray(value.notifications)
     || !Array.isArray(value.revisions) || !Array.isArray(value.operationLedger)
     || (value.recurring !== undefined && !Array.isArray(value.recurring))
-    || (value.groupSettings !== undefined && !isDemoGroupSettings(value.groupSettings))) {
+    || (value.groupSettings !== undefined && !isDemoGroupSettings(value.groupSettings))
+    || (value.removedMemberIds !== undefined && (!Array.isArray(value.removedMemberIds) || value.removedMemberIds.some((id) => typeof id !== 'string' || id === lakeHouseCurrentUser.id || !lakeHouseMembers.some((member) => member.id === id)) || new Set(value.removedMemberIds).size !== value.removedMemberIds.length))) {
     throw new Error('Persisted demo repository state is invalid')
   }
   const settlements = value.settlements.map(decodeDemoSettlement)
@@ -972,7 +1010,7 @@ function sameActor(left: ActorSnapshot, right: ActorSnapshot): boolean { return 
 function sameMoney(left: SettlementRecord['money'], right: SettlementRecord['money']): boolean { return left.currency === right.currency && left.minorAmount === right.minorAmount }
 function isDemoOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
 function isCommandKind(value: unknown): value is CommandEnvelope['kind'] {
-  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
+  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'group.member-remove', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -1019,8 +1057,8 @@ function browserStorage(): Storage | undefined {
   try { return window.localStorage } catch { return undefined }
 }
 
-function validateDraft(draft: ExpenseDraft): readonly ExpenseRow['allocations'][number][] {
-  const active = new Set(lakeHouseMembers.map(({ id }) => id))
+function validateDraft(draft: ExpenseDraft, members: readonly Member[]): readonly ExpenseRow['allocations'][number][] {
+  const active = new Set(members.map(({ id }) => id))
   const assertActive = (participantId: string, label: string) => { if (!active.has(participantId)) throw new Error(`${label} must be an active group member`) }
   assertLakeHouseGroup(draft.groupId)
   const allocations = computeAllocations(draft.total, draft.splitMethod)

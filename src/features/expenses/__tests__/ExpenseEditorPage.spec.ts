@@ -70,7 +70,7 @@ describe('ExpenseEditorPage', () => {
     const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
 
     expect(wrapper.get('.paid-split-sentence').findAll('[data-ionic-button]')).toHaveLength(2)
-    expect(wrapper.get('#participant-sheet-trigger').get('[data-ionic-note]').text()).toBe('4 participants')
+    expect(wrapper.get('#participant-sheet-trigger').get('[data-ionic-note]').text()).toBe('5 participants')
     expect(wrapper.get('#receipt-sheet-trigger').get('[data-ionic-note]').text()).toBe('Add receipt')
     expect(wrapper.get('#recurrence-sheet-trigger').get('[data-ionic-note]').text()).toBe('Does not repeat')
   })
@@ -195,7 +195,7 @@ describe('ExpenseEditorPage', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="expense-context"]').text()).toContain('Lake House Weekend')
-    expect(wrapper.get('#participant-sheet-trigger').text()).toContain('4 participants')
+    expect(wrapper.get('#participant-sheet-trigger').text()).toContain('5 participants')
   })
 
   it('confirms staged sheet dismissal from a backdrop or swipe gesture', async () => {

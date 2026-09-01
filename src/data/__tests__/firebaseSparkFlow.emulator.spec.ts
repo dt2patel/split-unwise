@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { connectAuthEmulator, createUserWithEmailAndPassword, getAuth, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth'
-import { collection, connectFirestoreEmulator, doc, getDoc, getDocs, getFirestore, limit, query } from 'firebase/firestore'
+import { collection, connectFirestoreEmulator, doc, getDoc, getDocs, getFirestore, limit, query, serverTimestamp, writeBatch } from 'firebase/firestore'
 import { deleteApp } from 'firebase/app'
 import { getSplitUnwiseFirebaseApp, resetFirebaseBootstrapForTesting } from '../firebaseBootstrap'
 import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkGroup, createSparkInvitation, inspectSparkInvitation, synchronizeFirebaseProfile } from '../firebaseSparkMutations'
@@ -128,6 +128,95 @@ describe('Firebase Spark two-account flow', () => {
     await signOut(auth)
     await signInWithEmailAndPassword(auth, ownerEmail, password)
     await expect(ownerRepository.groups.setDefaultSplit({ ...defaultCommand, operationId: `stale-default-${suffix}`, expectedRevision: 2 })).rejects.toThrow(/changed remotely/i)
+  }, 30_000)
+
+  emulatorIt('soft-removes an uninvolved member as one replay-safe group bundle', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `removal-owner-${suffix}@example.com`
+    const friendEmail = `removal-friend-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Removal Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `removal-${suffix}`, name: 'Removal Group', currency: 'USD' })
+    const invitation = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    const token = new URL(invitation.link).hash.slice('#token='.length)
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Removal Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, invitation.invitationId, token)
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+
+    const repository = createFirebaseRepository(configuration, owner.user.uid)
+    await repository.groups.setDefaultSplit({
+      kind: 'group.default-split', operationId: `removal-default-${suffix}`, groupId: created.groupId, expectedRevision: 1,
+      defaultSplit: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] },
+    })
+
+    const db = getFirestore(app)
+    const groupReference = doc(db, `groups/${created.groupId}`)
+    const targetReference = doc(db, `groups/${created.groupId}/members/${friend.user.uid}`)
+    const projectionReference = doc(db, `users/${friend.user.uid}/groups/${created.groupId}`)
+    const settingsReference = doc(db, `groups/${created.groupId}/settings/defaults`)
+    const [groupSnapshot, targetSnapshot, settingsSnapshot] = await Promise.all([
+      getDoc(groupReference), getDoc(targetReference), getDoc(settingsReference),
+    ])
+    const forgedOperationId = `forged-remove-${suffix}`
+    const forgedToken = 'f'.repeat(48)
+    const forgedFingerprint = 'e'.repeat(64)
+    const forgedBatch = writeBatch(db)
+    forgedBatch.set(groupReference, {
+      ...groupSnapshot.data(), memberIds: [owner.user.uid], updatedAt: serverTimestamp(),
+      lastMembershipCommandKind: 'group.member-remove', lastMembershipOperationId: forgedOperationId,
+      lastMembershipRequestFingerprint: forgedFingerprint, lastMembershipResourceToken: forgedToken,
+      lastRemovedMemberId: friend.user.uid,
+    })
+    forgedBatch.set(targetReference, {
+      ...targetSnapshot.data(), status: 'removed', removedByUid: owner.user.uid, removedAt: serverTimestamp(),
+      lastCommandKind: 'group.member-remove', lastOperationId: forgedOperationId,
+      lastRequestFingerprint: forgedFingerprint, lastResourceToken: forgedToken,
+    })
+    forgedBatch.update(projectionReference, {
+      status: 'removed', removedByUid: owner.user.uid, removedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    })
+    forgedBatch.set(settingsReference, {
+      ...settingsSnapshot.data(), revision: Number(settingsSnapshot.data()?.revision) + 1,
+      defaultSplit: { type: 'equal', participantIds: [owner.user.uid] },
+      lastCommandKind: 'group.member-remove', lastOperationId: forgedOperationId,
+      lastRequestFingerprint: forgedFingerprint, lastResourceToken: forgedToken,
+      updatedAt: serverTimestamp(), updatedBy: { id: owner.user.uid, displayName: 'Removal Owner' },
+    })
+    forgedBatch.set(doc(db, `groups/${created.groupId}/activity/activity-${forgedToken}`), {
+      groupId: created.groupId, operationId: forgedOperationId, kind: 'membership.changed',
+      subject: { kind: 'membership', id: friend.user.uid, label: 'Removal Friend removed' },
+      actor: { id: owner.user.uid, displayName: 'Removal Owner' }, createdAt: serverTimestamp(),
+    })
+    await expect(forgedBatch.commit()).rejects.toThrow(/permission/i)
+
+    const command = { kind: 'group.member-remove' as const, operationId: `remove-${suffix}`, groupId: created.groupId, targetMemberId: friend.user.uid }
+
+    const saved = await repository.groups.removeMember(command)
+    await expect(repository.groups.removeMember(command)).resolves.toEqual(saved)
+
+    expect(saved).toEqual({ kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: friend.user.uid })
+    await expect(repository.groups.listMembers(created.groupId)).resolves.toEqual([expect.objectContaining({ id: owner.user.uid, role: 'owner' })])
+    await expect(repository.groups.getSettings(created.groupId)).resolves.toMatchObject({ revision: 3 })
+    expect((await repository.groups.getSettings(created.groupId)).defaultSplit).toBeUndefined()
+    await expect(repository.activity.listForGroup(created.groupId)).resolves.toContainEqual(expect.objectContaining({
+      operationId: command.operationId, kind: 'membership.changed', subject: { kind: 'membership', id: friend.user.uid, label: 'Removal Friend removed' },
+    }))
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const removedRepository = createFirebaseRepository(configuration, friend.user.uid)
+    await expect(removedRepository.groups.list()).resolves.toEqual([])
+    expect((await getDoc(doc(getFirestore(app), `users/${friend.user.uid}/groups/${created.groupId}`))).data()).toMatchObject({ status: 'removed' })
   }, 30_000)
 
   emulatorIt('replays private profile and notification settings while propagating the public member snapshot', async () => {

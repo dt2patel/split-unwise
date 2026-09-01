@@ -24,6 +24,9 @@ suite('ledger against the Firestore emulator', () => {
       db.doc('groups/group-a/members/owner').set({ status: 'active', role: 'owner', canManage: true }),
       db.doc('groups/group-a/members/member').set({ status: 'active', role: 'member', canManage: false }),
       db.doc('groups/group-a/members/removed').set({ status: 'removed', role: 'member', canManage: false }),
+      db.doc('users/owner/groups/group-a').set({ groupId: 'group-a', status: 'active', contextLabel: 'Group A' }),
+      db.doc('users/member/groups/group-a').set({ groupId: 'group-a', status: 'active', contextLabel: 'Group A' }),
+      db.doc('groups/group-a/settings/defaults').set({ schemaVersion: 1, groupId: 'group-a', revision: 1, simplifyDebtsEnabled: true }),
       db.doc('groups/group-a/balance/current').set({ groupId: 'group-a', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] }),
     ])
   })
@@ -134,6 +137,27 @@ suite('ledger against the Firestore emulator', () => {
       subject: { kind: 'group', id: 'group-a', label: 'Simplify debts disabled' },
     })])
     await expect(executeLedgerCommand(db, 'member', { schemaVersion: 1, command: { ...request.command, operationId: 'simplify-stale' } })).rejects.toMatchObject({ code: 'failed-precondition' })
+  })
+
+  it('soft-removes an uninvolved member and rejects removing the owner', async () => {
+    const request = { schemaVersion: 1, command: { kind: 'group.member-remove', operationId: 'remove-member', groupId: 'group-a', targetMemberId: 'member' } }
+    const committedAt = '2026-09-01T18:00:00.000Z'
+
+    const saved = await executeLedgerCommand(db, 'owner', request, new Date(committedAt))
+    await expect(executeLedgerCommand(db, 'owner', request, new Date('2026-09-01T18:01:00.000Z'))).resolves.toEqual(saved)
+
+    expect(saved).toEqual({ kind: 'group.member-remove', operationId: 'remove-member', status: 'saved', resourceId: 'member' })
+    expect((await db.doc('groups/group-a').get()).data()?.memberIds).toEqual(['owner'])
+    expect((await db.doc('groups/group-a/members/member').get()).data()).toMatchObject({ status: 'removed', removedByUid: 'owner', removedAt: committedAt })
+    expect((await db.doc('users/member/groups/group-a').get()).data()).toMatchObject({ status: 'removed', removedByUid: 'owner', removedAt: committedAt })
+    expect((await db.doc('groups/group-a/settings/defaults').get()).data()).toMatchObject({ revision: 2, simplifyDebtsEnabled: true })
+    expect((await db.collection('groups/group-a/activity').get()).docs.map((document) => document.data())).toContainEqual(expect.objectContaining({
+      operationId: 'remove-member', kind: 'membership.changed', subject: { kind: 'membership', id: 'member', label: 'Member removed' },
+    }))
+
+    await expect(executeLedgerCommand(db, 'owner', {
+      schemaVersion: 1, command: { kind: 'group.member-remove', operationId: 'remove-owner', groupId: 'group-a', targetMemberId: 'owner' },
+    })).rejects.toMatchObject({ code: 'permission-denied' })
   })
 })
 

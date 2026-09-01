@@ -512,6 +512,8 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
       && (value.defaultSplit === null || isDefaultSplit(value.defaultSplit))
     case 'group.simplify-debts': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'simplifyDebtsEnabled'])
       && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision) && typeof value.simplifyDebtsEnabled === 'boolean'
+    case 'group.member-remove': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'targetMemberId'])
+      && isNonEmptyString(value.groupId) && isNonEmptyString(value.targetMemberId)
     case 'recurrence.materialize': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'templateId', 'occurrenceDate'])
       && isNonEmptyString(value.groupId) && isStrictId(value.templateId) && isIsoDate(value.occurrenceDate)
     case 'recurrence.cancel': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'templateId', 'expectedRevision'])
@@ -538,6 +540,7 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
     case 'profile.update': return isNonEmptyString(value.resourceId)
     case 'group.default-split': return value.resourceId === envelope.groupId
     case 'group.simplify-debts': return value.resourceId === envelope.groupId
+    case 'group.member-remove': return value.resourceId === envelope.targetMemberId
     case 'recurrence.materialize': return isSavedRecurrenceMaterialization(value, envelope)
     case 'recurrence.cancel': return isSavedRecurrenceCancellation(value, envelope)
   }

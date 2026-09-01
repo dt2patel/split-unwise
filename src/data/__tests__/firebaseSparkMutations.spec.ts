@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupMemberRemoveCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -558,6 +558,51 @@ describe('Firebase Spark mutations', () => {
     expect(cleared.activityDocument).toMatchObject({ subject: { label: 'Default split cleared' } })
   })
 
+  it('builds one replay-bound safe member removal bundle and clears a now-invalid default', () => {
+    const command: GroupMemberRemoveCommand = { kind: 'group.member-remove', operationId: 'remove-friend', groupId: 'group-a', targetMemberId: 'friend' }
+    const identity: OperationIdentity = {
+      userId: 'owner', operationId: command.operationId, kind: command.kind, groupId: command.groupId,
+      requestFingerprint: '7'.repeat(64), resourceId: `operation-${'8'.repeat(48)}`,
+    }
+    const committedAt = { kind: 'member-removed' }
+    const group = { id: 'group-a', kind: 'group', name: 'Group A', currency: 'USD', memberIds: ['owner', 'friend'], createdByUid: 'owner', createdAt: 'created', updatedAt: 'old' }
+    const target = { status: 'active', role: 'member', canManage: false, displayName: 'Friend Account', initials: 'FA', avatarUrl: null, invitationId: 'invite-a', joinedAt: 'joined' }
+    const settings = { schemaVersion: 1, groupId: 'group-a', revision: 3, simplifyDebtsEnabled: true, defaultSplit: { type: 'equal', participantIds: ['owner', 'friend'] } }
+    const buildRemoval = (sparkMutations as unknown as { buildSparkMemberRemovalRecord: SparkMemberRemovalBuilder }).buildSparkMemberRemovalRecord
+
+    const record = buildRemoval(command, group, target, settings, {
+      actor: { id: 'owner', displayName: 'Owner Account', initials: 'OA', isCurrentUser: true, canManage: true, role: 'owner' },
+      target: { id: 'friend', displayName: 'Friend Account', initials: 'FA', isCurrentUser: false, canManage: false, role: 'member' },
+    }, {}, identity, committedAt)
+
+    expect(record.groupDocument).toEqual({
+      ...group, memberIds: ['owner'], updatedAt: committedAt,
+      lastMembershipCommandKind: command.kind, lastMembershipOperationId: command.operationId,
+      lastMembershipRequestFingerprint: identity.requestFingerprint, lastMembershipResourceToken: '8'.repeat(48), lastRemovedMemberId: 'friend',
+    })
+    expect(record.memberDocument).toEqual({
+      ...target, status: 'removed', removedByUid: 'owner', removedAt: committedAt,
+      lastCommandKind: command.kind, lastOperationId: command.operationId,
+      lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: '8'.repeat(48),
+    })
+    expect(record.projectionPatch).toEqual({ status: 'removed', removedAt: committedAt, removedByUid: 'owner', updatedAt: committedAt })
+    expect(record.settingsDocument).toEqual({
+      schemaVersion: 1, groupId: 'group-a', revision: 4, simplifyDebtsEnabled: true,
+      lastCommandKind: command.kind, lastOperationId: command.operationId,
+      lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: '8'.repeat(48), updatedAt: committedAt,
+      updatedBy: { id: 'owner', displayName: 'Owner Account' },
+    })
+    expect(record.activityDocument).toEqual({
+      groupId: 'group-a', operationId: command.operationId, kind: 'membership.changed',
+      subject: { kind: 'membership', id: 'friend', label: 'Friend Account removed' },
+      actor: { id: 'owner', displayName: 'Owner Account' }, createdAt: committedAt,
+    })
+    expect(() => buildRemoval(command, group, target, settings, {
+      actor: { id: 'owner', displayName: 'Owner Account', initials: 'OA', isCurrentUser: true, canManage: true, role: 'owner' },
+      target: { id: 'friend', displayName: 'Friend Account', initials: 'FA', isCurrentUser: false, canManage: false, role: 'member' },
+    }, { activeExpenseCount: 1 }, identity, committedAt)).toThrow(/expense first/i)
+  })
+
   it('versions a private profile command while preserving account identity fields for membership propagation', () => {
     const command: ProfileUpdateCommand = { kind: 'profile.update', operationId: 'profile-rename', displayName: '  Maya Rivera  ' }
     const identity: OperationIdentity = { userId: 'maya-p', operationId: command.operationId, kind: command.kind, groupId: null, requestFingerprint: 'a'.repeat(64), resourceId: `operation-${'b'.repeat(48)}` }
@@ -727,6 +772,24 @@ type SparkGroupSettingsBuilder = (
 ) => {
   readonly settingsDocument: Readonly<Record<string, unknown>>
   readonly balanceDocument?: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+type SparkMemberRemovalBuilder = (
+  command: GroupMemberRemoveCommand,
+  group: Readonly<Record<string, unknown>>,
+  targetMember: Readonly<Record<string, unknown>>,
+  settings: Readonly<Record<string, unknown>>,
+  authorization: { readonly actor: Member; readonly target: Member },
+  references: { readonly activeExpenseCount?: number; readonly activeRecurringCount?: number; readonly activeSettlementCount?: number; readonly balanceCount?: number },
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => {
+  readonly groupDocument: Readonly<Record<string, unknown>>
+  readonly memberDocument: Readonly<Record<string, unknown>>
+  readonly projectionPatch: Readonly<Record<string, unknown>>
+  readonly settingsDocument: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }

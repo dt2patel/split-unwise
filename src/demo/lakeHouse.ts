@@ -9,13 +9,15 @@ export const lakeHouseCurrentUser: Member = {
   initials: 'MP',
   isCurrentUser: true,
   canManage: true,
+  role: 'owner',
 }
 
 export const lakeHouseMembers: readonly Member[] = [
   lakeHouseCurrentUser,
-  { id: 'jordan-k', displayName: 'Jordan K.', initials: 'JK', isCurrentUser: false, canManage: false },
-  { id: 'alex-r', displayName: 'Alex R.', initials: 'AR', isCurrentUser: false, canManage: false },
-  { id: 'taylor-s', displayName: 'Taylor S.', initials: 'TS', isCurrentUser: false, canManage: false },
+  { id: 'jordan-k', displayName: 'Jordan K.', initials: 'JK', isCurrentUser: false, canManage: false, role: 'member' },
+  { id: 'alex-r', displayName: 'Alex R.', initials: 'AR', isCurrentUser: false, canManage: false, role: 'member' },
+  { id: 'taylor-s', displayName: 'Taylor S.', initials: 'TS', isCurrentUser: false, canManage: false, role: 'member' },
+  { id: 'sam-d', displayName: 'Sam D.', initials: 'SD', isCurrentUser: false, canManage: false, role: 'member' },
 ]
 
 const actor = (id: string, displayName: string): ActorSnapshot => ({ id, displayName })
@@ -34,11 +36,12 @@ export const lakeHouseGroup: Group = {
   syncState: 'fresh',
 }
 
-const equalAllocations = (minorAmount: number) => lakeHouseMembers.map((member) => ({
+const expenseParticipants = lakeHouseMembers.filter(({ id }) => id !== 'sam-d')
+const equalAllocations = (minorAmount: number) => expenseParticipants.map((member) => ({
   participantId: member.id,
   money: { currency: 'USD' as const, minorAmount },
 }))
-const equalSplit = { type: 'equal' as const, participantIds: lakeHouseMembers.map(({ id }) => id) }
+const equalSplit = { type: 'equal' as const, participantIds: expenseParticipants.map(({ id }) => id) }
 
 export const lakeHouseExpenses: readonly ExpenseRow[] = [
   {

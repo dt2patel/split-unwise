@@ -54,6 +54,7 @@ export const commandEnvelopeSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('settlement.void'), ...base, groupId: id, settlementId: id, expectedRevision: z.number().int().positive(), expectedBalanceRevision: z.number().int().nonnegative(), reason: z.string().trim().min(1).max(1000) }),
   z.strictObject({ kind: z.literal('group.default-split'), ...base, groupId: id, expectedRevision: z.number().int().positive(), defaultSplit: defaultSplit.nullable() }),
   z.strictObject({ kind: z.literal('group.simplify-debts'), ...base, groupId: id, expectedRevision: z.number().int().positive(), simplifyDebtsEnabled: z.boolean() }),
+  z.strictObject({ kind: z.literal('group.member-remove'), ...base, groupId: id, targetMemberId: id }),
   z.strictObject({ kind: z.literal('profile.update'), ...base, displayName: z.string().trim().min(1).max(120), initials: z.string().trim().min(1).max(4).optional() }),
 ])
 

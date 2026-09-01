@@ -4,10 +4,10 @@ import { assertFirebaseAppMatchesConfiguration, getSplitUnwiseFirebaseApp, getSp
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement, type DecodedGroupProjection } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupMemberRemoveCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkFutureRecurringTemplateRecord, buildSparkGroupSettingsRecord, buildSparkMaterializationOperationId, buildSparkNotificationPreferencesRecord, buildSparkNotificationReadAllRecord, buildSparkNotificationReadRecord, buildSparkProfileUpdateRecord, buildSparkRecurrenceCancellationRecord, buildSparkRecurrenceMaterializationRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
+import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkFutureRecurringTemplateRecord, buildSparkGroupSettingsRecord, buildSparkMaterializationOperationId, buildSparkMemberRemovalRecord, buildSparkNotificationPreferencesRecord, buildSparkNotificationReadAllRecord, buildSparkNotificationReadRecord, buildSparkProfileUpdateRecord, buildSparkRecurrenceCancellationRecord, buildSparkRecurrenceMaterializationRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
@@ -56,12 +56,10 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (existing) return existing
     const pending = (async () => {
       const { db, firestore, userId } = await readyContext
-      const [snapshot, projection] = await Promise.all([
-        firestore.getDoc(firestore.doc(db, 'groups', groupId)),
-        knownProjection
-          ? Promise.resolve(knownProjection)
-          : firestore.getDoc(firestore.doc(db, 'users', userId, 'groups', groupId)).then((membership) => membership.exists() ? decodeGroupProjection(membership.id, membership.data()) : undefined),
-      ])
+      const projection = knownProjection ?? await firestore.getDoc(firestore.doc(db, 'users', userId, 'groups', groupId))
+        .then((membership) => membership.exists() ? decodeGroupProjection(membership.id, membership.data()) : undefined)
+      if (!projection || projection.status === 'removed') return undefined
+      const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
       if (!snapshot.exists()) return undefined
       const decoded = decodeGroup(snapshot.id, snapshot.data())
       const group = decoded.kind === 'friendship' && projection?.contextLabel
@@ -127,7 +125,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       return serverPage(decoded, activityQuery.limit, (item) => item.id)
     }
     const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
-    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()).groupId)
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data())).filter(({ status }) => status !== 'removed').map(({ groupId }) => groupId)
     const pages = await Promise.all(groupIds.map(async (groupId) => {
       const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), ...constraints))
       return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
@@ -179,7 +177,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   async function findSparkNotification(notificationId: string, readyContext = context()): Promise<NotificationItem> {
     const { db, firestore, userId } = await readyContext
     const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
-    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()).groupId)
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data())).filter(({ status }) => status !== 'removed').map(({ groupId }) => groupId)
     const snapshots = await Promise.all(groupIds.map(async (groupId) => ({
       groupId,
       snapshot: await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'activity', notificationId)),
@@ -631,12 +629,73 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: command.groupId } as SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>
   }
 
+  async function executeSparkMemberRemoval(command: GroupMemberRemoveCommand): Promise<SavedCommandResult<'group.member-remove'>> {
+    const readyContext = context()
+    const [{ db, firestore, userId }, allExpenses, templates, settlements] = await Promise.all([
+      readyContext,
+      listExpenseHeads(command.groupId, readyContext),
+      listRecurring(command.groupId, readyContext),
+      listSettlements(command.groupId, readyContext),
+    ])
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const groupReference = firestore.doc(db, 'groups', command.groupId)
+    const actorReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
+    const targetReference = firestore.doc(db, 'groups', command.groupId, 'members', command.targetMemberId)
+    const projectionReference = firestore.doc(db, 'users', command.targetMemberId, 'groups', command.groupId)
+    const settingsReference = firestore.doc(db, 'groups', command.groupId, 'settings', 'defaults')
+    const activityReference = firestore.doc(db, 'groups', command.groupId, 'activity', `activity-${token}`)
+    const activeExpenses = allExpenses.filter(({ deletedAt }) => deletedAt === undefined)
+    const activeSettlements = settlements.filter(({ void: voided }) => voided === undefined)
+    const plans = computeBalancePlans(activeExpenses, activeSettlements.map((settlement) => ({
+      id: settlement.settlementId, senderId: settlement.senderId, recipientId: settlement.recipientId, money: settlement.money,
+    })))
+    const references = {
+      activeExpenseCount: activeExpenses.filter((expense) => memberInAllocations(command.targetMemberId, expense.payments, expense.allocations)).length,
+      activeRecurringCount: templates.filter((template) => template.status === 'active' && memberInAllocations(command.targetMemberId, template.payments, template.allocations)).length,
+      activeSettlementCount: activeSettlements.filter((settlement) => settlement.senderId === command.targetMemberId || settlement.recipientId === command.targetMemberId).length,
+      balanceCount: plans.pairwise.filter((debt) => debt.fromParticipantId === command.targetMemberId || debt.toParticipantId === command.targetMemberId).length,
+    }
+    await firestore.runTransaction(db, async (transaction) => {
+      const [group, actor, target, settings, activity] = await Promise.all([
+        transaction.get(groupReference), transaction.get(actorReference), transaction.get(targetReference),
+        transaction.get(settingsReference), transaction.get(activityReference),
+      ])
+      if (!target.exists()) throw new Error('This person is not an active group member.')
+      const targetData = target.data()
+      if (targetData.lastOperationId === identity.operationId) {
+        if (targetData.lastCommandKind !== identity.kind || targetData.lastRequestFingerprint !== identity.requestFingerprint
+          || targetData.lastResourceToken !== token || !activity.exists()) throw new OperationReplayConflictError()
+        return
+      }
+      if (!group.exists() || !actor.exists() || !settings.exists()) throw new Error('Group membership is unavailable.')
+      const actorData = actor.data()
+      if (actorData.status !== 'active' || targetData.status !== 'active') throw new Error('Group membership changed remotely.')
+      const actorMember = decodeMember(userId, actorData, true)
+      const targetMember = decodeMember(command.targetMemberId, targetData, false)
+      const record = buildSparkMemberRemovalRecord(
+        command, group.data(), targetData, settings.data(),
+        { actor: actorMember, target: targetMember }, references, identity, firestore.serverTimestamp(),
+      )
+      transaction.set(groupReference, record.groupDocument)
+      transaction.set(targetReference, record.memberDocument)
+      transaction.update(projectionReference, record.projectionPatch)
+      transaction.set(settingsReference, record.settingsDocument)
+      transaction.set(activityReference, record.activityDocument)
+    })
+    groupCache.delete(command.groupId)
+    groupRequests.delete(command.groupId)
+    const [savedTarget, savedActivity] = await Promise.all([firestore.getDoc(targetReference), firestore.getDoc(activityReference)])
+    if (savedTarget.data()?.status !== 'removed' || !savedActivity.exists()) throw new Error('Saved member removal is unavailable.')
+    return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: command.targetMemberId }
+  }
+
   async function executeSparkProfileUpdate(command: ProfileUpdateCommand): Promise<SavedCommandResult<'profile.update'>> {
     const { auth, db, firestore, userId } = await context()
     const identity = await createOperationIdentity(userId, command)
     const token = identity.resourceId.slice('operation-'.length)
     const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
-    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()).groupId)
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data())).filter(({ status }) => status !== 'removed').map(({ groupId }) => groupId)
     const profileReference = firestore.doc(db, 'users', userId)
     await firestore.runTransaction(db, async (transaction) => {
       const memberReferences = groupIds.map((groupId) => firestore.doc(db, 'groups', groupId, 'members', userId))
@@ -872,6 +931,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       if (command.kind === 'settlement.record') return executeSparkSettlementRecord(command)
       if (command.kind === 'settlement.void') return executeSparkSettlementVoid(command)
       if (command.kind === 'group.default-split' || command.kind === 'group.simplify-debts') return executeSparkGroupSettings(command)
+      if (command.kind === 'group.member-remove') return executeSparkMemberRemoval(command)
       if (command.kind === 'profile.update') return executeSparkProfileUpdate(command)
       if (command.kind === 'notification.preferences') return executeSparkNotificationPreferences(command)
       if (command.kind === 'notification.read') return executeSparkNotificationRead(command)
@@ -905,6 +965,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         const projection = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
         const groups = await Promise.all(projection.docs.map((membership) => {
           const decodedProjection = decodeGroupProjection(membership.id, membership.data())
+          if (decodedProjection.status === 'removed') return undefined
           return loadGroup(decodedProjection.groupId, readyContext, decodedProjection)
         }))
         return groups.filter((group): group is NonNullable<typeof group> => group !== undefined).sort((left, right) => left.name.localeCompare(right.name))
@@ -913,7 +974,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async listMembers(groupId) {
         const { db, firestore, userId } = await context()
         const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'members'), firestore.limit(100)))
-        return snapshot.docs.map((document) => decodeMember(document.id, document.data(), document.id === userId)).sort((left, right) => left.displayName.localeCompare(right.displayName))
+        return snapshot.docs.flatMap((document) => document.data().status === 'active' ? [decodeMember(document.id, document.data(), document.id === userId)] : []).sort((left, right) => left.displayName.localeCompare(right.displayName))
       },
       async getBalanceSnapshot(groupId) {
         const readyContext = context()
@@ -960,6 +1021,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         return { occurrences, moreRemain }
       },
       setDefaultSplit: execute,
+      removeMember: execute,
       setSimplifyDebts: execute,
     },
     expenses: {
@@ -1214,4 +1276,8 @@ async function connectExecuteCommand(configuration: FirebaseConfiguration, regio
 function decodeCommandResult(command: CommandEnvelope, value: unknown): CommandResult {
   if (!isRecord(value) || value.kind !== command.kind || value.operationId !== command.operationId || value.status !== 'saved') throw new Error('Callable command result is invalid')
   return value as unknown as CommandResult
+}
+
+function memberInAllocations(memberId: string, ...sources: readonly (readonly { readonly participantId: string }[])[]): boolean {
+  return sources.some((entries) => entries.some(({ participantId }) => participantId === memberId))
 }

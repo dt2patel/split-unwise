@@ -12,6 +12,8 @@ export interface Member {
   readonly isCurrentUser: boolean
   /** Unknown/omitted capability is intentionally treated as false. */
   readonly canManage?: boolean
+  /** Membership authority is stored explicitly so owner-only safeguards are not inferred from UI labels. */
+  readonly role?: 'owner' | 'member'
 }
 
 export interface ActorSnapshot {
@@ -276,6 +278,11 @@ export interface GroupSimplifyDebtsCommand extends OperationRequest {
   readonly expectedRevision: number
   readonly simplifyDebtsEnabled: boolean
 }
+export interface GroupMemberRemoveCommand extends OperationRequest {
+  readonly kind: 'group.member-remove'
+  readonly groupId: string
+  readonly targetMemberId: ParticipantId
+}
 export interface RecurrenceMaterializeCommand extends OperationRequest {
   readonly kind: 'recurrence.materialize'
   readonly groupId: string
@@ -290,7 +297,7 @@ export interface RecurrenceCancelCommand extends OperationRequest {
 }
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
-export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
+export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | GroupMemberRemoveCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
 export type CommandKind = CommandEnvelope['kind']
 
 export interface SavedExpenseAddResult { readonly kind: 'expense.add'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
@@ -321,7 +328,7 @@ export type SettlementRecordResult = SavedSettlementRecordResult | NotSupportedC
 export type SettlementVoidResult = SavedSettlementVoidResult | NotSupportedCommandResult<'settlement.void'>
 export type RecurrenceMaterializeResult = SavedRecurrenceMaterializeResult | NotSupportedCommandResult<'recurrence.materialize'>
 export type RecurrenceCancelResult = SavedRecurrenceCancelResult | NotSupportedCommandResult<'recurrence.cancel'>
-export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'group.simplify-debts' | 'profile.update'>
+export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.member-remove'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'group.member-remove' | 'group.simplify-debts' | 'profile.update'>
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'
@@ -349,6 +356,7 @@ export interface GroupRepository {
   listRecurring(groupId: string): Promise<readonly RecurringExpense[]>
   materializeDue(groupId: string, throughDate: string, maxOccurrences?: number): Promise<MaterializeDueResult>
   setDefaultSplit(command: GroupDefaultSplitCommand): Promise<CommandResult>
+  removeMember(command: GroupMemberRemoveCommand): Promise<CommandResult>
   setSimplifyDebts(command: GroupSimplifyDebtsCommand): Promise<CommandResult>
 }
 export interface ExpenseRepository {

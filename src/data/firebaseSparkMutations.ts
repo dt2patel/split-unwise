@@ -2,12 +2,13 @@ import { getAuth, type User } from 'firebase/auth'
 import { arrayUnion, doc, getDoc, getFirestore, runTransaction, serverTimestamp, Timestamp, updateDoc, writeBatch, type DocumentData } from 'firebase/firestore'
 import { assertCurrencyCode } from '../domain/money'
 import { decodeDefaultSplit, updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
+import { assessGroupMemberRemoval, type GroupMemberRemovalAssessmentInput } from '../domain/groupMembership'
 import { canonicalHttpsOrigin, generateInvitationSecret, hashInvitationSecret, type PreparedInvitation } from '../features/invitations/invitations'
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupDefaultSplitCommand, GroupMemberRemoveCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
@@ -77,6 +78,15 @@ export interface SparkCommentRecord {
 export interface SparkGroupSettingsRecord {
   readonly settingsDocument: Readonly<Record<string, unknown>>
   readonly balanceDocument?: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+export interface SparkMemberRemovalRecord {
+  readonly groupDocument: Readonly<Record<string, unknown>>
+  readonly memberDocument: Readonly<Record<string, unknown>>
+  readonly projectionPatch: Readonly<Record<string, unknown>>
+  readonly settingsDocument: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }
@@ -502,6 +512,82 @@ export function buildSparkGroupSettingsRecord(
     balanceDocument: {
       groupId: parsed.groupId, balanceRevision: balance.balanceRevision + 1,
       simplifyDebtsEnabled: parsed.simplifyDebtsEnabled, pairwise: balance.pairwise, simplified: balance.simplified,
+    },
+  }
+}
+
+/** Builds the complete soft-removal bundle authorized by the Spark rules path. */
+export function buildSparkMemberRemovalRecord(
+  command: GroupMemberRemoveCommand,
+  group: Readonly<Record<string, unknown>>,
+  targetMember: Readonly<Record<string, unknown>>,
+  settings: Readonly<Record<string, unknown>>,
+  authorization: { readonly actor: Member; readonly target: Member },
+  references: Pick<GroupMemberRemovalAssessmentInput, 'activeExpenseCount' | 'activeRecurringCount' | 'activeSettlementCount' | 'balanceCount'>,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): SparkMemberRemovalRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'group.member-remove') throw new Error('Spark member removal command is invalid.')
+  const actor = normalizedActor(authorization.actor)
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  if (authorization.actor.id !== identity.userId || authorization.target.id !== parsed.targetMemberId) throw new Error('Member removal identity is invalid.')
+  if (targetMember.status !== 'active' || targetMember.role !== authorization.target.role || targetMember.displayName !== authorization.target.displayName) throw new Error('Target membership changed remotely.')
+  if (group.id !== parsed.groupId || !Array.isArray(group.memberIds) || group.memberIds.some((id) => typeof id !== 'string')
+    || !group.memberIds.includes(authorization.actor.id) || !group.memberIds.includes(parsed.targetMemberId)) throw new Error('Group membership changed remotely.')
+  const assessment = assessGroupMemberRemoval({ actor: authorization.actor, target: authorization.target, ...references })
+  if (!assessment.canRemove) throw new Error(assessment.reason)
+  const currentSettings = decodeSparkGroupSettings(parsed.groupId, settings)
+  if (currentSettings.revision >= Number.MAX_SAFE_INTEGER) throw new Error('Group settings revision cannot advance.')
+  const defaultSplit = currentSettings.defaultSplit?.participantIds.includes(parsed.targetMemberId) ? undefined : currentSettings.defaultSplit
+  const membershipIdentity = {
+    lastCommandKind: parsed.kind,
+    lastOperationId: parsed.operationId,
+    lastRequestFingerprint: identity.requestFingerprint,
+    lastResourceToken: token,
+  }
+  return {
+    groupDocument: {
+      ...group,
+      memberIds: group.memberIds.filter((id) => id !== parsed.targetMemberId),
+      updatedAt: committedAt,
+      lastMembershipCommandKind: parsed.kind,
+      lastMembershipOperationId: parsed.operationId,
+      lastMembershipRequestFingerprint: identity.requestFingerprint,
+      lastMembershipResourceToken: token,
+      lastRemovedMemberId: parsed.targetMemberId,
+    },
+    memberDocument: {
+      ...targetMember,
+      status: 'removed',
+      removedByUid: authorization.actor.id,
+      removedAt: committedAt,
+      ...membershipIdentity,
+    },
+    projectionPatch: {
+      status: 'removed',
+      removedAt: committedAt,
+      removedByUid: authorization.actor.id,
+      updatedAt: committedAt,
+    },
+    settingsDocument: {
+      schemaVersion: 1,
+      groupId: parsed.groupId,
+      revision: currentSettings.revision + 1,
+      ...(defaultSplit ? { defaultSplit } : {}),
+      ...(currentSettings.simplifyDebtsEnabled !== undefined ? { simplifyDebtsEnabled: currentSettings.simplifyDebtsEnabled } : {}),
+      ...membershipIdentity,
+      updatedAt: committedAt,
+      updatedBy: actor,
+    },
+    activityId: `activity-${token}`,
+    activityDocument: {
+      groupId: parsed.groupId,
+      operationId: parsed.operationId,
+      kind: 'membership.changed',
+      subject: { kind: 'membership', id: parsed.targetMemberId, label: `${authorization.target.displayName.trim()} removed` },
+      actor,
+      createdAt: committedAt,
     },
   }
 }

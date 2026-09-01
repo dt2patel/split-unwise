@@ -61,4 +61,14 @@ describe('strict shared ledger protocol', () => {
     expect(() => parseExecuteCommandRequest(request)).not.toThrow()
     expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, privateState: true } })).toThrow()
   })
+
+  it('accepts only a strict member-removal command with a target distinct from the actor', () => {
+    const request = {
+      schemaVersion: 1,
+      command: { kind: 'group.member-remove', operationId: 'remove-member', groupId: 'group-a', targetMemberId: 'member' },
+    }
+    expect(() => parseExecuteCommandRequest(request)).not.toThrow()
+    expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, targetMemberId: '' } })).toThrow()
+    expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, privateState: true } })).toThrow()
+  })
 })

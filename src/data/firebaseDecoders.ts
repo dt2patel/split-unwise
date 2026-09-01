@@ -27,6 +27,7 @@ function expenseContextKind(value: unknown, label: string): ExpenseContextKind {
 
 export interface DecodedGroupProjection {
   readonly groupId: string
+  readonly status?: 'active' | 'removed'
   readonly contextLabel?: string
 }
 
@@ -37,8 +38,14 @@ export function decodeGroupProjection(id: string, value: unknown): DecodedGroupP
   if (groupId !== id) throw new DocumentDecodeError(`group projection ${id}`, 'groupId does not match document ID')
   return {
     groupId,
+    ...(data.status === undefined ? {} : { status: projectionStatus(data.status, `group projection ${id}.status`) }),
     ...(data.contextLabel === undefined ? {} : { contextLabel: requiredString(data.contextLabel, `group projection ${id}.contextLabel`) }),
   }
+}
+
+function projectionStatus(value: unknown, label: string): NonNullable<DecodedGroupProjection['status']> {
+  if (value === 'active' || value === 'removed') return value
+  throw new DocumentDecodeError(label, 'must be active or removed')
 }
 
 export function decodeMember(id: string, value: unknown, isCurrentUser: boolean): Member {
@@ -47,8 +54,14 @@ export function decodeMember(id: string, value: unknown, isCurrentUser: boolean)
     id, displayName: requiredString(data.displayName, `member ${id}.displayName`), initials: requiredString(data.initials, `member ${id}.initials`),
     ...(data.avatarUrl === undefined || data.avatarUrl === null ? {} : { avatarUrl: requiredString(data.avatarUrl, `member ${id}.avatarUrl`) }),
     ...(data.canManage === undefined ? {} : { canManage: requiredBoolean(data.canManage, `member ${id}.canManage`) }),
+    ...(data.role === undefined ? {} : { role: memberRole(data.role, `member ${id}.role`) }),
     isCurrentUser,
   }
+}
+
+function memberRole(value: unknown, label: string): Member['role'] {
+  if (value === 'owner' || value === 'member') return value
+  throw new DocumentDecodeError(label, 'must be owner or member')
 }
 
 export function decodeBalanceSnapshot(groupId: string, value: unknown): GroupBalanceSnapshot {

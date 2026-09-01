@@ -125,6 +125,7 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
       'expense.delete',
       'expense.edit',
       'group.default-split',
+      'group.member-remove',
       'group.simplify-debts',
       'notification.preferences',
       'notification.read',
@@ -431,6 +432,7 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       listRecurring: (groupId) => call(() => source.groups.listRecurring(groupId)),
       materializeDue: (groupId, throughDate, maxOccurrences) => call(() => source.groups.materializeDue(groupId, throughDate, maxOccurrences)),
       setDefaultSplit: (command) => call(() => source.groups.setDefaultSplit(command)),
+      removeMember: (command) => call(() => source.groups.removeMember(command)),
       setSimplifyDebts: (command) => call(() => source.groups.setSimplifyDebts(command)),
     },
     expenses: {

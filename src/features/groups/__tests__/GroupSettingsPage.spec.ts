@@ -25,6 +25,10 @@ const stubs = {
     props: ['modelValue', 'disabled'], emits: ['ionChange'],
     template: '<input type="checkbox" :checked="modelValue" :disabled="disabled" @change="$emit(\'ionChange\', { detail: { checked: $event.target.checked } })" />',
   },
+  IonModal: {
+    name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement'], emits: ['didDismiss'],
+    template: '<aside v-if="isOpen" data-testid="member-removal-modal"><slot /></aside>',
+  },
 }
 
 beforeEach(() => vi.restoreAllMocks())
@@ -37,8 +41,28 @@ describe('group default settings page', () => {
 
     expect(wrapper.get('[data-testid="group-settings-list"]').attributes('data-inset')).toBeDefined()
     expect(wrapper.get('[data-testid="group-default-methods"]').attributes('aria-label')).toBe('Default split method')
-    expect(wrapper.findAll('[data-testid="group-member-row"]')).toHaveLength(4)
+    expect(wrapper.findAll('[data-testid="group-member-row"]')).toHaveLength(5)
     expect(wrapper.get('[data-testid="clear-default-button"]').attributes('data-fill')).toBe('clear')
+  })
+
+  it('uses an iOS card modal to remove an uninvolved member and refreshes the shared member list', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter(); await router.push('/tabs/groups/lake-house-weekend/settings'); await router.isReady()
+    const wrapper = mount(GroupSettingsPage, { attachTo: document.body, global: { plugins: [createPinia(), router], stubs } }); await flushPromises()
+
+    expect(wrapper.text()).toContain('Manage members')
+    await wrapper.get('[aria-label="Remove Sam D. from group"]').trigger('click')
+
+    const modal = wrapper.getComponent({ name: 'IonModal' })
+    expect(modal.props('presentingElement')).toBe(wrapper.get('.ion-page').element)
+    expect(wrapper.get('[data-testid="member-removal-modal"]').text()).toContain('Remove Sam D.?')
+    await wrapper.get('[data-testid="confirm-member-removal"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Sam D. was removed'))
+
+    expect(wrapper.find('[aria-label="Remove Sam D. from group"]').exists()).toBe(false)
+    await expect(repository.groups.listMembers('lake-house-weekend')).resolves.not.toContainEqual(expect.objectContaining({ id: 'sam-d' }))
+    wrapper.unmount()
   })
 
   it('saves an unlocked versioned shares default for future drafts', async () => {
@@ -85,7 +109,7 @@ describe('group default settings page', () => {
     await wrapper.get('button[value="percentage"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll<HTMLInputElement>('.ratio-input').map((input) => Number(input.element.value))).toEqual([25, 25, 25, 25])
+    expect(wrapper.findAll<HTMLInputElement>('.ratio-input').map((input) => Number(input.element.value))).toEqual([20, 20, 20, 20, 20])
   })
 
   it('reloads the authoritative revision after a concurrent settings conflict', async () => {

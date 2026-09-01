@@ -184,7 +184,73 @@ async function executeGroupCommand(context: GroupContext): Promise<CallableResul
     transaction.create(db.doc(`groups/${groupId}/activity/${activity.id}`), activity)
     return savedResource(command, groupId)
   }
+  if (command.kind === 'group.member-remove') {
+    if (!canManage(membership)) throw new LedgerError('permission-denied', 'Only a group manager can remove people.')
+    if (command.targetMemberId === uid) throw new LedgerError('permission-denied', 'You cannot remove yourself from group settings.')
+    const groupRef = db.doc(`groups/${groupId}`)
+    const targetRef = db.doc(`groups/${groupId}/members/${command.targetMemberId}`)
+    const projectionRef = db.doc(`users/${command.targetMemberId}/groups/${groupId}`)
+    const settingsRef = db.doc(`groups/${groupId}/settings/defaults`)
+    const balanceRef = db.doc(`groups/${groupId}/balance/current`)
+    const [groupSnapshot, targetSnapshot, projectionSnapshot, settingsSnapshot, balanceSnapshot, expenses, templates, settlements] = await Promise.all([
+      transaction.get(groupRef),
+      transaction.get(targetRef),
+      transaction.get(projectionRef),
+      transaction.get(settingsRef),
+      transaction.get(balanceRef),
+      transaction.get(db.collection(`groups/${groupId}/expenses`).limit(101)),
+      transaction.get(db.collection(`groups/${groupId}/recurringTemplates`).limit(101)),
+      transaction.get(db.collection(`groups/${groupId}/settlements`).limit(101)),
+    ])
+    if (!groupSnapshot.exists || !targetSnapshot.exists || !projectionSnapshot.exists || !settingsSnapshot.exists || !balanceSnapshot.exists) {
+      throw new LedgerError('not-found', 'Group membership is unavailable.')
+    }
+    if (expenses.size > 100 || templates.size > 100 || settlements.size > 100) throw new LedgerError('resource-exhausted', 'Member removal supports at most 100 records of each group type.')
+    const group = groupSnapshot.data()!
+    const target = targetSnapshot.data()!
+    const projection = projectionSnapshot.data()!
+    if (target.status !== 'active' || projection.status !== 'active' || target.role === 'owner') throw new LedgerError('permission-denied', 'The group owner cannot be removed.')
+    if (!Array.isArray(group.memberIds) || !group.memberIds.includes(uid) || !group.memberIds.includes(command.targetMemberId)) throw new LedgerError('failed-precondition', 'Group membership changed remotely.')
+    const activeExpenses = expenses.docs.map((document) => activeExpenseData(document.data())).filter((data): data is DocumentData => data !== undefined)
+    const activeTemplates = templates.docs.map((document) => document.data()).filter((data) => data.status === 'active')
+    const activeSettlements = settlements.docs.map((document) => document.data()).filter((data) => data.void === undefined)
+    const balance = balanceSnapshot.data()!
+    if (activeExpenses.some((data) => recordReferencesMember(data, command.targetMemberId))) throw new LedgerError('failed-precondition', 'Remove this person from all expenses first.')
+    if (activeTemplates.some((data) => recordReferencesMember(data, command.targetMemberId))) throw new LedgerError('failed-precondition', 'Remove this person from all recurring expenses first.')
+    if (activeSettlements.some((data) => data.senderId === command.targetMemberId || data.recipientId === command.targetMemberId)) throw new LedgerError('failed-precondition', 'Void this person’s payments first.')
+    if ([...(Array.isArray(balance.pairwise) ? balance.pairwise : []), ...(Array.isArray(balance.simplified) ? balance.simplified : [])]
+      .some((debt) => isRecord(debt) && (debt.fromParticipantId === command.targetMemberId || debt.toParticipantId === command.targetMemberId))) {
+      throw new LedgerError('failed-precondition', 'Settle this person’s balance before removing them.')
+    }
+    const settings = settingsSnapshot.data()!
+    const revision = positiveRevision(settings.revision)
+    const defaultSplit = isRecord(settings.defaultSplit) && Array.isArray(settings.defaultSplit.participantIds)
+      && settings.defaultSplit.participantIds.includes(command.targetMemberId) ? undefined : settings.defaultSplit
+    const activity = {
+      id: deterministicId('act', command.operationId), groupId, operationId: command.operationId, kind: 'membership.changed',
+      subject: { kind: 'membership', id: command.targetMemberId, label: `${String(target.displayName ?? 'Member')} removed` }, actor, createdAt: isoNow,
+    }
+    transaction.update(groupRef, { memberIds: group.memberIds.filter((memberId: unknown) => memberId !== command.targetMemberId), updatedAt: isoNow })
+    transaction.update(targetRef, { status: 'removed', removedByUid: uid, removedAt: isoNow })
+    transaction.update(projectionRef, { status: 'removed', removedByUid: uid, removedAt: isoNow, updatedAt: isoNow })
+    transaction.set(settingsRef, {
+      schemaVersion: 1, groupId, revision: revision + 1, ...(defaultSplit === undefined ? {} : { defaultSplit }),
+      simplifyDebtsEnabled: settings.simplifyDebtsEnabled !== false, updatedAt: isoNow, updatedBy: actor,
+    })
+    transaction.create(db.doc(`groups/${groupId}/activity/${activity.id}`), activity)
+    return savedResource(command, command.targetMemberId)
+  }
   throw new LedgerError('invalid-argument', 'This command cannot be used with a group.')
+}
+
+function activeExpenseData(data: DocumentData): DocumentData | undefined {
+  const current = isRecord(data.current) ? data.current : data
+  return current.deletedAt === undefined ? current : undefined
+}
+
+function recordReferencesMember(data: DocumentData, memberId: string): boolean {
+  const references = [...(Array.isArray(data.payments) ? data.payments : []), ...(Array.isArray(data.allocations) ? data.allocations : [])]
+  return references.some((entry) => isRecord(entry) && entry.participantId === memberId)
 }
 
 async function executeExpenseCommand(context: GroupContext, actor: Actor): Promise<CallableResult> {

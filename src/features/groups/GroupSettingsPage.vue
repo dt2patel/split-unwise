@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute } from 'vue-router'
-import { IonBackButton, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonItem, IonLabel, IonList, IonNote, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
+import { IonBackButton, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
 import type { DefaultSplit } from '../../domain/groupSettings'
 import type { GroupPremiumSnapshot } from '../premium/premiumData'
 import { loadGroupPremiumSnapshot } from '../premium/premiumData'
+import MemberAvatar from '../../components/MemberAvatar.vue'
+import type { Member } from '../../data/repositories'
 
 type DefaultKind = DefaultSplit['type']
 const route = useRoute(); const snapshot = ref<GroupPremiumSnapshot>(); const error = ref(''); const status = ref(''); const loading = ref(false); const saving = ref(false); const simplifying = ref(false); const kind = ref<DefaultKind>('equal'); const selectedIds = ref<string[]>([]); const ratios = ref<Record<string, string>>({}); let request = 0
+const presentingElement = shallowRef<HTMLElement>(); const removalTarget = ref<Member>(); const removing = ref(false); const removalError = ref('')
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
 const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups')
 const canManage = computed(() => snapshot.value?.currentUser.canManage === true)
@@ -26,6 +29,35 @@ function initialize(loaded: GroupPremiumSnapshot): void {
   kind.value = configured?.type ?? 'equal'; selectedIds.value = [...(configured?.participantIds ?? loaded.members.map(({ id }) => id))]
   ratios.value = Object.fromEntries(loaded.members.map(({ id }) => [id, configured?.type === 'percentage' ? String(configured.percentages[id] ?? 0) : configured?.type === 'shares' ? String(configured.shares[id] ?? 1) : '1']))
 }
+function setPresentingElement(value: Element | ComponentPublicInstance | null): void {
+  const element = value && '$el' in value ? value.$el : value
+  presentingElement.value = element instanceof HTMLElement ? element : undefined
+}
+function openMemberRemoval(member: Member): void {
+  if (!canManage.value || member.isCurrentUser || member.role === 'owner') return
+  removalError.value = ''; removalTarget.value = member
+}
+function closeMemberRemoval(): void {
+  if (removing.value) return
+  removalTarget.value = undefined; removalError.value = ''
+}
+async function removeMember(): Promise<void> {
+  const target = removalTarget.value; const group = snapshot.value?.group
+  if (!target || !group || removing.value) return
+  removing.value = true; removalError.value = ''; error.value = ''; status.value = ''
+  try {
+    const result = await getAppSession().queue.submit({
+      kind: 'group.member-remove', operationId: createClientOperationId('group-member-remove'), groupId: group.id, targetMemberId: target.id,
+    }).result()
+    if (result.status !== 'saved') throw new Error(result.reason)
+    const displayName = target.displayName
+    await load(group.id)
+    removalTarget.value = undefined
+    status.value = `${displayName} was removed from the group.`
+    await nextTick()
+  } catch (reason) { removalError.value = message(reason) } finally { removing.value = false }
+}
+async function canDismissRemoval(): Promise<boolean> { return !removing.value }
 function selectKind(next: DefaultKind): void {
   if (kind.value === next) return
   kind.value = next
@@ -100,7 +132,7 @@ function isConflict(reason: unknown, failure: string): boolean {
 </script>
 
 <template>
-  <ion-page>
+  <ion-page :ref="setPresentingElement">
     <ion-header translucent>
       <ion-toolbar>
         <ion-buttons slot="start"><ion-back-button :default-href="backPath" text="Group" /></ion-buttons>
@@ -125,6 +157,29 @@ function isConflict(reason: unknown, failure: string): boolean {
               <ion-item class="settings-row simplify-row">
                 <ion-label class="settings-row__copy"><strong>Use fewer payments</strong><p>Rearranges who pays whom without changing anyone’s total balance. Both views stay available.</p></ion-label>
                 <ion-toggle slot="end" data-testid="simplify-debts-toggle" aria-label="Simplify debts" :model-value="simplifyDebtsEnabled" :disabled="simplifying" @ion-change="updateSimplification" />
+              </ion-item>
+            </ion-list>
+          </section>
+
+          <section class="settings-section" aria-labelledby="members-heading">
+            <header class="section-heading">
+              <div><h2 id="members-heading">Manage members</h2><p>{{ snapshot.members.length }} active {{ snapshot.members.length === 1 ? 'person' : 'people' }}</p></div>
+              <span class="access-pill">{{ canManage ? 'Manager' : 'View only' }}</span>
+            </header>
+            <ion-note v-if="!canManage" class="permission-note">Only an active group manager can remove people.</ion-note>
+            <ion-list inset lines="full" class="settings-list manage-member-list">
+              <ion-item v-for="member in snapshot.members" :key="`manage-${member.id}`" class="settings-row manage-member-row">
+                <member-avatar slot="start" :member="member" size="compact" />
+                <ion-label class="manage-member-copy">
+                  <strong>{{ member.displayName }}</strong>
+                  <p>{{ member.isCurrentUser ? 'You' : member.role === 'owner' ? 'Owner' : member.canManage ? 'Manager' : 'Member' }}</p>
+                </ion-label>
+                <ion-button
+                  v-if="canManage && !member.isCurrentUser && member.role !== 'owner'"
+                  slot="end" fill="clear" color="danger" size="small"
+                  :aria-label="`Remove ${member.displayName} from group`"
+                  @click="openMemberRemoval(member)"
+                >Remove</ion-button>
               </ion-item>
             </ion-list>
           </section>
@@ -175,6 +230,30 @@ function isConflict(reason: unknown, failure: string): boolean {
         </template>
       </main>
     </ion-content>
+
+    <ion-modal :is-open="Boolean(removalTarget)" :presenting-element="presentingElement" :can-dismiss="canDismissRemoval" @did-dismiss="closeMemberRemoval">
+      <ion-header translucent>
+        <ion-toolbar>
+          <ion-buttons slot="start"><ion-button :disabled="removing" @click="closeMemberRemoval">Cancel</ion-button></ion-buttons>
+          <ion-title>Remove member</ion-title>
+        </ion-toolbar>
+      </ion-header>
+      <ion-content>
+        <main v-if="removalTarget" class="removal-card-content">
+          <member-avatar :member="removalTarget" />
+          <h2>Remove {{ removalTarget.displayName }}?</h2>
+          <p>They will lose access to this group. Shared history stays intact.</p>
+          <div class="removal-check">
+            <strong>Before removal</strong>
+            <p>They cannot be linked to expenses, recurring expenses, payments, or an unsettled balance. If anything is still linked, Split Unwise will tell you what to clean up.</p>
+          </div>
+          <p v-if="removalError" role="alert" class="error removal-error">{{ removalError }}</p>
+          <ion-button data-testid="confirm-member-removal" expand="block" shape="round" color="danger" :disabled="removing" @click="removeMember">
+            {{ removing ? 'Checking group…' : `Remove ${removalTarget.displayName}` }}
+          </ion-button>
+        </main>
+      </ion-content>
+    </ion-modal>
   </ion-page>
 </template>
 
@@ -202,6 +281,12 @@ function isConflict(reason: unknown, failure: string): boolean {
 .method-fieldset ion-segment-button { min-width: 0; min-height: 40px; --border-radius: 8px; --indicator-box-shadow: 0 1px 3px rgb(40 31 93 / 12%); --indicator-color: var(--su-surface); --padding-start: 6px; --padding-end: 6px; font-size: .75rem; text-transform: none; }
 .member-row ion-checkbox { width: 22px; height: 22px; margin-inline-end: 12px; }
 .member-row ion-label { min-width: 0; font-size: .92rem; }
+.manage-member-row { --min-height: 62px; }
+.manage-member-row :deep(.member-avatar) { margin-inline-end: 12px; }
+.manage-member-copy { min-width: 0; margin-block: 9px; }
+.manage-member-copy strong { display: block; overflow: hidden; font-size: .91rem; text-overflow: ellipsis; white-space: nowrap; }
+.manage-member-copy p { margin: 2px 0 0; color: var(--ion-color-medium); font-size: .72rem; }
+.manage-member-row ion-button { min-width: 66px; min-height: 44px; margin: 0; text-transform: none; }
 .ratio-control { display: flex; min-height: 44px; align-items: center; gap: 5px; margin-inline-start: 10px; }
 .ratio-input { box-sizing: border-box; width: 72px; min-height: 38px; border: 1px solid var(--su-divider); border-radius: 9px; padding: 0 8px; background: var(--su-surface); color: inherit; font: inherit; text-align: right; }
 .ratio-control small { width: 12px; color: var(--ion-color-medium); }
@@ -213,6 +298,14 @@ function isConflict(reason: unknown, failure: string): boolean {
 .status { min-height: 19px; margin: 8px 18px 0; color: var(--ion-color-medium); font-size: .8rem; line-height: 1.4; }
 .error { margin: 10px 18px 0; color: var(--ion-color-danger); font-size: .82rem; }
 .load-status { padding: 28px 0; color: var(--ion-color-medium); text-align: center; }
+.removal-card-content { box-sizing: border-box; display: flex; width: min(100%, 520px); min-height: 100%; flex-direction: column; align-items: center; margin: 0 auto; padding: 34px 20px calc(24px + env(safe-area-inset-bottom)); text-align: center; }
+.removal-card-content h2 { margin: 15px 0 7px; font-size: 1.35rem; letter-spacing: -.025em; }
+.removal-card-content > p { max-width: 390px; margin: 0; color: var(--ion-color-medium); font-size: .88rem; line-height: 1.45; }
+.removal-check { margin: 24px 0 18px; padding: 14px 15px; border: 1px solid color-mix(in srgb, var(--su-divider) 58%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--su-lilac) 34%, var(--su-surface)); text-align: start; }
+.removal-check strong { font-size: .83rem; }
+.removal-check p { margin: 4px 0 0; color: var(--ion-color-medium); font-size: .78rem; line-height: 1.45; }
+.removal-card-content > ion-button { width: 100%; min-height: 48px; margin-top: auto; text-transform: none; }
+.removal-error { width: 100%; margin: 0 0 12px; text-align: start; }
 .simplify-section { animation: settings-rise var(--su-motion-slow) cubic-bezier(.2,.75,.25,1) both; }
 @keyframes settings-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 360px) { .intro { font-size: .87rem; }.method-fieldset ion-segment-button { font-size: .68rem; }.ratio-input { width: 62px; } }
