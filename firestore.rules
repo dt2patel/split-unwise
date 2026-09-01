@@ -1,141 +1,207 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
+    function signedIn() { return request.auth != null; }
+    function owns(uid) { return signedIn() && request.auth.uid == uid; }
+    function strictId(value) { return value is string && value.matches('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'); }
+    function validName(value) { return value is string && value.size() > 0 && value.size() <= 120; }
+    function validInitials(value) { return value is string && value.size() > 0 && value.size() <= 4; }
+    function validAvatar(data) { return data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 2048); }
+    function validProfile(data) {
+      return data.keys().hasOnly(['displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt'])
+        && data.keys().hasAll(['displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt'])
+        && validName(data.displayName) && validInitials(data.initials) && validAvatar(data)
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
-
-    function owns(uid) {
-      return signedIn() && request.auth.uid == uid;
-    }
-
     function activeMember(groupId) {
-      return signedIn()
-        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active';
+      return signedIn() && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active';
+    }
+    function activeManager(groupId) {
+      let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
+      return signedIn() && member.status == 'active' && member.canManage == true;
+    }
+    function bounded(maximum) { return request.query.limit != null && request.query.limit > 0 && request.query.limit <= maximum; }
+
+    function validNewGroup(groupId, data) {
+      return signedIn() && strictId(groupId)
+        && data.keys().hasOnly(['id', 'name', 'currency', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasAll(['id', 'name', 'currency', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
+        && data.id == groupId && validName(data.name)
+        && data.currency is string && data.currency.matches('^[A-Z]{3}$')
+        && data.memberIds == [request.auth.uid] && data.createdByUid == request.auth.uid
+        && data.createdAt == request.time && data.updatedAt == request.time;
+    }
+    function validOwnerMember(data, profile) {
+      return data.keys().hasOnly(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'joinedAt'])
+        && data.keys().hasAll(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'joinedAt'])
+        && data.status == 'active' && data.role == 'owner' && data.canManage == true
+        && data.displayName == profile.displayName && data.initials == profile.initials && data.avatarUrl == profile.avatarUrl
+        && data.joinedAt == request.time;
+    }
+    function validJoinMember(data, profile, invitationId) {
+      return data.keys().hasOnly(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'invitationId', 'joinedAt'])
+        && data.keys().hasAll(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'invitationId', 'joinedAt'])
+        && data.status == 'active' && data.role == 'member' && data.canManage == false
+        && data.displayName == profile.displayName && data.initials == profile.initials && data.avatarUrl == profile.avatarUrl
+        && data.invitationId == invitationId && data.joinedAt == request.time;
+    }
+    function validSettings(groupId, data) {
+      return data.keys().hasOnly(['schemaVersion', 'groupId', 'revision', 'simplifyDebtsEnabled', 'updatedAt'])
+        && data.keys().hasAll(['schemaVersion', 'groupId', 'revision', 'simplifyDebtsEnabled', 'updatedAt'])
+        && data.schemaVersion == 1 && data.groupId == groupId && data.revision == 1
+        && data.simplifyDebtsEnabled == true && data.updatedAt == request.time;
+    }
+    function validInitialBalance(groupId, data) {
+      return data.keys().hasOnly(['groupId', 'balanceRevision', 'simplifyDebtsEnabled', 'pairwise', 'simplified'])
+        && data.keys().hasAll(['groupId', 'balanceRevision', 'simplifyDebtsEnabled', 'pairwise', 'simplified'])
+        && data.groupId == groupId && data.balanceRevision == 0 && data.simplifyDebtsEnabled == true
+        && data.pairwise == [] && data.simplified == [];
+    }
+    function validOwnerProjection(groupId, data) {
+      return data.keys().hasOnly(['groupId', 'status', 'joinedAt', 'updatedAt'])
+        && data.keys().hasAll(['groupId', 'status', 'joinedAt', 'updatedAt'])
+        && data.groupId == groupId && data.status == 'active'
+        && data.joinedAt == request.time && data.updatedAt == request.time;
+    }
+    function validJoinProjection(groupId, data, invitationId) {
+      return data.keys().hasOnly(['groupId', 'status', 'invitationId', 'joinedAt', 'updatedAt'])
+        && data.keys().hasAll(['groupId', 'status', 'invitationId', 'joinedAt', 'updatedAt'])
+        && data.groupId == groupId && data.status == 'active' && data.invitationId == invitationId
+        && data.joinedAt == request.time && data.updatedAt == request.time;
+    }
+    function ownerBundleExists(groupId) {
+      let profile = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return validOwnerMember(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data, profile)
+        && validSettings(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data)
+        && validInitialBalance(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)/balance/current).data)
+        && validOwnerProjection(groupId, getAfter(/databases/$(database)/documents/users/$(request.auth.uid)/groups/$(groupId)).data);
     }
 
-    function bounded(maximum) {
-      return request.query.limit != null && request.query.limit > 0 && request.query.limit <= maximum;
+    function invitationCapabilityId(invitationId) { return invitationId is string && invitationId.matches('^[A-Za-z0-9_-]{43}$'); }
+    function validTargetEmail(data) {
+      return !('targetEmail' in data) || data.targetEmail == null
+        || (data.targetEmail is string && data.targetEmail.size() >= 3 && data.targetEmail.size() <= 254);
+    }
+    function targetMatches(data) {
+      return !('targetEmail' in data) || data.targetEmail == null
+        || (request.auth.token.email_verified == true && request.auth.token.email == data.targetEmail);
+    }
+    function validNewInvitation(invitationId, data) {
+      return invitationCapabilityId(invitationId)
+        && data.keys().hasOnly(['schemaVersion', 'invitationId', 'tokenHash', 'groupId', 'groupName', 'status', 'createdByUid', 'targetEmail', 'createdAt', 'updatedAt', 'expiresAt'])
+        && data.keys().hasAll(['schemaVersion', 'invitationId', 'tokenHash', 'groupId', 'groupName', 'status', 'createdByUid', 'createdAt', 'updatedAt', 'expiresAt'])
+        && data.schemaVersion == 1 && data.invitationId == invitationId && data.tokenHash == invitationId
+        && strictId(data.groupId) && validName(data.groupName) && data.status == 'active' && data.createdByUid == request.auth.uid
+        && validTargetEmail(data) && data.createdAt == request.time && data.updatedAt == request.time
+        && data.expiresAt is timestamp && data.expiresAt > request.time
+        && data.expiresAt <= request.time + duration.value(8, 'd') && activeManager(data.groupId);
+    }
+    function validUsedInvitation(invitationId, groupId, uid) {
+      let before = get(/databases/$(database)/documents/invitations/$(invitationId)).data;
+      let after = getAfter(/databases/$(database)/documents/invitations/$(invitationId)).data;
+      return invitationCapabilityId(invitationId) && before.invitationId == invitationId && before.groupId == groupId
+        && before.status == 'active' && before.expiresAt is timestamp && before.expiresAt > request.time
+        && targetMatches(before)
+        && after.diff(before).affectedKeys().hasOnly(['status', 'usedByUid', 'usedAt', 'updatedAt'])
+        && after.status == 'used' && after.usedByUid == uid
+        && after.usedAt == request.time && after.updatedAt == request.time;
+    }
+    function validInvitationJoin(groupId) {
+      let profile = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      let member = getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
+      let projection = getAfter(/databases/$(database)/documents/users/$(request.auth.uid)/groups/$(groupId)).data;
+      return validJoinMember(member, profile, member.invitationId)
+        && validJoinProjection(groupId, projection, member.invitationId)
+        && validUsedInvitation(member.invitationId, groupId, request.auth.uid);
+    }
+    function validGroupJoin(groupId) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'updatedAt'])
+        && !(request.auth.uid in resource.data.memberIds) && request.auth.uid in request.resource.data.memberIds
+        && request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1
+        && request.resource.data.memberIds.toSet() == resource.data.memberIds.toSet().union([request.auth.uid].toSet())
+        && request.resource.data.updatedAt == request.time && validInvitationJoin(groupId);
     }
 
     match /users/{uid} {
       allow get: if owns(uid);
-      allow list, create, update, delete: if false;
+      allow list, delete: if false;
+      allow create: if owns(uid) && validProfile(request.resource.data)
+        && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
+      allow update: if owns(uid) && validProfile(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'initials', 'avatarUrl', 'updatedAt'])
+        && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.updatedAt == request.time;
 
       match /groups/{groupId} {
         allow get: if owns(uid);
         allow list: if owns(uid) && bounded(100);
-        allow write: if false;
+        allow create: if owns(uid) && (
+          (validOwnerProjection(groupId, request.resource.data)
+            && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data))
+          || (validJoinProjection(groupId, request.resource.data, request.resource.data.invitationId)
+            && validUsedInvitation(request.resource.data.invitationId, groupId, uid))
+        );
+        allow update, delete: if false;
       }
-
-      match /activity/{activityId} {
-        allow get: if owns(uid);
-        allow list: if owns(uid) && bounded(100);
-        allow write: if false;
-      }
-
-      match /notifications/{notificationId} {
-        allow get: if owns(uid);
-        allow list: if owns(uid) && bounded(100);
-        allow write: if false;
-      }
-
-      match /settings/{settingId} {
-        allow get: if owns(uid);
-        allow list, write: if false;
-      }
-
-      match /jobs/{jobId} {
-        allow get: if owns(uid);
-        allow list: if owns(uid) && bounded(50);
-        allow write: if false;
-      }
-
-      match /exports/{jobId} {
-        allow get: if owns(uid);
-        allow list: if owns(uid) && bounded(50);
-        allow write: if false;
-      }
-
-      match /devices/{deviceId} {
-        allow get: if owns(uid);
-        allow list: if owns(uid) && bounded(25);
-        allow write: if false;
-      }
-
-      match /operations/{operationId} {
-        allow read, write: if false;
-      }
+      match /activity/{activityId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(100); allow write: if false; }
+      match /notifications/{notificationId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(100); allow write: if false; }
+      match /settings/{settingId} { allow get: if owns(uid); allow list, write: if false; }
+      match /jobs/{jobId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(50); allow write: if false; }
+      match /exports/{jobId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(50); allow write: if false; }
+      match /devices/{deviceId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(25); allow write: if false; }
+      match /operations/{operationId} { allow read, write: if false; }
     }
 
     match /groups/{groupId} {
       allow get: if activeMember(groupId);
-      allow list, write: if false;
+      allow list, delete: if false;
+      allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId);
+      allow update: if validGroupJoin(groupId);
 
       match /members/{uid} {
         allow get: if activeMember(groupId);
         allow list: if activeMember(groupId) && bounded(100);
-        allow write: if false;
+        allow create: if owns(uid) && (
+          (validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data)
+            && validOwnerMember(request.resource.data, get(/databases/$(database)/documents/users/$(uid)).data))
+          || (validJoinMember(request.resource.data, get(/databases/$(database)/documents/users/$(uid)).data, request.resource.data.invitationId)
+            && validUsedInvitation(request.resource.data.invitationId, groupId, uid))
+        );
+        allow update, delete: if false;
       }
-
       match /expenses/{expenseId} {
-        allow get: if activeMember(groupId);
-        allow list: if activeMember(groupId) && bounded(100);
-        allow write: if false;
-
-        match /revisions/{revisionId} {
-          allow get: if activeMember(groupId);
-          allow list: if activeMember(groupId) && bounded(100);
-          allow write: if false;
-        }
+        allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false;
+        match /revisions/{revisionId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
       }
-
-      match /comments/{commentId} {
-        allow get: if activeMember(groupId);
-        allow list: if activeMember(groupId) && bounded(100);
-        allow write: if false;
-      }
-
-      match /settlements/{settlementId} {
-        allow get: if activeMember(groupId);
-        allow list: if activeMember(groupId) && bounded(100);
-        allow write: if false;
-      }
-
-      match /activity/{activityId} {
-        allow get: if activeMember(groupId);
-        allow list: if activeMember(groupId) && bounded(100);
-        allow write: if false;
-      }
-
+      match /comments/{commentId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
+      match /settlements/{settlementId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
+      match /activity/{activityId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
       match /balance/{snapshotId} {
-        allow get: if activeMember(groupId);
-        allow list, write: if false;
+        allow get: if activeMember(groupId); allow list, update, delete: if false;
+        allow create: if snapshotId == 'current' && validInitialBalance(groupId, request.resource.data)
+          && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data);
       }
-
       match /settings/{settingId} {
-        allow get: if activeMember(groupId);
-        allow list, write: if false;
+        allow get: if activeMember(groupId); allow list, update, delete: if false;
+        allow create: if settingId == 'defaults' && validSettings(groupId, request.resource.data)
+          && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data);
       }
-
-      match /recurringTemplates/{templateId} {
-        allow get: if activeMember(groupId);
-        allow list: if activeMember(groupId) && bounded(100);
-        allow write: if false;
-      }
-
-      match /assets/{assetId} {
-        allow get: if activeMember(groupId);
-        allow list, write: if false;
-      }
+      match /recurringTemplates/{templateId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
+      match /assets/{assetId} { allow get: if activeMember(groupId); allow list, write: if false; }
     }
 
     match /invitations/{invitationId} {
-      allow read, write: if false;
+      allow get: if signedIn() && invitationCapabilityId(invitationId);
+      allow list, delete: if false;
+      allow create: if signedIn() && validNewInvitation(invitationId, request.resource.data);
+      allow update: if signedIn() && (
+        validUsedInvitation(invitationId, resource.data.groupId, request.auth.uid)
+        || (activeManager(resource.data.groupId) && resource.data.status == 'active'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'revokedByUid', 'revokedAt', 'updatedAt'])
+          && request.resource.data.status == 'revoked' && request.resource.data.revokedByUid == request.auth.uid
+          && request.resource.data.revokedAt == request.time && request.resource.data.updatedAt == request.time)
+      );
     }
 
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    match /{document=**} { allow read, write: if false; }
   }
 }

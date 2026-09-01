@@ -4,6 +4,7 @@ import { getSplitUnwiseFirebaseApp } from '../../data/firebaseBootstrap'
 import type { FirebaseConfiguration } from '../../data/firebase'
 import { sanitizeInternalReturnPath, storeReturnPath } from './returnPath'
 import { sanitizeAuthIdentity, type AuthActionResult, type AuthIdentity, type AuthService, type AuthState } from './authService'
+import { synchronizeFirebaseProfile } from '../../data/firebaseSparkMutations'
 
 export async function createFirebaseAuthService(configuration: FirebaseConfiguration, capabilities: RuntimeCapabilities): Promise<AuthService> {
   const [app, firebase] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth')])
@@ -37,6 +38,7 @@ export async function createFirebaseAuthService(configuration: FirebaseConfigura
     async signUpWithEmail(displayName, email, password) {
       const credential = await firebase.createUserWithEmailAndPassword(auth, normalizeEmail(email), password)
       await firebase.updateProfile(credential.user, { displayName: displayName.trim().slice(0, 120) })
+      await synchronizeFirebaseProfile(configuration, credential.user)
       await firebase.sendEmailVerification(credential.user)
       return { status: 'complete' }
     },

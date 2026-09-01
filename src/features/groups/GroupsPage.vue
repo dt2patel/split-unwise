@@ -9,6 +9,8 @@ import { getAppSession } from '../../data/session'
 import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { loadCurrencyPreferences, SUPPORTED_CURRENCIES } from '../account/currencyPreferences'
+import { getActiveRuntimeConfiguration } from '../../data/firebase'
+import { createSparkGroup } from '../../data/firebaseSparkMutations'
 
 const store = useGroupStore()
 const { groups, error, isLoading } = storeToRefs(store)
@@ -30,7 +32,12 @@ async function createGroup(): Promise<void> {
   if (!name) { createError.value = 'Enter a group name.'; return }
   creating.value = true; createError.value = ''
   try {
-    const value = await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId: createClientOperationId('group'), name, currency: currency.value }, { replayProtected: true })
+    const runtime = getActiveRuntimeConfiguration()
+    if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for group creation.')
+    const operationId = createClientOperationId('group')
+    const value = runtime.functionsRegion
+      ? await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId, name, currency: currency.value }, { replayProtected: true })
+      : await createSparkGroup(runtime.firebase, { operationId, name, currency: currency.value })
     if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error('Group service returned an invalid response.')
     await store.loadOverview()
     await router.push(`/tabs/groups/${encodeURIComponent(value.groupId)}`)

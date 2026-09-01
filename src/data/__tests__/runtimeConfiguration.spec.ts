@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FirebaseConfigurationError, readFirebaseConfiguration, readRuntimeConfiguration, type PublicEnvironment } from '../firebase'
+import { FirebaseConfigurationError, readFirebaseConfiguration, readFirebaseHostingConfiguration, readRuntimeConfiguration, type PublicEnvironment } from '../firebase'
 
 const core: PublicEnvironment = {
   VITE_FIREBASE_API_KEY: 'AIzaSyExampleKey',
@@ -41,5 +41,15 @@ describe('runtime configuration', () => {
     })).toMatchObject({ kind: 'firebase', capabilities: { storage: 'available', functions: 'available', appCheck: 'available', push: 'available' } })
     expect(readRuntimeConfiguration({ ...core, VITE_FIREBASE_STORAGE_BUCKET: ' ' })).toMatchObject({ kind: 'firebase', capabilities: { storage: 'unavailable' } })
     expect(readRuntimeConfiguration({ ...core, VITE_FIREBASE_GOOGLE_ENABLED: 'maybe' })).toMatchObject({ kind: 'error', fields: ['VITE_FIREBASE_GOOGLE_ENABLED'] })
+  })
+
+  it('maps Firebase Hosting auto-init into an Auth and Firestore runtime without claiming undeployed paid services', () => {
+    expect(readFirebaseHostingConfiguration({
+      apiKey: 'AIzaSyExampleKey', authDomain: 'split-unwise-aditya.firebaseapp.com', projectId: 'split-unwise-aditya',
+      appId: '1:906824460273:web:ac56072d30a1dd5e72c650', messagingSenderId: '906824460273', storageBucket: 'split-unwise-aditya.firebasestorage.app',
+    })).toMatchObject({
+      kind: 'firebase', firebase: { projectId: 'split-unwise-aditya' },
+      capabilities: { auth: 'available', firestore: 'available', functions: 'unavailable', storage: 'unavailable', google: 'available' },
+    })
   })
 })

@@ -1,6 +1,7 @@
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import type { AppPrincipal } from './principal'
+import { bootstrapFirebaseProfile } from './firebaseSparkMutations'
 
 export interface HydratableFirebaseAuth {
   authStateReady(): Promise<void>
@@ -61,7 +62,11 @@ export async function connectFirebasePrincipalSource(configuration: FirebaseConf
     auth,
     projectId: configuration.projectId,
     subscribe: (listener) => authModule.onAuthStateChanged(auth, listener),
-    async prepare(user) { if (user && bootstrap) await bootstrap({ schemaVersion: 1 }) },
+    async prepare(user) {
+      if (!user) return
+      if (bootstrap) await bootstrap({ schemaVersion: 1 })
+      else await bootstrapFirebaseProfile(configuration, auth.currentUser ?? undefined)
+    },
   })
 }
 

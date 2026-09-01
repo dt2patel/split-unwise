@@ -9,6 +9,8 @@ import { prepareDemoInvitation, type PreparedInvitation } from './invitations'
 import { sharePreparedInvitation } from './shareInvitation'
 import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
 import { createClientOperationId } from '../../data/clientOperationId'
+import { getActiveRuntimeConfiguration } from '../../data/firebase'
+import { createSparkInvitation, revokeSparkInvitation } from '../../data/firebaseSparkMutations'
 
 const route = useRoute()
 const session = getAppSession()
@@ -36,10 +38,16 @@ async function create(): Promise<void> {
   busy.value = true; error.value = ''; status.value = ''; invitation.value = undefined
   try {
     if (!canManage.value) throw new Error('Only a group manager can create an invitation.')
-    const configuredOrigin = String(import.meta.env.VITE_CANONICAL_ORIGIN ?? 'https://split-unwise.web.app')
+    const configuredOrigin = String(import.meta.env.VITE_CANONICAL_ORIGIN ?? 'https://split-unwise-aditya.web.app')
     if (session.repository.mode === 'firebase') {
-      const result = await callSplitUnwiseFunction('invitationCreate', { schemaVersion: 1, operationId: createClientOperationId('invite'), groupId: groupId.value, origin: configuredOrigin, ...(email.value.trim() ? { targetEmail: email.value } : {}) }, { replayProtected: true })
-      invitation.value = decodePreparedInvitation(result)
+      const runtime = getActiveRuntimeConfiguration()
+      if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for invitations.')
+      if (runtime.functionsRegion) {
+        const result = await callSplitUnwiseFunction('invitationCreate', { schemaVersion: 1, operationId: createClientOperationId('invite'), groupId: groupId.value, origin: configuredOrigin, ...(email.value.trim() ? { targetEmail: email.value } : {}) }, { replayProtected: true })
+        invitation.value = decodePreparedInvitation(result)
+      } else {
+        invitation.value = await createSparkInvitation(runtime.firebase, { groupId: groupId.value, canonicalOrigin: configuredOrigin, ...(email.value.trim() ? { targetEmail: email.value } : {}) })
+      }
       status.value = 'Private seven-day invitation ready.'
     } else {
       invitation.value = await prepareDemoInvitation({ groupId: groupId.value, canonicalOrigin: configuredOrigin, ...(email.value.trim() ? { targetEmail: email.value } : {}) })
@@ -54,10 +62,13 @@ async function share(): Promise<void> {
   status.value = result.status === 'shared' ? 'Share sheet completed.' : result.status === 'copied' ? 'Invitation copied.' : result.status === 'cancelled' ? 'Sharing cancelled.' : 'Select and copy the invitation below.'
 }
 async function revoke(): Promise<void> {
-  if (!invitation.value || invitation.value.capability !== 'firebase-server') return
+  if (!invitation.value || (invitation.value.capability !== 'firebase-server' && invitation.value.capability !== 'firebase-client')) return
   busy.value = true; error.value = ''
   try {
-    await callSplitUnwiseFunction('invitationRevoke', { schemaVersion: 1, operationId: createClientOperationId('invite-revoke'), invitationId: invitation.value.invitationId }, { replayProtected: true })
+    const runtime = getActiveRuntimeConfiguration()
+    if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for invitations.')
+    if (invitation.value.capability === 'firebase-server') await callSplitUnwiseFunction('invitationRevoke', { schemaVersion: 1, operationId: createClientOperationId('invite-revoke'), invitationId: invitation.value.invitationId }, { replayProtected: true })
+    else await revokeSparkInvitation(runtime.firebase, invitation.value.invitationId)
     revoked.value = true; status.value = 'Invitation revoked.'
   } catch (reason) { error.value = message(reason) } finally { busy.value = false }
 }
@@ -91,7 +102,7 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
           <p>Expires {{ new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(invitation.expiresAt)) }}</p>
           <textarea readonly :value="invitation.link" aria-label="Prepared invitation URL" @focus="($event.target as HTMLTextAreaElement).select()" />
           <ion-button expand="block" shape="round" :disabled="revoked" @click="share"><ion-icon slot="start" :icon="copyOutline" /> {{ revoked ? 'Invitation revoked' : 'Share invitation' }}</ion-button>
-          <ion-button v-if="invitation.capability === 'firebase-server' && !revoked" expand="block" fill="clear" color="danger" :disabled="busy" @click="revoke">Revoke invitation</ion-button>
+          <ion-button v-if="(invitation.capability === 'firebase-server' || invitation.capability === 'firebase-client') && !revoked" expand="block" fill="clear" color="danger" :disabled="busy" @click="revoke">Revoke invitation</ion-button>
         </section>
         <p v-if="error" class="invite-error" role="alert">{{ error }}</p>
         <p v-if="status" class="invite-status" role="status" aria-live="polite">{{ status }}</p>

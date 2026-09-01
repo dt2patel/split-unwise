@@ -10,16 +10,21 @@ describe('Firebase security contract', () => {
   it('authorizes groups from active membership documents and default-denies unknown paths', () => {
     expect(firestoreRules).toContain(".data.status == 'active'")
     expect(firestoreRules).toContain('groups/$(groupId)/members/$(request.auth.uid)')
-    expect(firestoreRules).not.toMatch(/memberIds.*request\.auth/)
+    expect(firestoreRules).toMatch(/function activeMember\(groupId\) \{[\s\S]*?members\/\$\(request\.auth\.uid\)[\s\S]*?\}/)
+    expect(firestoreRules).toMatch(/allow update: if validGroupJoin\(groupId\)/)
     expect(firestoreRules).toMatch(/match \/\{document=\*\*\}[\s\S]*allow read, write: if false;/)
   })
 
-  it('keeps operation ledgers and every authoritative group collection server-only', () => {
+  it('keeps operation and financial ledgers server-only while narrowly allowing account and membership bootstrap', () => {
     expect(firestoreRules).toMatch(/match \/operations\/\{operationId\}[\s\S]*allow read, write: if false;/)
     for (const collection of ['expenses', 'revisions', 'comments', 'settlements', 'activity', 'recurringTemplates']) {
       expect(firestoreRules).toContain(`match /${collection}/`)
     }
-    expect(firestoreRules.match(/allow write: if false;/g)?.length).toBeGreaterThanOrEqual(12)
+    expect(firestoreRules).toMatch(/match \/expenses\/\{expenseId\}[\s\S]*?allow write: if false;/)
+    expect(firestoreRules).toMatch(/match \/settlements\/\{settlementId\}[\s\S]*?allow write: if false;/)
+    expect(firestoreRules).toContain('allow create: if owns(uid) && validProfile(request.resource.data)')
+    expect(firestoreRules).toContain('allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId)')
+    expect(firestoreRules).toContain('validUsedInvitation(request.resource.data.invitationId, groupId, uid)')
   })
 
   it('locks draft uploads to exact owner metadata, safe image types, and the inclusive 15 MiB boundary', () => {

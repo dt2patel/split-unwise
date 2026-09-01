@@ -37,6 +37,8 @@ export type PublicEnvironment = Partial<Record<
   string
 >>
 
+let activeRuntimeConfiguration: RuntimeConfiguration | undefined
+
 const CORE_FIELDS = ['VITE_FIREBASE_API_KEY', 'VITE_FIREBASE_AUTH_DOMAIN', 'VITE_FIREBASE_PROJECT_ID', 'VITE_FIREBASE_APP_ID'] as const
 const ALL_FIELDS = [...CORE_FIELDS, 'VITE_FIREBASE_STORAGE_BUCKET', 'VITE_FIREBASE_MESSAGING_SENDER_ID', 'VITE_FIREBASE_FUNCTIONS_REGION', 'VITE_FIREBASE_APP_CHECK_SITE_KEY', 'VITE_FIREBASE_VAPID_KEY', 'VITE_FIREBASE_GOOGLE_ENABLED'] as const
 
@@ -87,6 +89,52 @@ export function readRuntimeConfiguration(environment?: PublicEnvironment): Runti
   }
 }
 
+/** Resolves Firebase Hosting's same-origin auto-init payload without embedding public project configuration in source. */
+export async function resolveRuntimeConfiguration(environment?: PublicEnvironment): Promise<RuntimeConfiguration> {
+  const configured = readRuntimeConfiguration(environment)
+  if (environment !== undefined || configured.kind !== 'demo' || !isFirebaseHostingOrigin()) {
+    activeRuntimeConfiguration = configured
+    return configured
+  }
+  try {
+    const response = await fetch('/__/firebase/init.json', { cache: 'no-store', credentials: 'same-origin' })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const value: unknown = await response.json()
+    if (!isRecord(value)) throw new Error('invalid JSON object')
+    const discovered = readFirebaseHostingConfiguration(value)
+    if (discovered.kind !== 'firebase') throw new Error(discovered.kind === 'error' ? discovered.message : 'Firebase Hosting returned an empty configuration')
+    activeRuntimeConfiguration = discovered
+    return discovered
+  } catch (reason) {
+    const detail = reason instanceof Error ? reason.message : 'unknown error'
+    const failed: RuntimeConfiguration = { kind: 'error', fields: ['/__/firebase/init.json'], message: `Firebase Hosting configuration could not be loaded: ${detail}` }
+    activeRuntimeConfiguration = failed
+    return failed
+  }
+}
+
+/** Maps Hosting's public auto-init document to the deliberately Spark-safe client capability set. */
+export function readFirebaseHostingConfiguration(value: unknown): RuntimeConfiguration {
+  if (!isRecord(value)) return { kind: 'error', fields: ['/__/firebase/init.json'], message: 'Firebase Hosting configuration is not a JSON object' }
+  try {
+    return readRuntimeConfiguration({
+      VITE_FIREBASE_API_KEY: stringField(value, 'apiKey'),
+      VITE_FIREBASE_AUTH_DOMAIN: stringField(value, 'authDomain'),
+      VITE_FIREBASE_PROJECT_ID: stringField(value, 'projectId'),
+      VITE_FIREBASE_APP_ID: stringField(value, 'appId'),
+      VITE_FIREBASE_MESSAGING_SENDER_ID: optionalStringField(value, 'messagingSenderId'),
+      VITE_FIREBASE_GOOGLE_ENABLED: 'true',
+    })
+  } catch (reason) {
+    return { kind: 'error', fields: ['/__/firebase/init.json'], message: reason instanceof Error ? reason.message : 'Firebase Hosting configuration is invalid' }
+  }
+}
+
+/** The runtime already selected by the mounted composition root. */
+export function getActiveRuntimeConfiguration(): RuntimeConfiguration {
+  return activeRuntimeConfiguration ?? readRuntimeConfiguration()
+}
+
 /** Compatibility helper for repository adapters. Throws on broken Firebase intent. */
 export function readFirebaseConfiguration(environment?: PublicEnvironment): FirebaseConfiguration | undefined {
   const runtime = readRuntimeConfiguration(environment)
@@ -111,4 +159,28 @@ function demoConfiguration(): Extract<RuntimeConfiguration, { kind: 'demo' }> {
 function nonBlank(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
   return trimmed || undefined
+}
+
+function isFirebaseHostingOrigin(): boolean {
+  if (typeof location === 'undefined') return false
+  return /(?:^|\.)firebaseapp\.com$|(?:^|\.)web\.app$/.test(location.hostname)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function stringField(value: Record<string, unknown>, field: string): string {
+  const candidate = value[field]
+  if (typeof candidate !== 'string') throw new Error(`Firebase Hosting configuration is missing ${field}`)
+  return candidate
+}
+
+function optionalStringField(value: Record<string, unknown>, field: string): string | undefined {
+  const candidate = value[field]
+  return typeof candidate === 'string' ? candidate : undefined
+}
+
+export function resetActiveRuntimeConfigurationForTesting(): void {
+  activeRuntimeConfiguration = undefined
 }

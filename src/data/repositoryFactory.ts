@@ -1,5 +1,5 @@
 import { createBrowserDemoRepositoryStateStorage, createDemoRepository } from './demoRepository'
-import { readFirebaseConfiguration, readRuntimeConfiguration, type PublicEnvironment, type RuntimeConfiguration } from './firebase'
+import { readFirebaseConfiguration, resolveRuntimeConfiguration, type PublicEnvironment, type RuntimeConfiguration } from './firebase'
 import { createFirebaseRepository } from './firebaseRepository'
 import { connectFirebasePrincipalSource } from './firebaseSession'
 import { appPrincipalKey, type AppPrincipal, type AppPrincipalSource } from './principal'
@@ -23,7 +23,7 @@ export function createRepository(environment?: PublicEnvironment): AppRepository
 
 /** Principal-first composition used by the mounted app and auth lifecycle. */
 export async function createRepositorySessionRuntime(environment?: PublicEnvironment): Promise<AppRepositorySessionRuntime> {
-  const runtime = readRuntimeConfiguration(environment)
+  const runtime = await resolveRuntimeConfiguration(environment)
   if (runtime.kind === 'error') {
     const auth = createConfigurationErrorAuthService(runtime.message, {
       auth: 'available', firestore: 'available', storage: 'unavailable', functions: 'unavailable', appCheck: 'unavailable', push: 'unavailable', google: 'unavailable', apple: 'unavailable',

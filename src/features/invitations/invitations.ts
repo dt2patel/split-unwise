@@ -1,4 +1,4 @@
-export type InvitationCapability = 'demo-local-preview' | 'firebase-server' | 'server-required'
+export type InvitationCapability = 'demo-local-preview' | 'firebase-client' | 'firebase-server' | 'server-required'
 export type InvitationStatus = 'active' | 'expired' | 'revoked' | 'used' | 'email-mismatch'
 
 export interface PreparedInvitation {

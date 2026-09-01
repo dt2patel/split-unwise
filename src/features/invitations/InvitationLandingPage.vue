@@ -3,11 +3,13 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { IonButton, IonContent, IonIcon, IonPage, IonSpinner } from '@ionic/vue'
 import { peopleOutline, shieldCheckmarkOutline } from 'ionicons/icons'
-import { captureInvitationFragment, consumeTransientInvitationSecret, peekTransientInvitationSecret } from './invitations'
+import { captureInvitationFragment, consumeTransientInvitationSecret, hashInvitationSecret, peekTransientInvitationSecret } from './invitations'
 import { peekActiveAppSession } from '../../data/session'
 import { getAuthService } from '../auth/authService'
 import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
 import { storeReturnPath } from '../auth/returnPath'
+import { getActiveRuntimeConfiguration } from '../../data/firebase'
+import { acceptSparkInvitation, inspectSparkInvitation } from '../../data/firebaseSparkMutations'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,7 +29,12 @@ onMounted(async () => {
     const session = peekActiveAppSession()
     if (!session) { state.value = 'invalid'; message.value = 'Your signed-in account is not ready.'; return }
     if (session.repository.mode === 'firebase') {
-      const preview = decodePreview(await callSplitUnwiseFunction('invitationInspect', { schemaVersion: 1, invitationId: invitationId.value, token: secret }))
+      const runtime = getActiveRuntimeConfiguration()
+      if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for invitations.')
+      const serviceInvitationId = runtime.functionsRegion ? invitationId.value : await hashInvitationSecret(secret)
+      const preview = runtime.functionsRegion
+        ? decodePreview(await callSplitUnwiseFunction('invitationInspect', { schemaVersion: 1, invitationId: serviceInvitationId, token: secret }))
+        : await inspectSparkInvitation(runtime.firebase, serviceInvitationId, secret)
       groupId.value = preview.groupId
       state.value = preview.alreadyMember ? 'accepted' : 'ready'
       message.value = preview.alreadyMember ? `You already belong to ${preview.groupName}.` : `You’re invited to join ${preview.groupName}.`
@@ -42,7 +49,12 @@ async function accept(): Promise<void> {
   if (!secret) { state.value = 'invalid'; message.value = 'This invitation has already been consumed.'; return }
   accepting.value = true
   try {
-    const result = decodeAccept(await callSplitUnwiseFunction('invitationAccept', { schemaVersion: 1, invitationId: invitationId.value, token: secret }, { replayProtected: true }))
+    const runtime = getActiveRuntimeConfiguration()
+    if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for invitations.')
+    const serviceInvitationId = runtime.functionsRegion ? invitationId.value : await hashInvitationSecret(secret)
+    const result = runtime.functionsRegion
+      ? decodeAccept(await callSplitUnwiseFunction('invitationAccept', { schemaVersion: 1, invitationId: serviceInvitationId, token: secret }, { replayProtected: true }))
+      : await acceptSparkInvitation(runtime.firebase, serviceInvitationId, secret)
     consumeTransientInvitationSecret(invitationId.value)
     state.value = 'accepted'; groupId.value = result.groupId; message.value = 'You joined the group.'
     await router.replace(`/tabs/groups/${encodeURIComponent(result.groupId)}`)

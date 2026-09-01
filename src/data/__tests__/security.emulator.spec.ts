@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs'
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
-import { collection, collectionGroup, doc, getDoc, getDocs, limit, query, setDoc } from 'firebase/firestore'
+import { collection, collectionGroup, doc, getDoc, getDocs, limit, query, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch, type Firestore } from 'firebase/firestore'
 import { deleteObject, getBytes, ref, uploadBytes } from 'firebase/storage'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
@@ -36,6 +36,47 @@ beforeEach(async () => {
 afterAll(async () => environment?.cleanup())
 
 describe('Firestore rules in the emulator', () => {
+  emulatorIt('lets an authenticated account bootstrap and safely maintain only its own profile', async () => {
+    const owner = environment.authenticatedContext('new-owner', { email: 'owner@example.com', email_verified: true }).firestore()
+    const attacker = environment.authenticatedContext('attacker', { email: 'attacker@example.com', email_verified: true }).firestore()
+    await assertSucceeds(setDoc(doc(owner, 'users/new-owner'), profile('New Owner', 'NO')))
+    await assertFails(setDoc(doc(owner, 'users/someone-else'), profile('Someone Else', 'SE')))
+    await assertFails(setDoc(doc(attacker, 'users/attacker'), { ...profile('Attacker', 'A'), admin: true }))
+    await assertSucceeds(updateDoc(doc(owner, 'users/new-owner'), { displayName: 'Owner Updated', initials: 'OU', updatedAt: serverTimestamp() }))
+    await assertFails(updateDoc(doc(owner, 'users/new-owner'), { createdAt: serverTimestamp() }))
+  })
+
+  emulatorIt('permits one complete owner-only group bootstrap and rejects partial or forged groups', async () => {
+    const owner = environment.authenticatedContext('new-owner').firestore()
+    await assertSucceeds(setDoc(doc(owner, 'users/new-owner'), profile('New Owner', 'NO')))
+    await assertSucceeds(commitGroupBundle(owner, 'group-new', 'new-owner', 'New Owner', 'NO'))
+    await assertSucceeds(getDoc(doc(owner, 'groups/group-new')))
+    await assertSucceeds(getDoc(doc(owner, 'groups/group-new/members/new-owner')))
+    await assertSucceeds(getDoc(doc(owner, 'users/new-owner/groups/group-new')))
+
+    await assertFails(setDoc(doc(owner, 'groups/group-partial'), group('group-partial', 'new-owner', ['new-owner'])))
+    await assertFails(commitGroupBundle(owner, 'group-forged', 'new-owner', 'New Owner', 'NO', ['new-owner', 'victim']))
+  })
+
+  emulatorIt('supports a private invitation that adds a second signed-in user atomically', async () => {
+    const owner = environment.authenticatedContext('new-owner', { email: 'owner@example.com', email_verified: true }).firestore()
+    const invitee = environment.authenticatedContext('invitee', { email: 'friend@example.com', email_verified: true }).firestore()
+    await assertSucceeds(setDoc(doc(owner, 'users/new-owner'), profile('New Owner', 'NO')))
+    await assertSucceeds(setDoc(doc(invitee, 'users/invitee'), profile('Friendly User', 'FU')))
+    await assertSucceeds(commitGroupBundle(owner, 'group-shared', 'new-owner', 'New Owner', 'NO'))
+
+    const invitationId = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ'
+    await assertSucceeds(setDoc(doc(owner, `invitations/${invitationId}`), invitation(invitationId, 'group-shared', 'new-owner')))
+    await assertSucceeds(getDoc(doc(invitee, `invitations/${invitationId}`)))
+    await assertSucceeds(acceptInvitation(invitee, invitationId, 'group-shared', 'invitee', 'Friendly User', 'FU', ['new-owner', 'invitee']))
+    await assertSucceeds(getDoc(doc(invitee, 'groups/group-shared')))
+    await assertSucceeds(getDoc(doc(invitee, 'groups/group-shared/members/new-owner')))
+
+    const attacker = environment.authenticatedContext('attacker', { email: 'attacker@example.com', email_verified: true }).firestore()
+    await assertSucceeds(setDoc(doc(attacker, 'users/attacker'), profile('Attacker', 'A')))
+    await assertFails(setDoc(doc(attacker, 'invitations/not-a-capability'), invitation('not-a-capability', 'group-shared', 'attacker')))
+  })
+
   emulatorIt('allows only self-private and active-member bounded reads', async () => {
     const active = environment.authenticatedContext('active').firestore()
     const outsider = environment.authenticatedContext('outsider').firestore()
@@ -61,6 +102,42 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(getDocs(query(collectionGroup(active, 'expenses'), limit(10))))
   })
 })
+
+function profile(displayName: string, initials: string): Record<string, unknown> {
+  return { displayName, initials, avatarUrl: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
+}
+
+function group(groupId: string, ownerUid: string, memberIds: readonly string[]): Record<string, unknown> {
+  return { id: groupId, name: 'Shared group', currency: 'USD', memberIds, createdByUid: ownerUid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
+}
+
+function commitGroupBundle(source: unknown, groupId: string, ownerUid: string, displayName: string, initials: string, memberIds: readonly string[] = [ownerUid]): Promise<void> {
+  const db = source as Firestore
+  const batch = writeBatch(db)
+  batch.set(doc(db, `groups/${groupId}`), group(groupId, ownerUid, memberIds))
+  batch.set(doc(db, `groups/${groupId}/members/${ownerUid}`), { status: 'active', role: 'owner', canManage: true, displayName, initials, avatarUrl: null, joinedAt: serverTimestamp() })
+  batch.set(doc(db, `groups/${groupId}/settings/defaults`), { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true, updatedAt: serverTimestamp() })
+  batch.set(doc(db, `groups/${groupId}/balance/current`), { groupId, balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
+  batch.set(doc(db, `users/${ownerUid}/groups/${groupId}`), { groupId, status: 'active', joinedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+  return batch.commit()
+}
+
+function invitation(invitationId: string, groupId: string, creatorUid: string): Record<string, unknown> {
+  return {
+    schemaVersion: 1, invitationId, tokenHash: invitationId, groupId, groupName: 'Shared group', status: 'active', createdByUid: creatorUid,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt: Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  }
+}
+
+function acceptInvitation(source: unknown, invitationId: string, groupId: string, uid: string, displayName: string, initials: string, memberIds: readonly string[]): Promise<void> {
+  const db = source as Firestore
+  const batch = writeBatch(db)
+  batch.update(doc(db, `invitations/${invitationId}`), { status: 'used', usedByUid: uid, usedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+  batch.update(doc(db, `groups/${groupId}`), { memberIds, updatedAt: serverTimestamp() })
+  batch.set(doc(db, `groups/${groupId}/members/${uid}`), { status: 'active', role: 'member', canManage: false, displayName, initials, avatarUrl: null, invitationId, joinedAt: serverTimestamp() })
+  batch.set(doc(db, `users/${uid}/groups/${groupId}`), { groupId, status: 'active', invitationId, joinedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+  return batch.commit()
+}
 
 describe('Storage rules in the emulator', () => {
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])

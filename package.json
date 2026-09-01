@@ -17,7 +17,7 @@
     "cap:sync": "pnpm build && cap sync ios",
     "ios:build": "xcodebuild -quiet -project ios/App/App.xcodeproj -scheme App -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build",
     "test:firebase": "pnpm functions:build && node scripts/prepareFirebaseEmulator.mjs && firebase emulators:exec --project demo-split-unwise --only auth,firestore,functions,storage \"pnpm test:firebase:inside\"",
-    "test:firebase:inside": "vitest run src/data/__tests__/security.emulator.spec.ts && pnpm --filter @split-unwise/functions test:emulator",
+    "test:firebase:inside": "vitest run src/data/__tests__/security.emulator.spec.ts && vitest run src/data/__tests__/firebaseSparkFlow.emulator.spec.ts && pnpm --filter @split-unwise/functions test:emulator",
     "firebase:emulators": "firebase emulators:start --project demo-split-unwise --only auth,firestore,functions,storage"
   },
   "dependencies": {
