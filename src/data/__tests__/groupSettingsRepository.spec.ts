@@ -37,4 +37,48 @@ describe('demo group settings repository', () => {
     await expect(repository.groups.getSettings(groupId)).resolves.toEqual({ schemaVersion: 1, groupId, revision: 3 })
     await expect(repository.expenses.listForGroup(groupId)).resolves.toEqual(before)
   })
+
+  it('persists an active member debt-simplification choice and invalidates stale balance plans', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+
+    await repository.commands.execute({
+      kind: 'group.simplify-debts', operationId: 'disable-simplification', groupId,
+      expectedRevision: 1, simplifyDebtsEnabled: false,
+    })
+
+    await expect(repository.groups.getSettings(groupId)).resolves.toMatchObject({ revision: 2, simplifyDebtsEnabled: false })
+    await expect(repository.groups.getBalanceSnapshot(groupId)).resolves.toMatchObject({
+      balanceRevision: before.balanceRevision + 1,
+      simplifyDebtsEnabled: false,
+    })
+    await expect(repository.activity.listForGroup(groupId)).resolves.toContainEqual(expect.objectContaining({
+      kind: 'group.event', operationId: 'disable-simplification', subject: expect.objectContaining({ label: 'Simplify debts disabled' }),
+    }))
+  })
+
+  it('quarantines a persisted debt-simplification value that is not a boolean', async () => {
+    let persisted: unknown
+    const writer = createDemoRepository({
+      currentUserId: 'alex-r',
+      stateStorage: { load: () => persisted, save: (_scope: string, document: unknown) => { persisted = structuredClone(document) } },
+    })
+    await writer.groups.setSimplifyDebts({
+      kind: 'group.simplify-debts', operationId: 'persist-valid-toggle', groupId, expectedRevision: 1, simplifyDebtsEnabled: false,
+    })
+    const malformed = structuredClone(persisted) as { groupSettings: { simplifyDebtsEnabled: unknown } }
+    malformed.groupSettings.simplifyDebtsEnabled = 'false'
+    const quarantined: unknown[] = []
+    const restored = createDemoRepository({
+      currentUserId: 'alex-r',
+      stateStorage: {
+        load: () => malformed,
+        save: () => undefined,
+        quarantine: (_scope: string, records: readonly unknown[]) => { quarantined.push(...records) },
+      },
+    })
+
+    await expect(restored.groups.getSettings(groupId)).resolves.toEqual({ schemaVersion: 1, groupId, revision: 1 })
+    expect(quarantined).toEqual([malformed])
+  })
 })

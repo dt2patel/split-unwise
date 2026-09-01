@@ -97,9 +97,55 @@ async function executeGroupCommand(context: GroupContext): Promise<CallableResul
     const revision = snapshot.exists ? positiveRevision(snapshot.data()!.revision) : 1
     if (revision !== command.expectedRevision) throw new LedgerError('failed-precondition', 'Group settings changed remotely.')
     if (command.defaultSplit) await assertMembersActive(db, transaction, groupId, command.defaultSplit.participantIds)
-    const next = { schemaVersion: 1, groupId, revision: revision + 1, ...(command.defaultSplit ? { defaultSplit: command.defaultSplit } : {}), updatedAt: isoNow, updatedBy: actor }
+    const simplifyDebtsEnabled = snapshot.data()?.simplifyDebtsEnabled
+    if (simplifyDebtsEnabled !== undefined && typeof simplifyDebtsEnabled !== 'boolean') throw new LedgerError('failed-precondition', 'Stored group settings are invalid.')
+    const next = { schemaVersion: 1, groupId, revision: revision + 1, ...(command.defaultSplit ? { defaultSplit: command.defaultSplit } : {}), ...(simplifyDebtsEnabled !== undefined ? { simplifyDebtsEnabled } : {}), updatedAt: isoNow, updatedBy: actor }
     transaction.set(ref, next)
-    return savedResource(command, `${groupId}:defaults`)
+    return savedResource(command, groupId)
+  }
+  if (command.kind === 'group.simplify-debts') {
+    const settingsRef = db.doc(`groups/${groupId}/settings/defaults`)
+    const balanceRef = db.doc(`groups/${groupId}/balance/current`)
+    const settingsSnapshot = await transaction.get(settingsRef)
+    const balanceSnapshot = await transaction.get(balanceRef)
+    const settings = settingsSnapshot.data() ?? {}
+    const revision = settingsSnapshot.exists ? positiveRevision(settings.revision) : 1
+    if (revision !== command.expectedRevision) throw new LedgerError('failed-precondition', 'Group settings changed remotely.')
+    const balance = balanceSnapshot.data()
+    if (!balanceSnapshot.exists || !balance || !Number.isSafeInteger(balance.balanceRevision) || Number(balance.balanceRevision) < 0
+      || !Array.isArray(balance.pairwise) || !Array.isArray(balance.simplified)) {
+      throw new LedgerError('failed-precondition', 'Stored group balance is invalid.')
+    }
+    if (Number(balance.balanceRevision) >= Number.MAX_SAFE_INTEGER || revision >= Number.MAX_SAFE_INTEGER) throw new LedgerError('failed-precondition', 'Group revision cannot advance.')
+    const nextSettings = {
+      schemaVersion: 1,
+      groupId,
+      revision: revision + 1,
+      ...(settings.defaultSplit !== undefined ? { defaultSplit: settings.defaultSplit } : {}),
+      simplifyDebtsEnabled: command.simplifyDebtsEnabled,
+      updatedAt: isoNow,
+      updatedBy: actor,
+    }
+    const nextBalance = {
+      groupId,
+      balanceRevision: Number(balance.balanceRevision) + 1,
+      simplifyDebtsEnabled: command.simplifyDebtsEnabled,
+      pairwise: balance.pairwise,
+      simplified: balance.simplified,
+    }
+    const activity = {
+      id: deterministicId('act', command.operationId),
+      groupId,
+      operationId: command.operationId,
+      kind: 'group.event',
+      subject: { kind: 'group', id: groupId, label: `Simplify debts ${command.simplifyDebtsEnabled ? 'enabled' : 'disabled'}` },
+      actor,
+      createdAt: isoNow,
+    }
+    transaction.set(settingsRef, nextSettings)
+    transaction.set(balanceRef, nextBalance)
+    transaction.create(db.doc(`groups/${groupId}/activity/${activity.id}`), activity)
+    return savedResource(command, groupId)
   }
   throw new LedgerError('invalid-argument', 'This command cannot be used with a group.')
 }

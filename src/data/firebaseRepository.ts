@@ -79,7 +79,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async getSettings(groupId) {
         const { db, firestore } = await context()
         const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'settings', 'defaults'))
-        return snapshot.exists() ? decodeGroupSettings(groupId, snapshot.data()) : { schemaVersion: 1, groupId, revision: 1 }
+        return snapshot.exists() ? decodeGroupSettings(groupId, snapshot.data()) : { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true }
       },
       async getTotals(groupId) { const readyContext = context(); return buildCurrencyTotals(await listExpenses(groupId, readyContext), (await readyContext).userId) },
       async getCharts(groupId) { const readyContext = context(); return buildGroupCharts(await listExpenses(groupId, readyContext)) },
@@ -89,6 +89,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         return snapshot.docs.map((document) => decodeRecurringExpense(groupId, document.id, document.data()))
       },
       setDefaultSplit: execute,
+      setSimplifyDebts: execute,
     },
     expenses: {
       listForGroup: listExpenses,
@@ -202,9 +203,11 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
 
 function decodeGroupSettings(groupId: string, value: unknown): GroupSettings {
   if (!isRecord(value) || value.schemaVersion !== 1 || value.groupId !== groupId || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1) throw new Error('Group settings document is invalid')
+  if (value.simplifyDebtsEnabled !== undefined && typeof value.simplifyDebtsEnabled !== 'boolean') throw new Error('Group settings document is invalid')
+  const base = { schemaVersion: 1 as const, groupId, revision: value.revision as number, simplifyDebtsEnabled: value.simplifyDebtsEnabled !== false }
   const defaultSplit = value.defaultSplit
-  if (defaultSplit === undefined) return { schemaVersion: 1, groupId, revision: value.revision as number }
-  try { return { schemaVersion: 1, groupId, revision: value.revision as number, defaultSplit: decodeDefaultSplit(defaultSplit) } } catch { throw new Error('Group default split is invalid') }
+  if (defaultSplit === undefined) return base
+  try { return { ...base, defaultSplit: decodeDefaultSplit(defaultSplit) } } catch { throw new Error('Group default split is invalid') }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }

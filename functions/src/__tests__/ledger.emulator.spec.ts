@@ -74,6 +74,32 @@ suite('ledger against the Firestore emulator', () => {
     expect(result).toMatchObject({ status: 'saved', balanceSnapshot: { balanceRevision: 2, simplified: [{ fromParticipantId: 'member', toParticipantId: 'owner', money: { minorAmount: 300 } }] } })
     await expect(executeLedgerCommand(db, 'member', { schemaVersion: 1, command: { kind: 'settlement.record', operationId: 'stale-settlement', groupId: 'group-a', expectedBalanceRevision: 1, basis: { kind: 'simplified', senderId: 'member', recipientId: 'owner', currency: 'USD', debtMinor: 500 }, money: { currency: 'USD', minorAmount: 100 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true } })).rejects.toMatchObject({ code: 'failed-precondition' })
   })
+
+  it('lets an active member version debt simplification without changing the saved default split', async () => {
+    const defaultSplit = { type: 'shares', participantIds: ['owner', 'member'], shares: { owner: 2, member: 1 } }
+    const pairwise = [{ fromParticipantId: 'member', toParticipantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }]
+    const simplified = [{ fromParticipantId: 'member', toParticipantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }]
+    await Promise.all([
+      db.doc('groups/group-a/settings/defaults').set({ schemaVersion: 1, groupId: 'group-a', revision: 4, defaultSplit, simplifyDebtsEnabled: true }),
+      db.doc('groups/group-a/balance/current').set({ groupId: 'group-a', balanceRevision: 7, simplifyDebtsEnabled: true, pairwise, simplified }),
+    ])
+    const request = { schemaVersion: 1, command: { kind: 'group.simplify-debts', operationId: 'simplify-off', groupId: 'group-a', expectedRevision: 4, simplifyDebtsEnabled: false } }
+
+    await expect(executeLedgerCommand(db, 'member', request, new Date('2026-08-31T15:00:00.000Z'))).resolves.toEqual({
+      kind: 'group.simplify-debts', operationId: 'simplify-off', status: 'saved', resourceId: 'group-a',
+    })
+    await expect(executeLedgerCommand(db, 'member', request, new Date('2026-08-31T15:00:01.000Z'))).resolves.toEqual({
+      kind: 'group.simplify-debts', operationId: 'simplify-off', status: 'saved', resourceId: 'group-a',
+    })
+    expect((await db.doc('groups/group-a/settings/defaults').get()).data()).toMatchObject({ revision: 5, defaultSplit, simplifyDebtsEnabled: false })
+    expect((await db.doc('groups/group-a/balance/current').get()).data()).toEqual({ groupId: 'group-a', balanceRevision: 8, simplifyDebtsEnabled: false, pairwise, simplified })
+    const activity = await db.collection('groups/group-a/activity').get()
+    expect(activity.docs.map((document) => document.data())).toEqual([expect.objectContaining({
+      operationId: 'simplify-off', kind: 'group.event', actor: { id: 'member', displayName: 'Member' },
+      subject: { kind: 'group', id: 'group-a', label: 'Simplify debts disabled' },
+    })])
+    await expect(executeLedgerCommand(db, 'member', { schemaVersion: 1, command: { ...request.command, operationId: 'simplify-stale' } })).rejects.toMatchObject({ code: 'failed-precondition' })
+  })
 })
 
 function addRequest(operationId: string): { schemaVersion: 1; command: any } {

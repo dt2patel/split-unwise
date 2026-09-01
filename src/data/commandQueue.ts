@@ -508,6 +508,8 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
     case 'group.default-split': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'defaultSplit'])
       && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision)
       && (value.defaultSplit === null || isDefaultSplit(value.defaultSplit))
+    case 'group.simplify-debts': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'simplifyDebtsEnabled'])
+      && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision) && typeof value.simplifyDebtsEnabled === 'boolean'
     case 'profile.update': return isNonEmptyString(value.displayName) && (value.initials === undefined || isNonEmptyString(value.initials))
     default: return false
   }
@@ -529,6 +531,7 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
     case 'settlement.void': return isSavedSettlementVoid(value, envelope)
     case 'profile.update': return isNonEmptyString(value.resourceId)
     case 'group.default-split': return value.resourceId === envelope.groupId
+    case 'group.simplify-debts': return value.resourceId === envelope.groupId
   }
 }
 

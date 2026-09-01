@@ -9,20 +9,37 @@ export interface GroupSettings {
   readonly groupId: string
   readonly revision: number
   readonly defaultSplit?: DefaultSplit
+  /** Missing legacy values are interpreted as enabled. */
+  readonly simplifyDebtsEnabled?: boolean
 }
 
 export interface GroupSettingsUpdate {
   readonly expectedRevision: number
-  readonly defaultSplit?: SplitMethod
+  readonly defaultSplit?: SplitMethod | null
+  readonly simplifyDebtsEnabled?: boolean
 }
 
 export function updateGroupSettings(current: GroupSettings, update: GroupSettingsUpdate, members: readonly Member[], actorId: string): GroupSettings {
   const actor = members.find(({ id }) => id === actorId)
-  if (!actor || actor.canManage !== true) throw new Error('Only an active group manager can change shared defaults')
+  if (!actor) throw new Error('Only an active group member can change group settings')
+  const changesDefault = Object.hasOwn(update, 'defaultSplit')
+  const changesSimplification = Object.hasOwn(update, 'simplifyDebtsEnabled')
+  if (!changesDefault && !changesSimplification) throw new Error('Choose a group setting to change')
+  if (changesDefault && actor.canManage !== true) throw new Error('Only an active group manager can change shared defaults')
+  if (changesSimplification && typeof update.simplifyDebtsEnabled !== 'boolean') throw new Error('Simplify debts must be enabled or disabled')
   if (!Number.isSafeInteger(update.expectedRevision) || update.expectedRevision !== current.revision) throw new Error('Group settings changed remotely')
   if (!Number.isSafeInteger(current.revision) || current.revision < 1 || current.revision >= Number.MAX_SAFE_INTEGER) throw new Error('Group settings revision cannot advance')
-  const next = update.defaultSplit === undefined ? undefined : validateDefaultSplit(update.defaultSplit, members)
-  return { schemaVersion: 1, groupId: current.groupId, revision: current.revision + 1, ...(next ? { defaultSplit: next } : {}) }
+  const nextDefault = changesDefault
+    ? update.defaultSplit === null ? undefined : validateDefaultSplit(update.defaultSplit!, members)
+    : current.defaultSplit
+  const nextSimplification = changesSimplification ? update.simplifyDebtsEnabled : current.simplifyDebtsEnabled
+  return {
+    schemaVersion: 1,
+    groupId: current.groupId,
+    revision: current.revision + 1,
+    ...(nextDefault ? { defaultSplit: nextDefault } : {}),
+    ...(nextSimplification !== undefined ? { simplifyDebtsEnabled: nextSimplification } : {}),
+  }
 }
 
 export function validateDefaultSplit(value: SplitMethod, members: readonly Member[]): DefaultSplit {
@@ -60,7 +77,8 @@ export function clearInvalidDefaultSplit(settings: GroupSettings, activeMembers:
   const activeIds = new Set(activeMembers.map(({ id }) => id))
   if (settings.defaultSplit.participantIds.every((id) => activeIds.has(id))) return settings
   if (settings.revision >= Number.MAX_SAFE_INTEGER) throw new Error('Group settings revision cannot advance')
-  return { schemaVersion: 1, groupId: settings.groupId, revision: settings.revision + 1 }
+  const { defaultSplit: _removed, ...preserved } = settings
+  return { ...preserved, revision: settings.revision + 1 }
 }
 
 /** Existing itemized or user-selected intent always wins; defaults only seed a new unconfigured draft. */

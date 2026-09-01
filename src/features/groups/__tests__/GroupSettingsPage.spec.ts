@@ -11,6 +11,10 @@ const stubs = {
   IonPage: { template: '<div class="ion-page"><slot /></div>' }, IonHeader: { template: '<header><slot /></header>' }, IonToolbar: { template: '<div><slot /></div>' }, IonTitle: { template: '<div><slot /></div>' }, IonButtons: { template: '<div><slot /></div>' },
   IonBackButton: { props: ['defaultHref', 'text'], template: '<a data-testid="back" :href="defaultHref">{{ text }}</a>' }, IonContent: { template: '<section><slot /></section>' },
   IonButton: { props: ['disabled'], emits: ['click'], template: '<button type="button" :disabled="disabled" @click="$emit(\'click\')"><slot /></button>' },
+  IonToggle: {
+    props: ['modelValue', 'disabled'], emits: ['ionChange'],
+    template: '<input type="checkbox" :checked="modelValue" :disabled="disabled" @change="$emit(\'ionChange\', { detail: { checked: $event.target.checked } })" />',
+  },
 }
 
 beforeEach(() => vi.restoreAllMocks())
@@ -34,11 +38,21 @@ describe('group default settings page', () => {
   })
 
   it('keeps shared defaults read-only for a non-manager', async () => {
-    setAppSessionForTesting(createAppSession({ repository: createDemoRepository({ currentUserId: 'alex-r' }), commandStorage: createMemoryCommandStorage() }))
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
     const router = createAppRouter(); await router.push('/tabs/groups/lake-house-weekend/settings'); await router.isReady()
     const wrapper = mount(GroupSettingsPage, { global: { plugins: [createPinia(), router], stubs } }); await flushPromises()
     expect(wrapper.text()).toContain('Only an active group manager')
     expect(wrapper.get('.actions button').attributes('disabled')).toBeDefined()
+
+    const toggle = wrapper.get<HTMLInputElement>('[data-testid="simplify-debts-toggle"]')
+    expect(toggle.element.checked).toBe(true)
+    expect(toggle.attributes('disabled')).toBeUndefined()
+    await toggle.setValue(false)
+    await vi.waitFor(() => expect(wrapper.get('[role="status"]').text()).toContain('Direct balances saved'))
+
+    await expect(repository.groups.getSettings('lake-house-weekend')).resolves.toMatchObject({ revision: 2, simplifyDebtsEnabled: false })
+    await expect(repository.groups.getBalanceSnapshot('lake-house-weekend')).resolves.toMatchObject({ simplifyDebtsEnabled: false })
   })
 
   it('seeds a valid equal percentage when the manager changes methods', async () => {

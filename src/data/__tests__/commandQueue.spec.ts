@@ -488,6 +488,38 @@ describe('CommandQueue', () => {
     expect(quarantined).toEqual(invalid)
   })
 
+  it('hydrates only strict persisted debt-simplification commands and binds saved results to their group', () => {
+    const principalKey = 'demo:local:simplify-debts'
+    const operation = (operationId: string, simplifyDebtsEnabled: unknown, extra: Record<string, unknown> = {}) => ({
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'pending',
+      envelope: { kind: 'group.simplify-debts', operationId, groupId: 'lake-house-weekend', expectedRevision: 3, simplifyDebtsEnabled, ...extra },
+    })
+    const valid = operation('simplify-valid', false)
+    const invalid = [
+      operation('simplify-not-boolean', 'false'),
+      operation('simplify-extra-field', true, { privateState: true }),
+      {
+        ...operation('simplify-wrong-resource', true),
+        status: 'fresh',
+        result: { kind: 'group.simplify-debts', operationId: 'simplify-wrong-resource', status: 'saved', resourceId: 'another-group' },
+      },
+    ]
+    const quarantined: unknown[] = []
+    const queue = createBoundQueue({
+      storage: {
+        load: () => ({ version: 6, principalKey, operations: [valid, ...invalid] }),
+        save: async () => undefined,
+        quarantine: async (_scopeKey, records) => { quarantined.push(...records) },
+      },
+      handlers: {},
+    }, principalKey)
+
+    expect(queue.snapshot()).toEqual([valid])
+    expect(quarantined).toEqual(invalid)
+  })
+
   it('quarantines a persisted storage failure without a boolean execution marker', () => {
     const principalKey = 'demo:local:invalid-persistence-marker'
     const operation = {

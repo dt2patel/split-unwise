@@ -253,9 +253,15 @@ export interface GroupDefaultSplitCommand extends OperationRequest {
   /** `null` is an explicit versioned clear. */
   readonly defaultSplit: DefaultSplit | null
 }
+export interface GroupSimplifyDebtsCommand extends OperationRequest {
+  readonly kind: 'group.simplify-debts'
+  readonly groupId: string
+  readonly expectedRevision: number
+  readonly simplifyDebtsEnabled: boolean
+}
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
-export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | SettlementRecordCommand | SettlementVoidCommand
+export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | SettlementRecordCommand | SettlementVoidCommand
 export type CommandKind = CommandEnvelope['kind']
 
 export interface SavedExpenseAddResult { readonly kind: 'expense.add'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
@@ -282,7 +288,7 @@ export type NotificationReadAllResult = SavedNotificationReadAllResult | NotSupp
 export type NotificationPreferencesResult = SavedNotificationPreferencesResult | NotSupportedCommandResult<'notification.preferences'>
 export type SettlementRecordResult = SavedSettlementRecordResult | NotSupportedCommandResult<'settlement.record'>
 export type SettlementVoidResult = SavedSettlementVoidResult | NotSupportedCommandResult<'settlement.void'>
-export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'profile.update'>
+export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'group.simplify-debts' | 'profile.update'>
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'
@@ -309,6 +315,7 @@ export interface GroupRepository {
   getCharts(groupId: string): Promise<GroupCharts>
   listRecurring(groupId: string): Promise<readonly RecurringExpense[]>
   setDefaultSplit(command: GroupDefaultSplitCommand): Promise<CommandResult>
+  setSimplifyDebts(command: GroupSimplifyDebtsCommand): Promise<CommandResult>
 }
 export interface ExpenseRepository {
   listForGroup(groupId: string): Promise<readonly ExpenseRow[]>

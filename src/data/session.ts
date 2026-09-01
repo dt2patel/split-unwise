@@ -125,6 +125,7 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
       'expense.delete',
       'expense.edit',
       'group.default-split',
+      'group.simplify-debts',
       'notification.preferences',
       'notification.read',
       'notification.read-all',
@@ -427,6 +428,7 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       getCharts: (groupId) => call(() => source.groups.getCharts(groupId)),
       listRecurring: (groupId) => call(() => source.groups.listRecurring(groupId)),
       setDefaultSplit: (command) => call(() => source.groups.setDefaultSplit(command)),
+      setSimplifyDebts: (command) => call(() => source.groups.setSimplifyDebts(command)),
     },
     expenses: {
       listForGroup: (groupId) => call(() => source.expenses.listForGroup(groupId)),

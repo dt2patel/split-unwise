@@ -41,4 +41,17 @@ describe('versioned shared split defaults', () => {
     const itemized = { type: 'itemized' as const, items: [{ description: 'Coffee', money: { currency: 'USD' as const, minorAmount: 500 }, participantIds: ['maya'] }] }
     expect(seedDefaultSplit(configured, itemized)).toBe(itemized)
   })
+
+  it('lets any active member toggle debt simplification while preserving the saved default split', () => {
+    const configured: GroupSettings = {
+      schemaVersion: 1, groupId: 'lake', revision: 4, simplifyDebtsEnabled: true,
+      defaultSplit: { type: 'shares' as const, participantIds: ['maya', 'alex'], shares: { maya: 1, alex: 2 } },
+    }
+
+    expect(updateGroupSettings(configured, { expectedRevision: 4, simplifyDebtsEnabled: false }, members, 'alex')).toEqual({
+      ...configured,
+      revision: 5,
+      simplifyDebtsEnabled: false,
+    })
+  })
 })

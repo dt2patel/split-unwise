@@ -5,6 +5,7 @@ const firebase = vi.hoisted(() => ({
   expenseDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   settlementDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   balanceDocument: undefined as { data: () => Record<string, unknown> } | undefined,
+  settingsDocument: undefined as { data: () => Record<string, unknown> } | undefined,
   activityDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   notificationDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
 }))
@@ -55,6 +56,7 @@ vi.mock('firebase/firestore', () => {
   }
   const getDoc = async (reference: { path: string; id: string }) => {
     const found = reference.path.endsWith('/balance/current') ? firebase.balanceDocument
+      : reference.path.endsWith('/settings/defaults') ? firebase.settingsDocument
       : reference.path.includes('/expenses/') ? firebase.expenseDocuments.find(({ id }) => id === reference.id)
         : reference.path.includes('/settlements/') ? firebase.settlementDocuments.find(({ id }) => id === reference.id) : undefined
     return { id: reference.id, exists: () => found !== undefined, data: () => found?.data() }
@@ -74,6 +76,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
     firebase.expenseDocuments = [document('live-expense', expenseData()), document('deleted-expense', { ...expenseData(), deletedAt: '2026-08-31T12:00:00.000Z' })]
     firebase.settlementDocuments = [document('settlement-a', settlementData())]
     firebase.balanceDocument = document('current', balanceData())
+    firebase.settingsDocument = document('defaults', { schemaVersion: 1, groupId: 'lake-house-weekend', revision: 3 })
     firebase.activityDocuments = [
       document('activity_a', activityData('expense.updated', '2026-08-31T12:00:00.000Z', 'expense-a')),
       document('activity.Z', activityData('expense.created', '2026-08-31T12:00:00.000Z', 'expense-z')),
@@ -153,6 +156,23 @@ describe('Task 7 Firebase repository query boundaries', () => {
         { type: 'limit', value: 100 },
       ],
     })
+  })
+
+  it('defaults legacy group settings to simplified debts and strictly decodes an explicit toggle', async () => {
+    const repository = createFirebaseRepository(configuration)
+
+    await expect(repository.groups.getSettings('lake-house-weekend')).resolves.toEqual({
+      schemaVersion: 1, groupId: 'lake-house-weekend', revision: 3, simplifyDebtsEnabled: true,
+    })
+    firebase.settingsDocument = document('defaults', {
+      schemaVersion: 1, groupId: 'lake-house-weekend', revision: 4, simplifyDebtsEnabled: false,
+      defaultSplit: { type: 'equal', participantIds: ['maya-p'] },
+    })
+    await expect(repository.groups.getSettings('lake-house-weekend')).resolves.toMatchObject({
+      revision: 4, simplifyDebtsEnabled: false, defaultSplit: { type: 'equal', participantIds: ['maya-p'] },
+    })
+    firebase.settingsDocument = document('defaults', { schemaVersion: 1, groupId: 'lake-house-weekend', revision: 5, simplifyDebtsEnabled: 'false' })
+    await expect(repository.groups.getSettings('lake-house-weekend')).rejects.toThrow('invalid')
   })
 })
 

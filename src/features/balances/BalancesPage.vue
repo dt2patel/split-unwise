@@ -46,6 +46,11 @@ watch(groupId, (id) => {
   if (id) void store.loadGroup(id)
   else store.clear()
 }, { immediate: true })
+watch(balanceSnapshot, (snapshot, previous) => {
+  if (snapshot && (!previous || previous.groupId !== snapshot.groupId)) {
+    selectedPlan.value = snapshot.simplifyDebtsEnabled ? 'simplified' : 'pairwise'
+  }
+})
 
 function selectPlan(plan: BalancePlan): void {
   selectedPlan.value = plan

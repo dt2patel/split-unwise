@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
+import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonPage, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
@@ -10,10 +10,11 @@ import type { GroupPremiumSnapshot } from '../premium/premiumData'
 import { loadGroupPremiumSnapshot } from '../premium/premiumData'
 
 type DefaultKind = DefaultSplit['type']
-const route = useRoute(); const snapshot = ref<GroupPremiumSnapshot>(); const error = ref(''); const status = ref(''); const loading = ref(false); const saving = ref(false); const kind = ref<DefaultKind>('equal'); const selectedIds = ref<string[]>([]); const ratios = ref<Record<string, string>>({}); let request = 0
+const route = useRoute(); const snapshot = ref<GroupPremiumSnapshot>(); const error = ref(''); const status = ref(''); const loading = ref(false); const saving = ref(false); const simplifying = ref(false); const kind = ref<DefaultKind>('equal'); const selectedIds = ref<string[]>([]); const ratios = ref<Record<string, string>>({}); let request = 0
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
 const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups')
 const canManage = computed(() => snapshot.value?.currentUser.canManage === true)
+const simplifyDebtsEnabled = computed(() => snapshot.value?.settings.simplifyDebtsEnabled !== false)
 watch(groupId, (id) => { void load(id) }, { immediate: true })
 
 async function load(id: string): Promise<void> {
@@ -51,6 +52,28 @@ function buildDefault(): DefaultSplit {
 }
 async function saveDefault(): Promise<void> { await submit(buildDefault(), 'Default split saved.') }
 async function clearDefault(): Promise<void> { await submit(null, 'Default split cleared.') }
+async function updateSimplification(event: CustomEvent<{ checked: boolean }>): Promise<void> {
+  const enabled = event.detail.checked
+  if (!snapshot.value || simplifying.value || enabled === simplifyDebtsEnabled.value) return
+  simplifying.value = true; error.value = ''; status.value = ''
+  try {
+    const result = await getAppSession().queue.submit({
+      kind: 'group.simplify-debts', operationId: createClientOperationId('group-simplify'), groupId: snapshot.value.group.id,
+      expectedRevision: snapshot.value.settings.revision, simplifyDebtsEnabled: enabled,
+    }).result()
+    if (result.status !== 'saved') throw new Error(result.reason)
+    await load(snapshot.value.group.id)
+    status.value = enabled ? 'Simplified balances saved.' : 'Direct balances saved.'
+    await nextTick()
+  } catch (reason) {
+    const failure = message(reason)
+    if (isConflict(reason, failure)) {
+      const id = snapshot.value?.group.id ?? groupId.value
+      await load(id)
+      error.value = `${failure} Review the latest settings and try again.`
+    } else error.value = failure
+  } finally { simplifying.value = false }
+}
 async function submit(defaultSplit: DefaultSplit | null, confirmation: string): Promise<void> {
   if (!snapshot.value || !canManage.value || saving.value) return
   saving.value = true; error.value = ''; status.value = ''
@@ -77,7 +100,10 @@ function isConflict(reason: unknown, failure: string): boolean {
   <ion-page><ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="backPath" text="Group" /></ion-buttons><ion-title>Group settings</ion-title></ion-toolbar></ion-header>
     <ion-content :fullscreen="true"><main class="settings-main"><p class="eyebrow">{{ snapshot?.group.name ?? 'Group' }}</p><h1>Group settings</h1><p class="intro">Choose how new expenses start. Existing expenses, payers, recurrence, and receipt itemization never change.</p>
       <p v-if="loading" role="status">Loading group settings…</p><p v-else-if="error && !snapshot" role="alert" class="error">{{ error }}</p>
-      <template v-else-if="snapshot"><section class="settings-card" aria-labelledby="default-heading"><header><div><h2 id="default-heading">Default split</h2><p>Settings revision {{ snapshot.settings.revision }}</p></div><span class="unlocked">Included</span></header>
+      <template v-else-if="snapshot"><section class="settings-card simplify-card" aria-labelledby="simplify-heading"><header><div><h2 id="simplify-heading">Simplify debts</h2><p>Settings revision {{ snapshot.settings.revision }}</p></div><span class="unlocked">Everyone</span></header>
+          <div class="toggle-setting"><span><strong>Use fewer payments</strong><small>Rearranges who pays whom without changing anyone’s total balance. You can still inspect both views.</small></span><ion-toggle data-testid="simplify-debts-toggle" aria-label="Simplify debts" :model-value="simplifyDebtsEnabled" :disabled="simplifying" @ion-change="updateSimplification" /></div>
+        </section>
+        <section class="settings-card" aria-labelledby="default-heading"><header><div><h2 id="default-heading">Default split</h2><p>Settings revision {{ snapshot.settings.revision }}</p></div><span class="unlocked">Included</span></header>
           <p v-if="!canManage" class="permission-note">Only an active group manager can change this shared default.</p>
           <fieldset :disabled="!canManage || saving"><legend>Method</legend><div class="method-grid"><label v-for="option in (['equal', 'percentage', 'shares'] as const)" :key="option"><input :checked="kind === option" type="radio" name="default-kind" :value="option" @change="selectKind(option)"><span>{{ option === 'equal' ? 'Equally' : option === 'percentage' ? 'By percentage' : 'By shares' }}</span></label></div></fieldset>
           <fieldset :disabled="!canManage || saving"><legend>People included</legend><div class="member-list"><label v-for="member in snapshot.members" :key="member.id"><input type="checkbox" :checked="selectedIds.includes(member.id)" @change="toggle(member.id, ($event.target as HTMLInputElement).checked)"><span>{{ member.displayName }}</span><input v-if="kind !== 'equal'" v-model="ratios[member.id]" class="ratio-input" inputmode="decimal" :aria-label="`${member.displayName} ${kind === 'percentage' ? 'percentage' : 'shares'}`" :disabled="!selectedIds.includes(member.id)"><small v-if="kind === 'percentage'">%</small></label></div></fieldset>
@@ -91,5 +117,8 @@ function isConflict(reason: unknown, failure: string): boolean {
 
 <style scoped>
 .settings-main { width: min(100%, 640px); margin: 0 auto; padding: 22px 18px calc(42px + env(safe-area-inset-bottom)); }.eyebrow { margin: 0 0 4px; color: var(--su-accent); font-size: .78rem; font-weight: 700; text-transform: uppercase; }.settings-main h1 { margin: 0; font-size: clamp(2rem, 9vw, 2.55rem); letter-spacing: -.045em; }.intro { margin: 8px 0 20px; color: var(--ion-color-medium); line-height: 1.45; }.settings-card, .truth-card { margin-top: 14px; padding: 16px; border: 1px solid color-mix(in srgb, var(--su-divider) 35%, transparent); border-radius: 18px; }.settings-card > header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }.settings-card h2, .truth-card h2 { margin: 0; font-size: 1.05rem; }.settings-card header p { margin: 3px 0 0; color: var(--ion-color-medium); font-size: .78rem; }.unlocked { padding: 5px 9px; border-radius: 12px; background: var(--su-lilac); color: var(--su-category-fg); font-size: .72rem; font-weight: 700; }.settings-card fieldset { margin: 18px 0 0; border: 0; padding: 0; }.settings-card legend { margin-bottom: 8px; font-size: .82rem; font-weight: 700; }.method-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }.method-grid label { min-height: 44px; }.method-grid input { position: absolute; opacity: 0; }.method-grid span { display: grid; min-height: 44px; place-items: center; border: 1px solid var(--su-divider); border-radius: 12px; padding: 0 6px; font-size: .78rem; text-align: center; }.method-grid input:checked + span { border-color: var(--su-accent); background: var(--su-lilac); color: var(--su-category-fg); font-weight: 700; }.member-list { display: grid; }.member-list label { display: grid; grid-template-columns: 28px minmax(0, 1fr) 72px 16px; min-height: 50px; align-items: center; border-top: 1px solid color-mix(in srgb, var(--su-divider) 28%, transparent); }.member-list input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--su-accent); }.ratio-input { min-height: 40px; min-width: 0; border: 1px solid var(--su-divider); border-radius: 10px; padding: 0 8px; background: var(--su-surface); color: inherit; font: inherit; text-align: right; }.actions { display: grid; gap: 8px; margin-top: 8px; }.actions ion-button, .actions button { min-height: 44px; margin: 0; }.actions button { border: 0; background: transparent; color: var(--su-owing); font: inherit; }.permission-note, .truth-card, .status { color: var(--ion-color-medium); font-size: .88rem; line-height: 1.45; }.truth-card ul { margin: 10px 0 0; padding-left: 20px; }.error { color: var(--su-owing); }
+.toggle-setting { display: grid; min-height: 62px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; margin-top: 10px; }.toggle-setting > span { display: grid; gap: 3px; }.toggle-setting strong { font-size: .94rem; }.toggle-setting small { color: var(--ion-color-medium); font-size: .78rem; line-height: 1.35; }.toggle-setting ion-toggle { min-width: 51px; min-height: 44px; }.simplify-card { animation: settings-rise var(--su-motion-slow) cubic-bezier(.2,.75,.25,1) both; }
+@keyframes settings-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 360px) { .method-grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .simplify-card { animation: none; } }
 </style>

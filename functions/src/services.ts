@@ -140,7 +140,7 @@ export async function createGroupService(db: Firestore, uid: string, raw: unknow
     transaction.create(db.doc(`groups/${groupId}`), group)
     const profileData = profile.data()!
     transaction.create(db.doc(`groups/${groupId}/members/${uid}`), { status: 'active', role: 'owner', canManage: true, displayName: profileData.displayName, initials: profileData.initials, avatarUrl: profileData.avatarUrl ?? null, joinedAt: now.toISOString() })
-    transaction.create(db.doc(`groups/${groupId}/settings/defaults`), { schemaVersion: 1, groupId, revision: 1, updatedAt: now.toISOString() })
+    transaction.create(db.doc(`groups/${groupId}/settings/defaults`), { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true, updatedAt: now.toISOString() })
     transaction.create(db.doc(`groups/${groupId}/balance/current`), { groupId, balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
     transaction.create(db.doc(`users/${uid}/groups/${groupId}`), { groupId, status: 'active', joinedAt: now.toISOString(), updatedAt: now.toISOString() })
     transaction.create(operationRef, { schemaVersion: 1, uid, kind: 'group.create', requestHash: hash, groupId, status: 'succeeded', result, committedAt: now.toISOString() })

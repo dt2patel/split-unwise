@@ -77,6 +77,22 @@ describe('balances page', () => {
     expect(wrapper.get('.balances-page__explanation').text()).toContain('Every direct balance')
     expect(wrapper.find('[aria-label="Pairwise USD balances"]').exists()).toBe(true)
   })
+
+  it('opens on the saved direct-balance plan while keeping simplified balances inspectable', async () => {
+    const repository = createDemoRepository()
+    await repository.groups.setSimplifyDebts({
+      kind: 'group.simplify-debts', operationId: 'balances-direct-default', groupId, expectedRevision: 1, simplifyDebtsEnabled: false,
+    })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/balances`, BalancesPage)
+
+    expect(wrapper.get('.balances-page__explanation').text()).toContain('Every direct balance')
+    expect(wrapper.find('[aria-label="Pairwise USD balances"]').exists()).toBe(true)
+    wrapper.getComponent({ name: 'IonSegment' }).vm.$emit('ionChange', { detail: { value: 'simplified' } })
+    await flushPromises()
+    expect(wrapper.find('[aria-label="Simplified USD balances"]').exists()).toBe(true)
+  })
 })
 
 describe('settle up page', () => {

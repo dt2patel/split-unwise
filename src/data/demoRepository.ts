@@ -118,7 +118,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     return {
       groupId,
       balanceRevision,
-      simplifyDebtsEnabled: true,
+      simplifyDebtsEnabled: groupSettings.simplifyDebtsEnabled !== false,
       pairwise: plans.pairwise.map(clone),
       simplified: plans.simplified.map(clone),
     }
@@ -419,13 +419,28 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       case 'group.default-split': {
         assertLakeHouseGroup(command.groupId)
         if (command.expectedRevision !== groupSettings.revision) throw new CommandConflictError('Group settings changed remotely.', { remote: clone(groupSettings) })
-        groupSettings = updateGroupSettings(groupSettings, { expectedRevision: command.expectedRevision, ...(command.defaultSplit ? { defaultSplit: command.defaultSplit } : {}) }, lakeHouseMembers, currentUser.id)
+        groupSettings = updateGroupSettings(groupSettings, { expectedRevision: command.expectedRevision, defaultSplit: command.defaultSplit }, lakeHouseMembers, currentUser.id)
         const createdAt = checkedNow(now)
         activity.push({
           id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'group.event',
           subject: { kind: 'group', id: command.groupId, label: command.defaultSplit ? 'Default split updated' : 'Default split cleared' },
           actor: actorSnapshot(currentUser), createdAt, syncState: 'fresh',
         })
+        return saved(command, command.groupId)
+      }
+      case 'group.simplify-debts': {
+        assertLakeHouseGroup(command.groupId)
+        assertActiveMembership()
+        if (command.expectedRevision !== groupSettings.revision) throw new CommandConflictError('Group settings changed remotely.', { remote: clone(groupSettings) })
+        assertBalanceRevisionCanAdvance(balanceRevision)
+        groupSettings = updateGroupSettings(groupSettings, { expectedRevision: command.expectedRevision, simplifyDebtsEnabled: command.simplifyDebtsEnabled }, lakeHouseMembers, currentUser.id)
+        const createdAt = checkedNow(now)
+        activity.push({
+          id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'group.event',
+          subject: { kind: 'group', id: command.groupId, label: `Simplify debts ${command.simplifyDebtsEnabled ? 'enabled' : 'disabled'}` },
+          actor: actorSnapshot(currentUser), createdAt, syncState: 'fresh',
+        })
+        balanceRevision += 1
         return saved(command, command.groupId)
       }
       case 'profile.update':
@@ -476,6 +491,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       async getCharts(groupId) { return buildGroupCharts(groupExpenses(groupId)) },
       async listRecurring(groupId) { assertLakeHouseGroup(groupId); return lakeHouseRecurring.map(clone) },
       setDefaultSplit: execute,
+      setSimplifyDebts: execute,
     },
     expenses: {
       async listForGroup(groupId) { return groupExpenses(groupId).map(cloneExpense) },
@@ -537,7 +553,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   }
 }
 
-function saved(command: Extract<CommandEnvelope, { kind: 'group.default-split' | 'profile.update' }>, resourceId: string): CommandResult {
+function saved(command: Extract<CommandEnvelope, { kind: 'group.default-split' | 'group.simplify-debts' | 'profile.update' }>, resourceId: string): CommandResult {
   return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId } as CommandResult
 }
 
@@ -689,6 +705,8 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
 
 function isDemoGroupSettings(value: unknown): value is GroupSettings {
   if (!isRecord(value) || value.schemaVersion !== 1 || value.groupId !== LAKE_HOUSE_GROUP_ID || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1) return false
+  if (Object.keys(value).some((key) => !['schemaVersion', 'groupId', 'revision', 'defaultSplit', 'simplifyDebtsEnabled'].includes(key))) return false
+  if (value.simplifyDebtsEnabled !== undefined && typeof value.simplifyDebtsEnabled !== 'boolean') return false
   if (value.defaultSplit === undefined) return true
   try { updateGroupSettings({ schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }, { expectedRevision: 1, defaultSplit: value.defaultSplit as never }, lakeHouseMembers, lakeHouseCurrentUser.id); return true } catch { return false }
 }
@@ -809,7 +827,7 @@ function sameActor(left: ActorSnapshot, right: ActorSnapshot): boolean { return 
 function sameMoney(left: SettlementRecord['money'], right: SettlementRecord['money']): boolean { return left.currency === right.currency && left.minorAmount === right.minorAmount }
 function isDemoOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
 function isCommandKind(value: unknown): value is CommandEnvelope['kind'] {
-  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'settlement.record', 'settlement.void'].includes(value)
+  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'settlement.record', 'settlement.void'].includes(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }

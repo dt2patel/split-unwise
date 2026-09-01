@@ -52,4 +52,13 @@ describe('strict shared ledger protocol', () => {
     expect(deriveInvitationToken('a-secret-that-is-definitely-at-least-thirty-two-bytes', 'owner', 'operation-b')).not.toBe(first)
     expect(deterministicUuid('template', '2026-08-31')).toMatch(/^[0-9a-f-]{36}$/)
   })
+
+  it('accepts only a strict versioned debt-simplification command', () => {
+    const request = {
+      schemaVersion: 1,
+      command: { kind: 'group.simplify-debts', operationId: 'simplify-off', groupId: 'group-a', expectedRevision: 3, simplifyDebtsEnabled: false },
+    }
+    expect(() => parseExecuteCommandRequest(request)).not.toThrow()
+    expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, privateState: true } })).toThrow()
+  })
 })
