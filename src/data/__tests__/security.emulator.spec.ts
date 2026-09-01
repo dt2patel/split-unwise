@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs'
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
-import { collection, collectionGroup, doc, getDoc, getDocs, limit, query, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch, type Firestore } from 'firebase/firestore'
+import { collection, collectionGroup, deleteDoc, doc, getDoc, getDocs, limit, query, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch, type Firestore } from 'firebase/firestore'
 import { deleteObject, getBytes, ref, uploadBytes } from 'firebase/storage'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
@@ -29,8 +29,8 @@ beforeEach(async () => {
     await setDoc(doc(db, 'users/outsider'), { displayName: 'Outsider', initials: 'O' })
     await setDoc(doc(db, 'users/friend'), { displayName: 'Friend', initials: 'F' })
     await setDoc(doc(db, 'groups/group-a'), { name: 'Group A', currency: 'USD', memberIds: ['active', 'friend', 'removed'] })
-    await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', displayName: 'Active Member' })
-    await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', displayName: 'Friend' })
+    await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', canManage: true, displayName: 'Active Member' })
+    await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', canManage: false, displayName: 'Friend' })
     await setDoc(doc(db, 'groups/group-a/members/removed'), { status: 'removed' })
     await setDoc(doc(db, 'groups/group-a/expenses/expense-a'), { description: 'Dinner' })
   })
@@ -123,13 +123,53 @@ describe('Firestore rules in the emulator', () => {
     })))
   })
 
-  emulatorIt('rejects overwritten expenses and client-authored duplicate revision or activity projections', async () => {
+  emulatorIt('requires an authorized head advance plus an immutable full version and keeps physical deletes denied', async () => {
     const active = environment.authenticatedContext('active').firestore()
+    const friend = environment.authenticatedContext('friend').firestore()
     const expense = sparkExpense('e')
-    await assertSucceeds(setDoc(doc(active, `groups/group-a/expenses/${expense.id}`), expense))
-    await assertFails(updateDoc(doc(active, `groups/group-a/expenses/${expense.id}`), { description: 'Changed outside the audit bundle' }))
+    const reference = doc(active, `groups/group-a/expenses/${expense.id}`)
+    await assertSucceeds(setDoc(reference, expense))
+    await assertFails(updateDoc(reference, { description: 'Changed outside the audit bundle' }))
+    const beforeEdit = (await getDoc(reference)).data()!
+    const editToken = 'f'.repeat(48)
+    const editedExpense = {
+      ...beforeEdit, description: 'Audited change', lastOperationId: 'edit-operation-f', lastRequestFingerprint: 'f'.repeat(64), lastResourceToken: editToken,
+      updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 2,
+    }
+    await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, editToken, {
+      ...beforeEdit, lastOperationId: 'edit-operation-f', lastRequestFingerprint: 'f'.repeat(64), lastResourceToken: editToken,
+      headRevision: 2, headDeleted: false,
+    }, sparkExpenseVersion(editedExpense, 'edit-operation-f', 'updated', { id: 'active', displayName: 'Active Member' })))
+    expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 2, headDeleted: false })
+    expect((await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense).toMatchObject({ description: 'Audited change', revision: 2 })
+
+    const beforeDeniedEdit = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}`))).data()!
+    const currentEditedExpense = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense as Record<string, unknown>
+    const deniedToken = 'd'.repeat(48)
+    await assertFails(commitSparkExpenseMutation(friend, expense.id as string, deniedToken, {
+      ...beforeDeniedEdit, lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: deniedToken,
+      headRevision: 3, headDeleted: false,
+    }, sparkExpenseVersion({
+      ...currentEditedExpense, description: 'Friend forged edit', lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: deniedToken,
+      updatedAt: serverTimestamp(), updatedBy: { id: 'friend', displayName: 'Friend' }, revision: 3,
+    }, 'friend-edit-d', 'updated', { id: 'friend', displayName: 'Friend' })))
+
+    const beforeDelete = (await getDoc(reference)).data()!
+    const beforeDeleteExpense = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense as Record<string, unknown>
+    const deleteToken = '1'.repeat(48)
+    await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, deleteToken, {
+      ...beforeDelete, lastOperationId: 'delete-operation-1', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: deleteToken,
+      headRevision: 3, headDeleted: true,
+    }, sparkExpenseVersion({
+      ...beforeDeleteExpense, lastOperationId: 'delete-operation-1', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: deleteToken,
+      updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 3, deletedAt: serverTimestamp(),
+    }, 'delete-operation-1', 'deleted', { id: 'active', displayName: 'Active Member' })))
+    expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 3, headDeleted: true })
+    expect((await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()?.expense).toMatchObject({ description: 'Audited change', revision: 3 })
+    await assertFails(deleteDoc(reference))
+    await assertFails(updateDoc(reference, { description: 'Edit after delete' }))
     await assertFails(setDoc(doc(active, 'groups/group-a/activity/activity-ffffffffffffffffffffffffffffffffffffffffffffffff'), { kind: 'expense.created' }))
-    await assertFails(setDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/0000000002`), { action: 'updated' }))
+    await assertFails(setDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/forged-revision`), { action: 'updated' }))
   })
 })
 
@@ -179,6 +219,7 @@ function sparkExpense(token = 'a', overrides: Record<string, unknown> = {}): Rec
   ]
   return {
     id: expenseId, groupId: 'group-a', operationId: `expense-operation-${token}`, requestFingerprint: token.repeat(64), resourceToken,
+    lastOperationId: `expense-operation-${token}`, lastRequestFingerprint: token.repeat(64), lastResourceToken: resourceToken,
     description: 'Dinner', date: '2026-09-01', total: { currency: 'USD', minorAmount: 1000 },
     payments: [{ participantId: 'active', money: { currency: 'USD', minorAmount: 1000 } }], allocations,
     payerIds: ['active'], participantIds: ['active', 'friend'], involvedMemberIds: ['active', 'friend'], category: 'Food', splitType: 'percentage',
@@ -186,6 +227,21 @@ function sparkExpense(token = 'a', overrides: Record<string, unknown> = {}): Rec
     updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 1,
     ...overrides,
   }
+}
+
+function sparkExpenseVersion(expense: Record<string, unknown>, operationId: string, action: 'updated' | 'deleted', actor: Record<string, unknown>): Record<string, unknown> {
+  return {
+    groupId: 'group-a', expenseId: expense.id, revision: expense.revision,
+    operationId, action, actor, createdAt: serverTimestamp(), expense,
+  }
+}
+
+function commitSparkExpenseMutation(source: unknown, expenseId: string, revisionId: string, head: Record<string, unknown>, revision: Record<string, unknown>): Promise<void> {
+  const db = source as Firestore
+  const batch = writeBatch(db)
+  batch.set(doc(db, `groups/group-a/expenses/${expenseId}`), head)
+  batch.set(doc(db, `groups/group-a/expenses/${expenseId}/revisions/${revisionId}`), revision)
+  return batch.commit()
 }
 
 

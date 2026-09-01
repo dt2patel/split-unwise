@@ -62,7 +62,7 @@ describe('Firebase Spark two-account flow', () => {
     expect((await getDoc(doc(getFirestore(app), `groups/${created.groupId}`))).exists()).toBe(true)
   }, 30_000)
 
-  emulatorIt('adds one replay-stable expense that both members read with the same derived balance', async () => {
+  emulatorIt('adds, edits, and soft-deletes one replay-stable expense with shared history and balances', async () => {
     const auth = getAuth(app)
     const suffix = crypto.randomUUID()
     const ownerEmail = `ledger-owner-${suffix}@example.com`
@@ -102,6 +102,7 @@ describe('Firebase Spark two-account flow', () => {
 
     expect(first).toMatchObject({ kind: 'expense.add', operationId, status: 'saved', expense: { description: 'Shared dinner', revision: 1 } })
     expect(replay).toEqual(first)
+    if (first.status !== 'saved') throw new Error('Expected Spark expense creation to save')
     expect(await ownerRepository.expenses.listForGroup(created.groupId)).toHaveLength(1)
     expect(await ownerRepository.groups.getBalanceSnapshot(created.groupId)).toMatchObject({
       groupId: created.groupId, balanceRevision: 1,
@@ -118,5 +119,47 @@ describe('Firebase Spark two-account flow', () => {
     await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
       simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
     })
+
+    const editCommand = {
+      kind: 'expense.edit' as const, operationId: `edit-${suffix}`, groupId: created.groupId, expenseId: first.expense.id, expectedRevision: 1,
+      draft: {
+        groupId: created.groupId, description: 'Shared dinner and dessert', date: '2026-09-01',
+        total: { currency: 'USD' as const, minorAmount: 3000 },
+        payments: [{ participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 3000 } }],
+        allocations: [
+          { participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 1500 } },
+          { participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 1500 } },
+        ],
+        category: 'Food', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+      },
+    }
+    await expect(friendRepository.expenses.edit({ ...editCommand, operationId: `friend-edit-${suffix}` })).rejects.toThrow(/author|manager/i)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const edited = await ownerRepository.expenses.edit(editCommand)
+    const editReplay = await ownerRepository.expenses.edit(editCommand)
+    expect(edited).toMatchObject({ status: 'saved', expense: { id: first.expense.id, description: 'Shared dinner and dessert', revision: 2 } })
+    expect(editReplay).toEqual(edited)
+    await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
+      balanceRevision: 2,
+      simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1500 } }],
+    })
+    await expect(ownerRepository.expenses.listRevisions(created.groupId, first.expense.id)).resolves.toMatchObject([
+      { revision: 1, action: 'created', expense: { description: 'Shared dinner' } },
+      { revision: 2, action: 'updated', expense: { description: 'Shared dinner and dessert' } },
+    ])
+
+    const deleteCommand = { kind: 'expense.delete' as const, operationId: `delete-${suffix}`, groupId: created.groupId, expenseId: first.expense.id, expectedRevision: 2 }
+    const removed = await ownerRepository.expenses.delete(deleteCommand)
+    const deleteReplay = await ownerRepository.expenses.delete(deleteCommand)
+    expect(removed).toMatchObject({ status: 'saved', tombstone: { id: first.expense.id, groupId: created.groupId, revision: 3 } })
+    expect(deleteReplay).toEqual(removed)
+    await expect(ownerRepository.expenses.listForGroup(created.groupId)).resolves.toEqual([])
+    await expect(ownerRepository.expenses.getById(created.groupId, first.expense.id)).resolves.toMatchObject({ revision: 3, deletedAt: expect.any(String) })
+    await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({ balanceRevision: 3, pairwise: [], simplified: [] })
+    await expect(ownerRepository.expenses.listRevisions(created.groupId, first.expense.id)).resolves.toMatchObject([
+      { revision: 1, action: 'created' }, { revision: 2, action: 'updated' }, { revision: 3, action: 'deleted' },
+    ])
   }, 30_000)
 })

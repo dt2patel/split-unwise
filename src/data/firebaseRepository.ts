@@ -3,12 +3,13 @@ import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebas
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteResult, ExpenseEditResult, ExpenseRow, Member, NotificationItem, SettlementRecord, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Member, NotificationItem, SettlementRecord, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkExpenseRecord } from './firebaseSparkMutations'
+import { buildSparkExpenseMutationRecord, buildSparkExpenseRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
+import { CommandConflictError } from './commandQueue'
 
 type FirestoreModule = typeof import('firebase/firestore')
 type AuthModule = typeof import('firebase/auth')
@@ -33,10 +34,14 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (!snapshot.exists()) throw new Error('Current Firebase user profile is missing')
     return decodeMember(userId, snapshot.data(), true)
   }
-  async function listExpenses(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
+  async function listExpenseHeads(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
     const { db, firestore } = await readyContext
-    const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses'), firestore.orderBy('date', 'asc'), firestore.limit(100)))
-    return snapshot.docs.map((document) => decodeExpense(groupId, document.id, document.data())).filter(({ deletedAt }) => deletedAt === undefined)
+    const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses'), firestore.limit(100)))
+    const expenses = await Promise.all(snapshot.docs.map((document) => resolveSparkExpenseHead(db, firestore, groupId, document.id, document.data())))
+    return expenses.sort(oldestExpenseFirst)
+  }
+  async function listExpenses(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
+    return (await listExpenseHeads(groupId, readyContext)).filter(({ deletedAt }) => deletedAt === undefined)
   }
   async function listSettlements(groupId: string, readyContext = context()): Promise<readonly SettlementRecord[]> {
     const { db, firestore } = await readyContext
@@ -83,9 +88,72 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     return { kind: 'expense.add', operationId: command.operationId, status: 'saved', expense: decodeExpense(command.groupId, saved.id, saved.data()) }
   }
 
+  async function executeSparkExpenseMutation(command: ExpenseEditCommand | ExpenseDeleteCommand): Promise<ExpenseEditResult | ExpenseDeleteResult> {
+    const { db, firestore, userId } = await context()
+    const identity = await createOperationIdentity(userId, command)
+    const memberReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
+    const expenseReference = firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId)
+    await firestore.runTransaction(db, async (transaction) => {
+      const [member, head] = await Promise.all([transaction.get(memberReference), transaction.get(expenseReference)])
+      const memberData = member.data()
+      if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active' || typeof memberData.displayName !== 'string') {
+        throw new Error('Only active group members can change an expense')
+      }
+      if (!head.exists()) throw new Error('Expense was not found')
+      const headData = head.data()
+      const root = decodeExpense(command.groupId, command.expenseId, headData)
+      const headRevision = Number.isSafeInteger(headData.headRevision) ? Number(headData.headRevision) : root.revision
+      const headToken = typeof headData.lastResourceToken === 'string'
+        ? headData.lastResourceToken
+        : typeof headData.resourceToken === 'string' ? headData.resourceToken : ''
+      let currentData: Readonly<Record<string, unknown>> = headData
+      if (headRevision > root.revision) {
+        const versionReference = firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId, 'revisions', headToken)
+        const version = await transaction.get(versionReference)
+        if (!version.exists() || !isRecord(version.data().expense)) throw new Error('Current expense version is unavailable')
+        currentData = version.data().expense as Readonly<Record<string, unknown>>
+      }
+      const current = decodeExpense(command.groupId, command.expenseId, currentData)
+      if (headData.lastOperationId === identity.operationId) {
+        if (headData.lastRequestFingerprint !== identity.requestFingerprint || headToken !== identity.resourceId.slice('operation-'.length)) throw new OperationReplayConflictError()
+        return
+      }
+      try {
+        const mutation = buildSparkExpenseMutationRecord(
+          command,
+          headData,
+          currentData,
+          { actor: { id: userId, displayName: memberData.displayName }, canManage: memberData.canManage === true },
+          identity,
+          firestore.serverTimestamp(),
+        )
+        transaction.set(expenseReference, mutation.headDocument)
+        transaction.set(
+          firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId, 'revisions', mutation.revisionId),
+          mutation.revisionDocument,
+        )
+      } catch (error) {
+        if (error instanceof Error && /changed remotely/i.test(error.message)) throw new CommandConflictError(error.message, { remote: current })
+        throw error
+      }
+    })
+    const savedHead = await firestore.getDoc(expenseReference)
+    if (!savedHead.exists()) throw new Error('Saved expense is unavailable')
+    const saved = await resolveSparkExpenseHead(db, firestore, command.groupId, command.expenseId, savedHead.data())
+    if (command.kind === 'expense.edit') {
+      return { kind: 'expense.edit', operationId: command.operationId, status: 'saved', expense: saved }
+    }
+    if (!saved.deletedAt) throw new Error('Saved expense tombstone is unavailable')
+    return {
+      kind: 'expense.delete', operationId: command.operationId, status: 'saved',
+      tombstone: { id: saved.id, groupId: saved.groupId, revision: saved.revision, deletedAt: saved.deletedAt },
+    }
+  }
+
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
     if (!functionsRegion) {
       if (command.kind === 'expense.add') return executeSparkExpenseAdd(command)
+      if (command.kind === 'expense.edit' || command.kind === 'expense.delete') return executeSparkExpenseMutation(command)
       return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Secure cloud writes are unavailable because Firebase Functions is not configured.' } as CommandResult
     }
     await context()
@@ -128,11 +196,12 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           if (!snapshot.exists()) throw new Error('Authoritative group balance snapshot is unavailable')
           return decodeBalanceSnapshot(groupId, snapshot.data())
         }
-        const [expenses, settlements, settings] = await Promise.all([
-          listExpenses(groupId, readyContext),
+        const [allExpenses, settlements, settings] = await Promise.all([
+          listExpenseHeads(groupId, readyContext),
           listSettlements(groupId, readyContext),
           getGroupSettings(groupId, readyContext),
         ])
+        const expenses = allExpenses.filter(({ deletedAt }) => deletedAt === undefined)
         const balances = computeBalancePlans(expenses, settlements.map((settlement) => ({
           id: settlement.settlementId,
           senderId: settlement.senderId,
@@ -142,7 +211,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         })))
         return {
           groupId,
-          balanceRevision: expenses.reduce((total, expense) => total + expense.revision, 0)
+          balanceRevision: allExpenses.reduce((total, expense) => total + expense.revision, 0)
             + settlements.reduce((total, settlement) => total + settlement.revision, 0),
           simplifyDebtsEnabled: settings.simplifyDebtsEnabled !== false,
           ...balances,
@@ -164,15 +233,24 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async getById(groupId, expenseId) {
         const { db, firestore } = await context()
         const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'expenses', expenseId))
-        return snapshot.exists() ? decodeExpense(groupId, snapshot.id, snapshot.data()) : undefined
+        return snapshot.exists() ? resolveSparkExpenseHead(db, firestore, groupId, snapshot.id, snapshot.data()) : undefined
       },
       async add(command) { const result = await execute(command); if (result.kind !== 'expense.add') throw new Error('Unexpected expense result'); return result },
       async edit(command): Promise<ExpenseEditResult> { const result = await execute(command); if (result.kind !== 'expense.edit') throw new Error('Unexpected expense edit result'); return result },
       async delete(command): Promise<ExpenseDeleteResult> { const result = await execute(command); if (result.kind !== 'expense.delete') throw new Error('Unexpected expense delete result'); return result },
       async listRevisions(groupId, expenseId) {
         const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses', expenseId, 'revisions'), firestore.orderBy('revision', 'asc'), firestore.orderBy(firestore.documentId(), 'asc'), firestore.limit(100)))
-        return snapshot.docs.map((document) => decodeExpenseRevision(groupId, expenseId, document.id, document.data()))
+        const [root, snapshot] = await Promise.all([
+          firestore.getDoc(firestore.doc(db, 'groups', groupId, 'expenses', expenseId)),
+          firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses', expenseId, 'revisions'), firestore.orderBy('revision', 'asc'), firestore.orderBy(firestore.documentId(), 'asc'), firestore.limit(100))),
+        ])
+        if (!root.exists()) return []
+        const rootData = root.data()
+        const creation = decodeExpenseRevision(groupId, expenseId, String(rootData.resourceToken), {
+          groupId, expenseId, revision: 1, operationId: rootData.operationId, action: 'created',
+          actor: rootData.createdBy, createdAt: rootData.createdAt, expense: rootData,
+        })
+        return [creation, ...snapshot.docs.map((document) => decodeExpenseRevision(groupId, expenseId, document.id, document.data()))]
       },
     },
     comments: {
@@ -258,6 +336,28 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     },
     commands: { execute },
   }
+}
+
+async function resolveSparkExpenseHead(
+  db: FirebaseClient['db'],
+  firestore: FirestoreModule,
+  groupId: string,
+  expenseId: string,
+  head: Readonly<Record<string, unknown>>,
+): Promise<ExpenseRow> {
+  const root = decodeExpense(groupId, expenseId, head)
+  const headRevision = Number.isSafeInteger(head.headRevision) ? Number(head.headRevision) : root.revision
+  if (headRevision === root.revision) return root
+  if (headRevision < root.revision || typeof head.lastResourceToken !== 'string') throw new Error('Expense head pointer is invalid')
+  const version = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'expenses', expenseId, 'revisions', head.lastResourceToken))
+  if (!version.exists()) throw new Error('Current expense version is unavailable')
+  const decoded = decodeExpenseRevision(groupId, expenseId, version.id, version.data())
+  if (decoded.revision !== headRevision || (head.headDeleted === true) !== (decoded.action === 'deleted')) throw new Error('Expense head pointer does not match its immutable version')
+  return decoded.expense
+}
+
+function oldestExpenseFirst(left: ExpenseRow, right: ExpenseRow): number {
+  return left.date.localeCompare(right.date) || left.id.localeCompare(right.id)
 }
 
 function decodeGroupSettings(groupId: string, value: unknown): GroupSettings {

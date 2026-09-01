@@ -15,12 +15,15 @@ describe('Firebase security contract', () => {
     expect(firestoreRules).toMatch(/match \/\{document=\*\*\}[\s\S]*allow read, write: if false;/)
   })
 
-  it('keeps operations and projections server-only while narrowly allowing immutable Spark expense creation', () => {
+  it('keeps operations and projections server-only while narrowly allowing audited Spark expense mutations', () => {
     expect(firestoreRules).toMatch(/match \/operations\/\{operationId\}[\s\S]*allow read, write: if false;/)
     for (const collection of ['expenses', 'revisions', 'comments', 'settlements', 'activity', 'recurringTemplates']) {
       expect(firestoreRules).toContain(`match /${collection}/`)
     }
-    expect(firestoreRules).toMatch(/match \/expenses\/\{expenseId\}[\s\S]*?allow create: if validSparkExpenseData\(groupId, expenseId, request\.resource\.data\);[\s\S]*?allow update, delete: if false;/)
+    expect(firestoreRules).toMatch(/match \/expenses\/\{expenseId\}[\s\S]*?allow create: if validSparkExpenseCreate\(groupId, expenseId, request\.resource\.data\);/)
+    expect(firestoreRules).toContain('allow update: if validSparkExpenseHeadUpdate(groupId, expenseId, request.resource.data);')
+    expect(firestoreRules).toMatch(/match \/revisions\/\{revisionId\}[\s\S]*?allow create: if validSparkExpenseVersionCreate\(groupId, expenseId, revisionId, request\.resource\.data\);[\s\S]*?allow update, delete: if false;/)
+    expect(firestoreRules).toContain("'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'headRevision', 'headDeleted'")
     expect(firestoreRules).toMatch(/match \/settlements\/\{settlementId\}[\s\S]*?allow write: if false;/)
     expect(firestoreRules).toContain('allow create: if owns(uid) && validProfile(request.resource.data)')
     expect(firestoreRules).toContain('allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId)')

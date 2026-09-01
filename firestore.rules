@@ -22,16 +22,18 @@ service cloud.firestore {
     }
     function bounded(maximum) { return request.query.limit != null && request.query.limit > 0 && request.query.limit <= maximum; }
 
-    function validSparkActor(groupId, actor) {
-      let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
-      return signedIn() && actor is map
+    function validSparkActorShape(actor) {
+      return actor is map
         && actor.keys().hasOnly(['id', 'displayName'])
-        && actor.id == request.auth.uid && member.status == 'active'
-        && actor.displayName == member.displayName && validName(actor.displayName);
+        && strictId(actor.id) && validName(actor.displayName);
+    }
+    function validSparkCurrentActor(groupId, actor) {
+      let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
+      return validSparkActorShape(actor) && actor.id == request.auth.uid && member.status == 'active'
+        && actor.displayName == member.displayName;
     }
     function validSparkMoney(value, currency, positive) {
-      return value is map
-        && value.currency == currency && value.currency.matches('^[A-Z]{3}$')
+      return value.currency == currency && value.currency.matches('^[A-Z]{3}$')
         && value.minorAmount is int && value.minorAmount >= (positive ? 1 : 0)
         && value.minorAmount <= 9007199254740991;
     }
@@ -40,8 +42,7 @@ service cloud.firestore {
     }
     function validSparkAllocationAt(values, ids, currency, index) {
       return values.size() <= index || (
-        values[index] is map
-        && values[index].participantId == ids[index]
+        values[index].participantId == ids[index]
         && values[index].money.currency == currency
         && values[index].money.minorAmount is int && values[index].money.minorAmount >= 0
         && values[index].money.minorAmount <= 9007199254740991
@@ -78,13 +79,44 @@ service cloud.firestore {
       return value == 'equal' || value == 'exact' || value == 'percentage'
         || value == 'shares' || value == 'adjustment' || value == 'itemized';
     }
-    function validSparkExpenseData(groupId, expenseId, data) {
-      return data is map
-        && data.keys().hasOnly([
+    function validSparkExpenseStructure(groupId, expenseId, data) {
+      return data.keys().hasOnly([
           'id', 'groupId', 'operationId', 'requestFingerprint', 'resourceToken',
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
           'description', 'date', 'total', 'payments', 'allocations', 'payerIds', 'participantIds', 'involvedMemberIds',
           'category', 'splitType', 'splitMethod', 'attachmentRefs', 'notes',
-          'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'revision'
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'revision', 'deletedAt'
+        ])
+        && data.id == expenseId && data.groupId == groupId
+        && data.resourceToken is string && data.resourceToken.matches('^[a-f0-9]{48}$')
+        && expenseId == 'expense-' + data.resourceToken
+        && data.operationId is string && data.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.requestFingerprint is string && data.requestFingerprint.matches('^[a-f0-9]{64}$')
+        && validName(data.description) && data.date is string && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.category is string && data.category.size() > 0 && data.category.size() <= 80
+        && (!('notes' in data) || (data.notes is string && data.notes.size() > 0 && data.notes.size() <= 5000))
+        && validSparkSplitType(data.splitType)
+        && data.splitMethod.keys().hasOnly(['type', 'allocations']) && data.splitMethod.type == 'exact'
+        && data.attachmentRefs == [];
+    }
+    function validSparkExpensePaymentLedger(data) {
+      return validSparkMoney(data.total, data.total.currency, true)
+        && validSparkAllocations(data.payments, data.payerIds, data.total.currency, data.total.minorAmount)
+        && data.payerIds.toSet().difference(data.involvedMemberIds.toSet()).size() == 0;
+    }
+    function validSparkExpenseAllocationLedger(groupId, data) {
+      return validSparkAllocations(data.allocations, data.participantIds, data.total.currency, data.total.minorAmount)
+        && validSparkInvolvedMembers(groupId, data.involvedMemberIds)
+        && data.participantIds.toSet().difference(data.involvedMemberIds.toSet()).size() == 0
+        && data.splitMethod.allocations == data.allocations;
+    }
+    function validSparkExpenseShape(groupId, expenseId, data) {
+      return data.keys().hasOnly([
+          'id', 'groupId', 'operationId', 'requestFingerprint', 'resourceToken',
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
+          'description', 'date', 'total', 'payments', 'allocations', 'payerIds', 'participantIds', 'involvedMemberIds',
+          'category', 'splitType', 'splitMethod', 'attachmentRefs', 'notes',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'revision', 'deletedAt'
         ])
         && data.id == expenseId && data.groupId == groupId
         && data.resourceToken is string && data.resourceToken.matches('^[a-f0-9]{48}$')
@@ -101,11 +133,74 @@ service cloud.firestore {
         && data.payerIds.toSet().difference(data.involvedMemberIds.toSet()).size() == 0
         && data.participantIds.toSet().difference(data.involvedMemberIds.toSet()).size() == 0
         && validSparkSplitType(data.splitType)
-        && data.splitMethod is map && data.splitMethod.keys().hasOnly(['type', 'allocations']) && data.splitMethod.type == 'exact'
+        && data.splitMethod.keys().hasOnly(['type', 'allocations']) && data.splitMethod.type == 'exact'
         && data.splitMethod.allocations == data.allocations
-        && data.attachmentRefs == []
-        && validSparkActor(groupId, data.createdBy) && data.updatedBy == data.createdBy
+        && data.attachmentRefs == [];
+    }
+    function validSparkExpenseCreate(groupId, expenseId, data) {
+      return validSparkExpenseShape(groupId, expenseId, data)
+        && !('deletedAt' in data)
+        && data.lastOperationId == data.operationId
+        && data.lastRequestFingerprint == data.requestFingerprint
+        && data.lastResourceToken == data.resourceToken
+        && validSparkCurrentActor(groupId, data.createdBy) && data.updatedBy == data.createdBy
         && data.createdAt == request.time && data.updatedAt == request.time && data.revision == 1;
+    }
+    function sparkHeadRevision(data) {
+      return 'headRevision' in data ? data.headRevision : data.revision;
+    }
+    function sparkHeadDeleted(data) {
+      return 'headDeleted' in data && data.headDeleted == true;
+    }
+    function validSparkExpenseHeadUpdate(groupId, expenseId, data) {
+      let version = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)/revisions/$(data.lastResourceToken)).data;
+      let nextRevision = sparkHeadRevision(resource.data) + 1;
+      return !sparkHeadDeleted(resource.data)
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'headRevision', 'headDeleted'
+        ])
+        && data.headRevision is int && data.headRevision == nextRevision
+        && data.headDeleted is bool
+        && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
+        && data.lastOperationId != resource.data.lastOperationId
+        && data.lastResourceToken != resource.data.lastResourceToken
+        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
+        && version.keys().hasOnly(['groupId', 'expenseId', 'revision', 'operationId', 'action', 'actor', 'createdAt', 'expense'])
+        && version.groupId == groupId && version.expenseId == expenseId
+        && version.revision == nextRevision && version.operationId == data.lastOperationId
+        && version.action == (data.headDeleted ? 'deleted' : 'updated')
+        && version.createdAt == request.time && validSparkCurrentActor(groupId, version.actor)
+        && validSparkExpenseStructure(groupId, expenseId, version.expense)
+        && validSparkExpensePaymentLedger(version.expense)
+        && version.expense.operationId == resource.data.operationId
+        && version.expense.requestFingerprint == resource.data.requestFingerprint
+        && version.expense.resourceToken == resource.data.resourceToken
+        && version.expense.createdAt == resource.data.createdAt && version.expense.createdBy == resource.data.createdBy
+        && version.expense.lastOperationId == data.lastOperationId
+        && version.expense.lastRequestFingerprint == data.lastRequestFingerprint
+        && version.expense.lastResourceToken == data.lastResourceToken
+        && version.expense.revision == nextRevision
+        && version.expense.updatedAt == request.time && version.expense.updatedBy == version.actor
+        && (data.headDeleted ? version.expense.deletedAt == request.time : !('deletedAt' in version.expense));
+    }
+    function validSparkExpenseVersionCreate(groupId, expenseId, revisionId, data) {
+      let before = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)).data;
+      let after = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)).data;
+      return after.headRevision is int && after.headRevision == sparkHeadRevision(before) + 1
+        && revisionId == after.lastResourceToken && revisionId.matches('^[a-f0-9]{48}$')
+        && data.groupId == groupId && data.expenseId == expenseId
+        && data.revision == after.headRevision && data.operationId == after.lastOperationId
+        && data.action == (after.headDeleted ? 'deleted' : 'updated')
+        && data.createdAt == request.time && validSparkCurrentActor(groupId, data.actor)
+        && validSparkExpenseAllocationLedger(groupId, data.expense)
+        && data.expense.lastOperationId == after.lastOperationId
+        && data.expense.lastRequestFingerprint == after.lastRequestFingerprint
+        && data.expense.lastResourceToken == after.lastResourceToken
+        && data.expense.revision == after.headRevision
+        && data.expense.updatedAt == request.time && data.expense.updatedBy == data.actor
+        && (after.headDeleted ? data.expense.deletedAt == request.time : !('deletedAt' in data.expense));
     }
 
     function validNewGroup(groupId, data) {
@@ -256,11 +351,13 @@ service cloud.firestore {
       }
       match /expenses/{expenseId} {
         allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
-        allow create: if validSparkExpenseData(groupId, expenseId, request.resource.data);
-        allow update, delete: if false;
+        allow create: if validSparkExpenseCreate(groupId, expenseId, request.resource.data);
+        allow update: if validSparkExpenseHeadUpdate(groupId, expenseId, request.resource.data);
+        allow delete: if false;
         match /revisions/{revisionId} {
           allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
-          allow write: if false;
+          allow create: if validSparkExpenseVersionCreate(groupId, expenseId, revisionId, request.resource.data);
+          allow update, delete: if false;
         }
       }
       match /comments/{commentId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }

@@ -4,8 +4,9 @@ import { assertCurrencyCode } from '../domain/money'
 import { canonicalHttpsOrigin, generateInvitationSecret, hashInvitationSecret, type PreparedInvitation } from '../features/invitations/invitations'
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
+import { decodeExpense } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, ExpenseAddCommand } from './repositories'
+import type { ActorSnapshot, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand } from './repositories'
 import type { OperationIdentity } from './operationIdentity'
 import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
 
@@ -33,39 +34,138 @@ export interface SparkExpenseRecord {
   readonly expenseDocument: Readonly<Record<string, unknown>>
 }
 
+export interface SparkExpenseMutationRecord {
+  readonly expenseId: string
+  readonly headDocument: Readonly<Record<string, unknown>>
+  readonly revisionId: string
+  readonly revisionDocument: Readonly<Record<string, unknown>> & { readonly expense: Readonly<Record<string, unknown>> }
+}
+
 /** Builds the single immutable source document authorized by the Spark rules path. */
 export function buildSparkExpenseRecord(command: ExpenseAddCommand, actor: ActorSnapshot, identity: OperationIdentity, committedAt: unknown): SparkExpenseRecord {
   const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
   if (parsed.kind !== 'expense.add') throw new Error('Spark expense command is invalid.')
-  if (identity.userId !== actor.id || identity.operationId !== parsed.operationId || identity.kind !== parsed.kind || identity.groupId !== parsed.groupId) throw new Error('Spark expense operation identity does not match the command.')
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  const expenseId = `expense-${token}`
+  const expenseDocument: Record<string, unknown> = {
+    id: expenseId, groupId: parsed.groupId, operationId: parsed.operationId, requestFingerprint: identity.requestFingerprint, resourceToken: token,
+    lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    ...normalizeSparkExpenseDraft(parsed, identity.resourceId),
+    createdAt: committedAt, createdBy: normalizedActor(actor), updatedAt: committedAt, updatedBy: normalizedActor(actor), revision: 1,
+  }
+  return { expenseId, expenseDocument }
+}
+
+/** Advances the small mutable head pointer and creates one immutable full expense version. */
+export function buildSparkExpenseMutationRecord(
+  command: ExpenseEditCommand | ExpenseDeleteCommand,
+  head: Readonly<Record<string, unknown>>,
+  current: Readonly<Record<string, unknown>>,
+  authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
+  identity: OperationIdentity,
+  committedAt: unknown,
+): SparkExpenseMutationRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'expense.edit' && parsed.kind !== 'expense.delete') throw new Error('Spark expense mutation command is invalid.')
+  const token = assertSparkOperationIdentity(parsed, authorization.actor, identity)
+  const snapshot = decodeExpense(parsed.groupId, parsed.expenseId, current)
+  const rootSnapshot = decodeExpense(parsed.groupId, parsed.expenseId, head)
+  const headRevision = Number.isSafeInteger(head.headRevision) ? Number(head.headRevision) : rootSnapshot.revision
+  const headDeleted = head.headDeleted === true
+  if (snapshot.revision !== headRevision) throw new Error('Expense changed remotely. Reload it before trying again.')
+  if (headDeleted) throw new Error('Expense was already deleted.')
+  if (snapshot.deletedAt) throw new Error('Expense was already deleted.')
+  if (snapshot.revision !== parsed.expectedRevision) throw new Error('Expense changed remotely. Reload it before trying again.')
+  const creator = actorFromRecord(head.createdBy, 'createdBy')
+  if (creator.id !== authorization.actor.id && !authorization.canManage) throw new Error('Only the expense author or an active group manager can change it.')
+  if (head.id !== parsed.expenseId || head.groupId !== parsed.groupId || current.id !== parsed.expenseId || current.groupId !== parsed.groupId) throw new Error('Spark expense document identity is invalid.')
+  const creationOperationId = strictInternalString(head.operationId, 'operationId')
+  const creationFingerprint = strictHex(head.requestFingerprint, 64, 'request fingerprint')
+  const creationToken = strictHex(head.resourceToken, 48, 'resource token')
+  const normalized = parsed.kind === 'expense.edit' ? normalizeSparkExpenseDraft(parsed.draft, identity.resourceId) : undefined
+  const revision = snapshot.revision + 1
+  const expense: Record<string, unknown> = parsed.kind === 'expense.edit'
+    ? {
+        id: parsed.expenseId, groupId: parsed.groupId, operationId: creationOperationId, requestFingerprint: creationFingerprint, resourceToken: creationToken,
+        lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+        ...normalized, createdAt: head.createdAt, createdBy: creator, updatedAt: committedAt, updatedBy: normalizedActor(authorization.actor), revision,
+      }
+    : {
+        ...current, lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+        updatedAt: committedAt, updatedBy: normalizedActor(authorization.actor), revision, deletedAt: committedAt,
+      }
+  const actor = normalizedActor(authorization.actor)
+  return {
+    expenseId: parsed.expenseId,
+    headDocument: {
+      ...head,
+      lastOperationId: parsed.operationId,
+      lastRequestFingerprint: identity.requestFingerprint,
+      lastResourceToken: token,
+      headRevision: revision,
+      headDeleted: parsed.kind === 'expense.delete',
+    },
+    revisionId: token,
+    revisionDocument: {
+      groupId: parsed.groupId, expenseId: parsed.expenseId, revision, operationId: parsed.operationId,
+      action: parsed.kind === 'expense.delete' ? 'deleted' : 'updated', actor, createdAt: committedAt, expense,
+    },
+  }
+}
+
+function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string): Readonly<Record<string, unknown>> {
+  if (draft.attachmentRefs.length) throw new Error('Spark expense attachments require the secure cloud asset service.')
+  if (draft.recurrence) throw new Error('Recurring Spark expenses require the secure recurrence service.')
+  if (draft.occurrenceEditScope) throw new Error('Occurrence scope requires a recurring expense.')
+  validateLedgerExpense({ id: resourceId, total: draft.total, payments: draft.payments, allocations: draft.allocations })
+  assertSplitMatchesAllocations(draft.total, draft.splitMethod, draft.allocations)
+  const payerIds = draft.payments.map(({ participantId }) => participantId)
+  const participantIds = draft.allocations.map(({ participantId }) => participantId)
+  const involvedMemberIds = [...new Set([...payerIds, ...participantIds])].sort((left, right) => left.localeCompare(right))
+  if (involvedMemberIds.length > 6) throw new Error('Spark expenses currently support at most six involved members.')
+  const exactAllocations = draft.allocations.map(({ participantId, money }) => ({ participantId, money: { ...money } }))
+  const notes = draft.notes?.replace(/\s+/g, ' ').trim()
+  return {
+    description: draft.description.replace(/\s+/g, ' ').trim(), date: draft.date, total: { ...draft.total },
+    payments: draft.payments.map(({ participantId, money }) => ({ participantId, money: { ...money } })), allocations: exactAllocations,
+    payerIds, participantIds, involvedMemberIds, category: draft.category.trim(), splitType: draft.splitMethod.type,
+    splitMethod: { type: 'exact', allocations: exactAllocations }, attachmentRefs: [], ...(notes ? { notes } : {}),
+  }
+}
+
+function assertSparkOperationIdentity(command: { readonly kind: string; readonly operationId: string; readonly groupId: string }, actor: ActorSnapshot, identity: OperationIdentity): string {
+  if (identity.userId !== actor.id || identity.operationId !== command.operationId || identity.kind !== command.kind || identity.groupId !== command.groupId) throw new Error('Spark expense operation identity does not match the command.')
   if (!/^[a-f0-9]{64}$/.test(identity.requestFingerprint)) throw new Error('Spark expense request fingerprint is invalid.')
   const token = /^operation-([a-f0-9]{48})$/.exec(identity.resourceId)?.[1]
   if (!token) throw new Error('Spark expense resource identity is invalid.')
-  if (!actor.displayName.trim() || actor.displayName.length > 120) throw new Error('Spark expense actor is invalid.')
-  if (parsed.attachmentRefs.length) throw new Error('Spark expense attachments require the secure cloud asset service.')
-  if (parsed.recurrence) throw new Error('Recurring Spark expenses require the secure recurrence service.')
-  if (parsed.occurrenceEditScope) throw new Error('Occurrence scope requires a recurring expense.')
-  validateLedgerExpense({ id: identity.resourceId, total: parsed.total, payments: parsed.payments, allocations: parsed.allocations })
-  assertSplitMatchesAllocations(parsed.total, parsed.splitMethod, parsed.allocations)
-  const payerIds = parsed.payments.map(({ participantId }) => participantId)
-  const participantIds = parsed.allocations.map(({ participantId }) => participantId)
-  const involvedMemberIds = [...new Set([...payerIds, ...participantIds])].sort((left, right) => left.localeCompare(right))
-  if (involvedMemberIds.length > 6) throw new Error('Spark expenses currently support at most six involved members.')
-  const expenseId = `expense-${token}`
-  const description = parsed.description.replace(/\s+/g, ' ').trim()
-  const notes = parsed.notes?.replace(/\s+/g, ' ').trim()
-  const normalizedActor = { id: actor.id, displayName: actor.displayName.trim() }
-  const exactAllocations = parsed.allocations.map(({ participantId, money }) => ({ participantId, money: { ...money } }))
-  const expenseDocument: Record<string, unknown> = {
-    id: expenseId, groupId: parsed.groupId, operationId: parsed.operationId, requestFingerprint: identity.requestFingerprint, resourceToken: token,
-    description, date: parsed.date, total: { ...parsed.total },
-    payments: parsed.payments.map(({ participantId, money }) => ({ participantId, money: { ...money } })), allocations: exactAllocations,
-    payerIds, participantIds, involvedMemberIds, category: parsed.category.trim(), splitType: parsed.splitMethod.type,
-    splitMethod: { type: 'exact', allocations: exactAllocations }, attachmentRefs: [],
-    ...(notes ? { notes } : {}),
-    createdAt: committedAt, createdBy: normalizedActor, updatedAt: committedAt, updatedBy: normalizedActor, revision: 1,
-  }
-  return { expenseId, expenseDocument }
+  normalizedActor(actor)
+  return token
+}
+
+function normalizedActor(actor: ActorSnapshot): ActorSnapshot {
+  const displayName = actor.displayName.trim()
+  if (!actor.id.trim() || !displayName || displayName.length > 120) throw new Error('Spark expense actor is invalid.')
+  return { id: actor.id, displayName }
+}
+
+function actorFromRecord(value: unknown, label: string): ActorSnapshot {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.displayName !== 'string') throw new Error(`Spark expense ${label} is invalid.`)
+  return normalizedActor({ id: value.id, displayName: value.displayName })
+}
+
+function strictInternalString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`Spark expense ${label} is invalid.`)
+  return value
+}
+
+function strictHex(value: unknown, length: number, label: string): string {
+  const text = strictInternalString(value, label)
+  if (!new RegExp(`^[a-f0-9]{${length}}$`).test(text)) throw new Error(`Spark expense ${label} is invalid.`)
+  return text
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 export function buildFirebaseProfile(identity: FirebaseIdentity): FirebaseProfileDocument {
