@@ -11,6 +11,15 @@ describe('Firebase boundary decoders', () => {
     expect(() => decodeGroup('unknown-context', { ...shared, kind: 'household' })).toThrow('kind')
   })
 
+  it('decodes a deleted group only with a complete lifecycle audit', () => {
+    const shared = { id: 'group-a', kind: 'group', name: 'Trip', currency: 'USD', memberIds: ['owner'] }
+    expect(decodeGroup('group-a', {
+      ...shared, status: 'deleted', deletedAt: '2026-09-01T12:00:00.000Z', deletedBy: { id: 'owner', displayName: 'Owner' },
+    })).toMatchObject({ deletedAt: '2026-09-01T12:00:00.000Z', deletedBy: { id: 'owner', displayName: 'Owner' } })
+    expect(() => decodeGroup('group-a', { ...shared, status: 'deleted' })).toThrow('deletedAt')
+    expect(() => decodeGroup('group-a', { ...shared, status: 'active', deletedAt: '2026-09-01T12:00:00.000Z' })).toThrow('active group')
+  })
+
   it('decodes a user-specific context label while accepting legacy projections', () => {
     expect(decodeGroupProjection('friend-jordan', { groupId: 'friend-jordan', contextLabel: 'Jordan Lee' })).toEqual({
       groupId: 'friend-jordan', contextLabel: 'Jordan Lee',

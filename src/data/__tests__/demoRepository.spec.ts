@@ -60,6 +60,40 @@ describe('demo repository', () => {
     })
   })
 
+  it('soft-deletes a group for every member and restores its intact ledger', async () => {
+    const repository = createDemoRepository()
+    const beforeExpenses = await repository.expenses.listForGroup('lake-house-weekend')
+    const beforeSettlements = await repository.settlements.listForGroup('lake-house-weekend')
+
+    const deleted = await repository.commands.execute({
+      kind: 'group.delete', operationId: 'delete-lake-house', groupId: 'lake-house-weekend',
+    } as never)
+
+    expect(deleted).toEqual({ kind: 'group.delete', operationId: 'delete-lake-house', status: 'saved', resourceId: 'lake-house-weekend' })
+    await expect(repository.groups.list()).resolves.toEqual([])
+    await expect(repository.groups.getById('lake-house-weekend')).resolves.toBeUndefined()
+
+    const restored = await repository.commands.execute({
+      kind: 'group.restore', operationId: 'restore-lake-house', groupId: 'lake-house-weekend',
+    } as never)
+
+    expect(restored).toEqual({ kind: 'group.restore', operationId: 'restore-lake-house', status: 'saved', resourceId: 'lake-house-weekend' })
+    await expect(repository.groups.list()).resolves.toContainEqual(expect.objectContaining({ id: 'lake-house-weekend' }))
+    await expect(repository.groups.getById('lake-house-weekend')).resolves.toMatchObject({ id: 'lake-house-weekend' })
+    await expect(repository.expenses.listForGroup('lake-house-weekend')).resolves.toEqual(beforeExpenses)
+    await expect(repository.settlements.listForGroup('lake-house-weekend')).resolves.toEqual(beforeSettlements)
+    await expect(repository.activity.listForGroup('lake-house-weekend')).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'group.deleted', operationId: 'delete-lake-house' }),
+      expect.objectContaining({ kind: 'group.restored', operationId: 'restore-lake-house' }),
+    ]))
+
+    await repository.commands.execute({
+      kind: 'group.delete', operationId: 'delete-lake-house-again', groupId: 'lake-house-weekend',
+    } as never)
+    const lifecycleTimeline = await repository.activity.listForAccount({ filter: 'all', limit: 100 })
+    expect(lifecycleTimeline.items[0]).toMatchObject({ kind: 'group.deleted', operationId: 'delete-lake-house-again' })
+  })
+
   it('removes an uninvolved member once, clears an invalid default, and records membership activity', async () => {
     const repository = createDemoRepository()
     const participantIds = ['maya-p', 'jordan-k', 'alex-r', 'taylor-s', 'sam-d']

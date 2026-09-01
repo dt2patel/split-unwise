@@ -104,15 +104,28 @@ service cloud.firestore {
         && (data.cutoffCreatedAt > resource.data.cutoffCreatedAt
           || (data.cutoffCreatedAt == resource.data.cutoffCreatedAt && data.cutoffId >= resource.data.cutoffId));
     }
-    function activeMember(groupId) {
+    function groupMember(groupId) {
       return signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
     }
+    function groupActive(groupId) {
+      return get(/databases/$(database)/documents/groups/$(groupId)).data.get('status', 'active') != 'deleted';
+    }
+    function activeMember(groupId) {
+      return groupMember(groupId) && groupActive(groupId);
+    }
     function activeMemberOfGroup(data) {
+      return signedIn() && data.memberIds is list && request.auth.uid in data.memberIds && data.get('status', 'active') != 'deleted';
+    }
+    function groupMemberOfGroup(data) {
       return signedIn() && data.memberIds is list && request.auth.uid in data.memberIds;
     }
     function activeManager(groupId) {
       let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
-      return signedIn() && member.status == 'active' && member.canManage == true;
+      return signedIn() && groupActive(groupId) && member.status == 'active' && member.canManage == true;
+    }
+    function lifecycleManager(groupId) {
+      let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
+      return signedIn() && groupMember(groupId) && member.status == 'active' && member.canManage == true;
     }
     function bounded(maximum) { return request.query.limit != null && request.query.limit > 0 && request.query.limit <= maximum; }
 
@@ -122,6 +135,11 @@ service cloud.firestore {
         && strictId(actor.id) && validName(actor.displayName);
     }
     function validSparkCurrentActor(groupId, actor) {
+      let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
+      return groupActive(groupId) && validSparkActorShape(actor) && actor.id == request.auth.uid && member.status == 'active'
+        && actor.displayName == member.displayName;
+    }
+    function validSparkLifecycleActor(groupId, actor) {
       let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;
       return validSparkActorShape(actor) && actor.id == request.auth.uid && member.status == 'active'
         && actor.displayName == member.displayName;
@@ -1026,12 +1044,55 @@ service cloud.firestore {
         && validUsedInvitation(member.invitationId, groupId, request.auth.uid);
     }
     function validGroupJoin(groupId) {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'updatedAt'])
+      return groupActive(groupId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'updatedAt'])
         && !(request.auth.uid in resource.data.memberIds) && request.auth.uid in request.resource.data.memberIds
         && request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1
         && (resource.data.get('kind', 'group') != 'friendship' || request.resource.data.memberIds.size() == 2)
         && request.resource.data.memberIds.toSet() == resource.data.memberIds.toSet().union([request.auth.uid].toSet())
         && request.resource.data.updatedAt == request.time && validInvitationJoin(groupId);
+    }
+    function validGroupLifecycleActivity(groupId, data) {
+      let activityId = 'activity-' + data.lastLifecycleResourceToken;
+      let activity = getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
+      return activity.keys().hasOnly(['groupId', 'operationId', 'kind', 'subject', 'actor', 'createdAt'])
+        && activity.groupId == groupId && activity.operationId == data.lastLifecycleOperationId
+        && activity.kind == (data.lastLifecycleCommandKind == 'group.delete' ? 'group.deleted' : 'group.restored')
+        && (data.lastLifecycleCommandKind != 'group.delete' || activity.actor == data.deletedBy)
+        && validSparkLifecycleActor(groupId, activity.actor) && activity.createdAt == request.time
+        && activity.subject.keys().hasOnly(['kind', 'id', 'label'])
+        && activity.subject.kind == 'group' && activity.subject.id == groupId && activity.subject.label == data.name;
+    }
+    function validGroupLifecycleUpdate(groupId) {
+      let data = request.resource.data;
+      let kind = data.lastLifecycleCommandKind;
+      return lifecycleManager(groupId)
+        && (kind == 'group.delete' || kind == 'group.restore')
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'deletedAt', 'deletedBy', 'updatedAt',
+          'lastLifecycleCommandKind', 'lastLifecycleOperationId', 'lastLifecycleRequestFingerprint', 'lastLifecycleResourceToken'
+        ])
+        && data.memberIds == resource.data.memberIds && data.name == resource.data.name
+        && data.updatedAt == request.time
+        && data.lastLifecycleOperationId is string && data.lastLifecycleOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastLifecycleRequestFingerprint is string && data.lastLifecycleRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastLifecycleResourceToken is string && data.lastLifecycleResourceToken.matches('^[a-f0-9]{48}$')
+        && data.lastLifecycleOperationId != resource.data.get('lastLifecycleOperationId', '')
+        && data.lastLifecycleResourceToken != resource.data.get('lastLifecycleResourceToken', '')
+        && (
+          (kind == 'group.delete' && resource.data.get('status', 'active') != 'deleted'
+            && data.status == 'deleted' && data.deletedAt == request.time
+            && validSparkLifecycleActor(groupId, data.deletedBy))
+          || (kind == 'group.restore' && resource.data.get('status', 'active') == 'deleted'
+            && data.status == 'active' && !('deletedAt' in data) && !('deletedBy' in data))
+        )
+        && validGroupLifecycleActivity(groupId, data);
+    }
+    function validSparkLifecycleActivityCreate(groupId, activityId, data) {
+      let group = getAfter(/databases/$(database)/documents/groups/$(groupId)).data;
+      return activityId == 'activity-' + group.lastLifecycleResourceToken
+        && group.updatedAt == request.time && validGroupLifecycleActivity(groupId, group)
+        && data == getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
     }
     function validRemovedMemberDocument(groupId, uid, data) {
       let group = getAfter(/databases/$(database)/documents/groups/$(groupId)).data;
@@ -1143,14 +1204,14 @@ service cloud.firestore {
     }
 
     match /groups/{groupId} {
-      allow get: if activeMemberOfGroup(resource.data);
+      allow get: if groupMemberOfGroup(resource.data);
       allow list, delete: if false;
       allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId);
-      allow update: if validGroupJoin(groupId) || validGroupMemberRemoval(groupId);
+      allow update: if validGroupJoin(groupId) || validGroupMemberRemoval(groupId) || validGroupLifecycleUpdate(groupId);
 
       match /members/{uid} {
-        allow get: if activeMember(groupId);
-        allow list: if activeMember(groupId) && bounded(100);
+        allow get: if groupMember(groupId);
+        allow list: if groupMember(groupId) && bounded(100);
         allow create: if owns(uid) && (
           (validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data)
             && validOwnerMember(request.resource.data, get(/databases/$(database)/documents/users/$(uid)).data))
@@ -1202,17 +1263,19 @@ service cloud.firestore {
         allow delete: if false;
       }
       match /activity/{activityId} {
-        allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
+        allow get: if groupMember(groupId); allow list: if groupMember(groupId) && bounded(100);
         allow create: if request.resource.data.kind == 'expense.created'
             || request.resource.data.kind == 'expense.updated'
             || request.resource.data.kind == 'expense.deleted'
           ? validSparkExpenseActivityCreate(groupId, activityId, request.resource.data)
           : ((request.resource.data.kind == 'group.event' || request.resource.data.kind == 'membership.changed')
             ? validSparkSettingsActivityCreate(groupId, activityId, request.resource.data)
-            : ((request.resource.data.kind == 'comment.added' || request.resource.data.kind == 'comment.deleted')
-              ? validSparkCommentActivityCreate(groupId, activityId, request.resource.data)
-              : ((request.resource.data.kind == 'settlement.created' || request.resource.data.kind == 'settlement.voided')
-                && validSparkSettlementActivityCreate(groupId, activityId, request.resource.data))));
+            : ((request.resource.data.kind == 'group.deleted' || request.resource.data.kind == 'group.restored')
+              ? validSparkLifecycleActivityCreate(groupId, activityId, request.resource.data)
+              : ((request.resource.data.kind == 'comment.added' || request.resource.data.kind == 'comment.deleted')
+                ? validSparkCommentActivityCreate(groupId, activityId, request.resource.data)
+                : ((request.resource.data.kind == 'settlement.created' || request.resource.data.kind == 'settlement.voided')
+                  && validSparkSettlementActivityCreate(groupId, activityId, request.resource.data)))));
         allow update, delete: if false;
       }
       match /balance/{snapshotId} {

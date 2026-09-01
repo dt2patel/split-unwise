@@ -74,6 +74,7 @@ interface DemoRepositoryStateDocument {
   readonly operationLedger: readonly (readonly [string, { readonly identity: OperationIdentity; readonly result: CommandResult }])[]
   readonly groupSettings?: GroupSettings
   readonly removedMemberIds?: readonly string[]
+  readonly groupDeletion?: { readonly deletedAt: string; readonly deletedBy: ActorSnapshot }
 }
 
 /** A fresh deterministic in-memory repository; its operation ledger prevents duplicate same-ID effects. */
@@ -102,8 +103,14 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   let balanceRevision = restored?.balanceRevision ?? lakeHouseExpenses.length
   let groupSettings: GroupSettings = restored?.groupSettings ? clone(restored.groupSettings) : { schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }
   const removedMemberIds = new Set(restored?.removedMemberIds ?? [])
+  let groupDeletion = restored?.groupDeletion ? clone(restored.groupDeletion) : undefined
   let executionTail: Promise<void> = Promise.resolve()
-  const now = options.now ?? (() => '2026-08-30T12:00:00.000Z')
+  let defaultCommitTime = Math.max(
+    Date.parse('2026-08-30T12:00:00.000Z') - 1,
+    ...activity.map((item) => Date.parse(item.createdAt)),
+    ...(groupDeletion ? [Date.parse(groupDeletion.deletedAt)] : []),
+  )
+  const now = options.now ?? (() => new Date(++defaultCommitTime).toISOString())
 
   const groupExpenses = (groupId: string): ExpenseRow[] => {
     assertLakeHouseGroup(groupId)
@@ -174,6 +181,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     operationLedger: [...operationLedger.entries()].map(([id, value]) => [id, clone(value)] as const),
     groupSettings: clone(groupSettings),
     removedMemberIds: [...removedMemberIds].sort(),
+    ...(groupDeletion ? { groupDeletion: clone(groupDeletion) } : {}),
   })
 
   const restoreState = (state: DemoRepositoryStateDocument): void => {
@@ -193,6 +201,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     groupSettings = state.groupSettings ? clone(state.groupSettings) : { schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }
     removedMemberIds.clear()
     state.removedMemberIds?.forEach((id) => removedMemberIds.add(id))
+    groupDeletion = state.groupDeletion ? clone(state.groupDeletion) : undefined
   }
 
   const executeNew = (command: CommandEnvelope, identity: OperationIdentity): CommandResult => {
@@ -512,6 +521,34 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         })
         return saved(command, target.id)
       }
+      case 'group.delete': {
+        assertLakeHouseGroup(command.groupId)
+        const member = currentMembership()
+        if (member.canManage !== true) throw new Error('Only an active group manager can delete this group.')
+        if (groupDeletion) throw new Error('This group is already deleted.')
+        const deletedAt = checkedNow(now)
+        const deletedBy = actorSnapshot(currentUser)
+        groupDeletion = { deletedAt, deletedBy }
+        activity.push({
+          id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'group.deleted',
+          subject: { kind: 'group', id: command.groupId, label: lakeHouseGroup.name }, actor: deletedBy, createdAt: deletedAt, syncState: 'fresh',
+        })
+        return saved(command, command.groupId)
+      }
+      case 'group.restore': {
+        assertLakeHouseGroup(command.groupId)
+        const member = currentMembership()
+        if (member.canManage !== true) throw new Error('Only an active group manager can restore this group.')
+        if (!groupDeletion) throw new Error('This group is not deleted.')
+        const restoredAt = checkedNow(now)
+        const actor = actorSnapshot(currentUser)
+        groupDeletion = undefined
+        activity.push({
+          id: `activity-${command.operationId}`, groupId: command.groupId, operationId: command.operationId, kind: 'group.restored',
+          subject: { kind: 'group', id: command.groupId, label: lakeHouseGroup.name }, actor, createdAt: restoredAt, syncState: 'fresh',
+        })
+        return saved(command, command.groupId)
+      }
       case 'profile.update':
         currentUser = { ...currentUser, displayName: command.displayName, initials: command.initials ?? initials(command.displayName) }
         return saved(command, currentUser.id)
@@ -567,6 +604,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   }
 
   function assertActiveMembership(): void {
+    if (groupDeletion) throw new Error('This group is deleted. Restore it from Activity to make changes.')
     currentMembership()
   }
 
@@ -614,8 +652,8 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     projectId: 'split-unwise-demo',
     app: { async getCurrentUser(): Promise<Member> { return { ...currentUser } }, updateProfile: execute },
     groups: {
-      async list() { return [{ ...lakeHouseGroup, memberIds: activeMembers().map(({ id }) => id) }] },
-      async getById(groupId) { return groupId === LAKE_HOUSE_GROUP_ID ? { ...lakeHouseGroup, memberIds: activeMembers().map(({ id }) => id) } : undefined },
+      async list() { return groupDeletion ? [] : [{ ...lakeHouseGroup, memberIds: activeMembers().map(({ id }) => id) }] },
+      async getById(groupId) { return groupId === LAKE_HOUSE_GROUP_ID && !groupDeletion ? { ...lakeHouseGroup, memberIds: activeMembers().map(({ id }) => id) } : undefined },
       async listMembers(groupId) {
         assertLakeHouseGroup(groupId)
         return activeMembers().map((member) => ({ ...member, isCurrentUser: member.id === currentUser.id, ...(member.id === currentUser.id ? { displayName: currentUser.displayName, initials: currentUser.initials } : {}) }))
@@ -711,7 +749,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   }
 }
 
-function saved(command: Extract<CommandEnvelope, { kind: 'group.default-split' | 'group.member-remove' | 'group.simplify-debts' | 'profile.update' }>, resourceId: string): CommandResult {
+function saved(command: Extract<CommandEnvelope, { kind: 'group.default-split' | 'group.delete' | 'group.member-remove' | 'group.restore' | 'group.simplify-debts' | 'profile.update' }>, resourceId: string): CommandResult {
   return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId } as CommandResult
 }
 
@@ -871,7 +909,8 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
     || !Array.isArray(value.revisions) || !Array.isArray(value.operationLedger)
     || (value.recurring !== undefined && !Array.isArray(value.recurring))
     || (value.groupSettings !== undefined && !isDemoGroupSettings(value.groupSettings))
-    || (value.removedMemberIds !== undefined && (!Array.isArray(value.removedMemberIds) || value.removedMemberIds.some((id) => typeof id !== 'string' || id === lakeHouseCurrentUser.id || !lakeHouseMembers.some((member) => member.id === id)) || new Set(value.removedMemberIds).size !== value.removedMemberIds.length))) {
+    || (value.removedMemberIds !== undefined && (!Array.isArray(value.removedMemberIds) || value.removedMemberIds.some((id) => typeof id !== 'string' || id === lakeHouseCurrentUser.id || !lakeHouseMembers.some((member) => member.id === id)) || new Set(value.removedMemberIds).size !== value.removedMemberIds.length))
+    || (value.groupDeletion !== undefined && (!isRecord(value.groupDeletion) || !isStrictIsoTimestamp(value.groupDeletion.deletedAt) || !isDemoActor(value.groupDeletion.deletedBy)))) {
     throw new Error('Persisted demo repository state is invalid')
   }
   const settlements = value.settlements.map(decodeDemoSettlement)
@@ -1010,10 +1049,18 @@ function sameActor(left: ActorSnapshot, right: ActorSnapshot): boolean { return 
 function sameMoney(left: SettlementRecord['money'], right: SettlementRecord['money']): boolean { return left.currency === right.currency && left.minorAmount === right.minorAmount }
 function isDemoOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
 function isCommandKind(value: unknown): value is CommandEnvelope['kind'] {
-  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'group.member-remove', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
+  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.default-split', 'group.delete', 'group.member-remove', 'group.restore', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+function isStrictIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const parsed = new Date(value)
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value
+}
+function isDemoActor(value: unknown): value is ActorSnapshot {
+  return isRecord(value) && typeof value.id === 'string' && value.id.length > 0 && typeof value.displayName === 'string' && value.displayName.trim().length > 0
+}
 
 export function createBrowserDemoRepositoryStateStorage(storage: Storage | undefined = browserStorage()): DemoRepositoryStateStorage {
   const key = (scope: string) => `split-unwise:demo-repository:v2:${encodeURIComponent(scope)}`

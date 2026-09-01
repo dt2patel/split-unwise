@@ -26,6 +26,7 @@ export async function executeLedgerCommand(db: Firestore, uid: string, rawReques
     const operationSnapshot = await transaction.get(operationRef)
     const groupId = commandGroupId(command)
     const memberSnapshot = groupId ? await transaction.get(db.doc(`groups/${groupId}/members/${uid}`)) : undefined
+    const groupSnapshot = groupId ? await transaction.get(db.doc(`groups/${groupId}`)) : undefined
     if (groupId && memberSnapshot?.data()?.status !== 'active') throw new LedgerError('permission-denied', 'Active group membership is required.')
     if (operationSnapshot.exists) {
       const stored = operationSnapshot.data()!
@@ -33,9 +34,12 @@ export async function executeLedgerCommand(db: Firestore, uid: string, rawReques
       if (!isRecord(stored.result)) throw new LedgerError('failed-precondition', 'The saved operation result is invalid.')
       return stored.result
     }
+    if (groupId && !groupSnapshot?.exists) throw new LedgerError('not-found', 'Group was not found.')
+    if (groupId && command.kind !== 'group.restore' && groupSnapshot?.data()?.status === 'deleted') throw new LedgerError('failed-precondition', 'Restore this group from Activity before making changes.')
+    if (groupId && command.kind === 'group.restore' && groupSnapshot?.data()?.status !== 'deleted') throw new LedgerError('failed-precondition', 'This group is not deleted.')
 
     const result = groupId
-      ? await executeGroupCommand({ db, transaction, uid, command, groupId, membership: memberSnapshot!.data()!, isoNow })
+      ? await executeGroupCommand({ db, transaction, uid, command, groupId, membership: memberSnapshot!.data()!, group: groupSnapshot!.data()!, isoNow })
       : await executePrivateCommand({ db, transaction, uid, command, isoNow })
     transaction.create(operationRef, { schemaVersion: 1, uid, kind: command.kind, requestHash: hash, groupId: groupId ?? null, status: 'succeeded', result, committedAt: isoNow })
     return result
@@ -113,11 +117,30 @@ async function executePrivateCommand({ db, transaction, uid, command, isoNow }: 
   throw new LedgerError('invalid-argument', 'This command requires a group.')
 }
 
-interface GroupContext { db: Firestore; transaction: Transaction; uid: string; command: SharedCommandEnvelope; groupId: string; membership: DocumentData; isoNow: string }
+interface GroupContext { db: Firestore; transaction: Transaction; uid: string; command: SharedCommandEnvelope; groupId: string; membership: DocumentData; group: DocumentData; isoNow: string }
 
 async function executeGroupCommand(context: GroupContext): Promise<CallableResult> {
-  const { db, transaction, uid, command, groupId, membership, isoNow } = context
+  const { db, transaction, uid, command, groupId, membership, group, isoNow } = context
   const actor = await actorSnapshot(db, transaction, uid)
+  if (command.kind === 'group.delete' || command.kind === 'group.restore') {
+    if (!canManage(membership)) throw new LedgerError('permission-denied', 'Only a group manager can change this group lifecycle.')
+    if (!Array.isArray(group.memberIds) || !group.memberIds.includes(uid)) throw new LedgerError('failed-precondition', 'Group membership changed remotely.')
+    const { status: _status, deletedAt: _deletedAt, deletedBy: _deletedBy, ...retained } = group
+    const next = {
+      ...retained,
+      status: command.kind === 'group.delete' ? 'deleted' : 'active',
+      ...(command.kind === 'group.delete' ? { deletedAt: isoNow, deletedBy: actor } : {}),
+      updatedAt: isoNow,
+    }
+    const activity = {
+      id: deterministicId('act', command.operationId), groupId, operationId: command.operationId,
+      kind: command.kind === 'group.delete' ? 'group.deleted' : 'group.restored',
+      subject: { kind: 'group', id: groupId, label: String(group.name ?? 'Group') }, actor, createdAt: isoNow,
+    }
+    transaction.set(db.doc(`groups/${groupId}`), next)
+    transaction.create(db.doc(`groups/${groupId}/activity/${activity.id}`), activity)
+    return savedResource(command, groupId)
+  }
   if (command.kind === 'expense.add' || command.kind === 'expense.edit' || command.kind === 'expense.delete') {
     return executeExpenseCommand(context, actor)
   }

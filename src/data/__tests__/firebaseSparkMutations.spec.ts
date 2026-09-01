@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupMemberRemoveCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -603,6 +603,36 @@ describe('Firebase Spark mutations', () => {
     }, { activeExpenseCount: 1 }, identity, committedAt)).toThrow(/expense first/i)
   })
 
+  it('soft-deletes and restores a group without changing any ledger fields', () => {
+    const manager: Member = { id: 'owner', displayName: 'Owner Account', initials: 'OA', isCurrentUser: true, canManage: true, role: 'owner' }
+    const original = { id: 'group-a', kind: 'group', name: 'Group A', currency: 'USD', memberIds: ['owner', 'friend'], createdByUid: 'owner', createdAt: 'created', updatedAt: 'old' }
+    const deletedAt = { kind: 'deleted-at' }
+    const deleteCommand: GroupDeleteCommand = { kind: 'group.delete', operationId: 'delete-group-a', groupId: 'group-a' }
+    const deleteIdentity: OperationIdentity = { userId: 'owner', operationId: deleteCommand.operationId, kind: deleteCommand.kind, groupId: deleteCommand.groupId, requestFingerprint: '9'.repeat(64), resourceId: `operation-${'a'.repeat(48)}` }
+    const buildLifecycle = (sparkMutations as unknown as { buildSparkGroupLifecycleRecord: SparkGroupLifecycleBuilder }).buildSparkGroupLifecycleRecord
+
+    const deleted = buildLifecycle(deleteCommand, original, manager, deleteIdentity, deletedAt)
+    expect(deleted.groupDocument).toEqual({
+      ...original, status: 'deleted', deletedAt, deletedBy: { id: 'owner', displayName: 'Owner Account' }, updatedAt: deletedAt,
+      lastLifecycleCommandKind: deleteCommand.kind, lastLifecycleOperationId: deleteCommand.operationId,
+      lastLifecycleRequestFingerprint: deleteIdentity.requestFingerprint, lastLifecycleResourceToken: 'a'.repeat(48),
+    })
+    expect(deleted.activityDocument).toMatchObject({ kind: 'group.deleted', subject: { kind: 'group', id: 'group-a', label: 'Group A' } })
+
+    const restoreCommand: GroupRestoreCommand = { kind: 'group.restore', operationId: 'restore-group-a', groupId: 'group-a' }
+    const restoreIdentity: OperationIdentity = { userId: 'owner', operationId: restoreCommand.operationId, kind: restoreCommand.kind, groupId: restoreCommand.groupId, requestFingerprint: 'b'.repeat(64), resourceId: `operation-${'c'.repeat(48)}` }
+    const restoredAt = { kind: 'restored-at' }
+    const restored = buildLifecycle(restoreCommand, deleted.groupDocument, manager, restoreIdentity, restoredAt)
+    expect(restored.groupDocument).toEqual({
+      ...original, status: 'active', updatedAt: restoredAt,
+      lastLifecycleCommandKind: restoreCommand.kind, lastLifecycleOperationId: restoreCommand.operationId,
+      lastLifecycleRequestFingerprint: restoreIdentity.requestFingerprint, lastLifecycleResourceToken: 'c'.repeat(48),
+    })
+    expect(restored.groupDocument).not.toHaveProperty('deletedAt')
+    expect(restored.groupDocument).not.toHaveProperty('deletedBy')
+    expect(restored.activityDocument).toMatchObject({ kind: 'group.restored', subject: { kind: 'group', id: 'group-a', label: 'Group A' } })
+  })
+
   it('versions a private profile command while preserving account identity fields for membership propagation', () => {
     const command: ProfileUpdateCommand = { kind: 'profile.update', operationId: 'profile-rename', displayName: '  Maya Rivera  ' }
     const identity: OperationIdentity = { userId: 'maya-p', operationId: command.operationId, kind: command.kind, groupId: null, requestFingerprint: 'a'.repeat(64), resourceId: `operation-${'b'.repeat(48)}` }
@@ -790,6 +820,18 @@ type SparkMemberRemovalBuilder = (
   readonly memberDocument: Readonly<Record<string, unknown>>
   readonly projectionPatch: Readonly<Record<string, unknown>>
   readonly settingsDocument: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+type SparkGroupLifecycleBuilder = (
+  command: GroupDeleteCommand | GroupRestoreCommand,
+  group: Readonly<Record<string, unknown>>,
+  actor: Member,
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => {
+  readonly groupDocument: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }

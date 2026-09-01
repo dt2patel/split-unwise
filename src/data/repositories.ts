@@ -31,6 +31,8 @@ export interface Group {
   readonly coverImageUrl?: string
   readonly memberIds: readonly ParticipantId[]
   readonly syncState: SyncState
+  readonly deletedAt?: string
+  readonly deletedBy?: ActorSnapshot
 }
 
 export interface ExpenseRow extends Expense {
@@ -86,6 +88,8 @@ export type ActivityKind =
   | 'expense.updated'
   | 'expense.deleted'
   | 'group.event'
+  | 'group.deleted'
+  | 'group.restored'
   | 'membership.changed'
   | 'settlement.created'
   | 'settlement.voided'
@@ -283,6 +287,8 @@ export interface GroupMemberRemoveCommand extends OperationRequest {
   readonly groupId: string
   readonly targetMemberId: ParticipantId
 }
+export interface GroupDeleteCommand extends OperationRequest { readonly kind: 'group.delete'; readonly groupId: string }
+export interface GroupRestoreCommand extends OperationRequest { readonly kind: 'group.restore'; readonly groupId: string }
 export interface RecurrenceMaterializeCommand extends OperationRequest {
   readonly kind: 'recurrence.materialize'
   readonly groupId: string
@@ -297,7 +303,7 @@ export interface RecurrenceCancelCommand extends OperationRequest {
 }
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
-export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | GroupMemberRemoveCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
+export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupDefaultSplitCommand | GroupDeleteCommand | GroupMemberRemoveCommand | GroupRestoreCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
 export type CommandKind = CommandEnvelope['kind']
 
 export interface SavedExpenseAddResult { readonly kind: 'expense.add'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
@@ -328,7 +334,7 @@ export type SettlementRecordResult = SavedSettlementRecordResult | NotSupportedC
 export type SettlementVoidResult = SavedSettlementVoidResult | NotSupportedCommandResult<'settlement.void'>
 export type RecurrenceMaterializeResult = SavedRecurrenceMaterializeResult | NotSupportedCommandResult<'recurrence.materialize'>
 export type RecurrenceCancelResult = SavedRecurrenceCancelResult | NotSupportedCommandResult<'recurrence.cancel'>
-export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.member-remove'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'group.member-remove' | 'group.simplify-debts' | 'profile.update'>
+export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.delete'> | SavedCommandResult<'group.member-remove'> | SavedCommandResult<'group.restore'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.default-split' | 'group.delete' | 'group.member-remove' | 'group.restore' | 'group.simplify-debts' | 'profile.update'>
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'

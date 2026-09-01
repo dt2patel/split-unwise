@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
-import { useRoute } from 'vue-router'
-import { IonBackButton, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
+import { useRoute, useRouter } from 'vue-router'
+import { IonBackButton, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonIcon, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
+import { trashOutline } from 'ionicons/icons'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
@@ -12,8 +13,9 @@ import MemberAvatar from '../../components/MemberAvatar.vue'
 import type { Member } from '../../data/repositories'
 
 type DefaultKind = DefaultSplit['type']
-const route = useRoute(); const snapshot = ref<GroupPremiumSnapshot>(); const error = ref(''); const status = ref(''); const loading = ref(false); const saving = ref(false); const simplifying = ref(false); const kind = ref<DefaultKind>('equal'); const selectedIds = ref<string[]>([]); const ratios = ref<Record<string, string>>({}); let request = 0
+const route = useRoute(); const router = useRouter(); const snapshot = ref<GroupPremiumSnapshot>(); const error = ref(''); const status = ref(''); const loading = ref(false); const saving = ref(false); const simplifying = ref(false); const kind = ref<DefaultKind>('equal'); const selectedIds = ref<string[]>([]); const ratios = ref<Record<string, string>>({}); let request = 0
 const presentingElement = shallowRef<HTMLElement>(); const removalTarget = ref<Member>(); const removing = ref(false); const removalError = ref('')
+const deleteOpen = ref(false); const deleting = ref(false); const lifecycleError = ref('')
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
 const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups')
 const canManage = computed(() => snapshot.value?.currentUser.canManage === true)
@@ -58,6 +60,28 @@ async function removeMember(): Promise<void> {
   } catch (reason) { removalError.value = message(reason) } finally { removing.value = false }
 }
 async function canDismissRemoval(): Promise<boolean> { return !removing.value }
+function openGroupDeletion(): void {
+  if (!canManage.value || !snapshot.value) return
+  lifecycleError.value = ''; deleteOpen.value = true
+}
+function closeGroupDeletion(): void {
+  if (deleting.value) return
+  deleteOpen.value = false; lifecycleError.value = ''
+}
+async function deleteGroup(): Promise<void> {
+  const group = snapshot.value?.group
+  if (!group || !canManage.value || deleting.value) return
+  deleting.value = true; lifecycleError.value = ''
+  try {
+    const result = await getAppSession().queue.submit({
+      kind: 'group.delete', operationId: createClientOperationId('group-delete'), groupId: group.id,
+    }).result()
+    if (result.status !== 'saved') throw new Error(result.reason)
+    deleteOpen.value = false
+    await router.replace('/tabs/groups')
+  } catch (reason) { lifecycleError.value = message(reason) } finally { deleting.value = false }
+}
+async function canDismissLifecycle(): Promise<boolean> { return !deleting.value }
 function selectKind(next: DefaultKind): void {
   if (kind.value === next) return
   kind.value = next
@@ -227,6 +251,20 @@ function isConflict(reason: unknown, failure: string): boolean {
             <h2 id="defaults-help-heading">How defaults work</h2>
             <ul><li>They seed only future expense drafts.</li><li>Receipt itemization always wins.</li><li>Membership changes clear an invalid default instead of redistributing it.</li></ul>
           </section>
+
+          <section class="settings-section lifecycle-section" aria-labelledby="lifecycle-heading">
+            <header class="section-heading">
+              <div><h2 id="lifecycle-heading">Group lifecycle</h2><p>Shared with every active member</p></div>
+              <span class="access-pill access-pill--danger">Manager</span>
+            </header>
+            <ion-list inset lines="none" class="settings-list">
+              <ion-item class="settings-row lifecycle-row">
+                <ion-label class="settings-row__copy"><strong>Delete this group</strong><p>Hide it for everyone. You can restore the complete group later from Activity.</p></ion-label>
+                <ion-button data-testid="delete-group-button" slot="end" fill="clear" color="danger" :disabled="!canManage" aria-label="Delete group" @click="openGroupDeletion">Delete</ion-button>
+              </ion-item>
+            </ion-list>
+            <ion-note v-if="!canManage" class="permission-note">Only an active group manager can delete this shared group.</ion-note>
+          </section>
         </template>
       </main>
     </ion-content>
@@ -254,6 +292,30 @@ function isConflict(reason: unknown, failure: string): boolean {
         </main>
       </ion-content>
     </ion-modal>
+
+    <ion-modal :is-open="deleteOpen" :presenting-element="presentingElement" :can-dismiss="canDismissLifecycle" @did-dismiss="closeGroupDeletion">
+      <ion-header translucent>
+        <ion-toolbar>
+          <ion-buttons slot="start"><ion-button :disabled="deleting" @click="closeGroupDeletion">Cancel</ion-button></ion-buttons>
+          <ion-title>Delete group</ion-title>
+        </ion-toolbar>
+      </ion-header>
+      <ion-content>
+        <main v-if="snapshot" class="lifecycle-card-content" data-testid="group-lifecycle-modal">
+          <span class="lifecycle-mark" aria-hidden="true"><ion-icon :icon="trashOutline" /></span>
+          <h2>Delete {{ snapshot.group.name }}?</h2>
+          <p>This hides the group for everyone. All expenses and payments stay intact and can be restored from Activity.</p>
+          <div class="removal-check">
+            <strong>Reversible for the whole group</strong>
+            <p>Restoring brings back the same members, expenses, recurring expenses, comments, and payments.</p>
+          </div>
+          <p v-if="lifecycleError" role="alert" class="error removal-error">{{ lifecycleError }}</p>
+          <ion-button data-testid="confirm-group-delete" expand="block" shape="round" color="danger" :disabled="deleting" @click="deleteGroup">
+            {{ deleting ? 'Deleting group…' : 'Delete group for everyone' }}
+          </ion-button>
+        </main>
+      </ion-content>
+    </ion-modal>
   </ion-page>
 </template>
 
@@ -268,6 +330,7 @@ function isConflict(reason: unknown, failure: string): boolean {
 .section-heading h2, .truth-card h2 { margin: 0; font-size: 1rem; }
 .section-heading p { margin: 3px 0 0; color: var(--ion-color-medium); font-size: .75rem; }
 .access-pill { padding: 4px 8px; border-radius: 999px; background: var(--su-lilac); color: var(--su-category-fg); font-size: .68rem; font-weight: 700; }
+.access-pill--danger { background: color-mix(in srgb, var(--ion-color-danger) 10%, var(--su-surface)); color: var(--ion-color-danger); }
 .settings-list { overflow: hidden; margin-block: 0; border: 1px solid color-mix(in srgb, var(--su-divider) 72%, transparent); border-radius: 13px; background: var(--su-surface); box-shadow: 0 1px 3px rgb(40 31 93 / 7%); }
 .settings-row { --background: var(--su-surface); --border-color: color-mix(in srgb, var(--su-divider) 76%, transparent); --inner-padding-end: 12px; --min-height: 52px; --padding-start: 12px; }
 .simplify-row { --min-height: 88px; }
@@ -306,6 +369,14 @@ function isConflict(reason: unknown, failure: string): boolean {
 .removal-check p { margin: 4px 0 0; color: var(--ion-color-medium); font-size: .78rem; line-height: 1.45; }
 .removal-card-content > ion-button { width: 100%; min-height: 48px; margin-top: auto; text-transform: none; }
 .removal-error { width: 100%; margin: 0 0 12px; text-align: start; }
+.lifecycle-section { margin-top: 24px; padding-bottom: 4px; }
+.lifecycle-row { --min-height: 76px; }
+.lifecycle-row ion-button { min-width: 68px; min-height: 44px; margin: 0; text-transform: none; }
+.lifecycle-card-content { box-sizing: border-box; display: flex; width: min(100%, 520px); min-height: 100%; flex-direction: column; align-items: center; margin: 0 auto; padding: 36px 20px calc(24px + env(safe-area-inset-bottom)); text-align: center; }
+.lifecycle-card-content h2 { margin: 15px 0 7px; font-size: 1.35rem; letter-spacing: -.025em; }
+.lifecycle-card-content > p { max-width: 390px; margin: 0; color: var(--ion-color-medium); font-size: .88rem; line-height: 1.45; }
+.lifecycle-card-content > ion-button { width: 100%; min-height: 48px; margin-top: auto; text-transform: none; }
+.lifecycle-mark { display: grid; width: 54px; height: 54px; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--ion-color-danger) 11%, var(--su-surface)); color: var(--ion-color-danger); font-size: 2rem; font-weight: 300; line-height: 1; }
 .simplify-section { animation: settings-rise var(--su-motion-slow) cubic-bezier(.2,.75,.25,1) both; }
 @keyframes settings-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 360px) { .intro { font-size: .87rem; }.method-fieldset ion-segment-button { font-size: .68rem; }.ratio-input { width: 62px; } }

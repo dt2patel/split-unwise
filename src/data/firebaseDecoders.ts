@@ -12,10 +12,16 @@ export class DocumentDecodeError extends Error {
 export function decodeGroup(id: string, value: unknown): Group {
   const data = record(value, `group ${id}`)
   const currency = currencyValue(data.currency, `group ${id}.currency`)
+  const status = data.status === undefined ? 'active' : data.status
+  if (status !== 'active' && status !== 'deleted') throw new DocumentDecodeError(`group ${id}.status`, 'must be active or deleted')
+  if (status === 'active' && (data.deletedAt !== undefined || data.deletedBy !== undefined)) throw new DocumentDecodeError(`group ${id}`, 'active group cannot carry deletion audit fields')
+  const deletion = status === 'deleted'
+    ? { deletedAt: isoTimestamp(data.deletedAt, `group ${id}.deletedAt`), deletedBy: actorSnapshot(data.deletedBy, `group ${id}.deletedBy`) }
+    : {}
   return {
     id, kind: expenseContextKind(data.kind, `group ${id}.kind`), name: requiredString(data.name, `group ${id}.name`), currency,
     ...(data.coverImageUrl === undefined ? {} : { coverImageUrl: requiredString(data.coverImageUrl, `group ${id}.coverImageUrl`) }),
-    memberIds: requiredStringArray(data.memberIds, `group ${id}.memberIds`), syncState: 'fresh',
+    memberIds: requiredStringArray(data.memberIds, `group ${id}.memberIds`), syncState: 'fresh', ...deletion,
   }
 }
 
@@ -293,7 +299,7 @@ function actorSnapshot(value: unknown, path: string): ActorSnapshot {
 }
 
 function activityKind(value: unknown, path: string): ActivityKind {
-  const kinds: readonly ActivityKind[] = ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'group.event', 'membership.changed', 'settlement.created', 'settlement.voided']
+  const kinds: readonly ActivityKind[] = ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'group.event', 'group.deleted', 'group.restored', 'membership.changed', 'settlement.created', 'settlement.voided']
   if (typeof value !== 'string' || !kinds.includes(value as ActivityKind)) throw new DocumentDecodeError(path, 'activity type is invalid')
   return value as ActivityKind
 }

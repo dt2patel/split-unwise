@@ -15,6 +15,7 @@ if (!password || process.env.LIVE_PREVERIFIED_ACCOUNTS !== '1') throw new Error(
 if (!thirdUid || !/^[A-Za-z0-9_-]{1,128}$/.test(thirdUid)) throw new Error('Hosted browser proof requires the exact disposable third-account UID.')
 
 const ownerEmail = `live-owner-${suffix}@example.com`
+const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
 const unverifiedEmail = `live-unverified-${suffix}@example.com`
 const groupId = `grp-live-${suffix}`
@@ -25,7 +26,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence and member-removal card modals, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense save, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -132,6 +133,7 @@ async function verifyAuthenticatedMobileJourney() {
 
     await verifyInvitationAcceptance(browser, verifiedInvitationUrl)
     await verifyMemberRemoval(browser)
+    await verifyGroupLifecycle(browser)
     await verifyInvitationVerificationGate(browser, unverifiedInvitationUrl)
   } finally {
     await browser.close()
@@ -316,6 +318,80 @@ async function verifyMemberRemoval(browser) {
     assertPageClean()
   } finally {
     await removedContext.close()
+  }
+}
+
+async function verifyGroupLifecycle(browser) {
+  const ownerContext = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
+  const friendContext = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
+  try {
+    const ownerPage = await ownerContext.newPage()
+    const friendPage = await friendContext.newPage()
+    const assertOwnerPageClean = monitorBrowserErrors(ownerPage, 'group lifecycle owner journey')
+    const assertFriendPageClean = monitorBrowserErrors(friendPage, 'group lifecycle friend journey')
+
+    const ownerNavigation = await ownerPage.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
+    if (!ownerNavigation?.ok()) throw new Error(`Hosted lifecycle owner navigation failed with ${ownerNavigation?.status() ?? 'no response'}.`)
+    await signIn(ownerPage, ownerEmail)
+    await ownerPage.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
+    await ownerPage.goto(`${deepUrl}/settings`, { waitUntil: 'domcontentloaded' })
+    await ownerPage.getByRole('heading', { name: 'Group settings', exact: true }).waitFor({ state: 'visible' })
+    const deleteButton = ownerPage.getByTestId('delete-group-button')
+    await deleteButton.scrollIntoViewIfNeeded()
+    await deleteButton.click()
+    let cardModal = ownerPage.locator('ion-modal.show-modal')
+    await cardModal.waitFor({ state: 'visible' })
+    await cardModal.getByRole('heading', { name: 'Delete Live Account Proof?', exact: true }).waitFor({ state: 'visible' })
+    if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted group deletion did not use the Ionic iOS card modal.')
+    await cardModal.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await cardModal.waitFor({ state: 'hidden' })
+
+    await deleteButton.click()
+    cardModal = ownerPage.locator('ion-modal.show-modal')
+    await cardModal.waitFor({ state: 'visible' })
+    await cardModal.getByRole('button', { name: 'Delete group for everyone', exact: true }).click()
+    await ownerPage.waitForURL(/\/tabs\/groups(?:[?#].*)?$/, { timeout: 120_000 })
+    await ownerPage.getByRole('heading', { name: 'Groups', exact: true }).waitFor({ state: 'visible' })
+    if (await ownerPage.getByRole('link', { name: /Live Account Proof/ }).count()) throw new Error('Deleted group still appeared for its owner.')
+
+    const friendNavigation = await friendPage.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
+    if (!friendNavigation?.ok()) throw new Error(`Hosted lifecycle friend navigation failed with ${friendNavigation?.status() ?? 'no response'}.`)
+    await signIn(friendPage, friendEmail)
+    await friendPage.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
+    await friendPage.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+    if (await friendPage.getByRole('link', { name: /Live Account Proof/ }).count()) throw new Error('Deleted group still appeared for another member.')
+    await friendPage.goto(deepUrl, { waitUntil: 'domcontentloaded' })
+    const unavailable = friendPage.locator('[data-testid="group-detail"]:not(.ion-page-hidden) [role="alert"]')
+    await unavailable.waitFor({ state: 'visible' })
+    if (!/not available/i.test((await unavailable.textContent()) ?? '')) throw new Error('Deleted group deep link did not show an unavailable state.')
+
+    await ownerPage.goto(`${hostedOrigin}/tabs/activity`, { waitUntil: 'domcontentloaded' })
+    await ownerPage.getByRole('heading', { name: 'Activity', exact: true }).waitFor({ state: 'visible' })
+    const deletedRow = ownerPage.locator('[data-activity-id]', { hasText: 'deleted Live Account Proof' }).first()
+    await deletedRow.waitFor({ state: 'visible' })
+    await deletedRow.locator('[data-action="restore-group"]').click()
+    cardModal = ownerPage.locator('ion-modal.show-modal')
+    await cardModal.waitFor({ state: 'visible' })
+    await cardModal.getByRole('heading', { name: 'Restore Live Account Proof?', exact: true }).waitFor({ state: 'visible' })
+    if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted group restore did not use the Ionic iOS card modal.')
+    await cardModal.getByRole('button', { name: 'Restore group', exact: true }).click()
+    await cardModal.waitFor({ state: 'hidden' })
+    await ownerPage.getByText('Live Account Proof was restored for everyone.', { exact: true }).waitFor({ state: 'visible' })
+    await ownerPage.getByText('Live Renamed Owner restored Live Account Proof', { exact: true }).waitFor({ state: 'visible' })
+
+    await ownerPage.goto(deepUrl, { waitUntil: 'domcontentloaded' })
+    const restoredOwnerGroup = ownerPage.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+    await restoredOwnerGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+    await restoredOwnerGroup.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
+    await friendPage.reload({ waitUntil: 'domcontentloaded' })
+    const restoredFriendGroup = friendPage.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+    await restoredFriendGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+    await restoredFriendGroup.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
+
+    assertOwnerPageClean()
+    assertFriendPageClean()
+  } finally {
+    await Promise.all([ownerContext.close(), friendContext.close()])
   }
 }
 

@@ -426,4 +426,43 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   expect(readAll).toMatchObject({ status: 'saved', cutoff, readNotificationIds: expect.arrayContaining(notificationPage.items.slice(0, -1).map(({ notificationId }) => notificationId)) })
   await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(0)
   expect((await ownerNotificationRepository.notifications.list({ limit: 100 })).items.every(({ readAt }) => typeof readAt === 'string')).toBe(true)
+
+  const lifecycleExpenses = await ownerNotificationRepository.expenses.listForGroup(ledgerGroupId)
+  const lifecycleSettlements = await ownerNotificationRepository.settlements.listForGroup(ledgerGroupId)
+  const deleteGroupCommand = { kind: 'group.delete' as const, operationId: `live-group-delete-${suffix}`, groupId: ledgerGroupId }
+  const deletedGroup = await ownerNotificationRepository.commands.execute(deleteGroupCommand)
+  await expect(ownerNotificationRepository.commands.execute(deleteGroupCommand)).resolves.toEqual(deletedGroup)
+  await expect(ownerNotificationRepository.groups.list()).resolves.not.toContainEqual(expect.objectContaining({ id: ledgerGroupId }))
+  await expect(ownerNotificationRepository.groups.getById(ledgerGroupId)).resolves.toBeUndefined()
+
+  ;({ auth, db } = await restartHostedClient(configuration))
+  await signInWithEmailAndPassword(auth, friendEmail, password)
+  const deletedFriendRepository = createFirebaseRepository(configuration, friendUid)
+  await expect(deletedFriendRepository.groups.list()).resolves.not.toContainEqual(expect.objectContaining({ id: ledgerGroupId }))
+  await expect(deletedFriendRepository.groups.getById(ledgerGroupId)).resolves.toBeUndefined()
+  await expect(deletedFriendRepository.activity.listForAccount({ filter: 'all', limit: 100 })).resolves.toMatchObject({
+    items: expect.arrayContaining([expect.objectContaining({ kind: 'group.deleted', operationId: deleteGroupCommand.operationId })]),
+  })
+  await expect(deletedFriendRepository.expenses.listForGroup(ledgerGroupId)).rejects.toThrow()
+
+  ;({ auth, db } = await restartHostedClient(configuration))
+  await signInWithEmailAndPassword(auth, ownerEmail, password)
+  const restoreOwnerRepository = createFirebaseRepository(configuration, ownerUid)
+  const restoreGroupCommand = { kind: 'group.restore' as const, operationId: `live-group-restore-${suffix}`, groupId: ledgerGroupId }
+  const restoredGroup = await restoreOwnerRepository.commands.execute(restoreGroupCommand)
+  await expect(restoreOwnerRepository.commands.execute(restoreGroupCommand)).resolves.toEqual(restoredGroup)
+  await expect(restoreOwnerRepository.groups.list()).resolves.toContainEqual(expect.objectContaining({ id: ledgerGroupId }))
+  await expect(restoreOwnerRepository.expenses.listForGroup(ledgerGroupId)).resolves.toEqual(lifecycleExpenses)
+  await expect(restoreOwnerRepository.settlements.listForGroup(ledgerGroupId)).resolves.toEqual(lifecycleSettlements)
+  await expect(restoreOwnerRepository.activity.listForGroup(ledgerGroupId)).resolves.toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'group.deleted', operationId: deleteGroupCommand.operationId }),
+    expect.objectContaining({ kind: 'group.restored', operationId: restoreGroupCommand.operationId }),
+  ]))
+
+  ;({ auth } = await restartHostedClient(configuration))
+  await signInWithEmailAndPassword(auth, friendEmail, password)
+  const restoredFriendRepository = createFirebaseRepository(configuration, friendUid)
+  await expect(restoredFriendRepository.groups.list()).resolves.toContainEqual(expect.objectContaining({ id: ledgerGroupId }))
+  await expect(restoredFriendRepository.expenses.listForGroup(ledgerGroupId)).resolves.toEqual(lifecycleExpenses)
+  await expect(restoredFriendRepository.settlements.listForGroup(ledgerGroupId)).resolves.toEqual(lifecycleSettlements)
 }, 300_000)

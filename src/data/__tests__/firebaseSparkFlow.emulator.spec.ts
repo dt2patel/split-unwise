@@ -746,4 +746,89 @@ describe('Firebase Spark two-account flow', () => {
     await expect(repository.expenses.listForGroup(created.groupId)).resolves.toEqual(expensesBeforeCancel)
     await expect(repository.groups.materializeDue(created.groupId, '2026-12-31')).resolves.toEqual({ occurrences: [], moreRemain: false })
   }, 45_000)
+
+  emulatorIt('deletes a shared group for both accounts and restores its exact expense and payment ledger', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `lifecycle-owner-${suffix}@example.com`
+    const friendEmail = `lifecycle-friend-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Lifecycle Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `lifecycle-${suffix}`, name: 'Recoverable Trip', currency: 'USD' })
+    const invitation = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    const token = new URL(invitation.link).hash.slice('#token='.length)
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Lifecycle Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, invitation.invitationId, token)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const ownerRepository = createFirebaseRepository(configuration, owner.user.uid)
+    await ownerRepository.expenses.add({
+      kind: 'expense.add', operationId: `lifecycle-expense-${suffix}`, groupId: created.groupId, description: 'Train tickets', date: '2026-09-01',
+      total: { currency: 'USD', minorAmount: 2000 }, payments: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2000 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1000 } },
+        { participantId: friend.user.uid, money: { currency: 'USD', minorAmount: 1000 } },
+      ],
+      category: 'Transport', splitMethod: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+    })
+    await ownerRepository.settlements.record({
+      kind: 'settlement.record', operationId: `lifecycle-payment-${suffix}`, groupId: created.groupId, expectedBalanceRevision: 1,
+      basis: { kind: 'simplified', senderId: friend.user.uid, recipientId: owner.user.uid, currency: 'USD', debtMinor: 1000 },
+      money: { currency: 'USD', minorAmount: 400 }, method: 'cash', occurredOn: '2026-09-01', outsidePaymentConfirmed: true,
+    })
+    const beforeExpenses = await ownerRepository.expenses.listForGroup(created.groupId)
+    const beforeSettlements = await ownerRepository.settlements.listForGroup(created.groupId)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
+    await expect(friendRepository.groups.list()).resolves.toContainEqual(expect.objectContaining({ id: created.groupId }))
+    await expect(friendRepository.commands.execute({ kind: 'group.delete', operationId: `friend-delete-${suffix}`, groupId: created.groupId })).rejects.toThrow(/manager/i)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const deleteCommand = { kind: 'group.delete' as const, operationId: `delete-${suffix}`, groupId: created.groupId }
+    const deleted = await ownerRepository.commands.execute(deleteCommand)
+    await expect(ownerRepository.commands.execute(deleteCommand)).resolves.toEqual(deleted)
+    await expect(ownerRepository.groups.list()).resolves.not.toContainEqual(expect.objectContaining({ id: created.groupId }))
+    await expect(ownerRepository.groups.getById(created.groupId)).resolves.toBeUndefined()
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    await expect(friendRepository.groups.list()).resolves.not.toContainEqual(expect.objectContaining({ id: created.groupId }))
+    await expect(friendRepository.groups.getById(created.groupId)).resolves.toBeUndefined()
+    await expect(friendRepository.activity.listForAccount({ filter: 'all', limit: 100 })).resolves.toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ kind: 'group.deleted', operationId: deleteCommand.operationId })]),
+    })
+    await expect(friendRepository.commands.execute({ kind: 'group.restore', operationId: `friend-restore-${suffix}`, groupId: created.groupId })).rejects.toThrow(/manager/i)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const restoreCommand = { kind: 'group.restore' as const, operationId: `restore-${suffix}`, groupId: created.groupId }
+    const restored = await ownerRepository.commands.execute(restoreCommand)
+    await expect(ownerRepository.commands.execute(restoreCommand)).resolves.toEqual(restored)
+    await expect(ownerRepository.groups.list()).resolves.toContainEqual(expect.objectContaining({ id: created.groupId, name: 'Recoverable Trip' }))
+    await expect(ownerRepository.expenses.listForGroup(created.groupId)).resolves.toEqual(beforeExpenses)
+    await expect(ownerRepository.settlements.listForGroup(created.groupId)).resolves.toEqual(beforeSettlements)
+    await expect(ownerRepository.activity.listForGroup(created.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'group.deleted', operationId: deleteCommand.operationId }),
+      expect.objectContaining({ kind: 'group.restored', operationId: restoreCommand.operationId }),
+    ]))
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    await expect(friendRepository.groups.list()).resolves.toContainEqual(expect.objectContaining({ id: created.groupId }))
+    await expect(friendRepository.expenses.listForGroup(created.groupId)).resolves.toEqual(beforeExpenses)
+    await expect(friendRepository.settlements.listForGroup(created.groupId)).resolves.toEqual(beforeSettlements)
+  }, 45_000)
 })

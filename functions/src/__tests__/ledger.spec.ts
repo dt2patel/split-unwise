@@ -71,4 +71,10 @@ describe('strict shared ledger protocol', () => {
     expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, targetMemberId: '' } })).toThrow()
     expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, privateState: true } })).toThrow()
   })
+
+  it.each(['group.delete', 'group.restore'] as const)('accepts only a strict %s lifecycle command', (kind) => {
+    const request = { schemaVersion: 1, command: { kind, operationId: `${kind}-operation`, groupId: 'group-a' } }
+    expect(() => parseExecuteCommandRequest(request)).not.toThrow()
+    expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, privateState: true } })).toThrow()
+  })
 })

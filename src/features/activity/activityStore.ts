@@ -126,6 +126,8 @@ export function activityText(item: ActivityItem): string {
   if (item.kind === 'settlement.created') return `${item.actor.displayName} recorded ${label}`
   if (item.kind === 'settlement.voided') return `${item.actor.displayName} voided ${label}`
   if (item.kind === 'membership.changed') return `${item.actor.displayName} changed membership for ${label}`
+  if (item.kind === 'group.deleted') return `${item.actor.displayName} deleted ${label}`
+  if (item.kind === 'group.restored') return `${item.actor.displayName} restored ${label}`
   return `${item.actor.displayName} updated ${label}`
 }
 

@@ -510,10 +510,12 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
     case 'group.default-split': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'defaultSplit'])
       && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision)
       && (value.defaultSplit === null || isDefaultSplit(value.defaultSplit))
+    case 'group.delete': return onlyOperationFields(value, ['kind', 'operationId', 'groupId']) && isNonEmptyString(value.groupId)
     case 'group.simplify-debts': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'simplifyDebtsEnabled'])
       && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision) && typeof value.simplifyDebtsEnabled === 'boolean'
     case 'group.member-remove': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'targetMemberId'])
       && isNonEmptyString(value.groupId) && isNonEmptyString(value.targetMemberId)
+    case 'group.restore': return onlyOperationFields(value, ['kind', 'operationId', 'groupId']) && isNonEmptyString(value.groupId)
     case 'recurrence.materialize': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'templateId', 'occurrenceDate'])
       && isNonEmptyString(value.groupId) && isStrictId(value.templateId) && isIsoDate(value.occurrenceDate)
     case 'recurrence.cancel': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'templateId', 'expectedRevision'])
@@ -539,8 +541,10 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
     case 'settlement.void': return isSavedSettlementVoid(value, envelope)
     case 'profile.update': return isNonEmptyString(value.resourceId)
     case 'group.default-split': return value.resourceId === envelope.groupId
+    case 'group.delete': return value.resourceId === envelope.groupId
     case 'group.simplify-debts': return value.resourceId === envelope.groupId
     case 'group.member-remove': return value.resourceId === envelope.targetMemberId
+    case 'group.restore': return value.resourceId === envelope.groupId
     case 'recurrence.materialize': return isSavedRecurrenceMaterialization(value, envelope)
     case 'recurrence.cancel': return isSavedRecurrenceCancellation(value, envelope)
   }
@@ -720,7 +724,7 @@ function isNotificationItem(value: unknown): value is import('./repositories').N
 }
 
 function isActorSnapshot(value: unknown): value is import('./repositories').ActorSnapshot { return isRecord(value) && isNonEmptyString(value.id) && isNonEmptyString(value.displayName) }
-function isActivityKind(value: unknown): boolean { return typeof value === 'string' && ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'group.event', 'membership.changed', 'settlement.created', 'settlement.voided'].includes(value) }
+function isActivityKind(value: unknown): boolean { return typeof value === 'string' && ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'group.event', 'group.deleted', 'group.restored', 'membership.changed', 'settlement.created', 'settlement.voided'].includes(value) }
 function isActivitySubject(value: unknown): boolean { return isRecord(value) && ['comment', 'expense', 'group', 'membership', 'settlement'].includes(String(value.kind)) && isNonEmptyString(value.id) && (value.label === undefined || isNonEmptyString(value.label)) }
 function isTimelineCursor(value: unknown): value is import('./repositories').TimelineCursor { return isRecord(value) && isIsoTimestamp(value.createdAt) && isNonEmptyString(value.id) }
 function sameTimelineCursor(left: import('./repositories').TimelineCursor, right: import('./repositories').TimelineCursor): boolean { return left.createdAt === right.createdAt && left.id === right.id }

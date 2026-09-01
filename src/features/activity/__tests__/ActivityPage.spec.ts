@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -20,6 +20,8 @@ const ionicStubs = {
   IonSegmentButton: { props: ['value'], emits: ['click'], template: '<button type="button" :data-filter="value" @click="$emit(\'click\')"><slot /></button>' },
   IonLabel: { template: '<span><slot /></span>' },
   IonButton: { template: '<button type="button"><slot /></button>' },
+  IonButtons: { template: '<div><slot /></div>' },
+  IonModal: { name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement'], emits: ['didDismiss'], template: '<aside v-if="isOpen"><slot /></aside>' },
   IonToggle: { props: ['modelValue'], template: '<input type="checkbox" :checked="modelValue" />' },
 }
 
@@ -55,6 +57,22 @@ describe('global Activity page', () => {
     await wrapper.get('[data-filter="all"]').trigger('click')
     await flushPromises()
     expect(wrapper.findAll('[data-activity-id]')).toHaveLength(6)
+  })
+
+  it('restores a deleted group and its ledger from a native card modal', async () => {
+    const repository = createDemoRepository()
+    await repository.commands.execute({ kind: 'group.delete', operationId: 'delete-for-restore', groupId: 'lake-house-weekend' })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountActivity()
+    expect(wrapper.text()).toContain('Maya P. deleted Lake House Weekend')
+    await wrapper.get('[data-action="restore-group"]').trigger('click')
+    expect(wrapper.get('[data-testid="restore-group-modal"]').text()).toContain('Restore Lake House Weekend?')
+    expect(wrapper.get('[data-testid="restore-group-modal"]').text()).toContain('expenses and payments')
+    await wrapper.get('[data-testid="confirm-group-restore"]').trigger('click')
+
+    await vi.waitFor(async () => expect(await repository.groups.list()).toHaveLength(1))
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Maya P. restored Lake House Weekend'))
   })
 
   it('orders timestamp ties by descending ID', async () => {

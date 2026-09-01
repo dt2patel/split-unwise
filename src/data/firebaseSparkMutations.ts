@@ -8,7 +8,7 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupDefaultSplitCommand, GroupMemberRemoveCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
@@ -87,6 +87,12 @@ export interface SparkMemberRemovalRecord {
   readonly memberDocument: Readonly<Record<string, unknown>>
   readonly projectionPatch: Readonly<Record<string, unknown>>
   readonly settingsDocument: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+export interface SparkGroupLifecycleRecord {
+  readonly groupDocument: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }
@@ -587,6 +593,55 @@ export function buildSparkMemberRemovalRecord(
       kind: 'membership.changed',
       subject: { kind: 'membership', id: parsed.targetMemberId, label: `${authorization.target.displayName.trim()} removed` },
       actor,
+      createdAt: committedAt,
+    },
+  }
+}
+
+/** Builds one reversible group lifecycle transition without touching its ledger subcollections. */
+export function buildSparkGroupLifecycleRecord(
+  command: GroupDeleteCommand | GroupRestoreCommand,
+  group: Readonly<Record<string, unknown>>,
+  actor: Member,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): SparkGroupLifecycleRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'group.delete' && parsed.kind !== 'group.restore') throw new Error('Spark group lifecycle command is invalid.')
+  const normalized = normalizedActor(actor)
+  const token = assertSparkOperationIdentity(parsed, normalized, identity)
+  if (actor.id !== identity.userId || actor.canManage !== true) throw new Error('Only an active group manager can change this group lifecycle.')
+  if (group.id !== parsed.groupId || !Array.isArray(group.memberIds) || !group.memberIds.includes(actor.id)) throw new Error('Group membership changed remotely.')
+  const deleted = group.status === 'deleted'
+  if (parsed.kind === 'group.delete' && deleted) throw new Error('This group is already deleted.')
+  if (parsed.kind === 'group.restore' && !deleted) throw new Error('This group is not deleted.')
+  const {
+    status: _status, deletedAt: _deletedAt, deletedBy: _deletedBy,
+    lastLifecycleCommandKind: _lastKind, lastLifecycleOperationId: _lastOperation,
+    lastLifecycleRequestFingerprint: _lastFingerprint, lastLifecycleResourceToken: _lastToken,
+    ...retained
+  } = group
+  const lifecycleIdentity = {
+    lastLifecycleCommandKind: parsed.kind,
+    lastLifecycleOperationId: parsed.operationId,
+    lastLifecycleRequestFingerprint: identity.requestFingerprint,
+    lastLifecycleResourceToken: token,
+  }
+  return {
+    groupDocument: {
+      ...retained,
+      status: parsed.kind === 'group.delete' ? 'deleted' : 'active',
+      ...(parsed.kind === 'group.delete' ? { deletedAt: committedAt, deletedBy: normalized } : {}),
+      updatedAt: committedAt,
+      ...lifecycleIdentity,
+    },
+    activityId: `activity-${token}`,
+    activityDocument: {
+      groupId: parsed.groupId,
+      operationId: parsed.operationId,
+      kind: parsed.kind === 'group.delete' ? 'group.deleted' : 'group.restored',
+      subject: { kind: 'group', id: parsed.groupId, label: String(group.name ?? 'Group') },
+      actor: normalized,
       createdAt: committedAt,
     },
   }

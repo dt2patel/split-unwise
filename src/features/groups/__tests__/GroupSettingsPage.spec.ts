@@ -65,6 +65,22 @@ describe('group default settings page', () => {
     wrapper.unmount()
   })
 
+  it('deletes the shared group from an iOS card modal and returns to the group list', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter(); await router.push('/tabs/groups/lake-house-weekend/settings'); await router.isReady()
+    const wrapper = mount(GroupSettingsPage, { attachTo: document.body, global: { plugins: [createPinia(), router], stubs } }); await flushPromises()
+
+    await wrapper.get('[data-testid="delete-group-button"]').trigger('click')
+    expect(wrapper.get('[data-testid="group-lifecycle-modal"]').text()).toContain('Delete Lake House Weekend?')
+    expect(wrapper.get('[data-testid="group-lifecycle-modal"]').text()).toContain('expenses and payments')
+    await wrapper.get('[data-testid="confirm-group-delete"]').trigger('click')
+
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/tabs/groups'))
+    await expect(repository.groups.list()).resolves.toEqual([])
+    wrapper.unmount()
+  })
+
   it('saves an unlocked versioned shares default for future drafts', async () => {
     const repository = createDemoRepository()
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))

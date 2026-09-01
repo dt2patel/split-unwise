@@ -159,6 +159,37 @@ suite('ledger against the Firestore emulator', () => {
       schemaVersion: 1, command: { kind: 'group.member-remove', operationId: 'remove-owner', groupId: 'group-a', targetMemberId: 'owner' },
     })).rejects.toMatchObject({ code: 'permission-denied' })
   })
+
+  it('soft-deletes and restores a group without changing its expense or settlement documents', async () => {
+    const expense = { id: 'expense-a', groupId: 'group-a', description: 'Train', total: { currency: 'USD', minorAmount: 2000 } }
+    const settlement = { settlementId: 'settlement-a', groupId: 'group-a', money: { currency: 'USD', minorAmount: 400 } }
+    await Promise.all([
+      db.doc('groups/group-a/expenses/expense-a').set(expense),
+      db.doc('groups/group-a/settlements/settlement-a').set(settlement),
+    ])
+    const deletedAt = '2026-09-01T19:00:00.000Z'
+    const deleteRequest = { schemaVersion: 1, command: { kind: 'group.delete', operationId: 'delete-group', groupId: 'group-a' } }
+
+    const deleted = await executeLedgerCommand(db, 'owner', deleteRequest, new Date(deletedAt))
+    await expect(executeLedgerCommand(db, 'owner', deleteRequest, new Date('2026-09-01T19:01:00.000Z'))).resolves.toEqual(deleted)
+    expect((await db.doc('groups/group-a').get()).data()).toMatchObject({ status: 'deleted', deletedAt, deletedBy: { id: 'owner', displayName: 'Owner' } })
+    await expect(executeLedgerCommand(db, 'member', { schemaVersion: 1, command: { kind: 'group.restore', operationId: 'member-restore', groupId: 'group-a' } })).rejects.toMatchObject({ code: 'permission-denied' })
+    await expect(executeLedgerCommand(db, 'owner', { ...addRequest('blocked-while-deleted') })).rejects.toMatchObject({ code: 'failed-precondition' })
+
+    const restoreRequest = { schemaVersion: 1, command: { kind: 'group.restore', operationId: 'restore-group', groupId: 'group-a' } }
+    const restored = await executeLedgerCommand(db, 'owner', restoreRequest, new Date('2026-09-01T19:02:00.000Z'))
+    await expect(executeLedgerCommand(db, 'owner', restoreRequest, new Date('2026-09-01T19:03:00.000Z'))).resolves.toEqual(restored)
+    const group = (await db.doc('groups/group-a').get()).data()
+    expect(group).toMatchObject({ status: 'active', memberIds: ['owner', 'member'] })
+    expect(group).not.toHaveProperty('deletedAt')
+    expect(group).not.toHaveProperty('deletedBy')
+    expect((await db.doc('groups/group-a/expenses/expense-a').get()).data()).toEqual(expense)
+    expect((await db.doc('groups/group-a/settlements/settlement-a').get()).data()).toEqual(settlement)
+    expect((await db.collection('groups/group-a/activity').get()).docs.map((document) => document.data())).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'group.deleted', operationId: 'delete-group' }),
+      expect.objectContaining({ kind: 'group.restored', operationId: 'restore-group' }),
+    ]))
+  })
 })
 
 function addRequest(operationId: string): { schemaVersion: 1; command: any } {

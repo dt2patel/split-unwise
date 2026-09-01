@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OperationReplayConflictError, assertReplayIdentity, createOperationIdentity } from '../operationIdentity'
 import type { ExpenseAddCommand } from '../repositories'
 
@@ -11,6 +11,8 @@ const command = (overrides: Partial<ExpenseAddCommand> = {}): ExpenseAddCommand 
 })
 
 describe('operation identity', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
   it('replays only an identical authenticated request and rejects changed payload or group', async () => {
     const stored = await createOperationIdentity('maya-p', command())
     await expect(assertReplayIdentity(stored, await createOperationIdentity('maya-p', command()))).resolves.toBeUndefined()
@@ -29,5 +31,11 @@ describe('operation identity', () => {
   it('rejects a corrupt replay whose resource ID no longer binds uid and operation ID', async () => {
     const identity = await createOperationIdentity('maya-p', command())
     await expect(assertReplayIdentity({ ...identity, resourceId: 'operation-corrupt' }, identity)).rejects.toBeInstanceOf(OperationReplayConflictError)
+  })
+
+  it('preserves the SHA-256 identity when Web Crypto is unavailable on a plain HTTP mobile preview', async () => {
+    const secureIdentity = await createOperationIdentity('maya-p', command())
+    vi.stubGlobal('crypto', undefined)
+    await expect(createOperationIdentity('maya-p', command())).resolves.toEqual(secureIdentity)
   })
 })
