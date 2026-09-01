@@ -27,6 +27,7 @@ export interface AuthService {
   signInWithGoogle(returnTo?: string): Promise<AuthActionResult>
   sendPasswordReset(email: string): Promise<void>
   sendVerification(): Promise<void>
+  refreshIdentity(): Promise<AuthIdentity | undefined>
   signOut(): Promise<void>
   reportSessionError?(message: string): void
   dispose(): void
@@ -59,6 +60,7 @@ function staticService(state: AuthState, capabilities: RuntimeCapabilities): Aut
     async signInWithGoogle() { return { status: 'complete' } },
     async sendPasswordReset() {},
     async sendVerification() {},
+    async refreshIdentity() { return state.status === 'signed-in' ? state.identity : undefined },
     async signOut() { throw new Error('Demo mode uses a fixed local identity') },
     reportSessionError() {},
     dispose() {},

@@ -1,13 +1,126 @@
 diff --git a/dist/index.js b/dist/index.js
-index 6cf2b0d88921541056308d07029d26f6b9d60d16..f17cc67a104c4bffb0c87113403a89194a9ce412 100644
+index 6cf2b0d88921541056308d07029d26f6b9d60d16..9577fcc7ccf5aa19ba9c2ed482b9b7b787db63fa 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -1740,7 +1740,7 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
-                     enteringViewItem.registerCallback = undefined;
-                 };
+@@ -1503,6 +1503,7 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+          * https://github.com/vuejs/core/issues/9965#issuecomment-1875067499
+          */
+         { deep: true });
++        let swipeTransitionStarted = false;
+         const canStart = () => {
+             const stack = viewStacks.getViewStack(id);
+             if (!stack || stack.length <= 1)
+@@ -1514,36 +1515,40 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+              */
+             const routeInfo = ionRouter.getLeavingRouteInfo();
+             const enteringViewItem = viewStacks.findViewItemByRouteInfo({ pathname: routeInfo.pushedByRoute || "" }, id);
+-            return !!enteringViewItem;
++            const leavingViewItem = viewStacks.findViewItemByRouteInfo(routeInfo, id);
++            return !!enteringViewItem?.ionPageElement && !!leavingViewItem?.ionPageElement;
+         };
+         const onStart = async () => {
++            swipeTransitionStarted = false;
+             const routeInfo = ionRouter.getLeavingRouteInfo();
+             const { routerAnimation } = routeInfo;
+             const enteringViewItem = viewStacks.findViewItemByRouteInfo({ pathname: routeInfo.pushedByRoute || "" }, id);
+             const leavingViewItem = viewStacks.findViewItemByRouteInfo(routeInfo, id);
+-            if (leavingViewItem) {
+-                let animationBuilder = routerAnimation;
+-                const enteringEl = enteringViewItem.ionPageElement;
+-                const leavingEl = leavingViewItem.ionPageElement;
+-                /**
+-                 * If we are going back from a page that
+-                 * was presented using a custom animation
+-                 * we should default to using that
+-                 * unless the developer explicitly
+-                 * provided another animation.
+-                 */
+-                const customAnimation = enteringViewItem.routerAnimation;
+-                if (animationBuilder === undefined && customAnimation !== undefined) {
+-                    animationBuilder = customAnimation;
+-                }
+-                leavingViewItem.routerAnimation = animationBuilder;
+-                await transition(enteringEl, leavingEl, "back", ionRouter.canGoBack(2), true, animationBuilder);
++            if (!enteringViewItem?.ionPageElement || !leavingViewItem?.ionPageElement) {
++                return Promise.resolve();
++            }
++            let animationBuilder = routerAnimation;
++            const enteringEl = enteringViewItem.ionPageElement;
++            const leavingEl = leavingViewItem.ionPageElement;
++            /**
++             * If we are going back from a page that
++             * was presented using a custom animation
++             * we should default to using that
++             * unless the developer explicitly
++             * provided another animation.
++             */
++            const customAnimation = enteringViewItem.routerAnimation;
++            if (animationBuilder === undefined && customAnimation !== undefined) {
++                animationBuilder = customAnimation;
+             }
++            leavingViewItem.routerAnimation = animationBuilder;
++            await transition(enteringEl, leavingEl, "back", ionRouter.canGoBack(2), true, animationBuilder);
++            swipeTransitionStarted = true;
+             return Promise.resolve();
+         };
+         const onEnd = (shouldContinue) => {
+             if (shouldContinue) {
+-                skipTransition = true;
++                skipTransition = swipeTransitionStarted;
+                 /**
+                  * Use the same logic as clicking
+                  * ion-back-button to determine where
+@@ -1551,7 +1556,7 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+                  */
+                 ionRouter.handleNavigateBack();
              }
 -            else {
-+            else if (enteringViewItem.ionPageElement !== undefined) {
-                 handlePageTransition();
++            else if (swipeTransitionStarted) {
+                 /**
+                  * In the event that the swipe
+                  * gesture was aborted, we should
+@@ -1559,9 +1564,12 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+                  */
+                 const routeInfo = ionRouter.getCurrentRouteInfo();
+                 const enteringViewItem = viewStacks.findViewItemByRouteInfo({ pathname: routeInfo.pushedByRoute || "" }, id);
+-                enteringViewItem.ionPageElement.setAttribute("aria-hidden", "true");
+-                enteringViewItem.ionPageElement.classList.add("ion-page-hidden");
++                if (enteringViewItem?.ionPageElement) {
++                    enteringViewItem.ionPageElement.setAttribute("aria-hidden", "true");
++                    enteringViewItem.ionPageElement.classList.add("ion-page-hidden");
++                }
              }
-             components.value = viewStacks.getChildrenToRender(id);
++            swipeTransitionStarted = false;
+         };
+         watch(ionRouterOutlet, () => {
+             ionRouterOutlet.value.swipeHandler = {
+@@ -1575,6 +1583,9 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+                 skipTransition = false;
+                 return Promise.resolve(false);
+             }
++            if (enteringEl === undefined || leavingEl === undefined) {
++                return Promise.resolve(false);
++            }
+             if (enteringEl === leavingEl) {
+                 return Promise.resolve(false);
+             }
+@@ -1733,12 +1744,14 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
+                 enteringViewItem = viewStacks.createViewItem(id, matchedRouteRef.value.components.default, matchedRouteRef.value, currentRoute);
+                 viewStacks.add(enteringViewItem);
+             }
+-            if (!enteringViewItem.mount) {
++            if (!enteringViewItem.mount || enteringViewItem.ionPageElement === undefined) {
+                 enteringViewItem.mount = true;
+-                enteringViewItem.registerCallback = () => {
+-                    handlePageTransition();
+-                    enteringViewItem.registerCallback = undefined;
+-                };
++                if (enteringViewItem.registerCallback === undefined) {
++                    enteringViewItem.registerCallback = () => {
++                        handlePageTransition();
++                        enteringViewItem.registerCallback = undefined;
++                    };
++                }
+             }
+             else {
+                 handlePageTransition();

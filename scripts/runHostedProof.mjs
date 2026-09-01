@@ -15,6 +15,7 @@ const password = process.env.LIVE_PROOF_PASSWORD ?? `${randomBytes(24).toString(
 const ownerEmail = `live-owner-${suffix}@example.com`
 const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
+const unverifiedEmail = `live-unverified-${suffix}@example.com`
 const keepLiveProof = process.env.KEEP_LIVE_PROOF === '1'
 if (keepLiveProof && !process.env.LIVE_PROOF_PASSWORD) throw new Error('KEEP_LIVE_PROOF requires an explicit LIVE_PROOF_PASSWORD so retained fixtures remain usable.')
 const expectedHostedCommit = assertExpectedHostedCommit(process.env.EXPECTED_HOSTED_COMMIT
@@ -106,7 +107,7 @@ async function invitationDocumentsFor(groupIds) {
 }
 
 async function assertFixturesAvailable() {
-  for (const email of [ownerEmail, friendEmail, thirdEmail]) {
+  for (const email of [ownerEmail, friendEmail, thirdEmail, unverifiedEmail]) {
     try {
       await findUser(projectId, email)
       throw new Error(`Hosted proof fixture collision for ${email}. Choose a new LIVE_PROOF_SUFFIX.`)
@@ -140,11 +141,11 @@ try {
   await assertFixturesAvailable()
   throwIfTerminated()
 
-  for (const email of [ownerEmail, friendEmail, thirdEmail]) {
+  for (const email of [ownerEmail, friendEmail, thirdEmail, unverifiedEmail]) {
     const fixture = await identityRequest(configuration.apiKey, 'accounts:signUp', { email, password, returnSecureToken: false })
     createdAuthUids.add(fixture.localId)
     if (email === ownerEmail) ownerFixtureUid = fixture.localId
-    await adminClient.post('/v1/accounts:update', { localId: fixture.localId, emailVerified: true, targetProjectId: projectId })
+    if (email !== unverifiedEmail) await adminClient.post('/v1/accounts:update', { localId: fixture.localId, emailVerified: true, targetProjectId: projectId })
     throwIfTerminated()
   }
 

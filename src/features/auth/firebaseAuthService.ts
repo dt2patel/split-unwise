@@ -69,6 +69,15 @@ export async function createFirebaseAuthService(configuration: FirebaseConfigura
       if (!auth.currentUser) throw new Error('Sign in before requesting email verification')
       await firebase.sendEmailVerification(auth.currentUser)
     },
+    async refreshIdentity() {
+      const user = auth.currentUser
+      if (!user) return undefined
+      await firebase.reload(user)
+      await user.getIdToken(true)
+      const identity = identityFromUser(user)
+      publish({ status: 'signed-in', mode: 'firebase', identity })
+      return identity
+    },
     async signOut() { await firebase.signOut(auth) },
     reportSessionError(message) { publish({ status: 'error', mode: 'firebase', message: message.trim() || 'Your account could not be opened.' }) },
     dispose() { disposed = true; unsubscribe(); listeners.clear() },
