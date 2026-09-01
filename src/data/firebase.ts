@@ -92,12 +92,15 @@ export function readRuntimeConfiguration(environment?: PublicEnvironment): Runti
 /** Resolves Firebase Hosting's same-origin auto-init payload without embedding public project configuration in source. */
 export async function resolveRuntimeConfiguration(environment?: PublicEnvironment): Promise<RuntimeConfiguration> {
   const configured = readRuntimeConfiguration(environment)
-  if (environment !== undefined || configured.kind !== 'demo' || !isFirebaseHostingOrigin()) {
+  const initUrl = environment === undefined && configured.kind === 'demo'
+    ? firebaseHostingInitUrl(typeof location === 'undefined' ? undefined : location, await runningNatively())
+    : undefined
+  if (environment !== undefined || configured.kind !== 'demo' || !initUrl) {
     activeRuntimeConfiguration = configured
     return configured
   }
   try {
-    const response = await fetch('/__/firebase/init.json', { cache: 'no-store', credentials: 'same-origin' })
+    const response = await fetch(initUrl, { cache: 'no-store', credentials: initUrl.startsWith('/') ? 'same-origin' : 'omit' })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const value: unknown = await response.json()
     if (!isRecord(value)) throw new Error('invalid JSON object')
@@ -161,9 +164,17 @@ function nonBlank(value: string | undefined): string | undefined {
   return trimmed || undefined
 }
 
-function isFirebaseHostingOrigin(): boolean {
-  if (typeof location === 'undefined') return false
-  return /(?:^|\.)firebaseapp\.com$|(?:^|\.)web\.app$/.test(location.hostname)
+export function firebaseHostingInitUrl(locationValue: Pick<Location, 'hostname' | 'protocol'> | undefined, nativePlatform: boolean): string | undefined {
+  if (locationValue && /(?:^|\.)firebaseapp\.com$|(?:^|\.)web\.app$/.test(locationValue.hostname)) return '/__/firebase/init.json'
+  if (nativePlatform) return 'https://split-unwise-aditya.web.app/__/firebase/init.json'
+  return undefined
+}
+
+async function runningNatively(): Promise<boolean> {
+  try {
+    const { Capacitor } = await import('@capacitor/core')
+    return Capacitor.isNativePlatform()
+  } catch { return false }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

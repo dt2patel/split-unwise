@@ -1,6 +1,6 @@
 # Split Unwise release verification
 
-Verified release candidate: `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`
+P1 identity and shared-groups implementation: `ce4747adc3791291c6140d2e12f7e16de6d2c1d4`
 
 Date: 2026-08-31 (America/Chicago)
 
@@ -8,12 +8,13 @@ Date: 2026-08-31 (America/Chicago)
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Unit and component suite | Pass | `pnpm test`: 72 files passed, 5 skipped; 675 tests passed, 25 skipped |
+| Unit and component suite | Pass | `pnpm test`: 73 files passed, 6 skipped; 679 tests passed, 29 skipped |
 | Type safety | Pass | `pnpm typecheck` |
-| Firestore rules | Pass | `pnpm test:firebase`: 5 emulator-backed rules tests |
+| Firestore rules | Pass | `pnpm test:firebase`: 8 emulator-backed rules tests |
+| Auth/group/invite flow | Pass | One emulator flow plus one live production flow with two temporary Firebase Auth accounts and separate client sessions |
 | Functions and service behavior | Pass | `pnpm test:firebase`: 16 emulator-backed tests |
-| Production web bundle | Pass | `pnpm build`: 502 modules transformed; Workbox generated 98 precache entries |
-| Artifact policy | Pass | 100 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
+| Production web bundle | Pass | `pnpm build`: 503 modules transformed; Workbox generated 99 precache entries |
+| Artifact policy | Pass | 101 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
 | Reference-rate provider | Pass | Live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS |
 | Capacitor synchronization | Pass | `pnpm exec cap sync ios`; local `dist` copied with no production `server.url` |
 | Native compile | Pass | `pnpm ios:build`; unsigned Debug build for a generic iOS simulator |
@@ -38,7 +39,7 @@ The compiled `App.app` was installed and launched, not inferred from a web build
 
 The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`; the iPad simulator identifier was `348D09B8-FC5D-4936-8ED8-69FC1D92AF5C`. Both ran the Apple iOS 26.5 simulator runtime installed through Xcode.
 
-The final `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4` native build was installed again on the iPhone simulator after deployment, launched as bundle `app.splitunwise.mobile`, and rendered the mobile home shell at 390 × 844 points. The packaged `App.app` contains the same build identifier.
+The previously packaged native build was installed on the iPhone simulator, launched as bundle `app.splitunwise.mobile`, and rendered the mobile home shell at 390 × 844 points. The P1 package is rebuilt and its embedded source identifier rechecked as part of the final release procedure below.
 
 ## PWA, offline, and update behavior
 
@@ -69,8 +70,16 @@ The final `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4` native build was installed 
 - Production: `https://split-unwise-aditya.web.app` and `https://split-unwise-aditya.firebaseapp.com`.
 - Both hosts returned `200` for `/`, `/manifest.webmanifest`, `/sw.js`, `/tabs/activity`, `/build-info.json`, and a hashed JavaScript asset.
 - Root and nested app-shell responses have `no-cache, no-store, must-revalidate`; the manifest revalidates; the service worker is non-cacheable; hashed assets retain `public, max-age=31536000, immutable`.
-- Root and nested route bodies were byte-identical, proving the Hosting rewrite. The live build metadata reports commit `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`.
+- Root and nested route bodies were byte-identical, proving the Hosting rewrite. The final build metadata is checked against the deployed source commit after each release.
 - The reviewed CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy` headers were observed on both production domains.
+- Hosting auto-init is the only source of production Web SDK configuration. The Capacitor shell uses the same endpoint through an explicit `Access-Control-Allow-Origin: *` rule; the payload contains Firebase's public app metadata only.
+
+## Production identity and shared-group evidence
+
+- Firebase Authentication was initialized remotely and verified as Identity Platform subtype with Email/Password enabled, passwords required, Google enabled, and both production domains authorized.
+- A live production SDK run created an owner and a friend as temporary Auth accounts in separate Firebase app sessions. The owner bootstrapped a profile, created a complete group bundle, and generated a fragment-only invitation capability. The friend bootstrapped a profile, inspected the invitation, accepted it atomically, and read the two-member group. A fresh owner session then read the same persisted group.
+- The raw 256-bit invitation token stays in the URL fragment and is stripped immediately. Only its SHA-256-derived document ID is stored; the share URL uses the fixed `/invite/join` path so the capability is not placed in request logs.
+- All temporary Auth accounts, profiles, group trees, projections, and invitation documents were deleted after verification. Follow-up Auth and Firestore queries returned empty results for every live-flow marker.
 
 ## Accessibility and interaction evidence
 
@@ -84,4 +93,4 @@ The final `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4` native build was installed 
 
 The iPad split-pane/master-detail contract is component-tested, but the iPad screenshot proves the home shell only; no tap automation was authorized for this pass. VoiceOver traversal, Full Keyboard Access, Switch Control, physical-device haptics/camera, landscape tablet master/detail, keyboard-driven sheets, and same-viewport reference-image comparison still require an interactive device session. They are not claimed as passed.
 
-Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md), but the deployed app intentionally remains in demo mode. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so real Firebase sign-in plus durable add/edit/settle/replay proof is not claimed. Hosted install UI, cold-offline navigation, and Cache Storage inspection also remain unobserved because browser interaction was not authorized for this pass.
+Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md). Real Firebase sign-in, profile persistence, group creation, invitation acceptance, two-user visibility, and sign-out/in persistence are production-proven. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so durable add/edit/settle/replay proof is not claimed. Interactive Google OAuth, hosted install UI, cold-offline navigation, and Cache Storage inspection remain unobserved because browser interaction was not authorized for this pass.

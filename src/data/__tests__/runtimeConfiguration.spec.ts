@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FirebaseConfigurationError, readFirebaseConfiguration, readFirebaseHostingConfiguration, readRuntimeConfiguration, type PublicEnvironment } from '../firebase'
+import { firebaseHostingInitUrl, FirebaseConfigurationError, readFirebaseConfiguration, readFirebaseHostingConfiguration, readRuntimeConfiguration, type PublicEnvironment } from '../firebase'
 
 const core: PublicEnvironment = {
   VITE_FIREBASE_API_KEY: 'AIzaSyExampleKey',
@@ -51,5 +51,11 @@ describe('runtime configuration', () => {
       kind: 'firebase', firebase: { projectId: 'split-unwise-aditya' },
       capabilities: { auth: 'available', firestore: 'available', functions: 'unavailable', storage: 'unavailable', google: 'available' },
     })
+  })
+
+  it('discovers auto-init from same-origin Hosting and from the native Capacitor shell', () => {
+    expect(firebaseHostingInitUrl({ hostname: 'split-unwise-aditya.web.app', protocol: 'https:' }, false)).toBe('/__/firebase/init.json')
+    expect(firebaseHostingInitUrl({ hostname: 'localhost', protocol: 'capacitor:' }, true)).toBe('https://split-unwise-aditya.web.app/__/firebase/init.json')
+    expect(firebaseHostingInitUrl({ hostname: 'localhost', protocol: 'http:' }, false)).toBeUndefined()
   })
 })

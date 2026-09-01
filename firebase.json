@@ -17,6 +17,13 @@
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "headers": [
       {
+        "source": "/__/firebase/init.json",
+        "headers": [
+          { "key": "Access-Control-Allow-Origin", "value": "*" },
+          { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+        ]
+      },
+      {
         "source": "**",
         "headers": [
           { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
@@ -47,5 +54,14 @@
     "storage": { "port": 9199 },
     "ui": { "enabled": true, "port": 4000 },
     "singleProjectMode": true
+  },
+  "auth": {
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Split Unwise",
+        "supportEmail": "heyadityapatel@gmail.com"
+      }
+    }
   }
 }
