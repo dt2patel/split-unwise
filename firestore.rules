@@ -58,7 +58,7 @@ service cloud.firestore {
         && data.lastResourceToken != resource.data.lastResourceToken;
     }
     function activeMember(groupId) {
-      return signedIn() && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active';
+      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)/groups/$(groupId)).data.status == 'active';
     }
     function activeManager(groupId) {
       let member = get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data;

@@ -32,6 +32,9 @@ beforeEach(async () => {
     await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', canManage: true, displayName: 'Active Member' })
     await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', canManage: false, displayName: 'Friend' })
     await setDoc(doc(db, 'groups/group-a/members/removed'), { status: 'removed' })
+    await setDoc(doc(db, 'users/active/groups/group-a'), { groupId: 'group-a', status: 'active' })
+    await setDoc(doc(db, 'users/friend/groups/group-a'), { groupId: 'group-a', status: 'active' })
+    await setDoc(doc(db, 'users/removed/groups/group-a'), { groupId: 'group-a', status: 'removed' })
     await setDoc(doc(db, 'groups/group-a/settings/defaults'), { schemaVersion: 1, groupId: 'group-a', revision: 1, simplifyDebtsEnabled: true, updatedAt: Timestamp.fromMillis(0) })
     await setDoc(doc(db, 'groups/group-a/balance/current'), { groupId: 'group-a', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
     await setDoc(doc(db, 'groups/group-a/expenses/expense-a'), { description: 'Dinner' })
@@ -97,6 +100,9 @@ describe('Firestore rules in the emulator', () => {
   })
 
   emulatorIt('allows only self-private and active-member bounded reads', async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'groups/group-a/members/outsider'), { status: 'active', canManage: false, displayName: 'Outsider' })
+    })
     const active = environment.authenticatedContext('active').firestore()
     const outsider = environment.authenticatedContext('outsider').firestore()
     const removed = environment.authenticatedContext('removed').firestore()
@@ -105,6 +111,7 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(getDoc(doc(active, 'users/outsider')))
     await assertSucceeds(getDoc(doc(active, 'groups/group-a/expenses/expense-a')))
     await assertFails(getDoc(doc(outsider, 'groups/group-a/expenses/expense-a')))
+    await assertFails(getDoc(doc(outsider, 'groups/group-a')))
     await assertFails(getDoc(doc(removed, 'groups/group-a/expenses/expense-a')))
     await assertFails(getDoc(doc(anonymous, 'groups/group-a')))
     await assertFails(getDocs(collection(active, 'groups/group-a/expenses')))
