@@ -284,7 +284,7 @@ async function verifyMemberRemoval(browser) {
 
     const cardModal = page.locator('ion-modal.show-modal')
     await cardModal.waitFor({ state: 'visible' })
-    await cardModal.getByRole('heading', { name: 'Remove member', exact: true }).waitFor({ state: 'visible' })
+    await cardModal.getByText('Remove member', { exact: true }).waitFor({ state: 'visible' })
     await cardModal.getByRole('heading', { name: `Remove ${targetName}?`, exact: true }).waitFor({ state: 'visible' })
     if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted member removal did not use the Ionic iOS card modal.')
     await cardModal.getByRole('button', { name: `Remove ${targetName}`, exact: true }).click()
@@ -310,7 +310,9 @@ async function verifyMemberRemoval(browser) {
     await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
     if (await page.getByRole('link', { name: /Live Account Proof/ }).count()) throw new Error('Removed account still listed the group on Home.')
     await page.goto(deepUrl, { waitUntil: 'domcontentloaded' })
-    await page.getByText('These shared expenses are not available.', { exact: true }).waitFor({ state: 'visible' })
+    const unavailable = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden) [role="alert"]')
+    await unavailable.waitFor({ state: 'visible' })
+    if (!/not available/i.test((await unavailable.textContent()) ?? '')) throw new Error('Removed account deep link did not show an unavailable-group state.')
     assertPageClean()
   } finally {
     await removedContext.close()
