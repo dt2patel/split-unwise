@@ -57,6 +57,53 @@ service cloud.firestore {
         && data.lastOperationId != resource.data.lastOperationId
         && data.lastResourceToken != resource.data.lastResourceToken;
     }
+    function validSparkNotificationReadReceipt(uid, notificationId, data) {
+      let activity = get(/databases/$(database)/documents/groups/$(data.groupId)/activity/$(data.activityId)).data;
+      return owns(uid)
+        && data.keys().hasOnly([
+          'schemaVersion', 'notificationId', 'groupId', 'activityId', 'sourceCreatedAt', 'readAt',
+          'operationId', 'requestFingerprint', 'resourceToken'
+        ])
+        && data.keys().hasAll([
+          'schemaVersion', 'notificationId', 'groupId', 'activityId', 'sourceCreatedAt', 'readAt',
+          'operationId', 'requestFingerprint', 'resourceToken'
+        ])
+        && data.schemaVersion == 1 && strictId(notificationId)
+        && data.notificationId == notificationId && data.activityId == notificationId
+        && strictId(data.groupId) && activeMember(data.groupId)
+        && data.sourceCreatedAt is string && data.sourceCreatedAt.size() >= 20 && data.sourceCreatedAt.size() <= 40
+        && data.readAt == request.time
+        && data.operationId is string && data.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.requestFingerprint is string && data.requestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.resourceToken is string && data.resourceToken.matches('^[a-f0-9]{48}$')
+        && activity.groupId == data.groupId && activity.actor.id != uid && activity.createdAt is timestamp;
+    }
+    function validSparkNotificationReadCursor(data) {
+      return data.keys().hasOnly([
+          'schemaVersion', 'revision', 'cutoffCreatedAt', 'cutoffId', 'readNotificationIds', 'updatedAt',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+        ])
+        && data.keys().hasAll([
+          'schemaVersion', 'revision', 'cutoffCreatedAt', 'cutoffId', 'readNotificationIds', 'updatedAt',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+        ])
+        && data.schemaVersion == 1 && data.revision is int && data.revision >= 1
+        && data.cutoffCreatedAt is string && data.cutoffCreatedAt.size() >= 20 && data.cutoffCreatedAt.size() <= 40
+        && strictId(data.cutoffId) && data.readNotificationIds is list && data.readNotificationIds.size() <= 100
+        && data.readNotificationIds.toSet().size() == data.readNotificationIds.size() && data.updatedAt == request.time
+        && validSparkPrivateReplay(data, 'notification.read-all');
+    }
+    function validSparkNotificationReadCursorCreate(data) {
+      return validSparkNotificationReadCursor(data) && data.revision == 1;
+    }
+    function validSparkNotificationReadCursorUpdate(data) {
+      return validSparkNotificationReadCursor(data)
+        && data.revision == resource.data.revision + 1
+        && data.lastOperationId != resource.data.lastOperationId
+        && data.lastResourceToken != resource.data.lastResourceToken
+        && (data.cutoffCreatedAt > resource.data.cutoffCreatedAt
+          || (data.cutoffCreatedAt == resource.data.cutoffCreatedAt && data.cutoffId >= resource.data.cutoffId));
+    }
     function activeMember(groupId) {
       return signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
     }
@@ -688,13 +735,23 @@ service cloud.firestore {
       }
       match /activity/{activityId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(100); allow write: if false; }
       match /notifications/{notificationId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(100); allow write: if false; }
+      match /notificationReads/{notificationId} {
+        allow get: if owns(uid);
+        allow list: if owns(uid) && bounded(100);
+        allow create: if validSparkNotificationReadReceipt(uid, notificationId, request.resource.data);
+        allow update, delete: if false;
+      }
       match /settings/{settingId} {
         allow get: if owns(uid);
         allow list, delete: if false;
-        allow create: if settingId == 'notifications' && owns(uid)
-          && validSparkNotificationPreferencesCreate(request.resource.data);
-        allow update: if settingId == 'notifications' && owns(uid)
-          && validSparkNotificationPreferencesUpdate(request.resource.data);
+        allow create: if owns(uid) && (
+          (settingId == 'notifications' && validSparkNotificationPreferencesCreate(request.resource.data))
+          || (settingId == 'sparkNotificationReadCursor' && validSparkNotificationReadCursorCreate(request.resource.data))
+        );
+        allow update: if owns(uid) && (
+          (settingId == 'notifications' && validSparkNotificationPreferencesUpdate(request.resource.data))
+          || (settingId == 'sparkNotificationReadCursor' && validSparkNotificationReadCursorUpdate(request.resource.data))
+        );
       }
       match /jobs/{jobId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(50); allow write: if false; }
       match /exports/{jobId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(50); allow write: if false; }

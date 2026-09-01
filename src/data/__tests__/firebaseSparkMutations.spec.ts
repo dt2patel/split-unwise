@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationPreferencesCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -394,6 +394,64 @@ describe('Firebase Spark mutations', () => {
       lastRequestFingerprint: 'e'.repeat(64), lastResourceToken: 'f'.repeat(48),
     })
   })
+
+  it('builds an owner-private notification read receipt bound to the source activity and replay identity', () => {
+    const notification: NotificationItem = {
+      notificationId: 'activity-source-a', principalId: 'maya-p', groupId: 'group-a', activityId: 'activity-source-a',
+      kind: 'expense.created', subject: { kind: 'expense', id: 'expense-a', label: 'Dinner' },
+      actor: { id: 'friend', displayName: 'Friend Account' }, createdAt: '2026-09-01T17:30:00.000Z', syncState: 'fresh',
+    }
+    const command: NotificationReadCommand = { kind: 'notification.read', operationId: 'read-source-a', notificationId: notification.notificationId }
+    const identity: OperationIdentity = {
+      userId: 'maya-p', operationId: command.operationId, kind: command.kind, groupId: null,
+      requestFingerprint: '1'.repeat(64), resourceId: `operation-${'2'.repeat(48)}`,
+    }
+    const committedAt = { kind: 'read-commit' }
+    const buildRead = (sparkMutations as unknown as { buildSparkNotificationReadRecord: SparkNotificationReadBuilder }).buildSparkNotificationReadRecord
+
+    expect(buildRead(command, notification, identity, committedAt)).toEqual({
+      receiptId: notification.notificationId,
+      receiptDocument: {
+        schemaVersion: 1, notificationId: notification.notificationId, groupId: notification.groupId, activityId: notification.activityId,
+        sourceCreatedAt: notification.createdAt, readAt: committedAt,
+        operationId: command.operationId, requestFingerprint: '1'.repeat(64), resourceToken: '2'.repeat(48),
+      },
+    })
+  })
+
+  it('creates and advances a replay-bound inclusive notification read cursor', () => {
+    const first: NotificationReadAllCommand = {
+      kind: 'notification.read-all', operationId: 'read-all-a',
+      cutoff: { createdAt: '2026-09-01T17:30:00.000Z', id: 'activity-source-a' },
+    }
+    const firstIdentity: OperationIdentity = {
+      userId: 'maya-p', operationId: first.operationId, kind: first.kind, groupId: null,
+      requestFingerprint: '3'.repeat(64), resourceId: `operation-${'4'.repeat(48)}`,
+    }
+    const buildReadAll = (sparkMutations as unknown as { buildSparkNotificationReadAllRecord: SparkNotificationReadAllBuilder }).buildSparkNotificationReadAllRecord
+
+    const created = buildReadAll(first, undefined, firstIdentity, 'first-read-all', ['activity-source-a'])
+    expect(created).toEqual({
+      schemaVersion: 1, revision: 1, cutoffCreatedAt: first.cutoff.createdAt, cutoffId: first.cutoff.id, updatedAt: 'first-read-all',
+      readNotificationIds: ['activity-source-a'],
+      lastCommandKind: first.kind, lastOperationId: first.operationId,
+      lastRequestFingerprint: '3'.repeat(64), lastResourceToken: '4'.repeat(48),
+    })
+
+    const second: NotificationReadAllCommand = {
+      kind: 'notification.read-all', operationId: 'read-all-b',
+      cutoff: { createdAt: '2026-09-02T08:00:00.000Z', id: 'activity-source-b' },
+    }
+    expect(buildReadAll(second, created, {
+      userId: 'maya-p', operationId: second.operationId, kind: second.kind, groupId: null,
+      requestFingerprint: '5'.repeat(64), resourceId: `operation-${'6'.repeat(48)}`,
+    }, 'second-read-all', ['activity-source-b'])).toEqual({
+      schemaVersion: 1, revision: 2, cutoffCreatedAt: second.cutoff.createdAt, cutoffId: second.cutoff.id, updatedAt: 'second-read-all',
+      readNotificationIds: ['activity-source-b'],
+      lastCommandKind: second.kind, lastOperationId: second.operationId,
+      lastRequestFingerprint: '5'.repeat(64), lastResourceToken: '6'.repeat(48),
+    })
+  })
 })
 
 const groupMembers: readonly Member[] = [
@@ -468,6 +526,24 @@ type SparkNotificationPreferencesBuilder = (
   current: Readonly<Record<string, unknown>> | undefined,
   identity: OperationIdentity,
   committedAt: unknown,
+) => Readonly<Record<string, unknown>>
+
+type SparkNotificationReadBuilder = (
+  command: NotificationReadCommand,
+  notification: NotificationItem,
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => {
+  readonly receiptId: string
+  readonly receiptDocument: Readonly<Record<string, unknown>>
+}
+
+type SparkNotificationReadAllBuilder = (
+  command: NotificationReadAllCommand,
+  current: Readonly<Record<string, unknown>> | undefined,
+  identity: OperationIdentity,
+  committedAt: unknown,
+  readNotificationIds: readonly string[],
 ) => Readonly<Record<string, unknown>>
 
 type SparkSettlementBuilder = (

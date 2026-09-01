@@ -172,4 +172,34 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
     expect.objectContaining({ kind: 'settlement.created', operationId: settlementCommand.operationId, settlementId: settlement.settlement.settlementId }),
     expect.objectContaining({ kind: 'settlement.voided', operationId: voidCommand.operationId, settlementId: settlement.settlement.settlementId }),
   ]))
-}, 60_000)
+  await expect(friendRepository.notifications.list({ limit: 100 })).resolves.toEqual({ items: [] })
+
+  ;({ auth, db } = await restartHostedClient(configuration))
+  await signInWithEmailAndPassword(auth, ownerEmail, password)
+  const ownerNotificationRepository = createFirebaseRepository(configuration, ownerUid)
+  const notificationPage = await ownerNotificationRepository.notifications.list({ limit: 100 })
+  expect(notificationPage.items).toHaveLength(4)
+  expect(notificationPage.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ principalId: ownerUid, groupId: group.groupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.created' }),
+    expect.objectContaining({ principalId: ownerUid, groupId: group.groupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.updated' }),
+    expect.objectContaining({ principalId: ownerUid, groupId: group.groupId, actor: expect.objectContaining({ id: friendUid }), kind: 'settlement.created' }),
+    expect.objectContaining({ principalId: ownerUid, groupId: group.groupId, actor: expect.objectContaining({ id: friendUid }), kind: 'settlement.voided' }),
+  ]))
+  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(4)
+
+  const individual = notificationPage.items.at(-1)!
+  const readCommand = { kind: 'notification.read' as const, operationId: `live-notification-read-${suffix}`, notificationId: individual.notificationId }
+  const read = await ownerNotificationRepository.notifications.markRead(readCommand)
+  await expect(ownerNotificationRepository.notifications.markRead(readCommand)).resolves.toEqual(read)
+  expect(read).toMatchObject({ status: 'saved', notification: { notificationId: individual.notificationId, readAt: expect.any(String) } })
+  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(3)
+
+  const latest = notificationPage.items[0]!
+  const cutoff = { createdAt: latest.createdAt, id: latest.notificationId }
+  const readAllCommand = { kind: 'notification.read-all' as const, operationId: `live-notification-read-all-${suffix}`, cutoff }
+  const readAll = await ownerNotificationRepository.notifications.markAllRead(readAllCommand)
+  await expect(ownerNotificationRepository.notifications.markAllRead(readAllCommand)).resolves.toEqual(readAll)
+  expect(readAll).toMatchObject({ status: 'saved', cutoff, readNotificationIds: expect.arrayContaining(notificationPage.items.slice(0, -1).map(({ notificationId }) => notificationId)) })
+  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(0)
+  expect((await ownerNotificationRepository.notifications.list({ limit: 100 })).items.every(({ readAt }) => typeof readAt === 'string')).toBe(true)
+}, 90_000)

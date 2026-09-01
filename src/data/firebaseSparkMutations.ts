@@ -7,8 +7,9 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationPreferencesCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
+import { compareTimelineAscending } from './timeline'
 import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
 
 export interface FirebaseIdentity {
@@ -75,6 +76,11 @@ export interface SparkSettlementRecord {
 export interface SparkProfileUpdateRecord {
   readonly profileDocument: Readonly<Record<string, unknown>>
   readonly memberPatch: Readonly<Record<string, unknown>>
+}
+
+export interface SparkNotificationReadRecord {
+  readonly receiptId: string
+  readonly receiptDocument: Readonly<Record<string, unknown>>
 }
 
 /** Builds the single immutable source document authorized by the Spark rules path. */
@@ -392,6 +398,56 @@ export function buildSparkNotificationPreferencesRecord(
   }
 }
 
+/** Persists private read state for one activity-derived in-app notification. */
+export function buildSparkNotificationReadRecord(
+  command: NotificationReadCommand,
+  notification: NotificationItem,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): SparkNotificationReadRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'notification.read') throw new Error('Spark notification read command is invalid.')
+  const token = assertSparkPrivateOperationIdentity(parsed, identity)
+  if (notification.principalId !== identity.userId || notification.notificationId !== parsed.notificationId
+    || notification.activityId !== parsed.notificationId || notification.actor.id === identity.userId
+    || !isStrictId(notification.groupId) || !isStrictId(notification.notificationId)) throw new Error('Spark notification identity is invalid.')
+  return {
+    receiptId: notification.notificationId,
+    receiptDocument: {
+      schemaVersion: 1, notificationId: notification.notificationId, groupId: notification.groupId,
+      activityId: notification.activityId, sourceCreatedAt: notification.createdAt, readAt: committedAt,
+      operationId: parsed.operationId, requestFingerprint: identity.requestFingerprint, resourceToken: token,
+    },
+  }
+}
+
+/** Creates or monotonically advances the private inclusive read-all cursor. */
+export function buildSparkNotificationReadAllRecord(
+  command: NotificationReadAllCommand,
+  current: Readonly<Record<string, unknown>> | undefined,
+  identity: OperationIdentity,
+  committedAt: unknown,
+  readNotificationIds: readonly string[],
+): Readonly<Record<string, unknown>> {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'notification.read-all') throw new Error('Spark notification read-all command is invalid.')
+  const token = assertSparkPrivateOperationIdentity(parsed, identity)
+  const revision = current === undefined ? 0 : sparkNotificationReadCursorRevision(current)
+  if (revision >= Number.MAX_SAFE_INTEGER) throw new Error('Notification read cursor revision cannot advance safely.')
+  if (readNotificationIds.length > 100 || new Set(readNotificationIds).size !== readNotificationIds.length
+    || readNotificationIds.some((notificationId) => !isStrictId(notificationId))) throw new Error('Notification read cursor IDs are invalid.')
+  if (current && compareTimelineAscending(parsed.cutoff, { createdAt: String(current.cutoffCreatedAt), id: String(current.cutoffId) }) < 0) {
+    throw new Error('Notification read cursor cannot move backward.')
+  }
+  return {
+    schemaVersion: 1, revision: revision + 1,
+    cutoffCreatedAt: parsed.cutoff.createdAt, cutoffId: parsed.cutoff.id, updatedAt: committedAt,
+    readNotificationIds: [...readNotificationIds],
+    lastCommandKind: parsed.kind, lastOperationId: parsed.operationId,
+    lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+  }
+}
+
 function sparkCommentActivity(groupId: string, operationId: string, kind: 'comment.added' | 'comment.deleted', actor: ActorSnapshot, expenseId: string, commentId: string, label: string, createdAt: unknown): Readonly<Record<string, unknown>> {
   return { groupId, operationId, kind, subject: { kind: 'comment', id: commentId, label }, actor, expenseId, commentId, createdAt }
 }
@@ -461,6 +517,13 @@ function assertSparkPrivateOperationIdentity(command: { readonly kind: string; r
 function sparkPrivateSettingsRevision(value: Readonly<Record<string, unknown>>): number {
   if (value.schemaVersion !== 1 || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1
     || typeof value.emailEnabled !== 'boolean' || typeof value.pushEnabled !== 'boolean') throw new Error('Stored notification preferences are invalid.')
+  return Number(value.revision)
+}
+
+function sparkNotificationReadCursorRevision(value: Readonly<Record<string, unknown>>): number {
+  if (value.schemaVersion !== 1 || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1
+    || typeof value.cutoffCreatedAt !== 'string' || Number.isNaN(Date.parse(value.cutoffCreatedAt))
+    || typeof value.cutoffId !== 'string' || !isStrictId(value.cutoffId)) throw new Error('Stored notification read cursor is invalid.')
   return Number(value.revision)
 }
 

@@ -174,7 +174,54 @@ describe('Firebase Spark two-account flow', () => {
       expect.objectContaining({ id: owner.user.uid, displayName: 'Renamed Owner', initials: 'RO' }),
       expect.objectContaining({ id: friend.user.uid, displayName: 'Private Friend' }),
     ]))
-  }, 30_000)
+    const expenseCommand = {
+      kind: 'expense.add' as const, operationId: `notification-expense-${suffix}`, groupId: created.groupId,
+      description: 'Notification dinner', date: '2026-09-01', total: { currency: 'USD' as const, minorAmount: 2000 },
+      payments: [{ participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 2000 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 1000 } },
+        { participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 1000 } },
+      ],
+      category: 'Food', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+    }
+    const expense = await friendRepository.expenses.add(expenseCommand)
+    if (expense.status !== 'saved') throw new Error('Expected notification source expense to save')
+    await expect(friendRepository.notifications.list({ limit: 100 })).resolves.toEqual({ items: [] })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const firstPage = await ownerRepository.notifications.list({ limit: 100 })
+    expect(firstPage.items).toEqual([
+      expect.objectContaining({ principalId: owner.user.uid, groupId: created.groupId, activityId: expect.any(String), kind: 'expense.created' }),
+    ])
+    const firstNotification = firstPage.items[0]!
+    const readCommand = { kind: 'notification.read' as const, operationId: `notification-read-${suffix}`, notificationId: firstNotification.notificationId }
+    const read = await ownerRepository.notifications.markRead(readCommand)
+    await expect(ownerRepository.notifications.markRead(readCommand)).resolves.toEqual(read)
+    expect(read).toMatchObject({ status: 'saved', notification: { notificationId: firstNotification.notificationId, readAt: expect.any(String) } })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    await friendRepository.comments.add({
+      kind: 'comment.add', operationId: `notification-comment-${suffix}`, groupId: created.groupId,
+      expenseId: expense.expense.id, body: 'Receipt is on the table.', attachmentRefs: [],
+    })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const secondPage = await ownerRepository.notifications.list({ limit: 100 })
+    expect(secondPage.items).toHaveLength(2)
+    expect(secondPage.items.filter(({ readAt }) => readAt === undefined)).toHaveLength(1)
+    expect(await ownerRepository.notifications.unreadCount()).toBe(1)
+    const latest = secondPage.items[0]!
+    const cutoff = { createdAt: latest.createdAt, id: latest.notificationId }
+    const readAllCommand = { kind: 'notification.read-all' as const, operationId: `notification-read-all-${suffix}`, cutoff }
+    const readAll = await ownerRepository.notifications.markAllRead(readAllCommand)
+    await expect(ownerRepository.notifications.markAllRead(readAllCommand)).resolves.toEqual(readAll)
+    expect(readAll).toMatchObject({ status: 'saved', cutoff, readNotificationIds: [latest.notificationId] })
+    await expect(ownerRepository.notifications.unreadCount()).resolves.toBe(0)
+    expect((await ownerRepository.notifications.list({ limit: 100 })).items.every(({ readAt }) => typeof readAt === 'string')).toBe(true)
+  }, 45_000)
 
   emulatorIt('adds, edits, and soft-deletes one replay-stable expense with shared history and balances', async () => {
     const auth = getAuth(app)

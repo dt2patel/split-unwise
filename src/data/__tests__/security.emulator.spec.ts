@@ -68,6 +68,37 @@ describe('Firestore rules in the emulator', () => {
     await assertSucceeds(setDoc(reference, sparkNotificationPreferences(2, 'preferences-update', 'd'.repeat(48), true, false)))
   })
 
+  emulatorIt('stores only exact owner-private notification receipts and a monotonic read-all cursor', async () => {
+    const activityId = 'activity-notification-a'
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), `groups/group-a/activity/${activityId}`), {
+        groupId: 'group-a', operationId: 'source-notification-a', kind: 'expense.created',
+        subject: { kind: 'expense', id: 'expense-a', label: 'Dinner' }, actor: { id: 'friend', displayName: 'Friend' },
+        expenseId: 'expense-a', resourceToken: 'a'.repeat(48), revision: 1, createdAt: Timestamp.fromDate(new Date('2026-09-01T17:30:00.000Z')),
+      })
+    })
+    const owner = environment.authenticatedContext('active').firestore()
+    const outsider = environment.authenticatedContext('outsider').firestore()
+    const receipt = sparkNotificationReadReceipt(activityId, 'read-notification-a', 'b'.repeat(48))
+    const receiptPath = `users/active/notificationReads/${activityId}`
+
+    await assertSucceeds(setDoc(doc(owner, receiptPath), receipt))
+    await assertSucceeds(getDoc(doc(owner, receiptPath)))
+    await assertFails(getDoc(doc(outsider, receiptPath)))
+    await assertFails(setDoc(doc(outsider, `users/outsider/notificationReads/${activityId}`), receipt))
+    await assertFails(setDoc(doc(owner, 'users/active/notificationReads/activity-forged'), { ...receipt, notificationId: 'activity-forged', activityId: 'activity-forged' }))
+    await assertFails(updateDoc(doc(owner, receiptPath), { readAt: serverTimestamp() }))
+    await assertFails(deleteDoc(doc(owner, receiptPath)))
+
+    const cursorPath = 'users/active/settings/sparkNotificationReadCursor'
+    await assertSucceeds(setDoc(doc(owner, cursorPath), sparkNotificationReadCursor(1, 'read-all-a', 'c'.repeat(48), '2026-09-01T17:30:00.000Z', activityId)))
+    await assertFails(setDoc(doc(outsider, cursorPath), sparkNotificationReadCursor(1, 'read-all-forged', 'd'.repeat(48), '2026-09-01T17:30:00.000Z', activityId)))
+    await assertFails(setDoc(doc(owner, cursorPath), sparkNotificationReadCursor(3, 'read-all-skipped', 'e'.repeat(48), '2026-09-02T08:00:00.000Z', 'activity-notification-b')))
+    await assertFails(setDoc(doc(owner, cursorPath), sparkNotificationReadCursor(2, 'read-all-backward', 'f'.repeat(48), '2026-09-01T16:00:00.000Z', 'activity-notification-old')))
+    await assertSucceeds(setDoc(doc(owner, cursorPath), sparkNotificationReadCursor(2, 'read-all-b', '1'.repeat(48), '2026-09-02T08:00:00.000Z', 'activity-notification-b')))
+    await assertFails(deleteDoc(doc(owner, cursorPath)))
+  })
+
   emulatorIt('permits one complete owner-only group bootstrap and rejects partial or forged groups', async () => {
     const owner = environment.authenticatedContext('new-owner').firestore()
     await assertSucceeds(setDoc(doc(owner, 'users/new-owner'), profile('New Owner', 'NO')))
@@ -340,6 +371,22 @@ function sparkNotificationPreferences(revision: number, operationId: string, tok
     lastCommandKind: 'notification.preferences', lastOperationId: operationId,
     lastRequestFingerprint: token[0]!.repeat(64), lastResourceToken: token,
     updatedAt: serverTimestamp(),
+  }
+}
+
+function sparkNotificationReadReceipt(activityId: string, operationId: string, token: string): Record<string, unknown> {
+  return {
+    schemaVersion: 1, notificationId: activityId, groupId: 'group-a', activityId,
+    sourceCreatedAt: '2026-09-01T17:30:00.000Z', readAt: serverTimestamp(), operationId,
+    requestFingerprint: token[0]!.repeat(64), resourceToken: token,
+  }
+}
+
+function sparkNotificationReadCursor(revision: number, operationId: string, token: string, cutoffCreatedAt: string, cutoffId: string): Record<string, unknown> {
+  return {
+    schemaVersion: 1, revision, cutoffCreatedAt, cutoffId, readNotificationIds: [cutoffId], updatedAt: serverTimestamp(),
+    lastCommandKind: 'notification.read-all', lastOperationId: operationId,
+    lastRequestFingerprint: token[0]!.repeat(64), lastResourceToken: token,
   }
 }
 

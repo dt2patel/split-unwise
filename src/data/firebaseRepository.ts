@@ -3,13 +3,14 @@ import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebas
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationPreferencesResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkProfileUpdateRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
+import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkNotificationReadAllRecord, buildSparkNotificationReadRecord, buildSparkProfileUpdateRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
+import { compareTimelineAscending } from './timeline'
 
 type FirestoreModule = typeof import('firebase/firestore')
 type AuthModule = typeof import('firebase/auth')
@@ -21,6 +22,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   let clientPromise: Promise<FirebaseClient> | undefined
   let callablePromise: Promise<(request: unknown) => Promise<{ readonly data: unknown }>> | undefined
   let currentUserPromise: Promise<Member> | undefined
+  const sparkActivityRequests = new Map<string, Promise<ActivityPage>>()
   const client = () => clientPromise ??= connect(configuration)
 
   async function context(): Promise<FirebaseContext> {
@@ -61,6 +63,98 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       firestore.limit(100),
     ))
     return snapshot.docs.map((document) => decodeSettlement(groupId, document.id, document.data()))
+  }
+  function listAccountActivity(activityQuery: ActivityQuery): Promise<ActivityPage> {
+    if (functionsRegion) return loadAccountActivity(activityQuery)
+    const key = JSON.stringify(activityQuery)
+    const existing = sparkActivityRequests.get(key)
+    if (existing) return existing
+    const pending = loadAccountActivity(activityQuery)
+    sparkActivityRequests.set(key, pending)
+    void pending.then(
+      () => { if (sparkActivityRequests.get(key) === pending) sparkActivityRequests.delete(key) },
+      () => { if (sparkActivityRequests.get(key) === pending) sparkActivityRequests.delete(key) },
+    )
+    return pending
+  }
+  async function loadAccountActivity(activityQuery: ActivityQuery): Promise<ActivityPage> {
+    const { db, firestore, userId } = await context()
+    assertTimelineLimit(activityQuery.limit)
+    const constraints = [
+      ...activityFilterConstraints(firestore, activityQuery.filter),
+      firestore.orderBy('createdAt', 'desc'),
+      firestore.orderBy(firestore.documentId(), 'desc'),
+      ...(activityQuery.cursor ? [firestore.startAfter(activityQuery.cursor.createdAt, activityQuery.cursor.id)] : []),
+      firestore.limit(Math.min(100, activityQuery.limit + 1)),
+    ]
+    if (functionsRegion) {
+      const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'activity'), ...constraints))
+      const decoded = snapshot.docs.map((document) => decodeActivity(String(document.data().groupId ?? ''), document.id, document.data()))
+      return serverPage(decoded, activityQuery.limit, (item) => item.id)
+    }
+    const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()))
+    const pages = await Promise.all(groupIds.map(async (groupId) => {
+      const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), ...constraints))
+      return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
+    }))
+    const decoded = pages.flat().sort(newestActivityFirst).slice(0, activityQuery.limit + 1)
+    return serverPage(decoded, activityQuery.limit, (item) => item.id)
+  }
+  async function listSparkNotifications(notificationQuery: { readonly limit: number; readonly cursor?: TimelineCursor }): Promise<NotificationPage> {
+    assertTimelineLimit(notificationQuery.limit)
+    const source = await listAccountActivity({ filter: 'all', limit: notificationQuery.limit, ...(notificationQuery.cursor ? { cursor: notificationQuery.cursor } : {}) })
+    const readyContext = context()
+    const { userId } = await readyContext
+    const activities = source.items.filter((activity) => activity.actor.id !== userId)
+    const state = await getSparkNotificationReadState(activities, readyContext)
+    const items = activities.map((activity) => activityNotification(userId, activity, state.readAtByNotificationId.get(activity.id)
+      ?? (state.cursor && compareTimelineAscending({ createdAt: activity.createdAt, id: activity.id }, state.cursor) <= 0 ? state.cursorReadAt : undefined)))
+    return { items, ...(source.nextCursor ? { nextCursor: source.nextCursor } : {}) }
+  }
+  async function getSparkNotificationReadState(activities: readonly ActivityItem[], readyContext = context()): Promise<{
+    readonly readAtByNotificationId: ReadonlyMap<string, string>
+    readonly cursor?: TimelineCursor
+    readonly cursorReadAt?: string
+  }> {
+    const { db, firestore, userId } = await readyContext
+    const cursorReference = firestore.doc(db, 'users', userId, 'settings', 'sparkNotificationReadCursor')
+    const chunks = chunk(activities.map(({ id }) => id), 30)
+    const [cursorSnapshot, ...receiptPages] = await Promise.all([
+      firestore.getDoc(cursorReference),
+      ...chunks.map((ids) => firestore.getDocs(firestore.query(
+        firestore.collection(db, 'users', userId, 'notificationReads'),
+        firestore.where(firestore.documentId(), 'in', ids), firestore.limit(ids.length),
+      ))),
+    ])
+    const readAtByNotificationId = new Map<string, string>()
+    for (const page of receiptPages) for (const receipt of page.docs) {
+      const data = receipt.data()
+      if (data.notificationId !== receipt.id || data.activityId !== receipt.id) throw new Error('Notification read receipt is invalid')
+      readAtByNotificationId.set(receipt.id, firebaseTimestamp(data.readAt, 'notification read receipt'))
+    }
+    if (!cursorSnapshot.exists()) return { readAtByNotificationId }
+    const data = cursorSnapshot.data()
+    if (!isRecord(data) || typeof data.cutoffCreatedAt !== 'string' || typeof data.cutoffId !== 'string') throw new Error('Notification read cursor is invalid')
+    return {
+      readAtByNotificationId,
+      cursor: { createdAt: data.cutoffCreatedAt, id: data.cutoffId },
+      cursorReadAt: firebaseTimestamp(data.updatedAt, 'notification read cursor'),
+    }
+  }
+  async function findSparkNotification(notificationId: string, readyContext = context()): Promise<NotificationItem> {
+    const { db, firestore, userId } = await readyContext
+    const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()))
+    const snapshots = await Promise.all(groupIds.map(async (groupId) => ({
+      groupId,
+      snapshot: await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'activity', notificationId)),
+    })))
+    const matches = snapshots.filter(({ snapshot }) => snapshot.exists())
+    if (matches.length !== 1) throw new Error('Notification was not found')
+    const activity = decodeActivity(matches[0]!.groupId, notificationId, matches[0]!.snapshot.data())
+    if (activity.actor.id === userId) throw new Error('A user cannot receive a notification for their own activity')
+    return activityNotification(userId, activity)
   }
   async function getGroupSettings(groupId: string, readyContext = context()): Promise<GroupSettings> {
     const { db, firestore } = await readyContext
@@ -523,6 +617,65 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     }
   }
 
+  async function executeSparkNotificationRead(command: NotificationReadCommand): Promise<NotificationReadResult> {
+    const readyContext = context()
+    const { db, firestore, userId } = await readyContext
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const reference = firestore.doc(db, 'users', userId, 'notificationReads', command.notificationId)
+    const existing = await firestore.getDoc(reference)
+    const notification = await findSparkNotification(command.notificationId, readyContext)
+    if (existing.exists()) {
+      const data = existing.data()
+      if (data.operationId === identity.operationId && (data.requestFingerprint !== identity.requestFingerprint || data.resourceToken !== token)) throw new OperationReplayConflictError()
+      return {
+        kind: command.kind, operationId: command.operationId, status: 'saved',
+        notification: { ...notification, readAt: firebaseTimestamp(data.readAt, 'notification read receipt') },
+      }
+    }
+    const record = buildSparkNotificationReadRecord(command, notification, identity, firestore.serverTimestamp())
+    await firestore.runTransaction(db, async (transaction) => {
+      const saved = await transaction.get(reference)
+      if (saved.exists()) return
+      transaction.set(reference, record.receiptDocument)
+    })
+    const saved = await firestore.getDoc(reference)
+    if (!saved.exists()) throw new Error('Saved notification read receipt is unavailable')
+    return {
+      kind: command.kind, operationId: command.operationId, status: 'saved',
+      notification: { ...notification, readAt: firebaseTimestamp(saved.data().readAt, 'notification read receipt') },
+    }
+  }
+
+  async function executeSparkNotificationReadAll(command: NotificationReadAllCommand): Promise<NotificationReadAllResult> {
+    const readyContext = context()
+    const { db, firestore, userId } = await readyContext
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const reference = firestore.doc(db, 'users', userId, 'settings', 'sparkNotificationReadCursor')
+    const before = await listSparkNotifications({ limit: 100 })
+    const unreadIds = before.items
+      .filter((notification) => notification.readAt === undefined && compareTimelineAscending({ createdAt: notification.createdAt, id: notification.notificationId }, command.cutoff) <= 0)
+      .map(({ notificationId }) => notificationId)
+    await firestore.runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(reference)
+      const current = snapshot.exists() ? snapshot.data() : undefined
+      if (current?.lastOperationId === identity.operationId) {
+        if (current.lastCommandKind !== identity.kind || current.lastRequestFingerprint !== identity.requestFingerprint || current.lastResourceToken !== token) throw new OperationReplayConflictError()
+        return
+      }
+      transaction.set(reference, buildSparkNotificationReadAllRecord(command, current, identity, firestore.serverTimestamp(), unreadIds))
+    })
+    const saved = await firestore.getDoc(reference)
+    const data = saved.data()
+    if (!saved.exists() || !isRecord(data) || data.lastOperationId !== identity.operationId || !Array.isArray(data.readNotificationIds)
+      || data.readNotificationIds.some((notificationId) => typeof notificationId !== 'string')) throw new Error('Saved notification read cursor is unavailable')
+    return {
+      kind: command.kind, operationId: command.operationId, status: 'saved', cutoff: command.cutoff,
+      readNotificationIds: data.readNotificationIds as readonly string[],
+    }
+  }
+
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
     if (!functionsRegion) {
       if (command.kind === 'expense.add') return executeSparkExpenseAdd(command)
@@ -534,7 +687,9 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       if (command.kind === 'group.default-split' || command.kind === 'group.simplify-debts') return executeSparkGroupSettings(command)
       if (command.kind === 'profile.update') return executeSparkProfileUpdate(command)
       if (command.kind === 'notification.preferences') return executeSparkNotificationPreferences(command)
-      return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Secure cloud writes are unavailable because Firebase Functions is not configured.' } as CommandResult
+      if (command.kind === 'notification.read') return executeSparkNotificationRead(command)
+      if (command.kind === 'notification.read-all') return executeSparkNotificationReadAll(command)
+      throw new Error('Unsupported Spark command')
     }
     await context()
     const request = parseExecuteCommandRequest({ schemaVersion: 1, command })
@@ -654,33 +809,11 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'asc'), firestore.orderBy(firestore.documentId(), 'asc'), firestore.limit(100)))
         return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
       },
-      async listForAccount(query) {
-        const { db, firestore, userId } = await context()
-        assertTimelineLimit(query.limit)
-        const constraints = [
-          ...activityFilterConstraints(firestore, query.filter),
-          firestore.orderBy('createdAt', 'desc'),
-          firestore.orderBy(firestore.documentId(), 'desc'),
-          ...(query.cursor ? [firestore.startAfter(query.cursor.createdAt, query.cursor.id)] : []),
-          firestore.limit(query.limit + 1),
-        ]
-        if (functionsRegion) {
-          const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'activity'), ...constraints))
-          const decoded = snapshot.docs.map((document) => decodeActivity(String(document.data().groupId ?? ''), document.id, document.data()))
-          return serverPage(decoded, query.limit, (item) => item.id)
-        }
-        const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
-        const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()))
-        const pages = await Promise.all(groupIds.map(async (groupId) => {
-          const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), ...constraints))
-          return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
-        }))
-        const decoded = pages.flat().sort(newestActivityFirst).slice(0, query.limit + 1)
-        return serverPage(decoded, query.limit, (item) => item.id)
-      },
+      listForAccount: listAccountActivity,
     },
     notifications: {
       async list(query) {
+        if (!functionsRegion) return listSparkNotifications(query)
         const { db, firestore, userId } = await context()
         assertTimelineLimit(query.limit)
         const snapshot = await firestore.getDocs(firestore.query(
@@ -693,6 +826,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         return serverPage(snapshot.docs.map((document) => decodeNotification(userId, document.id, document.data())), query.limit, (item) => item.notificationId)
       },
       async unreadCount() {
+        if (!functionsRegion) return (await listSparkNotifications({ limit: 100 })).items.filter(({ readAt }) => readAt === undefined).length
         const { db, firestore, userId } = await context()
         const cursor = await firestore.getDoc(firestore.doc(db, 'users', userId, 'settings', 'notificationReadCursor'))
         const projected = cursor.exists() ? cursor.data().unreadCount : undefined
@@ -747,6 +881,30 @@ function sameExpenseActivity(left: ActivityItem, right: ActivityItem): boolean {
     && left.kind === right.kind && left.subject.kind === right.subject.kind && left.subject.id === right.subject.id
     && left.subject.label === right.subject.label && left.actor.id === right.actor.id && left.actor.displayName === right.actor.displayName
     && left.expenseId === right.expenseId && left.revision === right.revision && left.createdAt === right.createdAt
+}
+
+function activityNotification(principalId: string, activity: ActivityItem, readAt?: string): NotificationItem {
+  return {
+    notificationId: activity.id, principalId, groupId: activity.groupId, activityId: activity.id,
+    kind: activity.kind, subject: { ...activity.subject }, actor: { ...activity.actor }, createdAt: activity.createdAt,
+    ...(readAt ? { readAt } : {}), syncState: 'fresh',
+  }
+}
+
+function firebaseTimestamp(value: unknown, label: string): string {
+  const date = typeof value === 'string'
+    ? new Date(value)
+    : value !== null && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function'
+      ? (value as { toDate(): Date }).toDate()
+      : undefined
+  if (!date || Number.isNaN(date.getTime())) throw new Error(`${label} timestamp is invalid`)
+  return date.toISOString()
+}
+
+function chunk<T>(values: readonly T[], size: number): readonly (readonly T[])[] {
+  const chunks: T[][] = []
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size))
+  return chunks
 }
 
 function settlementBasisMatches(snapshot: GroupBalanceSnapshot, command: SettlementRecordCommand): boolean {

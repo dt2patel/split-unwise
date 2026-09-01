@@ -164,7 +164,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
   })
 
   it('uses server ordering, limit-plus-one, and cursor continuation for notifications', async () => {
-    const repository = createFirebaseRepository(configuration)
+    const repository = createFirebaseRepository(configuration, undefined, 'us-central1')
     const first = await repository.notifications.list({ limit: 1 })
     expect(first.items).toHaveLength(1)
     expect(firebase.queries.at(-1)?.constraints).toEqual(expect.arrayContaining([
@@ -180,7 +180,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
   })
 
   it('uses explicit null for unread documents so listing and authoritative count agree', async () => {
-    const repository = createFirebaseRepository(configuration)
+    const repository = createFirebaseRepository(configuration, undefined, 'us-central1')
     const listed = await repository.notifications.list({ limit: 10 })
     expect(listed.items.filter(({ readAt }) => readAt === undefined)).toHaveLength(2)
     await expect(repository.notifications.unreadCount()).resolves.toBe(2)
