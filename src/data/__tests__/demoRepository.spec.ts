@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CommandConflictError } from '../commandQueue'
 import { createDemoRepository } from '../demoRepository'
 import type { ExpenseDraft } from '../repositories'
+import { lakeHouseGroup } from '../../demo/lakeHouse'
 
 describe('demo repository', () => {
   it('returns the deterministic Lake House group journal and derived views', async () => {
@@ -14,7 +15,7 @@ describe('demo repository', () => {
     await expect(repository.groups.getById('lake-house-weekend')).resolves.toMatchObject({
       id: 'lake-house-weekend',
       name: 'Lake House Weekend',
-      coverImageUrl: '/assets/images/lake-house-cover.png',
+      coverImageUrl: lakeHouseGroup.coverImageUrl,
     })
     await expect(repository.groups.listMembers('lake-house-weekend')).resolves.toEqual([
       expect.objectContaining({ id: 'maya-p', displayName: 'Maya P.' }),

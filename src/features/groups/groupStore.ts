@@ -73,6 +73,15 @@ export const useGroupStore = defineStore('groups', () => {
     }
   }
 
+  async function loadGroupList(): Promise<void> {
+    try {
+      await (session as typeof session & { readonly ready?: Promise<void> }).ready
+      groups.value = await repository.groups.list()
+    } catch (reason) {
+      if (!activeGroup.value) error.value = messageFor(reason)
+    }
+  }
+
   async function loadGroup(groupId: string): Promise<void> {
     const request = ++latestGroupRequest
     isLoading.value = true
@@ -203,6 +212,7 @@ export const useGroupStore = defineStore('groups', () => {
     isLoading,
     error,
     loadOverview,
+    loadGroupList,
     loadGroup,
     positionFor,
     payerName,

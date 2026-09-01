@@ -1,4 +1,5 @@
 import type { ActivityItem, ActorSnapshot, ExpenseComment, ExpenseRow, Group, Member, NotificationItem, RecurringExpense } from '../data/repositories'
+import lakeHouseCoverUrl from '../assets/lake-house-cover.jpg'
 
 export const LAKE_HOUSE_GROUP_ID = 'lake-house-weekend'
 
@@ -27,7 +28,7 @@ export const lakeHouseGroup: Group = {
   id: LAKE_HOUSE_GROUP_ID,
   name: 'Lake House Weekend',
   currency: 'USD',
-  coverImageUrl: '/assets/images/lake-house-cover.png',
+  coverImageUrl: lakeHouseCoverUrl,
   memberIds: lakeHouseMembers.map(({ id }) => id),
   syncState: 'fresh',
 }

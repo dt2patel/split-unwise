@@ -23,6 +23,8 @@ export interface ReceiptBlobStore {
   /** Prevents stale editor cleanup from deleting a local asset captured by a durable command. */
   claim(reference: LocalReceiptReference, operationId: string): Promise<boolean>
   delete(reference: LocalReceiptReference): Promise<void>
+  /** Counts device-only receipt drafts that must survive an app-shell update. */
+  countUnuploaded?(): Promise<number>
   /** Clears every receipt in this already principal-scoped store. */
   clear?(): Promise<void>
 }
@@ -84,6 +86,7 @@ export function createMemoryReceiptStore(options: ReceiptStoreOptions = {}): Rec
       if (assets.get(reference)?.commandOperationIds.length) return
       assets.delete(reference)
     },
+    async countUnuploaded() { return [...assets.values()].filter(({ durability }) => durability.status !== 'uploaded').length },
     async clear() { assets.clear() },
   }
 }
@@ -133,6 +136,10 @@ export function createIndexedDbReceiptStore(options: ReceiptStoreOptions & { rea
         }
         read.onerror = () => fail(read.error ?? new Error('Receipt cleanup could not be read'))
       })
+    },
+    async countUnuploaded() {
+      const assets = await requestFrom(getDatabase(), 'readonly', (store) => store.getAll()) as ReceiptAsset[]
+      return assets.filter(({ durability }) => durability.status !== 'uploaded').length
     },
     async clear() { await requestFrom(getDatabase(), 'readwrite', (store) => store.clear()) },
   }

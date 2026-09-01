@@ -392,6 +392,7 @@ function deferredReceiptStore(
     async setDurability(reference, durability) { await (await resolved()).setDurability(reference, durability) },
     async claim(reference, operationId) { return (await resolved()).claim(reference, operationId) },
     async delete(reference) { await (await resolved()).delete(reference) },
+    async countUnuploaded() { return (await resolved()).countUnuploaded?.() ?? 0 },
     async clear() { await (await resolved()).clear?.() },
   }
 }

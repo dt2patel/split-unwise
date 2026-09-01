@@ -10,6 +10,7 @@ import { appPrincipalKey } from './data/principal'
 import { createIndexedDbReceiptStore } from './data/receipts'
 import { createFirebaseReceiptProvider } from './data/firebaseReceiptProvider'
 import { setAuthService } from './features/auth/authService'
+import { registerPwa } from './app/pwa'
 import './app/theme.css'
 
 const repositoryRuntime = await createRepositorySessionRuntime()
@@ -35,6 +36,7 @@ function unmountIndependentSurface(): void {
 }
 
 await mountIndependentSurface()
+void registerPwa()
 const mountHost = createAppSessionMountHost({
   setSession: setActiveAppSession,
   async mount(session) {

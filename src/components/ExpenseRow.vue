@@ -147,17 +147,17 @@ watch(
 .expense-row--journal { min-height: 83px; border-color: color-mix(in srgb, var(--su-divider) 42%, transparent); }
 .expense-row--journal .expense-row__body { grid-template-columns: 30px 44px minmax(0, 1fr) var(--su-financial-track) var(--su-financial-track); column-gap: 8px; min-height: 83px; padding: 7px 0; }
 .expense-row__date { display: grid; align-self: center; color: var(--ion-color-medium); line-height: 1; text-align: center; }
-.expense-row__date span { font-size: 0.64rem; font-weight: 560; }
+.expense-row__date span { font-size: 0.72rem; font-weight: 560; }
 .expense-row__date strong { margin-top: 5px; font-size: 1.22rem; font-weight: 450; }
 .expense-row--journal .expense-row__summary { gap: 2px; }
 .expense-row--journal .expense-row__summary strong { font-size: 0.91rem; line-height: 1.15; }
-.expense-row--journal .expense-row__summary > span { font-size: 0.68rem; line-height: 1.22; }
-.expense-row--journal .expense-row__summary :deep(.sync-status) { justify-self: start; font-size: 0.68rem; }
+.expense-row--journal .expense-row__summary > span { font-size: 0.72rem; line-height: 1.28; }
+.expense-row--journal .expense-row__summary :deep(.sync-status) { justify-self: start; font-size: 0.72rem; }
 .expense-row__sync-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 0 7px 82px; }
 .expense-row__sync-actions button { min-width: 44px; min-height: 44px; margin: -5px 0; padding: 0 5px; border: 0; background: transparent; color: var(--ion-color-primary); font: inherit; font-weight: 650; }
 .expense-row__conflict-versions { display: grid; gap: 6px; }
 .expense-row__conflict-versions section { display: grid; gap: 2px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--su-divider) 72%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--su-surface) 92%, var(--su-lilac)); }
-.expense-row__conflict-versions section > span { color: var(--ion-color-medium); font-size: 0.68rem; font-weight: 650; }
+.expense-row__conflict-versions section > span { color: var(--ion-color-medium); font-size: 0.72rem; font-weight: 650; }
 .expense-row__conflict-versions :deep(.money-amount) { justify-self: start; font-size: 0.72rem; }
 .expense-row__sync-actions--conflict { flex-wrap: wrap; }
 .expense-row--journal .expense-row__amount { font-size: 0.78rem; }

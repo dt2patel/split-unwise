@@ -9,6 +9,7 @@ import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQ
 import { createDemoRepository } from '../../../data/demoRepository'
 import type { ExpenseRow } from '../../../data/repositories'
 import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
+import { lakeHouseGroup } from '../../../demo/lakeHouse'
 
 const ORIGIN_UID = 'maya-p'
 const PRINCIPAL_KEY = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: ORIGIN_UID })
@@ -16,6 +17,9 @@ const groupDetailSource = readFileSync(resolve(process.cwd(), 'src/features/grou
 
 const ionicStubs = {
   IonPage: { template: '<main class="ion-page"><slot /></main>' },
+  IonSplitPane: { template: '<div data-testid="split-pane"><slot /></div>' },
+  IonMenu: { template: '<aside><slot /></aside>' },
+  IonList: { template: '<div><slot /></div>' },
   IonHeader: { template: '<header><slot /></header>' },
   IonToolbar: { template: '<div><slot /></div>' },
   IonTitle: { template: '<div><slot /></div>' },
@@ -74,7 +78,8 @@ describe('Lake House group journal', () => {
     const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
 
     expect(wrapper.get('h1').text()).toBe('Lake House Weekend')
-    expect(wrapper.get('[data-testid="group-cover"]').attributes('src')).toBe('/assets/images/lake-house-cover.png')
+    expect(wrapper.get('[data-testid="group-cover"]').attributes('src')).toBe(lakeHouseGroup.coverImageUrl)
+    expect(wrapper.find('[data-testid="group-split-pane"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="group-monogram"]').text()).toBe('LW')
     expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('You are owed')
     expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$36.25')
@@ -175,7 +180,7 @@ describe('Lake House group journal', () => {
   it('marks the hero collapsed after the journal scroll threshold', async () => {
     const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
 
-    wrapper.getComponent({ name: 'IonContent' }).vm.$emit('ionScroll', { detail: { scrollTop: 96 } })
+    wrapper.findAllComponents({ name: 'IonContent' })[1].vm.$emit('ionScroll', { detail: { scrollTop: 96 } })
     await wrapper.vm.$nextTick()
     expect(wrapper.get('[data-testid="group-detail"]').classes()).toContain('group-detail--collapsed')
   })

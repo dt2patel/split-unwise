@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import {
@@ -11,11 +11,14 @@ import {
   IonHeader,
   IonIcon,
   IonLabel,
+  IonList,
+  IonMenu,
   IonPage,
   IonSegment,
   IonSegmentButton,
   IonTitle,
   IonToolbar,
+  IonSplitPane,
   onIonViewWillEnter,
 } from '@ionic/vue'
 import { listOutline, settingsOutline, timeOutline } from 'ionicons/icons'
@@ -31,7 +34,7 @@ type GroupView = 'expenses' | 'activity'
 
 const route = useRoute()
 const store = useGroupStore()
-const { activeGroup, currentUserNets, error, isLoading, journalExpenses, recentActivity } = storeToRefs(store)
+const { activeGroup, currentUserNets, error, groups, isLoading, journalExpenses, recentActivity } = storeToRefs(store)
 const selectedView = ref<GroupView>('expenses')
 const isCollapsed = ref(false)
 const groupId = computed(() => String(route.params.groupId ?? ''))
@@ -57,6 +60,7 @@ const groupedActivity = computed(() => {
 watch(groupId, (id) => {
   if (id) void store.loadGroup(id)
 }, { immediate: true })
+onMounted(() => { if (!groups.value.length) void store.loadGroupList() })
 onIonViewWillEnter(() => { void refreshOnViewEntry() })
 
 async function refreshOnViewEntry(): Promise<void> {
@@ -101,6 +105,23 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
 
 <template>
   <ion-page data-testid="group-detail" class="group-detail" :class="{ 'group-detail--collapsed': isCollapsed }">
+    <ion-split-pane content-id="group-detail-content" when="md" data-testid="group-split-pane">
+      <ion-menu content-id="group-detail-content" type="overlay" class="group-detail__master" menu-id="groups-master">
+        <ion-header translucent><ion-toolbar><ion-title>Groups</ion-title></ion-toolbar></ion-header>
+        <ion-content>
+          <nav aria-label="Your groups">
+            <ion-list lines="none">
+              <router-link v-for="group in groups" :key="group.id" :to="`/tabs/groups/${group.id}`" class="master-group" :class="{ 'master-group--active': group.id === groupId }" :aria-current="group.id === groupId ? 'page' : undefined">
+                <img v-if="group.coverImageUrl" :src="group.coverImageUrl" alt="" aria-hidden="true">
+                <span v-else class="master-group__monogram" aria-hidden="true">{{ group.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() }}</span>
+                <span><strong>{{ group.name }}</strong><small>{{ group.memberIds.length }} people · {{ group.currency }}</small></span>
+              </router-link>
+            </ion-list>
+          </nav>
+        </ion-content>
+      </ion-menu>
+
+      <section id="group-detail-content" class="ion-page group-detail__detail">
     <ion-header class="group-detail__header" translucent>
       <ion-toolbar>
         <ion-buttons slot="start">
@@ -120,7 +141,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
       </ion-toolbar>
     </ion-header>
 
-    <ion-content :fullscreen="true" :scroll-events="true" @ion-scroll="onScroll">
+    <ion-content class="group-detail__scroller" data-testid="group-detail-scroll" :fullscreen="true" :scroll-events="true" @ion-scroll="onScroll">
       <p v-if="isLoading && !activeGroup" class="group-detail__status" role="status">Loading group…</p>
       <main v-else-if="activeGroup" class="group-detail__main">
         <group-hero :group="activeGroup" :balances="currentUserNets" :collapsed="isCollapsed" />
@@ -196,11 +217,17 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
         </ion-segment-button>
       </ion-segment>
     </ion-footer>
+      </section>
+    </ion-split-pane>
   </ion-page>
 </template>
 
 <style scoped>
 .group-detail { --su-journal-gutter: 18px; }
+.group-detail ion-split-pane { --side-width: 310px; --side-max-width: 340px; --border: 1px solid color-mix(in srgb, var(--su-divider) 28%, transparent); }
+.group-detail__detail { position: relative; min-width: 0; background: var(--su-surface); }
+.group-detail__master { --width: 310px; --max-width: 340px; }.group-detail__master ion-toolbar { --min-height: 58px; }.group-detail__master ion-list { padding: 8px; background: transparent; }
+.master-group { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 11px; min-height: 64px; padding: 7px 9px; border-radius: 14px; color: inherit; text-decoration: none; }.master-group img,.master-group__monogram { display: grid; width: 48px; height: 48px; place-items: center; border-radius: 14px; object-fit: cover; background: var(--su-indigo); color: #fff; font-weight: 700; }.master-group>span:last-child { display: grid; min-width: 0; gap: 3px; }.master-group strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.master-group small { color: var(--ion-color-medium); }.master-group--active { background: color-mix(in srgb, var(--su-lilac) 78%, var(--su-surface)); color: var(--ion-color-primary); }
 .group-detail__header ion-toolbar { --min-height: 58px; --border-color: color-mix(in srgb, var(--su-divider) 34%, transparent); }
 .group-detail__header ion-title { font-size: 1rem; font-weight: 680; }
 .group-detail__header ion-button { width: 44px; height: 44px; margin: 0; font-size: 1.35rem; }
@@ -230,4 +257,5 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
   .journal-fade-enter-from,
   .journal-fade-leave-to { transform: none; }
 }
+@media (min-width: 768px) { .group-detail { --su-journal-gutter: clamp(22px, 4vw, 42px); }.group-detail__main { max-width: 760px; margin: 0 auto; }.group-detail__footer { padding-inline: clamp(22px, 4vw, 42px); }.group-detail__header ion-back-button { display: none; } }
 </style>

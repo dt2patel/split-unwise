@@ -46,7 +46,12 @@ body {
   background: var(--su-surface);
   color: var(--su-text);
   font-family: inherit;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
+
+button, input, select, textarea { font-size: max(16px, 1rem); }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--ion-color-primary) 58%, transparent); outline-offset: 2px; }
 
 :root.su-theme-dark {
   --su-surface: #17152A; --su-surface-rgb: 23, 21, 42; --su-text: #F7F5FF; --su-text-rgb: 247, 245, 255; --su-lilac: #29234B; --su-avatar-bg: #30295A; --su-avatar-fg: #F0EAFF; --su-category-fg: #C7BCFF; --su-divider: #9895A9; --su-owed: #7BE0A8; --su-owing: #FFB4A9; --ion-color-primary: #A897FF; --ion-color-primary-rgb: 168, 151, 255; --ion-color-primary-contrast: #000000; --ion-color-primary-contrast-rgb: 0, 0, 0; --ion-color-primary-shade: #9485E0; --ion-color-primary-tint: #B1A3FF;

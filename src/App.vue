@@ -3,6 +3,7 @@ import { IonApp, IonRouterOutlet } from '@ionic/vue'
 import AuthPage from './features/auth/AuthPage.vue'
 import InvitationLandingPage from './features/invitations/InvitationLandingPage.vue'
 import { peekActiveAppSession } from './data/session'
+import AppStatus from './components/AppStatus.vue'
 
 const ownsFeatureSession = Boolean(peekActiveAppSession())
 const isInvitationPath = typeof location !== 'undefined' && /^\/invite\/[A-Za-z0-9._~-]+$/.test(location.pathname)
@@ -10,6 +11,7 @@ const isInvitationPath = typeof location !== 'undefined' && /^\/invite\/[A-Za-z0
 
 <template>
   <ion-app mode="ios">
+    <app-status />
     <ion-router-outlet v-if="ownsFeatureSession" />
     <invitation-landing-page v-else-if="isInvitationPath" />
     <auth-page v-else />

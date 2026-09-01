@@ -426,7 +426,7 @@ function operationStatus(status: string): string {
 .settle-card__title, .settle-card__title > div { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
 .settle-card__title > div > span { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 9px; background: var(--su-lilac); color: var(--ion-color-primary); font-size: .75rem; font-weight: 800; }
 .settle-card__title h2 { margin: 0; font-size: .98rem; }
-.settle-card__title small { color: var(--ion-color-medium); font-size: .68rem; }
+.settle-card__title small { color: var(--ion-color-medium); font-size: .72rem; }
 .settle-form__segment { min-height: 44px; margin-top: 14px; border-radius: 12px; background: color-mix(in srgb, var(--su-lilac) 48%, var(--su-surface)); }
 .settle-form__segment ion-segment-button { min-height: 44px; --border-radius: 10px; --color-checked: var(--ion-color-primary); --indicator-color: var(--su-surface); text-transform: none; }
 .currency-picker { margin-top: 12px; }
@@ -450,7 +450,7 @@ function operationStatus(status: string): string {
 .field--amount > div { position: relative; }
 .field--amount > div > span { position: absolute; top: 50%; left: 12px; transform: translateY(-50%); color: var(--ion-color-primary); font-size: .73rem; font-weight: 750; }
 .field--amount input { padding-left: 48px; font-variant-numeric: tabular-nums; }
-.field > small, .field span small { color: var(--ion-color-medium); font-size: .68rem; font-weight: 450; }
+.field > small, .field span small { color: var(--ion-color-medium); font-size: .72rem; font-weight: 450; }
 .provider-card > p { margin: 10px 0; color: var(--ion-color-medium); font-size: .78rem; line-height: 1.4; }
 .provider-card ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .provider-card li { min-height: 44px; padding: 10px 12px; border-radius: 11px; background: color-mix(in srgb, var(--su-lilac) 32%, var(--su-surface)); font-size: .75rem; line-height: 1.35; }

@@ -3,5 +3,6 @@ dist/
 functions/lib/
 *-debug.log
 .playwright-cli/
+artifacts/
 .DS_Store
 *.local
