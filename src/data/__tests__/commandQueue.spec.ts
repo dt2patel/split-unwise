@@ -80,7 +80,7 @@ describe('CommandQueue', () => {
     await expect(queue.submit(command).result()).rejects.toMatchObject({ code: 'validation' })
   })
 
-  it('accepts and persists typed recurrence materialization and cancellation results', async () => {
+  it('accepts typed recurrence results and semantic replay after a mutable occurrence date edit', async () => {
     const template: RecurringExpense = {
       id: 'recurring-rent', groupId: 'lake-house-weekend', status: 'active', description: 'Rent',
       total: { currency: 'USD', minorAmount: 2400 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2400 } }],
@@ -116,7 +116,7 @@ describe('CommandQueue', () => {
       handlers: {
         'recurrence.materialize': async () => ({
           kind: semanticReplay.kind, operationId: semanticReplay.operationId, status: 'saved', template,
-          occurrence: { ...occurrence, updatedAt: '2026-10-02T12:00:00.000Z', revision: 2, deletedAt: '2026-10-02T12:00:00.000Z' },
+          occurrence: { ...occurrence, date: '2026-10-02', updatedAt: '2026-10-02T12:00:00.000Z', revision: 2, deletedAt: '2026-10-02T12:00:00.000Z' },
         }),
       },
     })

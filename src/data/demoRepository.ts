@@ -490,7 +490,8 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         const occurrenceId = recurringOccurrenceId(command.templateId, command.occurrenceDate)
         const existing = expenses.find((item) => item.id === occurrenceId && item.groupId === command.groupId)
         if (existing) {
-          if (existing.recurringTemplateId !== template.id || existing.date !== command.occurrenceDate) throw new Error('Recurring occurrence identity conflicts with an existing expense')
+          if (existing.id !== occurrenceId || existing.groupId !== command.groupId || existing.recurringTemplateId !== template.id
+            || template.nextDate <= command.occurrenceDate) throw new Error('Recurring occurrence identity conflicts with an existing expense')
           return { kind: command.kind, operationId: command.operationId, status: 'saved', template: clone(template), occurrence: cloneExpense(existing) }
         }
         if (template.status !== 'active') throw new Error('Recurring template is not active')
@@ -574,9 +575,10 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         assertLakeHouseGroup(groupId)
         checkedIsoDate(throughDate, 'Through date')
         assertMaterializationLimit(maxOccurrences)
+        const templates = recurring.filter((item) => item.groupId === groupId).map(clone)
         const occurrences: ExpenseRow[] = []
         while (occurrences.length < maxOccurrences) {
-          const template = recurring.filter((item) => item.groupId === groupId && item.status === 'active' && item.nextDate <= throughDate)
+          const template = templates.filter((item) => item.status === 'active' && item.nextDate <= throughDate)
             .sort((left, right) => left.nextDate.localeCompare(right.nextDate) || left.id.localeCompare(right.id))[0]
           if (!template) break
           const command = {
@@ -586,8 +588,9 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
           const result = await execute(command)
           if (result.kind !== 'recurrence.materialize' || result.status !== 'saved') throw new Error('Recurring occurrence could not be materialized')
           occurrences.push(cloneExpense(result.occurrence))
+          templates[templates.indexOf(template)] = clone(result.template)
         }
-        const moreRemain = recurring.some((item) => item.groupId === groupId && item.status === 'active' && item.nextDate <= throughDate)
+        const moreRemain = templates.some((item) => item.status === 'active' && item.nextDate <= throughDate)
         return { occurrences, moreRemain }
       },
       setDefaultSplit: execute,

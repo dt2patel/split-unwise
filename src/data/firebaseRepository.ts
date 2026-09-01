@@ -774,7 +774,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       const currentTemplate = decodeRecurringExpense(command.groupId, command.templateId, templateSnapshot.data())
       if (occurrenceSnapshot.exists()) {
         const existing = decodeExpense(command.groupId, occurrenceId, occurrenceSnapshot.data())
-        if (existing.recurringTemplateId !== command.templateId || existing.date !== command.occurrenceDate
+        if (existing.id !== occurrenceId || existing.groupId !== command.groupId || existing.recurringTemplateId !== command.templateId
           || currentTemplate.nextDate <= command.occurrenceDate) throw new OperationReplayConflictError()
         return
       }
@@ -790,7 +790,9 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (!savedOccurrence.exists() || !savedTemplate.exists()) throw new Error('Saved recurring occurrence is unavailable')
     const occurrence = await resolveSparkExpenseHead(db, firestore, command.groupId, occurrenceId, savedOccurrence.data())
     const template = decodeRecurringExpense(command.groupId, command.templateId, savedTemplate.data())
-    if (occurrence.recurringTemplateId !== template.id || occurrence.date !== command.occurrenceDate) throw new OperationReplayConflictError()
+    if (occurrence.id !== occurrenceId || occurrence.groupId !== command.groupId || occurrence.recurringTemplateId !== command.templateId
+      || template.id !== command.templateId || template.groupId !== command.groupId
+      || template.nextDate <= command.occurrenceDate) throw new OperationReplayConflictError()
     return { kind: command.kind, operationId: command.operationId, status: 'saved', template, occurrence }
   }
 
@@ -898,9 +900,10 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       listRecurring,
       async materializeDue(groupId, throughDate, maxOccurrences = 24) {
         assertMaterializationRequest(throughDate, maxOccurrences)
+        const templates = [...await listRecurring(groupId)]
         const occurrences: ExpenseRow[] = []
         while (occurrences.length < maxOccurrences) {
-          const template = (await listRecurring(groupId)).filter((item) => item.status === 'active' && item.nextDate <= throughDate)
+          const template = templates.filter((item) => item.status === 'active' && item.nextDate <= throughDate)
             .sort((left, right) => left.nextDate.localeCompare(right.nextDate) || left.id.localeCompare(right.id))[0]
           if (!template) break
           const command: RecurrenceMaterializeCommand = {
@@ -911,8 +914,9 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           const result = await execute(command)
           if (result.kind !== 'recurrence.materialize' || result.status !== 'saved') throw new Error('Recurring occurrence could not be materialized')
           occurrences.push(result.occurrence)
+          templates[templates.indexOf(template)] = result.template
         }
-        const moreRemain = (await listRecurring(groupId)).some((template) => template.status === 'active' && template.nextDate <= throughDate)
+        const moreRemain = templates.some((template) => template.status === 'active' && template.nextDate <= throughDate)
         return { occurrences, moreRemain }
       },
       setDefaultSplit: execute,

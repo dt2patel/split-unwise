@@ -160,6 +160,27 @@ describe('demo repository', () => {
     await expect(repository.groups.listRecurring('lake-house-weekend')).resolves.toEqual(before)
   })
 
+  it('semantically replays an occurrence after an occurrence-only date edit', async () => {
+    const repository = createDemoRepository()
+    const materialize = {
+      kind: 'recurrence.materialize' as const, operationId: 'materialize-cabin-before-date-edit', groupId: 'lake-house-weekend',
+      templateId: 'cabin-deposit-monthly', occurrenceDate: '2026-09-28',
+    }
+    const first = await repository.commands.execute(materialize)
+    if (first.kind !== 'recurrence.materialize' || first.status !== 'saved') throw new Error('Expected materialized occurrence')
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'move-cabin-occurrence-date', groupId: 'lake-house-weekend', expenseId: first.occurrence.id, expectedRevision: 1,
+      draft: { ...firewoodDraft(), date: '2026-09-29', occurrenceEditScope: 'occurrence' },
+    })
+
+    await expect(repository.commands.execute({ ...materialize, operationId: 'semantic-replay-after-date-edit' })).resolves.toMatchObject({
+      status: 'saved', occurrence: { id: 'occ_cabin-deposit-monthly_2026-09-28', date: '2026-09-29', revision: 2 },
+      template: { nextDate: '2026-10-28', revision: 2 },
+    })
+    expect((await repository.expenses.listForGroup('lake-house-weekend')).filter(({ id }) => id === first.occurrence.id)).toHaveLength(1)
+    expect((await repository.activity.listForGroup('lake-house-weekend')).filter(({ kind, expenseId }) => kind === 'expense.created' && expenseId === first.occurrence.id)).toHaveLength(1)
+  })
+
   it('keeps the source expense eligible for a future edit before any occurrence exists', async () => {
     const repository = createDemoRepository()
     const source = await repository.expenses.add({

@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const firebase = vi.hoisted(() => ({
   queries: [] as Array<{ base: { path: string }; constraints: readonly Record<string, unknown>[] }>,
   expenseDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
+  recurringDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
+  revisionDocuments: {} as Record<string, { id: string; data: () => Record<string, unknown> }>,
   settlementDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   balanceDocument: undefined as { data: () => Record<string, unknown> } | undefined,
   settingsDocument: undefined as { data: () => Record<string, unknown> } | undefined,
@@ -34,6 +36,7 @@ vi.mock('firebase/firestore', () => {
   const query = (base: { path: string }, ...constraints: readonly Record<string, unknown>[]) => ({ base, constraints })
   const dataFor = (path: string) => path === 'users/maya-p/groups' ? firebase.groupProjectionDocuments
     : path.endsWith('/expenses') ? firebase.expenseDocuments
+    : path.endsWith('/recurringTemplates') ? firebase.recurringDocuments
     : path.endsWith('/settlements') ? firebase.settlementDocuments
     : path === 'users/maya-p/activity' ? firebase.activityDocuments
       : path.endsWith('/activity') ? firebase.groupActivityDocuments[path] ?? []
@@ -61,17 +64,58 @@ vi.mock('firebase/firestore', () => {
     if (typeof cap === 'number') docs = docs.slice(0, cap)
     return { docs, size: docs.length }
   }
-  const getDoc = async (reference: { path: string; id: string }) => {
-    firebase.documentReads.push(reference.path)
+  const snapshotFor = (reference: { path: string; id: string }) => {
     const found = reference.path === 'users/maya-p' ? firebase.profileDocument
       : reference.path.startsWith('groups/') && reference.path.split('/').length === 2 ? firebase.groupDocuments[reference.path]
+      : reference.path === 'groups/lake-house-weekend/members/maya-p' ? documentValue('maya-p', { status: 'active', displayName: 'Maya P.', canManage: true })
       : reference.path.endsWith('/balance/current') ? firebase.balanceDocument
       : reference.path.endsWith('/settings/defaults') ? firebase.settingsDocument
+      : reference.path.includes('/recurringTemplates/') ? firebase.recurringDocuments.find(({ id }) => id === reference.id)
+      : reference.path.includes('/revisions/') ? firebase.revisionDocuments[reference.path]
       : reference.path.includes('/expenses/') ? firebase.expenseDocuments.find(({ id }) => id === reference.id)
-        : reference.path.includes('/settlements/') ? firebase.settlementDocuments.find(({ id }) => id === reference.id) : undefined
+      : reference.path.includes('/settlements/') ? firebase.settlementDocuments.find(({ id }) => id === reference.id)
+      : reference.path.includes('/activity/') ? (firebase.groupActivityDocuments[reference.path.split('/').slice(0, 3).join('/')] ?? []).find(({ id }) => id === reference.id)
+        : undefined
     return { id: reference.id, exists: () => found !== undefined, data: () => found?.data() }
   }
-  return { collection, doc, documentId: () => '__name__', getDoc, getDocs, getFirestore: () => ({}), limit, orderBy, query, startAfter, where }
+  const getDoc = async (reference: { path: string; id: string }) => {
+    firebase.documentReads.push(reference.path)
+    return snapshotFor(reference)
+  }
+  const setDocument = (reference: { path: string; id: string }, value: Record<string, unknown>) => {
+    const saved = documentValue(reference.id, value)
+    if (reference.path.includes('/revisions/')) {
+      firebase.revisionDocuments[reference.path] = saved
+    } else if (reference.path.includes('/recurringTemplates/')) {
+      upsert(firebase.recurringDocuments, saved)
+    } else if (reference.path.includes('/expenses/')) {
+      upsert(firebase.expenseDocuments, saved)
+    } else if (reference.path.includes('/activity/')) {
+      const collectionPath = reference.path.split('/').slice(0, 3).join('/')
+      const documents = firebase.groupActivityDocuments[collectionPath] ??= []
+      upsert(documents, saved)
+    }
+  }
+  const runTransaction = async (_db: unknown, callback: (transaction: {
+    get(reference: { path: string; id: string }): Promise<ReturnType<typeof snapshotFor>>
+    set(reference: { path: string; id: string }, value: Record<string, unknown>): void
+  }) => Promise<unknown>) => callback({
+    get: async (reference) => snapshotFor(reference),
+    set: setDocument,
+  })
+  return {
+    collection, doc, documentId: () => '__name__', getDoc, getDocs, getFirestore: () => ({}), limit, orderBy, query, runTransaction,
+    serverTimestamp: () => '2026-09-01T12:00:00.000Z', startAfter, where,
+  }
+
+  function documentValue(id: string, value: Record<string, unknown>) {
+    return { id, data: () => structuredClone(value) }
+  }
+  function upsert(documents: Array<{ id: string; data: () => Record<string, unknown> }>, saved: { id: string; data: () => Record<string, unknown> }) {
+    const index = documents.findIndex(({ id }) => id === saved.id)
+    if (index === -1) documents.push(saved)
+    else documents[index] = saved
+  }
 })
 
 import { createFirebaseRepository } from '../firebaseRepository'
@@ -84,6 +128,8 @@ describe('Task 7 Firebase repository query boundaries', () => {
   beforeEach(() => {
     firebase.queries.length = 0
     firebase.expenseDocuments = [document('live-expense', expenseData()), document('deleted-expense', { ...expenseData(), deletedAt: '2026-08-31T12:00:00.000Z' })]
+    firebase.recurringDocuments = []
+    firebase.revisionDocuments = {}
     firebase.settlementDocuments = [document('settlement-a', settlementData())]
     firebase.balanceDocument = document('current', balanceData())
     firebase.settingsDocument = document('defaults', { schemaVersion: 1, groupId: 'lake-house-weekend', revision: 3 })
@@ -257,6 +303,62 @@ describe('Task 7 Firebase repository query boundaries', () => {
     firebase.settingsDocument = document('defaults', { schemaVersion: 1, groupId: 'lake-house-weekend', revision: 5, simplifyDebtsEnabled: 'false' })
     await expect(repository.groups.getSettings('lake-house-weekend')).rejects.toThrow('invalid')
   })
+
+  it('semantically replays a materialized occurrence after its editable date changes', async () => {
+    const templateId = 'recurring-rent'
+    firebase.expenseDocuments = []
+    firebase.recurringDocuments = [document(templateId, recurringData({ id: templateId }))]
+    firebase.groupActivityDocuments['groups/lake-house-weekend/activity'] = []
+    const repository = createFirebaseRepository(configuration)
+    const materialize = {
+      kind: 'recurrence.materialize' as const, operationId: 'materialize-rent-september', groupId: 'lake-house-weekend',
+      templateId, occurrenceDate: '2026-09-30',
+    }
+
+    const first = await repository.commands.execute(materialize)
+    if (first.kind !== 'recurrence.materialize' || first.status !== 'saved') throw new Error('Expected materialized occurrence')
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-rent-occurrence-date', groupId: 'lake-house-weekend', expenseId: first.occurrence.id, expectedRevision: 1,
+      draft: {
+        groupId: 'lake-house-weekend', description: 'Rent moved one day', date: '2026-10-02', total: { currency: 'USD', minorAmount: 1000 },
+        payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+        allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing',
+        splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [], occurrenceEditScope: 'occurrence',
+      },
+    })
+
+    await expect(repository.commands.execute(materialize)).resolves.toMatchObject({
+      status: 'saved', template: { nextDate: '2026-10-30', revision: 2 },
+      occurrence: { id: `occ_${templateId}_2026-09-30`, date: '2026-10-02', revision: 2 },
+    })
+    expect(firebase.expenseDocuments.filter(({ id }) => id === `occ_${templateId}_2026-09-30`)).toHaveLength(1)
+    expect(firebase.groupActivityDocuments['groups/lake-house-weekend/activity']?.filter(({ data }) => {
+      const value = data()
+      return value.kind === 'expense.created' && value.expenseId === `occ_${templateId}_2026-09-30`
+    })).toHaveLength(1)
+    await expect(repository.groups.getTotals('lake-house-weekend')).resolves.toEqual([
+      { currency: 'USD', totalPaid: 1000, currentUserPaid: 1000, currentUserShare: 1000, currentUserNet: 0 },
+    ])
+  })
+
+  it('loads recurring templates once while materializing globally earliest due occurrences', async () => {
+    firebase.expenseDocuments = []
+    firebase.recurringDocuments = [
+      document('recurring-later', recurringData({ id: 'recurring-later', anchorDate: '2026-09-01', nextDate: '2026-10-01', anchor: { month: 9, day: 1 } })),
+      document('recurring-earlier', recurringData({ id: 'recurring-earlier', anchorDate: '2026-08-15', nextDate: '2026-09-15', anchor: { month: 8, day: 15 } })),
+    ]
+    firebase.groupActivityDocuments['groups/lake-house-weekend/activity'] = []
+    const repository = createFirebaseRepository(configuration)
+
+    await expect(repository.groups.materializeDue('lake-house-weekend', '2026-10-01', 2)).resolves.toEqual({
+      occurrences: [
+        expect.objectContaining({ id: 'occ_recurring-earlier_2026-09-15' }),
+        expect.objectContaining({ id: 'occ_recurring-later_2026-10-01' }),
+      ],
+      moreRemain: false,
+    })
+    expect(firebase.queries.filter(({ base }) => base.path === 'groups/lake-house-weekend/recurringTemplates')).toHaveLength(1)
+  })
 })
 
 function document(id: string, value: Record<string, unknown>) { return { id, data: () => structuredClone(value) } }
@@ -306,5 +408,22 @@ function settlementData() {
     money: { currency: 'USD', minorAmount: 500 }, basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
     method: 'cash', occurredOn: '2026-08-31', note: 'Paid', createdBy: { id: 'maya-p', displayName: 'Maya P.' },
     createdAt: '2026-08-31T20:00:00.000Z', revision: 1,
+  }
+}
+
+function recurringData(input: {
+  id: string
+  anchorDate?: string
+  nextDate?: string
+  anchor?: { readonly month: number; readonly day: number }
+}) {
+  return {
+    id: input.id, groupId: 'lake-house-weekend', sourceExpenseId: 'source-rent', status: 'active', description: 'Rent',
+    total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
+    allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing',
+    splitMethod: { type: 'equal', participantIds: ['maya-p'] },
+    recurrence: { frequency: 'monthly', anchor: input.anchor ?? { month: 8, day: 30 }, timeZone: 'UTC' },
+    anchorDate: input.anchorDate ?? '2026-08-30', nextDate: input.nextDate ?? '2026-09-30', revision: 1,
+    createdBy: { id: 'maya-p', displayName: 'Maya P.' },
   }
 }

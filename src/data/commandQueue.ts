@@ -567,7 +567,7 @@ function isSavedRecurrenceMaterialization(value: Record<string, unknown>, envelo
   return template.id === envelope.templateId && template.groupId === envelope.groupId
     && template.nextDate > envelope.occurrenceDate
     && occurrence.id === recurringOccurrenceId(envelope.templateId, envelope.occurrenceDate)
-    && occurrence.groupId === envelope.groupId && occurrence.date === envelope.occurrenceDate
+    && occurrence.groupId === envelope.groupId
     && occurrence.recurringTemplateId === envelope.templateId
 }
 
