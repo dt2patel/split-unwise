@@ -3,6 +3,7 @@ import { assertCurrencyCode } from '../domain/money'
 import { computeAllocations } from '../domain/splits'
 import { decodeDefaultSplit } from '../domain/groupSettings'
 import type { CommandEnvelope, CommandKind, CommandResult, ExpenseDraft, ExpenseRow, SyncState } from './repositories'
+import { isStrictId } from './identifiers'
 import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
 
 export const COMMAND_QUEUE_STORAGE_VERSION = 6 as const
@@ -511,9 +512,9 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
     case 'group.simplify-debts': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'expectedRevision', 'simplifyDebtsEnabled'])
       && isNonEmptyString(value.groupId) && isPositiveInteger(value.expectedRevision) && typeof value.simplifyDebtsEnabled === 'boolean'
     case 'recurrence.materialize': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'templateId', 'occurrenceDate'])
-      && isNonEmptyString(value.groupId) && isNonEmptyString(value.templateId) && isIsoDate(value.occurrenceDate)
+      && isNonEmptyString(value.groupId) && isStrictId(value.templateId) && isIsoDate(value.occurrenceDate)
     case 'recurrence.cancel': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'templateId', 'expectedRevision'])
-      && isNonEmptyString(value.groupId) && isNonEmptyString(value.templateId) && isPositiveInteger(value.expectedRevision)
+      && isNonEmptyString(value.groupId) && isStrictId(value.templateId) && isPositiveInteger(value.expectedRevision)
     case 'profile.update': return isNonEmptyString(value.displayName) && (value.initials === undefined || isNonEmptyString(value.initials))
     default: return false
   }

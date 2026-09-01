@@ -3,9 +3,9 @@ import { nextOccurrence, recurringOccurrenceId } from '../recurrence'
 
 describe('recurrence dates', () => {
   it('derives a bounded stable ID from a strict template ID and occurrence date', () => {
-    expect(recurringOccurrenceId('monthly-rent', '2026-09-01')).toBe('occ_4552bb042b2ea0154b7cbd89417b2d8d')
+    expect(recurringOccurrenceId('monthly-rent', '2026-09-01')).toBe('occ_monthly-rent_2026-09-01')
     expect(recurringOccurrenceId('monthly-rent', '2026-09-01')).toBe(recurringOccurrenceId('monthly-rent', '2026-09-01'))
-    expect(recurringOccurrenceId('monthly-rent', '2026-09-01')).toHaveLength(36)
+    expect(recurringOccurrenceId('x'.repeat(128), '2026-09-01')).toHaveLength(143)
   })
 
   it('rejects occurrence identities with non-strict template IDs or invalid ISO dates', () => {

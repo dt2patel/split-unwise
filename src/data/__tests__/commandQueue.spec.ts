@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { CommandConflictError, CommandFailedError, CommandQueue, createBrowserCommandStorage, createMemoryCommandStorage, type CommandOperation, type CommandQueueOptions, type CommandStorage } from '../commandQueue'
 import { OperationReplayConflictError } from '../operationIdentity'
-import type { CommandEnvelope, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseEditResult, ExpenseRow } from '../repositories'
+import type { CommandEnvelope, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, RecurrenceMaterializeCommand } from '../repositories'
 
 const addExpense = (operationId: string): ExpenseAddCommand => ({
   kind: 'expense.add',
@@ -71,6 +71,15 @@ function createWebStorage(): Storage {
 }
 
 describe('CommandQueue', () => {
+  it('rejects recurrence commands with a template ID outside the strict document-ID grammar', async () => {
+    const queue = createBoundQueue({ storage: createMemoryCommandStorage(), handlers: {} })
+    const command: RecurrenceMaterializeCommand = {
+      kind: 'recurrence.materialize', operationId: 'materialize-invalid-template', groupId: 'lake-house-weekend', templateId: 'monthly rent', occurrenceDate: '2026-09-01',
+    }
+
+    await expect(queue.submit(command).result()).rejects.toMatchObject({ code: 'validation' })
+  })
+
   it('rejects submit and resume before an authenticated owner is bound', async () => {
     const queue = new CommandQueue({
       storage: createMemoryCommandStorage(),

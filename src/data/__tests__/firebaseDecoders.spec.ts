@@ -103,13 +103,47 @@ describe('Firebase boundary decoders', () => {
       recurrence: { frequency: 'monthly', anchor: { month: 8, day: 1 }, timeZone: 'America/Chicago' },
       anchorDate: '2026-08-01', nextDate: '2026-09-01', revision: 4,
       createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
-      lastOccurrenceId: 'occ_9c14c4db1f653d44668e2dc24c1a7902', lastOccurrenceDate: '2026-08-01',
+      lastOccurrenceId: 'occ_monthly-rent_2026-08-01', lastOccurrenceDate: '2026-08-01',
     })
 
     expect(decoded).toMatchObject({
       status: 'cancelled', revision: 4,
-      lastOccurrenceId: 'occ_9c14c4db1f653d44668e2dc24c1a7902', lastOccurrenceDate: '2026-08-01',
+      lastOccurrenceId: 'occ_monthly-rent_2026-08-01', lastOccurrenceDate: '2026-08-01',
     })
+  })
+
+  it('rejects recurring templates with invalid state, immutable snapshot, anchor, or occurrence identity invariants', () => {
+    const template = {
+      status: 'active', description: 'Rent', total: { currency: 'USD', minorAmount: 120000 },
+      payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 120000 } }],
+      allocations: [
+        { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 60000 } },
+        { participantId: 'alex-r', money: { currency: 'USD', minorAmount: 60000 } },
+      ],
+      category: 'Home', splitMethod: { type: 'equal' as const, participantIds: ['maya-p', 'alex-r'] },
+      recurrence: { frequency: 'monthly' as const, anchor: { month: 8, day: 1 }, timeZone: 'America/Chicago' },
+      anchorDate: '2026-08-01', nextDate: '2026-09-01', revision: 3, createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
+    }
+
+    expect(() => decodeRecurringExpense('lake-house-weekend', 'monthly-rent', { ...template, status: 'paused' })).toThrow('active or cancelled')
+    expect(() => decodeRecurringExpense('lake-house-weekend', 'monthly-rent', { ...template, allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 120000 } }] })).toThrow('allocations do not match split method')
+    expect(() => decodeRecurringExpense('lake-house-weekend', 'monthly-rent', { ...template, lastOccurrenceId: 'occ_monthly-rent_2026-08-01' })).toThrow('provided together')
+    expect(() => decodeRecurringExpense('lake-house-weekend', 'monthly-rent', { ...template, anchorDate: '2026-08-02' })).toThrow('anchor date must match recurrence')
+    expect(() => decodeRecurringExpense('lake-house-weekend', 'monthly-rent', { ...template, lastOccurrenceId: 'occ_some-other-template_2026-08-01', lastOccurrenceDate: '2026-08-01' })).toThrow('last occurrence ID')
+  })
+
+  it('accepts the reconstructable occurrence ID for a maximum-length strict template ID', () => {
+    const templateId = 'x'.repeat(128)
+    const template = {
+      status: 'active', description: 'Rent', total: { currency: 'USD', minorAmount: 120000 },
+      payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 120000 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 120000 } }], category: 'Home', splitMethod: { type: 'equal' as const, participantIds: ['maya-p'] },
+      recurrence: { frequency: 'monthly' as const, anchor: { month: 8, day: 1 }, timeZone: 'America/Chicago' },
+      anchorDate: '2026-08-01', nextDate: '2026-09-01', revision: 3, createdBy: { id: 'maya-p', displayName: 'Maya Patel' },
+      lastOccurrenceId: `occ_${templateId}_2026-08-01`, lastOccurrenceDate: '2026-08-01',
+    }
+
+    expect(decodeRecurringExpense('lake-house-weekend', templateId, template)).toMatchObject({ lastOccurrenceId: template.lastOccurrenceId })
   })
 
   it('uses occurrence or future as the only persisted recurring-instance edit scopes', () => {

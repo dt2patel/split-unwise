@@ -1,4 +1,5 @@
 import { assertCurrencyCode } from '../domain/money'
+import { recurringOccurrenceId } from '../domain/recurrence'
 import { computeAllocations } from '../domain/splits'
 import type { Allocation, Recurrence, SplitMethod } from '../domain/model'
 import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseContextKind, ExpenseRevision, ExpenseRow, Group, GroupBalanceSnapshot, Member, NotificationItem, RecurringExpense, SettlementBasis, SettlementMethod, SettlementRecord, SettlementVoid } from './repositories'
@@ -230,13 +231,18 @@ export function decodeRecurringExpense(groupId: string, id: string, value: unkno
   const splitMethod = splitMethodValue(data.splitMethod, `recurring ${id}.splitMethod`, total)
   if (!sameAllocations(computeAllocations(total, splitMethod), allocations)) throw new DocumentDecodeError(`recurring ${id}`, 'allocations do not match split method')
   const status = recurringStatus(data.status, `recurring ${id}.status`)
-  const lastOccurrenceId = optionalStrictId(data.lastOccurrenceId, `recurring ${id}.lastOccurrenceId`)
+  const lastOccurrenceId = optionalString(data.lastOccurrenceId, `recurring ${id}.lastOccurrenceId`)
   const lastOccurrenceDate = data.lastOccurrenceDate === undefined ? undefined : isoDate(data.lastOccurrenceDate, `recurring ${id}.lastOccurrenceDate`)
   if ((lastOccurrenceId === undefined) !== (lastOccurrenceDate === undefined)) throw new DocumentDecodeError(`recurring ${id}`, 'last occurrence ID and date must be provided together')
+  if (lastOccurrenceId !== undefined && lastOccurrenceId !== recurringOccurrenceId(id, lastOccurrenceDate!)) throw new DocumentDecodeError(`recurring ${id}.lastOccurrenceId`, 'last occurrence ID must match the template ID and last occurrence date')
+  const recurrence = recurrenceValue(data.recurrence, `recurring ${id}.recurrence`)
+  const anchorDate = isoDate(data.anchorDate, `recurring ${id}.anchorDate`)
+  const anchorMonthDay = `${String(recurrence.anchor.month).padStart(2, '0')}-${String(recurrence.anchor.day).padStart(2, '0')}`
+  if (anchorDate.slice(5) !== anchorMonthDay) throw new DocumentDecodeError(`recurring ${id}.anchorDate`, 'anchor date must match recurrence anchor month and day')
   return {
     id, groupId, status, description: requiredString(data.description, `recurring ${id}.description`), total, payments, allocations,
     category: requiredString(data.category, `recurring ${id}.category`), splitMethod,
-    recurrence: recurrenceValue(data.recurrence, `recurring ${id}.recurrence`), anchorDate: isoDate(data.anchorDate, `recurring ${id}.anchorDate`), nextDate: isoDate(data.nextDate, `recurring ${id}.nextDate`),
+    recurrence, anchorDate, nextDate: isoDate(data.nextDate, `recurring ${id}.nextDate`),
     revision: positiveInteger(data.revision, `recurring ${id}.revision`), createdBy: actorSnapshot(data.createdBy, `recurring ${id}.createdBy`), syncState: 'fresh',
     ...(lastOccurrenceId === undefined ? {} : { lastOccurrenceId, lastOccurrenceDate: lastOccurrenceDate! }),
   }
@@ -247,9 +253,9 @@ function recurringStatus(value: unknown, path: string): RecurringExpense['status
   throw new DocumentDecodeError(path, 'must be active or cancelled')
 }
 
-function optionalStrictId(value: unknown, path: string): string | undefined {
+function optionalString(value: unknown, path: string): string | undefined {
   if (value === undefined) return undefined
-  if (!isStrictId(value)) throw new DocumentDecodeError(path, 'must be a valid structured ID')
+  if (typeof value !== 'string') throw new DocumentDecodeError(path, 'must be a string')
   return value
 }
 
