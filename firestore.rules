@@ -559,7 +559,7 @@ service cloud.firestore {
       let settings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
       return settings.updatedAt == request.time && validSparkSettingsActivityData(groupId, activityId, data, settings);
     }
-    function validSparkBalanceSettingsUpdate(groupId, data) {
+    function validSparkBalanceSettingsUpdate(groupId) {
       let beforeSettings = get(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
       let afterSettings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
       return afterSettings.lastCommandKind == 'group.simplify-debts'
@@ -766,7 +766,7 @@ service cloud.firestore {
       }
       match /balance/{snapshotId} {
         allow get: if activeMember(groupId); allow list, delete: if false;
-        allow update: if snapshotId == 'current' && validSparkBalanceSettingsUpdate(groupId, request.resource.data);
+        allow update: if snapshotId == 'current' && validSparkBalanceSettingsUpdate(groupId);
         allow create: if snapshotId == 'current' && validInitialBalance(groupId, request.resource.data)
           && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data);
       }

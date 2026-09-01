@@ -29,7 +29,7 @@ describe('Firebase security contract', () => {
     expect(firestoreRules).toContain('validSparkCommentActivityCreate(groupId, activityId, request.resource.data)')
     expect(firestoreRules).toContain('validSparkSettingsActivityCreate(groupId, activityId, request.resource.data)')
     expect(firestoreRules).toContain("allow update: if settingId == 'defaults' && validSparkSettingsUpdate(groupId, request.resource.data);")
-    expect(firestoreRules).toContain("allow update: if snapshotId == 'current' && validSparkBalanceSettingsUpdate(groupId, request.resource.data);")
+    expect(firestoreRules).toContain("allow update: if snapshotId == 'current' && validSparkBalanceSettingsUpdate(groupId);")
     expect(firestoreRules).toMatch(/match \/settlements\/\{settlementId\}[\s\S]*?allow write: if false;/)
     expect(firestoreRules).toContain('allow create: if owns(uid) && validProfile(request.resource.data)')
     expect(firestoreRules).toContain('allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId)')
