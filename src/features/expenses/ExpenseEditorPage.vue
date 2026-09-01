@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonModal, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
-import { calendarOutline, cameraOutline, cashOutline, documentTextOutline, peopleOutline, pricetagOutline, repeatOutline } from 'ionicons/icons'
+import { calendarOutline, cameraOutline, cashOutline, chevronForwardOutline, documentTextOutline, peopleOutline, pricetagOutline, repeatOutline } from 'ionicons/icons'
 import { currencyExponent, toMinorUnits, type CurrencyCode } from '../../domain/money'
 import { useHaptics } from '../../composables/useHaptics'
 import ContextSheet from './components/ContextSheet.vue'
@@ -19,6 +19,8 @@ const router = useRouter()
 const store = useExpenseStore()
 const haptics = useHaptics()
 const errorSummary = ref<HTMLElement>()
+const receiptInput = ref<HTMLInputElement>()
+const presentingElement = shallowRef<HTMLElement>()
 const receiptPreviewUrl = ref<string>()
 const sheetDirty = ref(false)
 const categories = ['Food', 'Transport', 'Lodging', 'Supplies', 'Entertainment', 'Utilities', 'Other']
@@ -36,6 +38,8 @@ const splitSummary = computed(() => {
   return `split ${labels[store.editor.split.type]}`
 })
 const recurrenceSummary = computed(() => store.editor.recurrence ? `${store.editor.recurrence.frequency} · ${store.editor.recurrence.timeZone}` : 'Does not repeat')
+const hasReceipt = computed(() => store.editor.attachmentRefs.length > 0)
+const modalCanDismiss = computed<true | typeof canDismissSheet>(() => sheetDirty.value ? canDismissSheet : true)
 const receiptItems = computed<readonly ReceiptItemInput[]>(() => {
   if (store.editor.split.type === 'itemized') return store.editor.split.items
   return store.receiptSuggestions.map((suggestion) => ({ description: suggestion.description, amountText: suggestion.amountText, participantIds: [...store.editor.participants] }))
@@ -78,7 +82,15 @@ async function save(): Promise<void> {
   await router.replace(store.returnPath)
 }
 
+function setPresentingElement(value: Element | ComponentPublicInstance | null): void {
+  const element = value && '$el' in value ? value.$el : value
+  presentingElement.value = element instanceof HTMLElement ? element : undefined
+}
 function openSheet(sheet: Parameters<typeof store.openSheet>[0], triggerId: string): void { sheetDirty.value = false; store.openSheet(sheet, triggerId) }
+function openReceipt(): void {
+  if (hasReceipt.value) openSheet('receipt', 'receipt-sheet-trigger')
+  else receiptInput.value?.click()
+}
 async function closeSheet(): Promise<void> {
   const target = store.focusTarget
   store.closeSheet()
@@ -104,14 +116,16 @@ async function confirmReceipt(items: readonly ReceiptItemInput[]): Promise<void>
 function changeCurrency(event: Event): void { store.changeCurrency((event.target as HTMLSelectElement).value as CurrencyCode) }
 function changeDate(event: Event): void { store.changeDate((event.target as HTMLInputElement).value) }
 async function selectReceipt(event: Event): Promise<void> {
-  const file = (event.target as HTMLInputElement).files?.[0]
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
   if (!file) return
   if (await store.attachReceipt(file, file.name)) openSheet('receipt', 'receipt-sheet-trigger')
+  input.value = ''
 }
 </script>
 
 <template>
-  <ion-page class="expense-editor-page">
+  <ion-page :ref="setPresentingElement" class="expense-editor-page">
     <ion-header class="expense-editor__header" translucent>
       <ion-toolbar>
         <ion-buttons slot="start"><ion-button data-action="cancel-expense" @click="cancel">Cancel</ion-button></ion-buttons>
@@ -162,13 +176,13 @@ async function selectReceipt(event: Event): Promise<void> {
             <label class="editor-row" for="expense-currency"><ion-icon :icon="cashOutline" aria-hidden="true" /><span>Currency</span><select id="expense-currency" :value="store.editor.currency" @change="changeCurrency"><option v-for="currency in store.currencyOptions" :key="currency">{{ currency }}</option></select></label>
             <label class="editor-row" for="expense-date"><ion-icon :icon="calendarOutline" aria-hidden="true" /><span>Date</span><input id="expense-date" :value="store.editor.date" type="date" :aria-invalid="store.errors.date ? 'true' : undefined" :aria-describedby="store.errors.date ? 'expense-date-error' : undefined" @input="changeDate"></label>
             <p v-if="store.errors.date" id="expense-date-error" class="field-error">{{ store.errors.date }}</p>
-            <button id="participant-sheet-trigger" type="button" class="editor-row" :aria-invalid="store.errors.participants ? 'true' : undefined" :aria-describedby="store.errors.participants ? 'expense-participants-error' : undefined" @click="openSheet('participants', 'participant-sheet-trigger')"><ion-icon :icon="peopleOutline" aria-hidden="true" /><span>Split with</span><small>{{ store.editor.participants.length }} participant{{ store.editor.participants.length === 1 ? '' : 's' }}</small></button>
+            <button id="participant-sheet-trigger" type="button" class="editor-row" :aria-invalid="store.errors.participants ? 'true' : undefined" :aria-describedby="store.errors.participants ? 'expense-participants-error' : undefined" @click="openSheet('participants', 'participant-sheet-trigger')"><ion-icon :icon="peopleOutline" aria-hidden="true" /><span>Split with</span><span class="editor-row__trailing"><small>{{ store.editor.participants.length }} participant{{ store.editor.participants.length === 1 ? '' : 's' }}</small><ion-icon class="editor-row__chevron" :icon="chevronForwardOutline" aria-hidden="true" /></span></button>
             <p v-if="store.errors.participants" id="expense-participants-error" class="field-error">{{ store.errors.participants }}</p>
-            <button id="receipt-sheet-trigger" type="button" class="editor-row" :aria-invalid="store.errors.receipt ? 'true' : undefined" :aria-describedby="store.errors.receipt ? 'expense-receipt-error' : undefined" @click="openSheet('receipt', 'receipt-sheet-trigger')"><ion-icon :icon="cameraOutline" aria-hidden="true" /><span>Receipt</span><small>{{ store.editor.attachmentRefs.length ? `${store.editor.attachmentRefs.length} attached` : 'Add or review' }}</small></button>
+            <button id="receipt-sheet-trigger" type="button" class="editor-row" :aria-label="hasReceipt ? 'Review attached receipt' : 'Add receipt image'" :aria-invalid="store.errors.receipt ? 'true' : undefined" :aria-describedby="store.errors.receipt ? 'expense-receipt-error' : undefined" @click="openReceipt"><ion-icon :icon="cameraOutline" aria-hidden="true" /><span>Receipt</span><span class="editor-row__trailing"><small>{{ hasReceipt ? `${store.editor.attachmentRefs.length} attached` : 'Add receipt' }}</small><ion-icon class="editor-row__chevron" :icon="chevronForwardOutline" aria-hidden="true" /></span></button>
             <p v-if="store.errors.receipt" id="expense-receipt-error" class="field-error">{{ store.errors.receipt }}</p>
-            <label class="editor-row editor-row--upload"><span class="su-visually-hidden">Choose receipt image</span><input type="file" accept="image/jpeg,image/png,image/heic,image/webp" @change="selectReceipt"></label>
+            <input id="expense-receipt-input" ref="receiptInput" hidden tabindex="-1" aria-hidden="true" type="file" accept="image/jpeg,image/png,image/heic,image/webp" @change="selectReceipt">
             <label class="editor-row editor-row--notes" for="expense-notes"><ion-icon :icon="documentTextOutline" aria-hidden="true" /><span>Notes</span><textarea id="expense-notes" v-model="store.editor.notes" rows="2" placeholder="Optional details"></textarea></label>
-            <button id="recurrence-sheet-trigger" type="button" class="editor-row" :aria-invalid="store.errors.recurrence ? 'true' : undefined" :aria-describedby="store.errors.recurrence ? 'expense-recurrence-error' : undefined" @click="openSheet('recurrence', 'recurrence-sheet-trigger')"><ion-icon :icon="repeatOutline" aria-hidden="true" /><span>Repeat</span><small>{{ recurrenceSummary }}</small></button>
+            <button id="recurrence-sheet-trigger" type="button" class="editor-row" :aria-invalid="store.errors.recurrence ? 'true' : undefined" :aria-describedby="store.errors.recurrence ? 'expense-recurrence-error' : undefined" @click="openSheet('recurrence', 'recurrence-sheet-trigger')"><ion-icon :icon="repeatOutline" aria-hidden="true" /><span>Repeat</span><span class="editor-row__trailing"><small>{{ recurrenceSummary }}</small><ion-icon class="editor-row__chevron" :icon="chevronForwardOutline" aria-hidden="true" /></span></button>
             <p v-if="store.errors.recurrence" id="expense-recurrence-error" class="field-error">{{ store.errors.recurrence }}</p>
           </section>
 
@@ -179,7 +193,7 @@ async function selectReceipt(event: Event): Promise<void> {
       </main>
     </ion-content>
 
-    <ion-modal :is-open="Boolean(store.activeSheet)" :can-dismiss="canDismissSheet" :initial-breakpoint="0.9" :breakpoints="[0, 0.55, 0.9]" @input="markSheetDirty" @change="markSheetDirty" @did-dismiss="closeSheet">
+    <ion-modal :is-open="Boolean(store.activeSheet)" :presenting-element="presentingElement" :can-dismiss="modalCanDismiss" @input="markSheetDirty" @change="markSheetDirty" @did-dismiss="closeSheet">
       <context-sheet v-if="store.activeSheet === 'context'" :model-value="store.editor.groupId" :groups="store.availableGroups" @apply="applyContext" @cancel="closeSheet" />
       <payer-sheet v-else-if="store.activeSheet === 'payers'" :model-value="store.editor.payments" :members="store.members" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" @apply="applyPayers" @cancel="closeSheet" />
       <participant-sheet v-else-if="store.activeSheet === 'participants'" :model-value="store.editor.participants" :members="store.members" @apply="applyParticipants" @cancel="closeSheet" />
@@ -208,24 +222,22 @@ async function selectReceipt(event: Event): Promise<void> {
 .paid-split-sentence { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; margin: 0 auto 24px; font-size: 0.86rem; }
 .paid-split-sentence button { min-height: 44px; padding: 0 11px; border: 1px solid color-mix(in srgb, var(--su-divider) 74%, transparent); border-radius: 9px; background: var(--su-surface); color: var(--ion-text-color); box-shadow: 0 1px 3px rgb(40 31 93 / 10%); font: inherit; }
 .editor-list { overflow: hidden; border-top: 1px solid var(--su-divider); }
-.editor-row { display: grid; width: 100%; min-height: 52px; grid-template-columns: minmax(28px, max-content) minmax(0, 1fr) minmax(0, auto); align-items: center; gap: 8px; padding-block: 4px; border: 0; border-bottom: 1px solid var(--su-divider); background: transparent; color: inherit; font: inherit; text-align: start; }
+.editor-row { display: grid; box-sizing: border-box; width: 100%; min-height: 52px; grid-template-columns: minmax(28px, max-content) minmax(0, 1fr) minmax(0, min(46%, 190px)); align-items: center; gap: 8px; padding-block: 4px; border: 0; border-bottom: 1px solid var(--su-divider); background: transparent; color: inherit; font: inherit; text-align: start; }
 .editor-row ion-icon { color: var(--ion-color-primary); font-size: 1.15rem; }
-.editor-row select, .editor-row input, .editor-row textarea { width: 100%; min-width: 0; min-height: 42px; max-width: 100%; border: 0; background: transparent; color: var(--ion-color-medium); font: inherit; text-align: end; }
+.editor-row > span { min-width: 0; overflow-wrap: anywhere; }
+.editor-row select, .editor-row input, .editor-row textarea { width: 100%; min-width: 0; min-height: 44px; max-width: 100%; border: 0; background: transparent; color: var(--ion-color-medium); font: inherit; text-align: end; }
 .editor-row textarea { resize: vertical; text-align: start; }
-.editor-row small { min-width: 0; max-width: 180px; color: var(--ion-color-medium); overflow-wrap: anywhere; white-space: normal; }
-.editor-row--upload { min-height: 44px; grid-template-columns: 1fr; padding-left: 36px; }
-.editor-row--upload input { max-width: none; width: 100%; text-align: start; }
-.editor-row--notes { align-items: start; padding: 8px 0; }
+.editor-row small { min-width: 0; max-width: 100%; color: var(--ion-color-medium); overflow-wrap: anywhere; text-align: end; white-space: normal; }
+.editor-row__trailing { display: flex; max-width: 100%; align-items: center; justify-content: flex-end; gap: 5px; }
+.editor-row__trailing small { flex: 1 1 auto; }
+.editor-row .editor-row__chevron { flex: 0 0 auto; color: var(--ion-color-medium); font-size: 0.95rem; }
+.editor-row--notes { align-items: start; grid-template-columns: minmax(28px, max-content) minmax(0, 1fr); padding: 8px 0; }
+.editor-row--notes textarea { grid-column: 2; }
 .field-error { margin: 5px 0 0; color: var(--ion-color-danger); font-size: 0.76rem; }
 .field-error--center { text-align: center; }
 .error-summary, .load-error { margin: 14px 0; padding: 12px; border: 1px solid color-mix(in srgb, var(--ion-color-danger) 36%, transparent); border-radius: 11px; background: color-mix(in srgb, var(--ion-color-danger) 8%, var(--su-surface)); color: var(--ion-color-danger); font-size: 0.86rem; }
 .editor-notice { color: var(--ion-color-primary); font-size: 0.84rem; }
 .load-status { padding: 32px 0; color: var(--ion-color-medium); text-align: center; }
 .premium-copy { margin: 20px auto 0; color: var(--ion-color-medium); font-size: 0.74rem; line-height: 1.4; text-align: center; }
-@media (max-width: 420px) {
-  .editor-row { grid-template-columns: minmax(28px, max-content) minmax(0, 1fr); }
-  .editor-row > :last-child:not(ion-icon):not(span) { grid-column: 2; justify-self: stretch; max-width: none; text-align: start; }
-  .editor-row small { max-width: none; }
-}
 @media (prefers-reduced-motion: reduce) { .expense-editor * { scroll-behavior: auto; } }
 </style>

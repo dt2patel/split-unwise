@@ -19,8 +19,8 @@ const ionicStubs = {
   IonButtons: { template: '<div><slot /></div>' },
   IonButton: { props: ['disabled', 'ariaLabel'], emits: ['click'], template: '<button type="button" :disabled="disabled" :aria-label="ariaLabel" @click="$emit(\'click\')"><slot /></button>' },
   IonContent: { template: '<section><slot /></section>' },
-  IonIcon: { template: '<span aria-hidden="true" />' },
-  IonModal: { name: 'IonModal', props: ['isOpen', 'canDismiss'], emits: ['didDismiss'], template: '<aside v-if="isOpen" data-testid="active-sheet"><slot /></aside>' },
+  IonIcon: { props: ['icon'], template: '<span />' },
+  IonModal: { name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement', 'initialBreakpoint', 'breakpoints'], emits: ['didDismiss'], template: '<aside v-if="isOpen" data-testid="active-sheet"><slot /></aside>' },
 }
 
 beforeEach(() => {
@@ -104,6 +104,32 @@ describe('ExpenseEditorPage', () => {
     expect(document.activeElement?.id).toBe('payer-sheet-trigger')
   })
 
+  it('presents one Ionic card modal without sheet breakpoints', async () => {
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    const modal = wrapper.getComponent({ name: 'IonModal' })
+
+    expect(modal.props('presentingElement')).toBe(wrapper.get('.ion-page').element)
+    expect(modal.props('initialBreakpoint')).toBeUndefined()
+    expect(modal.props('breakpoints')).toBeUndefined()
+  })
+
+  it('keeps clean swipe dismissal synchronous and installs the guard only after a staged change', async () => {
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    await wrapper.get('#payer-sheet-trigger').trigger('click')
+    const modal = wrapper.getComponent({ name: 'IonModal' })
+
+    expect(modal.props('canDismiss')).toBe(true)
+
+    await wrapper.get('[data-payer-id="maya-p"]').setValue('56.00')
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const canDismiss = modal.props('canDismiss') as (data?: unknown, role?: string) => Promise<boolean>
+
+    expect(canDismiss).toBeTypeOf('function')
+    await expect(canDismiss(undefined, 'backdrop')).resolves.toBe(false)
+    confirm.mockReturnValue(true)
+    await expect(canDismiss(undefined, 'gesture')).resolves.toBe(true)
+  })
+
   it('lets a no-query composer choose a real group context before editing participants', async () => {
     const { wrapper } = await mountRoute('/tabs/home/expenses/new')
     await wrapper.get('#context-sheet-trigger').trigger('click')
@@ -133,7 +159,8 @@ describe('ExpenseEditorPage', () => {
     ['recurrence frequency', '#recurrence-sheet-trigger', '[data-frequency="monthly"]'],
     ['receipt item', '#receipt-sheet-trigger', '.add-line'],
   ] as const)('protects a staged %s button mutation from backdrop dismissal', async (_name, triggerSelector, mutationSelector) => {
-    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    if (triggerSelector === '#receipt-sheet-trigger') store.editor.attachmentRefs.push('receipts/draft.jpg')
     await wrapper.get(triggerSelector).trigger('click')
     await wrapper.get(mutationSelector).trigger('click')
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
@@ -151,6 +178,52 @@ describe('ExpenseEditorPage', () => {
     const warning = wrapper.get('[data-testid="receipt-durability-warning"]')
     expect(warning.text()).toContain('Saved only on this device.')
     expect(warning.text()).toContain('until upload succeeds')
+  })
+
+  it('uses one labelled Receipt action to open a hidden image picker while empty', async () => {
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    const input = wrapper.get<HTMLInputElement>('input[type="file"]')
+    const picker = vi.spyOn(input.element, 'click').mockImplementation(() => undefined)
+
+    expect(input.attributes('hidden')).toBeDefined()
+    expect(input.attributes('tabindex')).toBe('-1')
+    expect(input.attributes('accept')).toBe('image/jpeg,image/png,image/heic,image/webp')
+    expect(wrapper.find('.editor-row--upload').exists()).toBe(false)
+
+    const receipt = wrapper.get('#receipt-sheet-trigger')
+    expect(receipt.attributes('aria-label')).toBe('Add receipt image')
+    await receipt.trigger('click')
+
+    expect(picker).toHaveBeenCalledOnce()
+    expect(wrapper.find('[data-testid="active-sheet"]').exists()).toBe(false)
+  })
+
+  it('opens Receipt review instead of the picker when an attachment draft exists', async () => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    const input = wrapper.get<HTMLInputElement>('input[type="file"]')
+    const picker = vi.spyOn(input.element, 'click').mockImplementation(() => undefined)
+    store.editor.attachmentRefs.push('receipts/draft.jpg')
+    await flushPromises()
+
+    const receipt = wrapper.get('#receipt-sheet-trigger')
+    expect(receipt.attributes('aria-label')).toBe('Review attached receipt')
+    await receipt.trigger('click')
+
+    expect(picker).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="active-sheet"]').text()).toContain('Receipt')
+  })
+
+  it('uses restrained disclosure icons only on option rows that open choices', async () => {
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+
+    for (const selector of ['#participant-sheet-trigger', '#receipt-sheet-trigger', '#recurrence-sheet-trigger']) {
+      const disclosure = wrapper.get(selector).find('.editor-row__chevron')
+      expect(disclosure.exists()).toBe(true)
+      expect(disclosure.attributes('aria-hidden')).toBe('true')
+    }
+    for (const selector of ['#expense-category', '#expense-currency', '#expense-date']) {
+      expect(wrapper.get(selector).element.closest('.editor-row')?.querySelector('.editor-row__chevron')).toBeNull()
+    }
   })
 
   it('connects every inline validation message to its invalid control', async () => {
@@ -236,6 +309,31 @@ describe('ExpenseEditorPage', () => {
     document.documentElement.style.removeProperty('font-size')
   })
 
+  it('keeps option values inline and overflow-safe at 390px while Notes remains deliberately multi-line', async () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/features/expenses/ExpenseEditorPage.vue'), 'utf8')
+    const css = source.match(/<style scoped>([\s\S]*?)<\/style>/)?.[1]
+    if (!css) throw new Error('Expected the editor stylesheet')
+    const style = document.createElement('style')
+    style.textContent = css
+    document.head.append(style)
+    const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+
+    const rowColumns = cascadedStyleAtWidth(style, '.editor-row', 'grid-template-columns', 390)
+    expect(topLevelCssTracks(rowColumns)).toHaveLength(3)
+    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger').element).minHeight).toBe('52px')
+    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger small').element).minWidth).toBe('0px')
+    expect(getComputedStyle(wrapper.get('#participant-sheet-trigger small').element).overflowWrap).toBe('anywhere')
+    expect(getComputedStyle(wrapper.get('.editor-list').element).overflow).toBe('hidden')
+
+    const notesColumns = cascadedStyleAtWidth(style, '.editor-row--notes', 'grid-template-columns', 390)
+    expect(topLevelCssTracks(notesColumns)).toHaveLength(2)
+    expect(cascadedStyleAtWidth(style, '.editor-row--notes textarea', 'grid-column', 390)).toBe('2')
+    expect(getComputedStyle(wrapper.get('#expense-notes').element).textAlign).toBe('start')
+
+    wrapper.unmount()
+    style.remove()
+  })
+
   it('invalidates pending receipt work when the composer unmounts', async () => {
     const recognition = deferred<ReceiptRecognitionResult>()
     const receiptProvider: ReceiptProvider = {
@@ -277,4 +375,43 @@ function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>((done) => { resolve = done })
   return { promise, resolve }
+}
+
+function cascadedStyleAtWidth(style: HTMLStyleElement, selector: string, property: string, width: number): string {
+  let value = ''
+  const visit = (rules: CSSRuleList, applies: boolean): void => {
+    for (const rule of Array.from(rules)) {
+      if ('selectorText' in rule && rule.selectorText === selector && applies) {
+        const declared = (rule as CSSStyleRule).style.getPropertyValue(property)
+        if (declared) value = declared
+      } else if ('cssRules' in rule && 'conditionText' in rule) {
+        visit((rule as CSSMediaRule).cssRules, applies && mediaAppliesAtWidth((rule as CSSMediaRule).conditionText, width))
+      }
+    }
+  }
+  visit(style.sheet?.cssRules ?? ([] as unknown as CSSRuleList), true)
+  return value
+}
+
+function mediaAppliesAtWidth(condition: string, width: number): boolean {
+  const max = /max-width:\s*(\d+)px/.exec(condition)?.[1]
+  const min = /min-width:\s*(\d+)px/.exec(condition)?.[1]
+  if (!max && !min) return false
+  return (!max || width <= Number(max)) && (!min || width >= Number(min))
+}
+
+function topLevelCssTracks(value: string): readonly string[] {
+  const tracks: string[] = []
+  let depth = 0
+  let current = ''
+  for (const character of value.trim()) {
+    if (character === '(') depth += 1
+    if (character === ')') depth -= 1
+    if (/\s/.test(character) && depth === 0) {
+      if (current) tracks.push(current)
+      current = ''
+    } else current += character
+  }
+  if (current) tracks.push(current)
+  return tracks
 }
