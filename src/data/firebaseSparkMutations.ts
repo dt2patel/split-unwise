@@ -1,12 +1,13 @@
 import { getAuth, type User } from 'firebase/auth'
 import { arrayUnion, doc, getDoc, getFirestore, runTransaction, serverTimestamp, Timestamp, updateDoc, writeBatch, type DocumentData } from 'firebase/firestore'
 import { assertCurrencyCode } from '../domain/money'
+import { decodeDefaultSplit, updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
 import { canonicalHttpsOrigin, generateInvitationSecret, hashInvitationSecret, type PreparedInvitation } from '../features/invitations/invitations'
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member } from './repositories'
 import type { OperationIdentity } from './operationIdentity'
 import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
 
@@ -44,6 +45,13 @@ export interface SparkExpenseMutationRecord {
 export interface SparkCommentRecord {
   readonly commentId: string
   readonly commentDocument: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+export interface SparkGroupSettingsRecord {
+  readonly settingsDocument: Readonly<Record<string, unknown>>
+  readonly balanceDocument?: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }
@@ -174,8 +182,81 @@ export function buildSparkCommentDeleteRecord(command: CommentDeleteCommand, cur
   }
 }
 
+/** Versions one shared group setting and binds it to immutable activity. */
+export function buildSparkGroupSettingsRecord(
+  command: GroupDefaultSplitCommand | GroupSimplifyDebtsCommand,
+  current: Readonly<Record<string, unknown>>,
+  currentBalance: Readonly<Record<string, unknown>> | undefined,
+  members: readonly Member[],
+  actor: ActorSnapshot,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): SparkGroupSettingsRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'group.default-split' && parsed.kind !== 'group.simplify-debts') throw new Error('Spark group settings command is invalid.')
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  const normalizedCurrentActor = normalizedActor(actor)
+  const actorMember = members.find(({ id }) => id === actor.id)
+  if (!actorMember || actorMember.displayName !== normalizedCurrentActor.displayName) throw new Error('Only an active group member can change group settings.')
+  const currentSettings = decodeSparkGroupSettings(parsed.groupId, current)
+  const updated = parsed.kind === 'group.default-split'
+    ? updateGroupSettings(currentSettings, { expectedRevision: parsed.expectedRevision, defaultSplit: parsed.defaultSplit }, members, actor.id)
+    : updateGroupSettings(currentSettings, { expectedRevision: parsed.expectedRevision, simplifyDebtsEnabled: parsed.simplifyDebtsEnabled }, members, actor.id)
+  if (updated.defaultSplit && updated.defaultSplit.participantIds.length > 6) throw new Error('Spark default splits currently support at most six active members.')
+  const label = parsed.kind === 'group.default-split'
+    ? parsed.defaultSplit ? 'Default split updated' : 'Default split cleared'
+    : `Simplify debts ${parsed.simplifyDebtsEnabled ? 'enabled' : 'disabled'}`
+  const activityId = `activity-${token}`
+  const settingsDocument: Record<string, unknown> = {
+    schemaVersion: 1, groupId: parsed.groupId, revision: updated.revision,
+    ...(updated.defaultSplit ? { defaultSplit: updated.defaultSplit } : {}),
+    ...(updated.simplifyDebtsEnabled !== undefined ? { simplifyDebtsEnabled: updated.simplifyDebtsEnabled } : {}),
+    lastCommandKind: parsed.kind, lastOperationId: parsed.operationId,
+    lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    updatedAt: committedAt, updatedBy: normalizedCurrentActor,
+  }
+  const base: SparkGroupSettingsRecord = {
+    settingsDocument,
+    activityId,
+    activityDocument: {
+      groupId: parsed.groupId, operationId: parsed.operationId, kind: 'group.event',
+      subject: { kind: 'group', id: parsed.groupId, label }, actor: normalizedCurrentActor, createdAt: committedAt,
+    },
+  }
+  if (parsed.kind === 'group.default-split') return base
+  const balance = decodeSparkSettingsBalance(parsed.groupId, currentSettings, currentBalance)
+  return {
+    ...base,
+    balanceDocument: {
+      groupId: parsed.groupId, balanceRevision: balance.balanceRevision + 1,
+      simplifyDebtsEnabled: parsed.simplifyDebtsEnabled, pairwise: balance.pairwise, simplified: balance.simplified,
+    },
+  }
+}
+
 function sparkCommentActivity(groupId: string, operationId: string, kind: 'comment.added' | 'comment.deleted', actor: ActorSnapshot, expenseId: string, commentId: string, label: string, createdAt: unknown): Readonly<Record<string, unknown>> {
   return { groupId, operationId, kind, subject: { kind: 'comment', id: commentId, label }, actor, expenseId, commentId, createdAt }
+}
+
+function decodeSparkGroupSettings(groupId: string, value: Readonly<Record<string, unknown>>): GroupSettings {
+  if (value.schemaVersion !== 1 || value.groupId !== groupId || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) throw new Error('Stored group settings are invalid.')
+  if (value.simplifyDebtsEnabled !== undefined && typeof value.simplifyDebtsEnabled !== 'boolean') throw new Error('Stored group settings are invalid.')
+  let defaultSplit: GroupSettings['defaultSplit']
+  if (value.defaultSplit !== undefined) {
+    try { defaultSplit = decodeDefaultSplit(value.defaultSplit) } catch { throw new Error('Stored group settings are invalid.') }
+  }
+  return {
+    schemaVersion: 1, groupId, revision: Number(value.revision),
+    ...(defaultSplit ? { defaultSplit } : {}),
+    ...(value.simplifyDebtsEnabled !== undefined ? { simplifyDebtsEnabled: value.simplifyDebtsEnabled } : {}),
+  }
+}
+
+function decodeSparkSettingsBalance(groupId: string, settings: GroupSettings, value: Readonly<Record<string, unknown>> | undefined): { readonly balanceRevision: number; readonly pairwise: readonly unknown[]; readonly simplified: readonly unknown[] } {
+  if (!value || value.groupId !== groupId || !Number.isSafeInteger(value.balanceRevision) || Number(value.balanceRevision) < 0 || Number(value.balanceRevision) >= Number.MAX_SAFE_INTEGER
+    || typeof value.simplifyDebtsEnabled !== 'boolean' || value.simplifyDebtsEnabled !== (settings.simplifyDebtsEnabled !== false)
+    || !Array.isArray(value.pairwise) || !Array.isArray(value.simplified)) throw new Error('Stored group balance is invalid.')
+  return { balanceRevision: Number(value.balanceRevision), pairwise: value.pairwise, simplified: value.simplified }
 }
 
 function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string): Readonly<Record<string, unknown>> {

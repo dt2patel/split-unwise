@@ -69,6 +69,61 @@ describe('Firebase Spark two-account flow', () => {
     expect((await getDoc(doc(getFirestore(app), `groups/${created.groupId}`))).exists()).toBe(true)
   }, 30_000)
 
+  emulatorIt('persists replay-safe Pro defaults and member-controlled debt simplification for both accounts', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `settings-owner-${suffix}@example.com`
+    const friendEmail = `settings-friend-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Settings Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `settings-${suffix}`, name: 'Saved Settings Group', currency: 'USD' })
+    const prepared = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    const token = new URL(prepared.link).hash.slice('#token='.length)
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Settings Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, prepared.invitationId, token)
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+
+    const ownerRepository = createFirebaseRepository(configuration, owner.user.uid)
+    const defaultCommand = {
+      kind: 'group.default-split' as const, operationId: `default-${suffix}`, groupId: created.groupId, expectedRevision: 1,
+      defaultSplit: { type: 'percentage' as const, participantIds: [owner.user.uid, friend.user.uid], percentages: { [owner.user.uid]: 60, [friend.user.uid]: 40 } },
+    }
+    const savedDefault = await ownerRepository.groups.setDefaultSplit(defaultCommand)
+    expect(savedDefault).toEqual({ kind: defaultCommand.kind, operationId: defaultCommand.operationId, status: 'saved', resourceId: created.groupId })
+    await expect(ownerRepository.groups.setDefaultSplit(defaultCommand)).resolves.toEqual(savedDefault)
+    await expect(ownerRepository.groups.getSettings(created.groupId)).resolves.toMatchObject({
+      revision: 2, defaultSplit: defaultCommand.defaultSplit, simplifyDebtsEnabled: true,
+    })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
+    await expect(friendRepository.groups.setDefaultSplit({ ...defaultCommand, operationId: `friend-default-${suffix}`, expectedRevision: 2 })).rejects.toThrow(/manager/i)
+    const simplifyCommand = { kind: 'group.simplify-debts' as const, operationId: `simplify-${suffix}`, groupId: created.groupId, expectedRevision: 2, simplifyDebtsEnabled: false }
+    const savedSimplification = await friendRepository.groups.setSimplifyDebts(simplifyCommand)
+    expect(savedSimplification).toEqual({ kind: simplifyCommand.kind, operationId: simplifyCommand.operationId, status: 'saved', resourceId: created.groupId })
+    await expect(friendRepository.groups.setSimplifyDebts(simplifyCommand)).resolves.toEqual(savedSimplification)
+    await expect(friendRepository.groups.getSettings(created.groupId)).resolves.toMatchObject({ revision: 3, defaultSplit: defaultCommand.defaultSplit, simplifyDebtsEnabled: false })
+    await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({ balanceRevision: 1, simplifyDebtsEnabled: false, pairwise: [], simplified: [] })
+    await expect(friendRepository.activity.listForGroup(created.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ operationId: defaultCommand.operationId, kind: 'group.event', subject: { kind: 'group', id: created.groupId, label: 'Default split updated' } }),
+      expect.objectContaining({ operationId: simplifyCommand.operationId, kind: 'group.event', subject: { kind: 'group', id: created.groupId, label: 'Simplify debts disabled' } }),
+    ]))
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    await expect(ownerRepository.groups.setDefaultSplit({ ...defaultCommand, operationId: `stale-default-${suffix}`, expectedRevision: 2 })).rejects.toThrow(/changed remotely/i)
+  }, 30_000)
+
   emulatorIt('adds, edits, and soft-deletes one replay-stable expense with shared history and balances', async () => {
     const auth = getAuth(app)
     const suffix = crypto.randomUUID()

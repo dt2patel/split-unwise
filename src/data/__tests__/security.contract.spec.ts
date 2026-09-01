@@ -15,7 +15,7 @@ describe('Firebase security contract', () => {
     expect(firestoreRules).toMatch(/match \/\{document=\*\*\}[\s\S]*allow read, write: if false;/)
   })
 
-  it('keeps operation ledgers server-only while narrowly allowing audited Spark expense and comment mutations', () => {
+  it('keeps operation ledgers server-only while narrowly allowing audited Spark mutations', () => {
     expect(firestoreRules).toMatch(/match \/operations\/\{operationId\}[\s\S]*allow read, write: if false;/)
     for (const collection of ['expenses', 'revisions', 'comments', 'settlements', 'activity', 'recurringTemplates']) {
       expect(firestoreRules).toContain(`match /${collection}/`)
@@ -26,7 +26,10 @@ describe('Firebase security contract', () => {
     expect(firestoreRules).toContain("'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'headRevision', 'headDeleted'")
     expect(firestoreRules).toContain('allow create: if validSparkCommentCreate(groupId, commentId, request.resource.data);')
     expect(firestoreRules).toContain('allow update: if validSparkCommentDelete(groupId, commentId, request.resource.data);')
-    expect(firestoreRules).toContain('allow create: if validSparkCommentActivityCreate(groupId, activityId, request.resource.data);')
+    expect(firestoreRules).toContain('validSparkCommentActivityCreate(groupId, activityId, request.resource.data)')
+    expect(firestoreRules).toContain('validSparkSettingsActivityCreate(groupId, activityId, request.resource.data)')
+    expect(firestoreRules).toContain("allow update: if settingId == 'defaults' && validSparkSettingsUpdate(groupId, request.resource.data);")
+    expect(firestoreRules).toContain("allow update: if snapshotId == 'current' && validSparkBalanceSettingsUpdate(groupId, request.resource.data);")
     expect(firestoreRules).toMatch(/match \/settlements\/\{settlementId\}[\s\S]*?allow write: if false;/)
     expect(firestoreRules).toContain('allow create: if owns(uid) && validProfile(request.resource.data)')
     expect(firestoreRules).toContain('allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId)')

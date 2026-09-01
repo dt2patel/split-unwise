@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -210,7 +210,68 @@ describe('Firebase Spark mutations', () => {
     expect(removed.activityDocument).toMatchObject({ operationId: 'comment-delete', kind: 'comment.deleted', actor: author, expenseId: 'expense-a', commentId: command.commentId, createdAt: deletedAt })
     expect(() => buildDelete(command, current, { id: 'owner', displayName: 'Owner Account' }, { ...identity, userId: 'owner' }, deletedAt)).toThrow(/author/i)
   })
+
+  it('versions Simplify Debts with immutable activity and an unchanged-plan balance revision', () => {
+    const command: GroupSimplifyDebtsCommand = { kind: 'group.simplify-debts', operationId: 'simplify-off', groupId: 'group-a', expectedRevision: 4, simplifyDebtsEnabled: false }
+    const actor = { id: 'friend', displayName: 'Friend Account' }
+    const identity: OperationIdentity = { userId: actor.id, operationId: command.operationId, kind: command.kind, groupId: command.groupId, requestFingerprint: '1'.repeat(64), resourceId: `operation-${'2'.repeat(48)}` }
+    const defaultSplit = { type: 'shares' as const, participantIds: ['owner', 'friend'], shares: { owner: 2, friend: 1 } }
+    const current = { schemaVersion: 1, groupId: 'group-a', revision: 4, defaultSplit, simplifyDebtsEnabled: true, updatedAt: 'old' }
+    const pairwise = [{ fromParticipantId: 'friend', toParticipantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }]
+    const simplified = [{ fromParticipantId: 'friend', toParticipantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }]
+    const balance = { groupId: 'group-a', balanceRevision: 7, simplifyDebtsEnabled: true, pairwise, simplified }
+    const committedAt = { kind: 'settings-updated' }
+    const buildSettings = (sparkMutations as unknown as { buildSparkGroupSettingsRecord: SparkGroupSettingsBuilder }).buildSparkGroupSettingsRecord
+
+    const record = buildSettings(command, current, balance, groupMembers, actor, identity, committedAt)
+
+    expect(record.settingsDocument).toEqual({
+      schemaVersion: 1, groupId: 'group-a', revision: 5, defaultSplit, simplifyDebtsEnabled: false,
+      lastCommandKind: 'group.simplify-debts', lastOperationId: command.operationId,
+      lastRequestFingerprint: '1'.repeat(64), lastResourceToken: '2'.repeat(48), updatedAt: committedAt, updatedBy: actor,
+    })
+    expect(record.balanceDocument).toEqual({ groupId: 'group-a', balanceRevision: 8, simplifyDebtsEnabled: false, pairwise, simplified })
+    expect(record.activityId).toBe(`activity-${'2'.repeat(48)}`)
+    expect(record.activityDocument).toEqual({
+      groupId: 'group-a', operationId: command.operationId, kind: 'group.event',
+      subject: { kind: 'group', id: 'group-a', label: 'Simplify debts disabled' }, actor, createdAt: committedAt,
+    })
+    expect(() => buildSettings({ ...command, operationId: 'stale', expectedRevision: 3 }, current, balance, groupMembers, actor, { ...identity, operationId: 'stale' }, committedAt)).toThrow(/changed remotely/i)
+  })
+
+  it('lets only a manager save or clear a validated Pro default split without changing balances', () => {
+    const command: GroupDefaultSplitCommand = {
+      kind: 'group.default-split', operationId: 'default-percentage', groupId: 'group-a', expectedRevision: 1,
+      defaultSplit: { type: 'percentage', participantIds: ['owner', 'friend'], percentages: { owner: 60, friend: 40 } },
+    }
+    const actor = { id: 'owner', displayName: 'Owner Account' }
+    const identity: OperationIdentity = { userId: actor.id, operationId: command.operationId, kind: command.kind, groupId: command.groupId, requestFingerprint: '3'.repeat(64), resourceId: `operation-${'4'.repeat(48)}` }
+    const current = { schemaVersion: 1, groupId: 'group-a', revision: 1, simplifyDebtsEnabled: false, updatedAt: 'old' }
+    const committedAt = { kind: 'default-updated' }
+    const buildSettings = (sparkMutations as unknown as { buildSparkGroupSettingsRecord: SparkGroupSettingsBuilder }).buildSparkGroupSettingsRecord
+
+    const saved = buildSettings(command, current, undefined, groupMembers, actor, identity, committedAt)
+
+    expect(saved.settingsDocument).toEqual({
+      schemaVersion: 1, groupId: 'group-a', revision: 2, defaultSplit: command.defaultSplit, simplifyDebtsEnabled: false,
+      lastCommandKind: 'group.default-split', lastOperationId: command.operationId,
+      lastRequestFingerprint: '3'.repeat(64), lastResourceToken: '4'.repeat(48), updatedAt: committedAt, updatedBy: actor,
+    })
+    expect(saved.balanceDocument).toBeUndefined()
+    expect(saved.activityDocument).toMatchObject({ kind: 'group.event', subject: { kind: 'group', id: 'group-a', label: 'Default split updated' }, actor })
+    expect(() => buildSettings(command, current, undefined, groupMembers, { id: 'friend', displayName: 'Friend Account' }, { ...identity, userId: 'friend' }, committedAt)).toThrow(/manager/i)
+
+    const clear = { ...command, operationId: 'default-clear', expectedRevision: 2, defaultSplit: null }
+    const cleared = buildSettings(clear, saved.settingsDocument, undefined, groupMembers, actor, { ...identity, operationId: clear.operationId, requestFingerprint: '5'.repeat(64), resourceId: `operation-${'6'.repeat(48)}` }, committedAt)
+    expect(cleared.settingsDocument).not.toHaveProperty('defaultSplit')
+    expect(cleared.activityDocument).toMatchObject({ subject: { label: 'Default split cleared' } })
+  })
 })
+
+const groupMembers: readonly Member[] = [
+  { id: 'owner', displayName: 'Owner Account', initials: 'OA', isCurrentUser: true, canManage: true },
+  { id: 'friend', displayName: 'Friend Account', initials: 'FA', isCurrentUser: false, canManage: false },
+]
 
 type SparkMutationBuilder = (
   command: ExpenseEditCommand | ExpenseDeleteCommand,
@@ -246,3 +307,18 @@ type SparkCommentDeleteBuilder = (
   identity: OperationIdentity,
   committedAt: unknown,
 ) => SparkCommentRecord
+
+type SparkGroupSettingsBuilder = (
+  command: GroupDefaultSplitCommand | GroupSimplifyDebtsCommand,
+  current: Readonly<Record<string, unknown>>,
+  currentBalance: Readonly<Record<string, unknown>> | undefined,
+  members: readonly Member[],
+  actor: ActorSnapshot,
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => {
+  readonly settingsDocument: Readonly<Record<string, unknown>>
+  readonly balanceDocument?: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}

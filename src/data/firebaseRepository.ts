@@ -3,10 +3,10 @@ import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebas
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Member, NotificationItem, SettlementRecord, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, SavedCommandResult, SettlementRecord, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord } from './firebaseSparkMutations'
+import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
@@ -57,6 +57,13 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const { db, firestore } = await readyContext
     const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'settings', 'defaults'))
     return snapshot.exists() ? decodeGroupSettings(groupId, snapshot.data()) : { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true }
+  }
+  async function getSparkSettingsBalanceRevision(groupId: string, readyContext = context()): Promise<number> {
+    const { db, firestore } = await readyContext
+    const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'balance', 'current'))
+    const data = snapshot.data()
+    if (!snapshot.exists() || !isRecord(data) || data.groupId !== groupId || !Number.isSafeInteger(data.balanceRevision) || Number(data.balanceRevision) < 0) throw new Error('Stored group balance is invalid')
+    return Number(data.balanceRevision)
   }
 
   async function executeSparkExpenseAdd(command: ExpenseAddCommand): Promise<ExpenseAddResult> {
@@ -215,12 +222,62 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     }
   }
 
+  async function executeSparkGroupSettings(command: GroupDefaultSplitCommand | GroupSimplifyDebtsCommand): Promise<SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>> {
+    const { db, firestore, userId } = await context()
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const settingsReference = firestore.doc(db, 'groups', command.groupId, 'settings', 'defaults')
+    const balanceReference = firestore.doc(db, 'groups', command.groupId, 'balance', 'current')
+    const activityReference = firestore.doc(db, 'groups', command.groupId, 'activity', `activity-${token}`)
+    await firestore.runTransaction(db, async (transaction) => {
+      const participantIds = command.kind === 'group.default-split' && command.defaultSplit ? command.defaultSplit.participantIds : []
+      const memberIds = [...new Set([userId, ...participantIds])]
+      const [settings, balance, ...memberSnapshots] = await Promise.all([
+        transaction.get(settingsReference), transaction.get(balanceReference),
+        ...memberIds.map((memberId) => transaction.get(firestore.doc(db, 'groups', command.groupId, 'members', memberId))),
+      ])
+      if (!settings.exists()) throw new Error('Group settings are unavailable')
+      const current = settings.data()
+      if (current.lastOperationId === identity.operationId) {
+        if (current.lastCommandKind !== identity.kind || current.lastRequestFingerprint !== identity.requestFingerprint || current.lastResourceToken !== token) throw new OperationReplayConflictError()
+        return
+      }
+      const members = memberSnapshots.flatMap((snapshot, index): Member[] => {
+        const data = snapshot.data()
+        if (!snapshot.exists() || !isRecord(data) || data.status !== 'active' || typeof data.displayName !== 'string' || typeof data.initials !== 'string') return []
+        return [{
+          id: memberIds[index]!, displayName: data.displayName, initials: data.initials, isCurrentUser: memberIds[index] === userId,
+          ...(typeof data.avatarUrl === 'string' ? { avatarUrl: data.avatarUrl } : {}),
+          ...(typeof data.canManage === 'boolean' ? { canManage: data.canManage } : {}),
+        }]
+      })
+      const actor = members.find(({ id }) => id === userId)
+      if (!actor) throw new Error('Only an active group member can change group settings')
+      try {
+        const record = buildSparkGroupSettingsRecord(
+          command, current, balance.exists() ? balance.data() : undefined, members,
+          { id: actor.id, displayName: actor.displayName }, identity, firestore.serverTimestamp(),
+        )
+        transaction.set(settingsReference, record.settingsDocument)
+        if (record.balanceDocument) transaction.set(balanceReference, record.balanceDocument)
+        transaction.set(activityReference, record.activityDocument)
+      } catch (reason) {
+        if (reason instanceof Error && /changed remotely/i.test(reason.message)) throw new CommandConflictError('Group settings changed remotely.')
+        throw reason
+      }
+    })
+    const [savedSettings, savedActivity] = await Promise.all([firestore.getDoc(settingsReference), firestore.getDoc(activityReference)])
+    if (!savedSettings.exists() || !savedActivity.exists()) throw new Error('Saved group settings are unavailable')
+    return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: command.groupId } as SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>
+  }
+
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
     if (!functionsRegion) {
       if (command.kind === 'expense.add') return executeSparkExpenseAdd(command)
       if (command.kind === 'expense.edit' || command.kind === 'expense.delete') return executeSparkExpenseMutation(command)
       if (command.kind === 'comment.add') return executeSparkCommentAdd(command)
       if (command.kind === 'comment.delete') return executeSparkCommentDelete(command)
+      if (command.kind === 'group.default-split' || command.kind === 'group.simplify-debts') return executeSparkGroupSettings(command)
       return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Secure cloud writes are unavailable because Firebase Functions is not configured.' } as CommandResult
     }
     await context()
@@ -263,10 +320,11 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           if (!snapshot.exists()) throw new Error('Authoritative group balance snapshot is unavailable')
           return decodeBalanceSnapshot(groupId, snapshot.data())
         }
-        const [allExpenses, settlements, settings] = await Promise.all([
+        const [allExpenses, settlements, settings, settingsBalanceRevision] = await Promise.all([
           listExpenseHeads(groupId, readyContext),
           listSettlements(groupId, readyContext),
           getGroupSettings(groupId, readyContext),
+          getSparkSettingsBalanceRevision(groupId, readyContext),
         ])
         const expenses = allExpenses.filter(({ deletedAt }) => deletedAt === undefined)
         const balances = computeBalancePlans(expenses, settlements.map((settlement) => ({
@@ -279,7 +337,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         return {
           groupId,
           balanceRevision: allExpenses.reduce((total, expense) => total + expense.revision, 0)
-            + settlements.reduce((total, settlement) => total + settlement.revision, 0),
+            + settlements.reduce((total, settlement) => total + settlement.revision, 0) + settingsBalanceRevision,
           simplifyDebtsEnabled: settings.simplifyDebtsEnabled !== false,
           ...balances,
         }

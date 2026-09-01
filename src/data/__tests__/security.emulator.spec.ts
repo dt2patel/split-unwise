@@ -32,6 +32,8 @@ beforeEach(async () => {
     await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', canManage: true, displayName: 'Active Member' })
     await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', canManage: false, displayName: 'Friend' })
     await setDoc(doc(db, 'groups/group-a/members/removed'), { status: 'removed' })
+    await setDoc(doc(db, 'groups/group-a/settings/defaults'), { schemaVersion: 1, groupId: 'group-a', revision: 1, simplifyDebtsEnabled: true, updatedAt: Timestamp.fromMillis(0) })
+    await setDoc(doc(db, 'groups/group-a/balance/current'), { groupId: 'group-a', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
     await setDoc(doc(db, 'groups/group-a/expenses/expense-a'), { description: 'Dinner' })
   })
 })
@@ -207,6 +209,39 @@ describe('Firestore rules in the emulator', () => {
     const closedComment = sparkComment(closedToken, expense.id as string, { id: 'friend', displayName: 'Friend' })
     await assertFails(commitSparkComment(friend, `comment-${closedToken}`, closedToken, closedComment, sparkCommentActivity(closedToken, closedComment, 'comment.added')))
   })
+
+  emulatorIt('requires replay-bound activity for manager defaults and an atomic balance revision for debt simplification', async () => {
+    const manager = environment.authenticatedContext('active').firestore()
+    const friend = environment.authenticatedContext('friend').firestore()
+    const outsider = environment.authenticatedContext('outsider').firestore()
+    const defaultToken = '5'.repeat(48)
+    const defaultSplit = { type: 'percentage', participantIds: ['active', 'friend'], percentages: { active: 60, friend: 40 } }
+    const defaultSettings = sparkSettings(2, 'group.default-split', 'default-operation-5', defaultToken, { id: 'active', displayName: 'Active Member' }, { defaultSplit })
+    const defaultActivity = sparkSettingsActivity(defaultToken, 'default-operation-5', { id: 'active', displayName: 'Active Member' }, 'Default split updated')
+
+    await assertFails(setDoc(doc(manager, 'groups/group-a/settings/defaults'), defaultSettings))
+    await assertFails(commitSparkSettings(friend, defaultToken, { ...defaultSettings, updatedBy: { id: 'friend', displayName: 'Friend' } }, { ...defaultActivity, actor: { id: 'friend', displayName: 'Friend' } }))
+    await assertFails(commitSparkSettings(outsider, defaultToken, defaultSettings, defaultActivity))
+    await assertSucceeds(commitSparkSettings(manager, defaultToken, defaultSettings, defaultActivity))
+    expect((await getDoc(doc(manager, 'groups/group-a/settings/defaults'))).data()).toMatchObject({ revision: 2, defaultSplit, simplifyDebtsEnabled: true })
+
+    const forgedToken = '6'.repeat(48)
+    await assertFails(commitSparkSettings(manager, forgedToken, sparkSettings(3, 'group.default-split', 'forged-default-6', forgedToken, { id: 'active', displayName: 'Active Member' }, {
+      defaultSplit: { type: 'percentage', participantIds: ['active', 'friend'], percentages: { active: 50, friend: 40 } },
+    }), sparkSettingsActivity(forgedToken, 'forged-default-6', { id: 'active', displayName: 'Active Member' }, 'Default split updated')))
+
+    const simplifyToken = '7'.repeat(48)
+    const simplifySettings = sparkSettings(3, 'group.simplify-debts', 'simplify-operation-7', simplifyToken, { id: 'friend', displayName: 'Friend' }, { defaultSplit, simplifyDebtsEnabled: false })
+    const simplifyActivity = sparkSettingsActivity(simplifyToken, 'simplify-operation-7', { id: 'friend', displayName: 'Friend' }, 'Simplify debts disabled')
+    const balance = { groupId: 'group-a', balanceRevision: 1, simplifyDebtsEnabled: false, pairwise: [], simplified: [] }
+
+    await assertFails(commitSparkSettings(friend, simplifyToken, simplifySettings, simplifyActivity))
+    await assertFails(setDoc(doc(friend, 'groups/group-a/balance/current'), balance))
+    await assertSucceeds(commitSparkSettings(friend, simplifyToken, simplifySettings, simplifyActivity, balance))
+    expect((await getDoc(doc(friend, 'groups/group-a/balance/current'))).data()).toEqual(balance)
+    await assertFails(setDoc(doc(friend, `groups/group-a/activity/activity-${'8'.repeat(48)}`), sparkSettingsActivity('8'.repeat(48), 'standalone-activity-8', { id: 'friend', displayName: 'Friend' }, 'Simplify debts enabled')))
+    await assertFails(deleteDoc(doc(friend, 'groups/group-a/settings/defaults')))
+  })
 })
 
 function profile(displayName: string, initials: string): Record<string, unknown> {
@@ -303,6 +338,29 @@ function commitSparkComment(source: unknown, commentId: string, activityToken: s
   const batch = writeBatch(db)
   batch.set(doc(db, `groups/group-a/comments/${commentId}`), comment)
   batch.set(doc(db, `groups/group-a/activity/activity-${activityToken}`), activity)
+  return batch.commit()
+}
+
+function sparkSettings(revision: number, lastCommandKind: 'group.default-split' | 'group.simplify-debts', operationId: string, token: string, actor: Record<string, unknown>, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schemaVersion: 1, groupId: 'group-a', revision, simplifyDebtsEnabled: true,
+    lastCommandKind, lastOperationId: operationId, lastRequestFingerprint: token[0]!.repeat(64), lastResourceToken: token,
+    updatedAt: serverTimestamp(), updatedBy: actor, ...overrides,
+  }
+}
+
+function sparkSettingsActivity(token: string, operationId: string, actor: Record<string, unknown>, label: string): Record<string, unknown> {
+  return {
+    groupId: 'group-a', operationId, kind: 'group.event', subject: { kind: 'group', id: 'group-a', label }, actor, createdAt: serverTimestamp(),
+  }
+}
+
+function commitSparkSettings(source: unknown, token: string, settings: Record<string, unknown>, activity: Record<string, unknown>, balance?: Record<string, unknown>): Promise<void> {
+  const db = source as Firestore
+  const batch = writeBatch(db)
+  batch.set(doc(db, 'groups/group-a/settings/defaults'), settings)
+  batch.set(doc(db, `groups/group-a/activity/activity-${token}`), activity)
+  if (balance) batch.set(doc(db, 'groups/group-a/balance/current'), balance)
   return batch.commit()
 }
 

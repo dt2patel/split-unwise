@@ -266,6 +266,128 @@ service cloud.firestore {
         && validSparkCommentActivityData(groupId, data.commentId, activityId, data, comment, data.kind);
     }
 
+    function validSparkRatio(value) {
+      return (value is int || value is float) && value > 0 && value <= 1000000;
+    }
+    function validSparkDefaultRatioAt(split, index) {
+      return split.participantIds.size() <= index || validSparkRatio(
+        split.type == 'percentage'
+          ? split.percentages[split.participantIds[index]]
+          : split.shares[split.participantIds[index]]
+      );
+    }
+    function sparkDefaultRatioSum(split) {
+      let ratios = split.type == 'percentage' ? split.percentages : split.shares;
+      return split.participantIds.size() == 1 ? ratios[split.participantIds[0]]
+        : split.participantIds.size() == 2 ? ratios[split.participantIds[0]] + ratios[split.participantIds[1]]
+        : split.participantIds.size() == 3 ? ratios[split.participantIds[0]] + ratios[split.participantIds[1]] + ratios[split.participantIds[2]]
+        : split.participantIds.size() == 4 ? ratios[split.participantIds[0]] + ratios[split.participantIds[1]] + ratios[split.participantIds[2]] + ratios[split.participantIds[3]]
+        : split.participantIds.size() == 5 ? ratios[split.participantIds[0]] + ratios[split.participantIds[1]] + ratios[split.participantIds[2]] + ratios[split.participantIds[3]] + ratios[split.participantIds[4]]
+        : ratios[split.participantIds[0]] + ratios[split.participantIds[1]] + ratios[split.participantIds[2]] + ratios[split.participantIds[3]] + ratios[split.participantIds[4]] + ratios[split.participantIds[5]];
+    }
+    function validSparkDefaultSplit(groupId, split) {
+      return split is map && validSparkIdList(split.participantIds, 6)
+        && validSparkInvolvedMembers(groupId, split.participantIds)
+        && (
+          (split.type == 'equal' && split.keys().hasOnly(['type', 'participantIds']))
+          || (split.type == 'percentage'
+            && split.keys().hasOnly(['type', 'participantIds', 'percentages'])
+            && split.percentages is map
+            && split.percentages.keys().hasOnly(split.participantIds) && split.percentages.keys().hasAll(split.participantIds)
+            && validSparkDefaultRatioAt(split, 0) && validSparkDefaultRatioAt(split, 1) && validSparkDefaultRatioAt(split, 2)
+            && validSparkDefaultRatioAt(split, 3) && validSparkDefaultRatioAt(split, 4) && validSparkDefaultRatioAt(split, 5)
+            && sparkDefaultRatioSum(split) == 100)
+          || (split.type == 'shares'
+            && split.keys().hasOnly(['type', 'participantIds', 'shares'])
+            && split.shares is map
+            && split.shares.keys().hasOnly(split.participantIds) && split.shares.keys().hasAll(split.participantIds)
+            && validSparkDefaultRatioAt(split, 0) && validSparkDefaultRatioAt(split, 1) && validSparkDefaultRatioAt(split, 2)
+            && validSparkDefaultRatioAt(split, 3) && validSparkDefaultRatioAt(split, 4) && validSparkDefaultRatioAt(split, 5))
+        );
+    }
+    function validSparkStoredDefault(groupId, data) {
+      return !('defaultSplit' in data) || validSparkDefaultSplit(groupId, data.defaultSplit);
+    }
+    function validSparkSettingsShape(groupId, data) {
+      return data.keys().hasOnly([
+          'schemaVersion', 'groupId', 'revision', 'defaultSplit', 'simplifyDebtsEnabled',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
+        ])
+        && data.keys().hasAll([
+          'schemaVersion', 'groupId', 'revision', 'simplifyDebtsEnabled',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
+        ])
+        && data.schemaVersion == 1 && data.groupId == groupId
+        && data.revision is int && data.revision > 1
+        && data.simplifyDebtsEnabled is bool
+        && (data.lastCommandKind == 'group.default-split' || data.lastCommandKind == 'group.simplify-debts')
+        && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
+        && data.updatedAt == request.time && validSparkCurrentActor(groupId, data.updatedBy)
+        && validSparkStoredDefault(groupId, data);
+    }
+    function validSparkSettingsActivityData(groupId, activityId, activity, settings) {
+      return activity.keys().hasOnly(['groupId', 'operationId', 'kind', 'subject', 'actor', 'createdAt'])
+        && activityId == 'activity-' + settings.lastResourceToken
+        && activity.groupId == groupId && activity.operationId == settings.lastOperationId
+        && activity.kind == 'group.event' && activity.actor == settings.updatedBy && activity.createdAt == request.time
+        && activity.subject.keys().hasOnly(['kind', 'id', 'label'])
+        && activity.subject.kind == 'group' && activity.subject.id == groupId
+        && (
+          (settings.lastCommandKind == 'group.default-split' && 'defaultSplit' in settings && activity.subject.label == 'Default split updated')
+          || (settings.lastCommandKind == 'group.default-split' && !('defaultSplit' in settings) && activity.subject.label == 'Default split cleared')
+          || (settings.lastCommandKind == 'group.simplify-debts' && settings.simplifyDebtsEnabled == true && activity.subject.label == 'Simplify debts enabled')
+          || (settings.lastCommandKind == 'group.simplify-debts' && settings.simplifyDebtsEnabled == false && activity.subject.label == 'Simplify debts disabled')
+        );
+    }
+    function validSparkSettingsBalanceAdvance(groupId, beforeSettings, afterSettings) {
+      let before = get(/databases/$(database)/documents/groups/$(groupId)/balance/current).data;
+      let after = getAfter(/databases/$(database)/documents/groups/$(groupId)/balance/current).data;
+      return before.groupId == groupId && after.groupId == groupId
+        && before.balanceRevision is int && before.balanceRevision >= 0
+        && after.diff(before).affectedKeys().hasOnly(['balanceRevision', 'simplifyDebtsEnabled'])
+        && after.balanceRevision == before.balanceRevision + 1
+        && after.simplifyDebtsEnabled == afterSettings.simplifyDebtsEnabled
+        && beforeSettings.simplifyDebtsEnabled != afterSettings.simplifyDebtsEnabled;
+    }
+    function validSparkSettingsUpdate(groupId, data) {
+      let activityId = 'activity-' + data.lastResourceToken;
+      let activity = getAfter(/databases/$(database)/documents/groups/$(groupId)/activity/$(activityId)).data;
+      return validSparkSettingsShape(groupId, data)
+        && resource.data.schemaVersion == 1 && resource.data.groupId == groupId
+        && resource.data.revision is int && data.revision == resource.data.revision + 1
+        && data.lastOperationId != resource.data.get('lastOperationId', '')
+        && data.lastResourceToken != resource.data.get('lastResourceToken', '')
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'revision', 'defaultSplit', 'simplifyDebtsEnabled', 'lastCommandKind', 'lastOperationId',
+          'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy'
+        ])
+        && validSparkSettingsActivityData(groupId, activityId, activity, data)
+        && (
+          (data.lastCommandKind == 'group.default-split'
+            && activeManager(groupId)
+            && data.simplifyDebtsEnabled == resource.data.simplifyDebtsEnabled
+            && data.get('defaultSplit', null) != resource.data.get('defaultSplit', null)
+            && getAfter(/databases/$(database)/documents/groups/$(groupId)/balance/current).data == get(/databases/$(database)/documents/groups/$(groupId)/balance/current).data)
+          || (data.lastCommandKind == 'group.simplify-debts'
+            && data.get('defaultSplit', null) == resource.data.get('defaultSplit', null)
+            && validSparkSettingsBalanceAdvance(groupId, resource.data, data))
+        );
+    }
+    function validSparkSettingsActivityCreate(groupId, activityId, data) {
+      let settings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
+      return settings.updatedAt == request.time && validSparkSettingsActivityData(groupId, activityId, data, settings);
+    }
+    function validSparkBalanceSettingsUpdate(groupId, data) {
+      let beforeSettings = get(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
+      let afterSettings = getAfter(/databases/$(database)/documents/groups/$(groupId)/settings/defaults).data;
+      return afterSettings.lastCommandKind == 'group.simplify-debts'
+        && afterSettings.revision == beforeSettings.revision + 1
+        && afterSettings.updatedAt == request.time
+        && validSparkSettingsBalanceAdvance(groupId, beforeSettings, afterSettings);
+    }
+
     function validNewGroup(groupId, data) {
       return signedIn() && strictId(groupId)
         && data.keys().hasOnly(['id', 'name', 'currency', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
@@ -432,16 +554,23 @@ service cloud.firestore {
       match /settlements/{settlementId} { allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100); allow write: if false; }
       match /activity/{activityId} {
         allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
-        allow create: if validSparkCommentActivityCreate(groupId, activityId, request.resource.data);
+        allow create: if (
+          (request.resource.data.kind == 'group.event'
+            && validSparkSettingsActivityCreate(groupId, activityId, request.resource.data))
+          || ((request.resource.data.kind == 'comment.added' || request.resource.data.kind == 'comment.deleted')
+            && validSparkCommentActivityCreate(groupId, activityId, request.resource.data))
+        );
         allow update, delete: if false;
       }
       match /balance/{snapshotId} {
-        allow get: if activeMember(groupId); allow list, update, delete: if false;
+        allow get: if activeMember(groupId); allow list, delete: if false;
+        allow update: if snapshotId == 'current' && validSparkBalanceSettingsUpdate(groupId, request.resource.data);
         allow create: if snapshotId == 'current' && validInitialBalance(groupId, request.resource.data)
           && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data);
       }
       match /settings/{settingId} {
-        allow get: if activeMember(groupId); allow list, update, delete: if false;
+        allow get: if activeMember(groupId); allow list, delete: if false;
+        allow update: if settingId == 'defaults' && validSparkSettingsUpdate(groupId, request.resource.data);
         allow create: if settingId == 'defaults' && validSettings(groupId, request.resource.data)
           && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data);
       }
