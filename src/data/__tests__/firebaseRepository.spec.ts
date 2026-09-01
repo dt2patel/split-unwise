@@ -7,6 +7,8 @@ const firebase = vi.hoisted(() => ({
   balanceDocument: undefined as { data: () => Record<string, unknown> } | undefined,
   settingsDocument: undefined as { data: () => Record<string, unknown> } | undefined,
   activityDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
+  groupProjectionDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
+  groupActivityDocuments: {} as Record<string, Array<{ id: string; data: () => Record<string, unknown> }>>,
   notificationDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
 }))
 
@@ -27,9 +29,11 @@ vi.mock('firebase/firestore', () => {
   const limit = (value: number) => ({ type: 'limit', value })
   const startAfter = (...values: unknown[]) => ({ type: 'startAfter', values })
   const query = (base: { path: string }, ...constraints: readonly Record<string, unknown>[]) => ({ base, constraints })
-  const dataFor = (path: string) => path.endsWith('/expenses') ? firebase.expenseDocuments
+  const dataFor = (path: string) => path === 'users/maya-p/groups' ? firebase.groupProjectionDocuments
+    : path.endsWith('/expenses') ? firebase.expenseDocuments
     : path.endsWith('/settlements') ? firebase.settlementDocuments
-    : path.endsWith('/activity') ? firebase.activityDocuments
+    : path === 'users/maya-p/activity' ? firebase.activityDocuments
+      : path.endsWith('/activity') ? firebase.groupActivityDocuments[path] ?? []
       : path.endsWith('/notifications') ? firebase.notificationDocuments : []
   const getDocs = async (reference: { path?: string; base?: { path: string }; constraints?: readonly Record<string, unknown>[] }) => {
     const base = reference.base ?? { path: reference.path ?? '' }
@@ -82,6 +86,19 @@ describe('Task 7 Firebase repository query boundaries', () => {
       document('activity.Z', activityData('expense.created', '2026-08-31T12:00:00.000Z', 'expense-z')),
       document('activity-B', activityData('settlement.created', '2026-08-30T12:00:00.000Z', undefined, undefined, 'settlement-a')),
     ]
+    firebase.groupProjectionDocuments = [
+      document('lake-house-weekend', { groupId: 'lake-house-weekend', status: 'active' }),
+      document('road-trip', { groupId: 'road-trip', status: 'active' }),
+    ]
+    firebase.groupActivityDocuments = {
+      'groups/lake-house-weekend/activity': [
+        document('activity_a', activityData('expense.updated', '2026-08-31T12:00:00.000Z', 'expense-a')),
+        document('activity-B', activityData('settlement.created', '2026-08-30T12:00:00.000Z', undefined, undefined, 'settlement-a')),
+      ],
+      'groups/road-trip/activity': [
+        document('activity.Z', { ...activityData('expense.created', '2026-08-31T12:00:00.000Z', 'expense-z'), groupId: 'road-trip' }),
+      ],
+    }
     firebase.notificationDocuments = [
       document('notification_a', notificationData(null, '2026-08-31T12:00:00.000Z')),
       document('notification.Z', notificationData('2026-08-31T13:00:00.000Z', '2026-08-31T12:00:00.000Z')),
@@ -98,7 +115,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
   })
 
   it('uses server filters, stable document ordering, limit-plus-one, and cursor continuation for activity', async () => {
-    const repository = createFirebaseRepository(configuration)
+    const repository = createFirebaseRepository(configuration, undefined, 'us-central1')
     const first = await repository.activity.listForAccount({ filter: 'expenses', limit: 1 })
     expect(first.items.map(({ id }) => id)).toEqual(['activity_a'])
     const query = firebase.queries.at(-1)?.constraints ?? []
@@ -113,6 +130,21 @@ describe('Task 7 Firebase repository query boundaries', () => {
     expect(firebase.queries.at(-1)?.constraints).toContainEqual({
       type: 'startAfter', values: [first.nextCursor.createdAt, first.nextCursor.id],
     })
+  })
+
+  it('fans account activity out across active Spark groups with stable filtering and pagination', async () => {
+    const repository = createFirebaseRepository(configuration)
+    const first = await repository.activity.listForAccount({ filter: 'expenses', limit: 1 })
+    expect(first.items.map(({ id, groupId }) => `${groupId}:${id}`)).toEqual(['lake-house-weekend:activity_a'])
+    expect(first.nextCursor).toEqual({ createdAt: '2026-08-31T12:00:00.000Z', id: 'activity_a' })
+    expect(firebase.queries).toContainEqual({ base: { path: 'users/maya-p/groups' }, constraints: [{ type: 'limit', value: 100 }] })
+    expect(firebase.queries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ base: { path: 'groups/lake-house-weekend/activity' } }),
+      expect.objectContaining({ base: { path: 'groups/road-trip/activity' } }),
+    ]))
+    if (!first.nextCursor) throw new Error('Expected Spark activity continuation')
+    const second = await repository.activity.listForAccount({ filter: 'expenses', limit: 1, cursor: first.nextCursor })
+    expect(second.items.map(({ id, groupId }) => `${groupId}:${id}`)).toEqual(['road-trip:activity.Z'])
   })
 
   it('uses server ordering, limit-plus-one, and cursor continuation for notifications', async () => {

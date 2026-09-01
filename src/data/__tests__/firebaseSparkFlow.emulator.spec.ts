@@ -118,10 +118,62 @@ describe('Firebase Spark two-account flow', () => {
       expect.objectContaining({ operationId: defaultCommand.operationId, kind: 'group.event', subject: { kind: 'group', id: created.groupId, label: 'Default split updated' } }),
       expect.objectContaining({ operationId: simplifyCommand.operationId, kind: 'group.event', subject: { kind: 'group', id: created.groupId, label: 'Simplify debts disabled' } }),
     ]))
+    await expect(friendRepository.activity.listForAccount({ filter: 'all', limit: 10 })).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ groupId: created.groupId, operationId: defaultCommand.operationId }),
+        expect.objectContaining({ groupId: created.groupId, operationId: simplifyCommand.operationId }),
+      ]),
+    })
 
     await signOut(auth)
     await signInWithEmailAndPassword(auth, ownerEmail, password)
     await expect(ownerRepository.groups.setDefaultSplit({ ...defaultCommand, operationId: `stale-default-${suffix}`, expectedRevision: 2 })).rejects.toThrow(/changed remotely/i)
+  }, 30_000)
+
+  emulatorIt('replays private profile and notification settings while propagating the public member snapshot', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `private-owner-${suffix}@example.com`
+    const friendEmail = `private-friend-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Original Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `private-${suffix}`, name: 'Private Settings Group', currency: 'USD' })
+    const invitation = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    const token = new URL(invitation.link).hash.slice('#token='.length)
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Private Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, invitation.invitationId, token)
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+
+    const ownerRepository = createFirebaseRepository(configuration, owner.user.uid)
+    const profileCommand = { kind: 'profile.update' as const, operationId: `rename-${suffix}`, displayName: 'Renamed Owner', initials: 'RO' }
+    const savedProfile = await ownerRepository.app.updateProfile(profileCommand)
+    expect(savedProfile).toEqual({ kind: profileCommand.kind, operationId: profileCommand.operationId, status: 'saved', resourceId: owner.user.uid })
+    await expect(ownerRepository.app.updateProfile(profileCommand)).resolves.toEqual(savedProfile)
+    await expect(ownerRepository.app.getCurrentUser()).resolves.toMatchObject({ id: owner.user.uid, displayName: 'Renamed Owner', initials: 'RO' })
+    expect(auth.currentUser?.displayName).toBe('Renamed Owner')
+
+    const preferencesCommand = { kind: 'notification.preferences' as const, operationId: `preferences-${suffix}`, preferences: { emailEnabled: false, pushEnabled: true } }
+    const savedPreferences = await ownerRepository.notifications.updatePreferences(preferencesCommand)
+    expect(savedPreferences).toEqual({ kind: preferencesCommand.kind, operationId: preferencesCommand.operationId, status: 'saved', preferences: preferencesCommand.preferences })
+    await expect(ownerRepository.notifications.updatePreferences(preferencesCommand)).resolves.toEqual(savedPreferences)
+    await expect(ownerRepository.notifications.getPreferences()).resolves.toEqual(preferencesCommand.preferences)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
+    await expect(friendRepository.groups.listMembers(created.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: owner.user.uid, displayName: 'Renamed Owner', initials: 'RO' }),
+      expect.objectContaining({ id: friend.user.uid, displayName: 'Private Friend' }),
+    ]))
   }, 30_000)
 
   emulatorIt('adds, edits, and soft-deletes one replay-stable expense with shared history and balances', async () => {

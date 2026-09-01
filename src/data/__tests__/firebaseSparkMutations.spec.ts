@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationPreferencesCommand, ProfileUpdateCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -266,6 +266,44 @@ describe('Firebase Spark mutations', () => {
     expect(cleared.settingsDocument).not.toHaveProperty('defaultSplit')
     expect(cleared.activityDocument).toMatchObject({ subject: { label: 'Default split cleared' } })
   })
+
+  it('versions a private profile command while preserving account identity fields for membership propagation', () => {
+    const command: ProfileUpdateCommand = { kind: 'profile.update', operationId: 'profile-rename', displayName: '  Maya Rivera  ' }
+    const identity: OperationIdentity = { userId: 'maya-p', operationId: command.operationId, kind: command.kind, groupId: null, requestFingerprint: 'a'.repeat(64), resourceId: `operation-${'b'.repeat(48)}` }
+    const createdAt = { kind: 'created' }
+    const committedAt = { kind: 'updated' }
+    const buildProfile = (sparkMutations as unknown as { buildSparkProfileUpdateRecord: SparkProfileUpdateBuilder }).buildSparkProfileUpdateRecord
+
+    const record = buildProfile(command, { displayName: 'Maya P.', initials: 'MP', avatarUrl: null, createdAt }, identity, committedAt)
+
+    expect(record.profileDocument).toEqual({
+      displayName: 'Maya Rivera', initials: 'MR', avatarUrl: null, createdAt, updatedAt: committedAt,
+      lastCommandKind: 'profile.update', lastOperationId: command.operationId,
+      lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: 'b'.repeat(48),
+    })
+    expect(record.memberPatch).toEqual({ displayName: 'Maya Rivera', initials: 'MR', avatarUrl: null })
+  })
+
+  it('creates and advances replay-bound notification preferences without inventing delivery state', () => {
+    const first: NotificationPreferencesCommand = { kind: 'notification.preferences', operationId: 'preferences-off', preferences: { emailEnabled: false, pushEnabled: true } }
+    const firstIdentity: OperationIdentity = { userId: 'maya-p', operationId: first.operationId, kind: first.kind, groupId: null, requestFingerprint: 'c'.repeat(64), resourceId: `operation-${'d'.repeat(48)}` }
+    const buildPreferences = (sparkMutations as unknown as { buildSparkNotificationPreferencesRecord: SparkNotificationPreferencesBuilder }).buildSparkNotificationPreferencesRecord
+
+    const created = buildPreferences(first, undefined, firstIdentity, 'first-commit')
+    expect(created).toEqual({
+      schemaVersion: 1, revision: 1, emailEnabled: false, pushEnabled: true, updatedAt: 'first-commit',
+      lastCommandKind: 'notification.preferences', lastOperationId: first.operationId,
+      lastRequestFingerprint: 'c'.repeat(64), lastResourceToken: 'd'.repeat(48),
+    })
+
+    const second: NotificationPreferencesCommand = { kind: 'notification.preferences', operationId: 'preferences-on', preferences: { emailEnabled: true, pushEnabled: false } }
+    const secondIdentity: OperationIdentity = { userId: 'maya-p', operationId: second.operationId, kind: second.kind, groupId: null, requestFingerprint: 'e'.repeat(64), resourceId: `operation-${'f'.repeat(48)}` }
+    expect(buildPreferences(second, created, secondIdentity, 'second-commit')).toEqual({
+      schemaVersion: 1, revision: 2, emailEnabled: true, pushEnabled: false, updatedAt: 'second-commit',
+      lastCommandKind: 'notification.preferences', lastOperationId: second.operationId,
+      lastRequestFingerprint: 'e'.repeat(64), lastResourceToken: 'f'.repeat(48),
+    })
+  })
 })
 
 const groupMembers: readonly Member[] = [
@@ -322,3 +360,20 @@ type SparkGroupSettingsBuilder = (
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }
+
+type SparkProfileUpdateBuilder = (
+  command: ProfileUpdateCommand,
+  current: Readonly<Record<string, unknown>>,
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => {
+  readonly profileDocument: Readonly<Record<string, unknown>>
+  readonly memberPatch: Readonly<Record<string, unknown>>
+}
+
+type SparkNotificationPreferencesBuilder = (
+  command: NotificationPreferencesCommand,
+  current: Readonly<Record<string, unknown>> | undefined,
+  identity: OperationIdentity,
+  committedAt: unknown,
+) => Readonly<Record<string, unknown>>

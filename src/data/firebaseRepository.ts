@@ -3,10 +3,10 @@ import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebas
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, SavedCommandResult, SettlementRecord, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationPreferencesResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord } from './firebaseSparkMutations'
+import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkProfileUpdateRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
@@ -271,6 +271,64 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     return { kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: command.groupId } as SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.simplify-debts'>
   }
 
+  async function executeSparkProfileUpdate(command: ProfileUpdateCommand): Promise<SavedCommandResult<'profile.update'>> {
+    const { auth, db, firestore, userId } = await context()
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
+    const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()))
+    const profileReference = firestore.doc(db, 'users', userId)
+    await firestore.runTransaction(db, async (transaction) => {
+      const memberReferences = groupIds.map((groupId) => firestore.doc(db, 'groups', groupId, 'members', userId))
+      const [profile, ...members] = await Promise.all([
+        transaction.get(profileReference), ...memberReferences.map((reference) => transaction.get(reference)),
+      ])
+      if (!profile.exists()) throw new Error('Current Firebase user profile is missing')
+      const current = profile.data()
+      if (current.lastOperationId === identity.operationId) {
+        if (current.lastCommandKind !== identity.kind || current.lastRequestFingerprint !== identity.requestFingerprint || current.lastResourceToken !== token) throw new OperationReplayConflictError()
+        return
+      }
+      const record = buildSparkProfileUpdateRecord(command, current, identity, firestore.serverTimestamp())
+      transaction.set(profileReference, record.profileDocument)
+      members.forEach((snapshot, index) => {
+        const data = snapshot.data()
+        if (snapshot.exists() && isRecord(data) && data.status === 'active') transaction.update(memberReferences[index]!, record.memberPatch)
+      })
+    })
+    const currentAuthUser = auth.currentUser
+    if (!currentAuthUser || currentAuthUser.uid !== userId) throw new Error('Firebase authenticated principal changed')
+    const firebaseAuth = await import('firebase/auth')
+    await firebaseAuth.updateProfile(currentAuthUser, { displayName: command.displayName.trim().replace(/\s+/g, ' ') })
+    const saved = await firestore.getDoc(profileReference)
+    if (!saved.exists() || saved.data().lastOperationId !== identity.operationId) throw new Error('Saved Firebase profile is unavailable')
+    return { kind: 'profile.update', operationId: command.operationId, status: 'saved', resourceId: userId }
+  }
+
+  async function executeSparkNotificationPreferences(command: NotificationPreferencesCommand): Promise<NotificationPreferencesResult> {
+    const { db, firestore, userId } = await context()
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const reference = firestore.doc(db, 'users', userId, 'settings', 'notifications')
+    await firestore.runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(reference)
+      const current = snapshot.exists() ? snapshot.data() : undefined
+      if (current?.lastOperationId === identity.operationId) {
+        if (current.lastCommandKind !== identity.kind || current.lastRequestFingerprint !== identity.requestFingerprint || current.lastResourceToken !== token) throw new OperationReplayConflictError()
+        return
+      }
+      transaction.set(reference, buildSparkNotificationPreferencesRecord(command, current, identity, firestore.serverTimestamp()))
+    })
+    const saved = await firestore.getDoc(reference)
+    const data = saved.data()
+    if (!saved.exists() || !isRecord(data) || data.lastOperationId !== identity.operationId
+      || typeof data.emailEnabled !== 'boolean' || typeof data.pushEnabled !== 'boolean') throw new Error('Saved notification preferences are unavailable')
+    return {
+      kind: 'notification.preferences', operationId: command.operationId, status: 'saved',
+      preferences: { emailEnabled: data.emailEnabled, pushEnabled: data.pushEnabled },
+    }
+  }
+
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
     if (!functionsRegion) {
       if (command.kind === 'expense.add') return executeSparkExpenseAdd(command)
@@ -278,6 +336,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       if (command.kind === 'comment.add') return executeSparkCommentAdd(command)
       if (command.kind === 'comment.delete') return executeSparkCommentDelete(command)
       if (command.kind === 'group.default-split' || command.kind === 'group.simplify-debts') return executeSparkGroupSettings(command)
+      if (command.kind === 'profile.update') return executeSparkProfileUpdate(command)
+      if (command.kind === 'notification.preferences') return executeSparkNotificationPreferences(command)
       return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Secure cloud writes are unavailable because Firebase Functions is not configured.' } as CommandResult
     }
     await context()
@@ -421,8 +481,18 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           ...(query.cursor ? [firestore.startAfter(query.cursor.createdAt, query.cursor.id)] : []),
           firestore.limit(query.limit + 1),
         ]
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'activity'), ...constraints))
-        const decoded = snapshot.docs.map((document) => decodeActivity(String(document.data().groupId ?? ''), document.id, document.data()))
+        if (functionsRegion) {
+          const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'activity'), ...constraints))
+          const decoded = snapshot.docs.map((document) => decodeActivity(String(document.data().groupId ?? ''), document.id, document.data()))
+          return serverPage(decoded, query.limit, (item) => item.id)
+        }
+        const projections = await firestore.getDocs(firestore.query(firestore.collection(db, 'users', userId, 'groups'), firestore.limit(100)))
+        const groupIds = projections.docs.map((snapshot) => decodeGroupProjection(snapshot.id, snapshot.data()))
+        const pages = await Promise.all(groupIds.map(async (groupId) => {
+          const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), ...constraints))
+          return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
+        }))
+        const decoded = pages.flat().sort(newestActivityFirst).slice(0, query.limit + 1)
         return serverPage(decoded, query.limit, (item) => item.id)
       },
     },
@@ -484,6 +554,12 @@ async function resolveSparkExpenseHead(
 function oldestExpenseFirst(left: ExpenseRow, right: ExpenseRow): number {
   return left.date.localeCompare(right.date) || left.id.localeCompare(right.id)
 }
+
+function newestActivityFirst(left: ActivityItem, right: ActivityItem): number {
+  return descendingText(left.createdAt, right.createdAt) || descendingText(left.id, right.id) || descendingText(left.groupId, right.groupId)
+}
+
+function descendingText(left: string, right: string): number { return left === right ? 0 : left < right ? 1 : -1 }
 
 function decodeGroupSettings(groupId: string, value: unknown): GroupSettings {
   if (!isRecord(value) || value.schemaVersion !== 1 || value.groupId !== groupId || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1) throw new Error('Group settings document is invalid')

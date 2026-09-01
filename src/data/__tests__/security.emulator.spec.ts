@@ -44,10 +44,25 @@ describe('Firestore rules in the emulator', () => {
     const owner = environment.authenticatedContext('new-owner', { email: 'owner@example.com', email_verified: true }).firestore()
     const attacker = environment.authenticatedContext('attacker', { email: 'attacker@example.com', email_verified: true }).firestore()
     await assertSucceeds(setDoc(doc(owner, 'users/new-owner'), profile('New Owner', 'NO')))
+    await assertSucceeds(commitGroupBundle(owner, 'group-profile', 'new-owner', 'New Owner', 'NO'))
     await assertFails(setDoc(doc(owner, 'users/someone-else'), profile('Someone Else', 'SE')))
     await assertFails(setDoc(doc(attacker, 'users/attacker'), { ...profile('Attacker', 'A'), admin: true }))
-    await assertSucceeds(updateDoc(doc(owner, 'users/new-owner'), { displayName: 'Owner Updated', initials: 'OU', updatedAt: serverTimestamp() }))
+    await assertFails(updateDoc(doc(owner, 'users/new-owner'), { displayName: 'Unversioned Owner', initials: 'UO', updatedAt: serverTimestamp() }))
+    await assertSucceeds(commitSparkProfileUpdate(owner, 'new-owner', 'group-profile', 'Owner Updated', 'OU'))
+    await assertFails(commitSparkProfileUpdate(attacker, 'new-owner', 'group-profile', 'Forged Owner', 'FO'))
     await assertFails(updateDoc(doc(owner, 'users/new-owner'), { createdAt: serverTimestamp() }))
+  })
+
+  emulatorIt('versions notification preferences privately and denies cross-account access', async () => {
+    const owner = environment.authenticatedContext('active').firestore()
+    const outsider = environment.authenticatedContext('outsider').firestore()
+    const reference = doc(owner, 'users/active/settings/notifications')
+    await assertSucceeds(setDoc(reference, sparkNotificationPreferences(1, 'preferences-create', 'a'.repeat(48), false, true)))
+    await assertSucceeds(getDoc(reference))
+    await assertFails(getDoc(doc(outsider, 'users/active/settings/notifications')))
+    await assertFails(setDoc(doc(outsider, 'users/active/settings/notifications'), sparkNotificationPreferences(2, 'preferences-forged', 'b'.repeat(48), true, false)))
+    await assertFails(setDoc(reference, sparkNotificationPreferences(3, 'preferences-skip', 'c'.repeat(48), true, false)))
+    await assertSucceeds(setDoc(reference, sparkNotificationPreferences(2, 'preferences-update', 'd'.repeat(48), true, false)))
   })
 
   emulatorIt('permits one complete owner-only group bootstrap and rejects partial or forged groups', async () => {
@@ -246,6 +261,27 @@ describe('Firestore rules in the emulator', () => {
 
 function profile(displayName: string, initials: string): Record<string, unknown> {
   return { displayName, initials, avatarUrl: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
+}
+
+function commitSparkProfileUpdate(source: unknown, uid: string, groupId: string, displayName: string, initials: string): Promise<void> {
+  const db = source as Firestore
+  const batch = writeBatch(db)
+  batch.update(doc(db, `users/${uid}`), {
+    displayName, initials, avatarUrl: null, updatedAt: serverTimestamp(),
+    lastCommandKind: 'profile.update', lastOperationId: 'profile-rename',
+    lastRequestFingerprint: 'e'.repeat(64), lastResourceToken: 'e'.repeat(48),
+  })
+  batch.update(doc(db, `groups/${groupId}/members/${uid}`), { displayName, initials, avatarUrl: null })
+  return batch.commit()
+}
+
+function sparkNotificationPreferences(revision: number, operationId: string, token: string, emailEnabled: boolean, pushEnabled: boolean): Record<string, unknown> {
+  return {
+    schemaVersion: 1, revision, emailEnabled, pushEnabled,
+    lastCommandKind: 'notification.preferences', lastOperationId: operationId,
+    lastRequestFingerprint: token[0]!.repeat(64), lastResourceToken: token,
+    updatedAt: serverTimestamp(),
+  }
 }
 
 function group(groupId: string, ownerUid: string, memberIds: readonly string[]): Record<string, unknown> {

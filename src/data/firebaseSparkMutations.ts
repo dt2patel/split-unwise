@@ -7,8 +7,8 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member } from './repositories'
-import type { OperationIdentity } from './operationIdentity'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationPreferencesCommand, ProfileUpdateCommand } from './repositories'
+import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
 
 export interface FirebaseIdentity {
@@ -54,6 +54,11 @@ export interface SparkGroupSettingsRecord {
   readonly balanceDocument?: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+export interface SparkProfileUpdateRecord {
+  readonly profileDocument: Readonly<Record<string, unknown>>
+  readonly memberPatch: Readonly<Record<string, unknown>>
 }
 
 /** Builds the single immutable source document authorized by the Spark rules path. */
@@ -234,6 +239,51 @@ export function buildSparkGroupSettingsRecord(
   }
 }
 
+/** Versions the private profile and emits the exact public membership snapshot patch. */
+export function buildSparkProfileUpdateRecord(
+  command: ProfileUpdateCommand,
+  current: Readonly<Record<string, unknown>>,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): SparkProfileUpdateRecord {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'profile.update') throw new Error('Spark profile command is invalid.')
+  const token = assertSparkPrivateOperationIdentity(parsed, identity)
+  const profile = requireProfile(current)
+  if (current.createdAt === undefined) throw new Error('Stored Firebase profile is invalid.')
+  const displayName = normalizeDisplayName(parsed.displayName)
+  const initials = parsed.initials?.trim() ?? profileInitials(displayName)
+  const memberPatch = { displayName, initials, avatarUrl: profile.avatarUrl }
+  return {
+    profileDocument: {
+      ...memberPatch, createdAt: current.createdAt, updatedAt: committedAt,
+      lastCommandKind: parsed.kind, lastOperationId: parsed.operationId,
+      lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    },
+    memberPatch,
+  }
+}
+
+/** Creates or advances the private notification-preference revision. */
+export function buildSparkNotificationPreferencesRecord(
+  command: NotificationPreferencesCommand,
+  current: Readonly<Record<string, unknown>> | undefined,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): Readonly<Record<string, unknown>> {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'notification.preferences') throw new Error('Spark notification preferences command is invalid.')
+  const token = assertSparkPrivateOperationIdentity(parsed, identity)
+  const revision = current === undefined ? 0 : sparkPrivateSettingsRevision(current)
+  if (revision >= Number.MAX_SAFE_INTEGER) throw new Error('Notification preferences revision cannot advance safely.')
+  return {
+    schemaVersion: 1, revision: revision + 1, ...parsed.preferences,
+    lastCommandKind: parsed.kind, lastOperationId: parsed.operationId,
+    lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    updatedAt: committedAt,
+  }
+}
+
 function sparkCommentActivity(groupId: string, operationId: string, kind: 'comment.added' | 'comment.deleted', actor: ActorSnapshot, expenseId: string, commentId: string, label: string, createdAt: unknown): Readonly<Record<string, unknown>> {
   return { groupId, operationId, kind, subject: { kind: 'comment', id: commentId, label }, actor, expenseId, commentId, createdAt }
 }
@@ -288,6 +338,20 @@ function assertSparkOperationIdentity(command: { readonly kind: string; readonly
   return token
 }
 
+function assertSparkPrivateOperationIdentity(command: { readonly kind: string; readonly operationId: string }, identity: OperationIdentity): string {
+  if (!identity.userId.trim() || identity.operationId !== command.operationId || identity.kind !== command.kind || identity.groupId !== null) throw new Error('Spark private operation identity does not match the command.')
+  if (!/^[a-f0-9]{64}$/.test(identity.requestFingerprint)) throw new Error('Spark private request fingerprint is invalid.')
+  const token = /^operation-([a-f0-9]{48})$/.exec(identity.resourceId)?.[1]
+  if (!token) throw new Error('Spark private resource identity is invalid.')
+  return token
+}
+
+function sparkPrivateSettingsRevision(value: Readonly<Record<string, unknown>>): number {
+  if (value.schemaVersion !== 1 || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1
+    || typeof value.emailEnabled !== 'boolean' || typeof value.pushEnabled !== 'boolean') throw new Error('Stored notification preferences are invalid.')
+  return Number(value.revision)
+}
+
 function normalizedActor(actor: ActorSnapshot): ActorSnapshot {
   const displayName = actor.displayName.trim()
   if (!actor.id.trim() || !displayName || displayName.length > 120) throw new Error('Spark expense actor is invalid.')
@@ -317,8 +381,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function buildFirebaseProfile(identity: FirebaseIdentity): FirebaseProfileDocument {
   const fallback = identity.email?.split('@')[0] ?? 'Split Unwise member'
   const displayName = normalizeDisplayName(identity.displayName ?? fallback)
-  const initials = displayName.split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('').slice(0, 4) || 'SU'
+  const initials = profileInitials(displayName)
   return { displayName, initials, avatarUrl: safeAvatarUrl(identity.photoURL) }
+}
+
+function profileInitials(displayName: string): string {
+  return displayName.split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('').slice(0, 4) || 'SU'
 }
 
 export function normalizeSparkGroup(input: { readonly operationId: string; readonly name: string; readonly currency: string }): { readonly groupId: string; readonly name: string; readonly currency: string } {
@@ -366,6 +434,11 @@ export async function synchronizeFirebaseProfile(configuration: FirebaseConfigur
   const app = await getSplitUnwiseFirebaseApp(configuration)
   const user = authenticatedUser(app, identity)
   const profile = buildFirebaseProfile(user)
+  const command: ProfileUpdateCommand = {
+    kind: 'profile.update', operationId: await firebaseProfileSyncOperationId(user.uid, profile),
+    displayName: profile.displayName, initials: profile.initials,
+  }
+  const operationIdentity = await createOperationIdentity(user.uid, command)
   const db = getFirestore(app)
   await runTransaction(db, async (transaction) => {
     const reference = doc(db, `users/${user.uid}`)
@@ -375,10 +448,17 @@ export async function synchronizeFirebaseProfile(configuration: FirebaseConfigur
       return
     }
     const data = existing.data()
-    if (data.displayName !== profile.displayName || data.initials !== profile.initials || (data.avatarUrl ?? null) !== profile.avatarUrl) {
-      transaction.update(reference, { ...profile, updatedAt: serverTimestamp() })
+    if (data.displayName !== profile.displayName || data.initials !== profile.initials) {
+      transaction.set(reference, buildSparkProfileUpdateRecord(command, data, operationIdentity, serverTimestamp()).profileDocument)
     }
   })
+}
+
+async function firebaseProfileSyncOperationId(uid: string, profile: FirebaseProfileDocument): Promise<string> {
+  const bytes = new TextEncoder().encode(`${uid}\u0000${profile.displayName}\u0000${profile.initials}`)
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+  const token = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 32)
+  return `auth-profile-${token}`
 }
 
 export async function createSparkGroup(configuration: FirebaseConfiguration, input: { readonly operationId: string; readonly name: string; readonly currency: string }): Promise<{ readonly groupId: string }> {

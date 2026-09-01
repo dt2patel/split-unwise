@@ -7,11 +7,55 @@ service cloud.firestore {
     function validName(value) { return value is string && value.size() > 0 && value.size() <= 120; }
     function validInitials(value) { return value is string && value.size() > 0 && value.size() <= 4; }
     function validAvatar(data) { return data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 2048); }
-    function validProfile(data) {
-      return data.keys().hasOnly(['displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt'])
-        && data.keys().hasAll(['displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt'])
+    function validProfileCore(data) {
+      return data.keys().hasAll(['displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt'])
         && validName(data.displayName) && validInitials(data.initials) && validAvatar(data)
         && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+    function validProfile(data) {
+      return data.keys().hasOnly(['displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt'])
+        && validProfileCore(data);
+    }
+    function validSparkPrivateReplay(data, kind) {
+      return data.lastCommandKind == kind
+        && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$');
+    }
+    function validSparkProfileUpdate(data) {
+      return data.keys().hasOnly([
+          'displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+        ])
+        && validProfileCore(data) && validSparkPrivateReplay(data, 'profile.update')
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'initials', 'updatedAt',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+        ])
+        && data.avatarUrl == resource.data.avatarUrl && data.createdAt == resource.data.createdAt
+        && data.updatedAt == request.time;
+    }
+    function validSparkNotificationPreferences(data) {
+      return data.keys().hasOnly([
+          'schemaVersion', 'revision', 'emailEnabled', 'pushEnabled', 'updatedAt',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+        ])
+        && data.keys().hasAll([
+          'schemaVersion', 'revision', 'emailEnabled', 'pushEnabled', 'updatedAt',
+          'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+        ])
+        && data.schemaVersion == 1 && data.revision is int && data.revision >= 1
+        && data.emailEnabled is bool && data.pushEnabled is bool && data.updatedAt == request.time
+        && validSparkPrivateReplay(data, 'notification.preferences');
+    }
+    function validSparkNotificationPreferencesCreate(data) {
+      return validSparkNotificationPreferences(data) && data.revision == 1;
+    }
+    function validSparkNotificationPreferencesUpdate(data) {
+      return validSparkNotificationPreferences(data)
+        && data.revision == resource.data.revision + 1
+        && data.lastOperationId != resource.data.lastOperationId
+        && data.lastResourceToken != resource.data.lastResourceToken;
     }
     function activeMember(groupId) {
       return signedIn() && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active';
@@ -493,9 +537,7 @@ service cloud.firestore {
       allow list, delete: if false;
       allow create: if owns(uid) && validProfile(request.resource.data)
         && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
-      allow update: if owns(uid) && validProfile(request.resource.data)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'initials', 'avatarUrl', 'updatedAt'])
-        && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.updatedAt == request.time;
+      allow update: if owns(uid) && validSparkProfileUpdate(request.resource.data);
 
       match /groups/{groupId} {
         allow get: if owns(uid);
@@ -510,7 +552,14 @@ service cloud.firestore {
       }
       match /activity/{activityId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(100); allow write: if false; }
       match /notifications/{notificationId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(100); allow write: if false; }
-      match /settings/{settingId} { allow get: if owns(uid); allow list, write: if false; }
+      match /settings/{settingId} {
+        allow get: if owns(uid);
+        allow list, delete: if false;
+        allow create: if settingId == 'notifications' && owns(uid)
+          && validSparkNotificationPreferencesCreate(request.resource.data);
+        allow update: if settingId == 'notifications' && owns(uid)
+          && validSparkNotificationPreferencesUpdate(request.resource.data);
+      }
       match /jobs/{jobId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(50); allow write: if false; }
       match /exports/{jobId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(50); allow write: if false; }
       match /devices/{deviceId} { allow get: if owns(uid); allow list: if owns(uid) && bounded(25); allow write: if false; }
@@ -532,7 +581,15 @@ service cloud.firestore {
           || (validJoinMember(request.resource.data, get(/databases/$(database)/documents/users/$(uid)).data, request.resource.data.invitationId)
             && validUsedInvitation(request.resource.data.invitationId, groupId, uid))
         );
-        allow update, delete: if false;
+        allow update: if owns(uid) && resource.data.status == 'active'
+          && request.resource.data.status == 'active'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'initials', 'avatarUrl'])
+          && request.resource.data.displayName == getAfter(/databases/$(database)/documents/users/$(uid)).data.displayName
+          && request.resource.data.initials == getAfter(/databases/$(database)/documents/users/$(uid)).data.initials
+          && request.resource.data.avatarUrl == getAfter(/databases/$(database)/documents/users/$(uid)).data.avatarUrl
+          && getAfter(/databases/$(database)/documents/users/$(uid)).data.updatedAt == request.time
+          && validSparkPrivateReplay(getAfter(/databases/$(database)/documents/users/$(uid)).data, 'profile.update');
+        allow delete: if false;
       }
       match /expenses/{expenseId} {
         allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
