@@ -147,7 +147,11 @@ describe('Firebase Spark mutations', () => {
         { participantId: 'owner', money: { currency: 'USD', minorAmount: 90000 } },
         { participantId: 'friend', money: { currency: 'USD', minorAmount: 90000 } },
       ],
-      category: 'Housing', splitMethod: { type: 'equal', participantIds: ['owner', 'friend'] },
+      payerIds: ['owner'], participantIds: ['owner', 'friend'], involvedMemberIds: ['friend', 'owner'],
+      category: 'Housing', splitMethod: { type: 'exact', allocations: [
+        { participantId: 'owner', money: { currency: 'USD', minorAmount: 90000 } },
+        { participantId: 'friend', money: { currency: 'USD', minorAmount: 90000 } },
+      ] },
       recurrence: command.recurrence, anchorDate: '2026-09-01', nextDate: '2026-10-01', revision: 1,
       createdAt: 'now', createdBy: actor, updatedAt: 'now', updatedBy: actor,
     })

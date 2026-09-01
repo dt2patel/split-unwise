@@ -762,37 +762,54 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const templateReference = firestore.doc(db, 'groups', command.groupId, 'recurringTemplates', command.templateId)
     const occurrenceReference = firestore.doc(db, 'groups', command.groupId, 'expenses', occurrenceId)
     const activityReference = firestore.doc(db, 'groups', command.groupId, 'activity', `activity-${token}`)
-    await firestore.runTransaction(db, async (transaction) => {
-      const [member, templateSnapshot, occurrenceSnapshot, activitySnapshot] = await Promise.all([
-        transaction.get(memberReference), transaction.get(templateReference), transaction.get(occurrenceReference), transaction.get(activityReference),
-      ])
-      const memberData = member.data()
-      if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active' || typeof memberData.displayName !== 'string') {
-        throw new Error('Only active group members can materialize a recurring expense')
-      }
-      if (!templateSnapshot.exists()) throw new Error('Recurring template was not found')
-      const currentTemplate = decodeRecurringExpense(command.groupId, command.templateId, templateSnapshot.data())
-      if (occurrenceSnapshot.exists()) {
-        const existing = decodeExpense(command.groupId, occurrenceId, occurrenceSnapshot.data())
-        if (existing.id !== occurrenceId || existing.groupId !== command.groupId || existing.recurringTemplateId !== command.templateId
-          || currentTemplate.nextDate <= command.occurrenceDate) throw new OperationReplayConflictError()
-        return
-      }
-      if (activitySnapshot.exists()) throw new OperationReplayConflictError()
-      const record = buildSparkRecurrenceMaterializationRecord(
-        command, templateSnapshot.data(), { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp(),
-      )
-      transaction.set(occurrenceReference, record.occurrenceDocument)
-      transaction.set(templateReference, record.templateDocument)
-      transaction.set(activityReference, record.activityDocument)
-    })
+    try {
+      await firestore.runTransaction(db, async (transaction) => {
+        const [member, templateSnapshot, occurrenceSnapshot, activitySnapshot] = await Promise.all([
+          transaction.get(memberReference), transaction.get(templateReference), transaction.get(occurrenceReference), transaction.get(activityReference),
+        ])
+        const memberData = member.data()
+        if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active' || typeof memberData.displayName !== 'string') {
+          throw new Error('Only active group members can materialize a recurring expense')
+        }
+        if (!templateSnapshot.exists()) throw new Error('Recurring template was not found')
+        const currentTemplate = decodeRecurringExpense(command.groupId, command.templateId, templateSnapshot.data())
+        if (occurrenceSnapshot.exists()) {
+          const existing = decodeExpense(command.groupId, occurrenceId, occurrenceSnapshot.data())
+          if (existing.id !== occurrenceId || existing.groupId !== command.groupId || existing.recurringTemplateId !== command.templateId
+            || currentTemplate.nextDate <= command.occurrenceDate) throw new OperationReplayConflictError()
+          return
+        }
+        if (activitySnapshot.exists()) throw new OperationReplayConflictError()
+        const record = buildSparkRecurrenceMaterializationRecord(
+          command, templateSnapshot.data(), { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp(),
+        )
+        transaction.set(occurrenceReference, record.occurrenceDocument)
+        transaction.set(templateReference, record.templateDocument)
+        transaction.set(activityReference, record.activityDocument)
+      })
+    } catch (error) {
+      // Rules intentionally reject a stale losing race after another client advances the template.
+      // Re-read below and accept only the deterministic occurrence's complete semantic replay.
+      if (!isFirestorePermissionDenied(error)) throw error
+    }
     const [savedOccurrence, savedTemplate] = await Promise.all([firestore.getDoc(occurrenceReference), firestore.getDoc(templateReference)])
     if (!savedOccurrence.exists() || !savedTemplate.exists()) throw new Error('Saved recurring occurrence is unavailable')
-    const occurrence = await resolveSparkExpenseHead(db, firestore, command.groupId, occurrenceId, savedOccurrence.data())
+    const savedOccurrenceData = savedOccurrence.data()
+    const occurrence = await resolveSparkExpenseHead(db, firestore, command.groupId, occurrenceId, savedOccurrenceData)
     const template = decodeRecurringExpense(command.groupId, command.templateId, savedTemplate.data())
     if (occurrence.id !== occurrenceId || occurrence.groupId !== command.groupId || occurrence.recurringTemplateId !== command.templateId
       || template.id !== command.templateId || template.groupId !== command.groupId
       || template.nextDate <= command.occurrenceDate) throw new OperationReplayConflictError()
+    const creationToken = isRecord(savedOccurrenceData) ? savedOccurrenceData.resourceToken : undefined
+    if (typeof creationToken !== 'string' || !/^[a-f0-9]{48}$/.test(creationToken)) throw new OperationReplayConflictError()
+    const activityId = `activity-${creationToken}`
+    const savedActivity = await firestore.getDoc(firestore.doc(db, 'groups', command.groupId, 'activity', activityId))
+    if (!savedActivity.exists()) throw new OperationReplayConflictError()
+    const activity = decodeActivity(command.groupId, activityId, savedActivity.data())
+    if (activity.kind !== 'expense.created' || activity.expenseId !== occurrenceId || activity.subject.id !== occurrenceId
+      || activity.operationId !== savedOccurrenceData.operationId || activity.revision !== 1
+      || activity.actor.id !== occurrence.createdBy?.id || activity.actor.displayName !== occurrence.createdBy.displayName
+      || activity.createdAt !== occurrence.createdAt) throw new OperationReplayConflictError()
     return { kind: command.kind, operationId: command.operationId, status: 'saved', template, occurrence }
   }
 
@@ -1117,6 +1134,11 @@ function decodeGroupSettings(groupId: string, value: unknown): GroupSettings {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+
+function isFirestorePermissionDenied(error: unknown): boolean {
+  if (!isRecord(error)) return false
+  return error.code === 'permission-denied' || error.code === 'firestore/permission-denied'
+}
 
 function serverPage<T extends ActivityItem | NotificationItem>(values: readonly T[], limit: number, id: (value: T) => string): { items: readonly T[]; nextCursor?: TimelineCursor } {
   const items = values.slice(0, limit)
