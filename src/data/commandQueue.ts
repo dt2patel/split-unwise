@@ -5,6 +5,7 @@ import { decodeDefaultSplit } from '../domain/groupSettings'
 import type { CommandEnvelope, CommandKind, CommandResult, ExpenseDraft, ExpenseRow, SyncState } from './repositories'
 import { isStrictId } from './identifiers'
 import { assertOperationId, canonicalEnvelopeFingerprint, OperationReplayConflictError } from './operationIdentity'
+import { recurringOccurrenceId } from '../domain/recurrence'
 
 export const COMMAND_QUEUE_STORAGE_VERSION = 6 as const
 const COMMAND_QUEUE_STORAGE_PREFIX = `split-unwise:command-queue:v${COMMAND_QUEUE_STORAGE_VERSION}`
@@ -537,8 +538,8 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
     case 'profile.update': return isNonEmptyString(value.resourceId)
     case 'group.default-split': return value.resourceId === envelope.groupId
     case 'group.simplify-debts': return value.resourceId === envelope.groupId
-    case 'recurrence.materialize': return false
-    case 'recurrence.cancel': return false
+    case 'recurrence.materialize': return isSavedRecurrenceMaterialization(value, envelope)
+    case 'recurrence.cancel': return isSavedRecurrenceCancellation(value, envelope)
   }
 }
 
@@ -556,6 +557,42 @@ function isExpenseRow(value: unknown): value is ExpenseRow {
   return isExpenseDraft(value) && isRecord(value) && isNonEmptyString(value.id) && isIsoTimestamp(value.createdAt) && isIsoTimestamp(value.updatedAt) && isPositiveInteger(value.revision) && isSyncState(value.syncState)
     && (value.recurringTemplateId === undefined || isNonEmptyString(value.recurringTemplateId)) && (value.deletedAt === undefined || isIsoTimestamp(value.deletedAt))
     && (value.createdBy === undefined || isActorSnapshot(value.createdBy)) && (value.updatedBy === undefined || isActorSnapshot(value.updatedBy))
+}
+
+function isSavedRecurrenceMaterialization(value: Record<string, unknown>, envelope: Extract<CommandEnvelope, { kind: 'recurrence.materialize' }>): boolean {
+  if (!onlyOperationFields(value, ['kind', 'operationId', 'status', 'template', 'occurrence'])
+    || !isRecurringExpense(value.template) || !isExpenseRow(value.occurrence)) return false
+  const template = value.template
+  const occurrence = value.occurrence
+  return template.id === envelope.templateId && template.groupId === envelope.groupId
+    && template.nextDate > envelope.occurrenceDate
+    && occurrence.id === recurringOccurrenceId(envelope.templateId, envelope.occurrenceDate)
+    && occurrence.groupId === envelope.groupId && occurrence.date === envelope.occurrenceDate
+    && occurrence.recurringTemplateId === envelope.templateId
+}
+
+function isSavedRecurrenceCancellation(value: Record<string, unknown>, envelope: Extract<CommandEnvelope, { kind: 'recurrence.cancel' }>): boolean {
+  return onlyOperationFields(value, ['kind', 'operationId', 'status', 'template']) && isRecurringExpense(value.template)
+    && value.template.id === envelope.templateId && value.template.groupId === envelope.groupId
+    && value.template.status === 'cancelled' && value.template.revision === envelope.expectedRevision + 1
+}
+
+function isRecurringExpense(value: unknown): value is import('./repositories').RecurringExpense {
+  if (!isRecord(value) || !isStrictId(value.id) || !isNonEmptyString(value.groupId) || (value.status !== 'active' && value.status !== 'cancelled')
+    || !isNonEmptyString(value.description) || !isPositiveMoney(value.total) || !isAllocations(value.payments, value.total.currency)
+    || !isAllocations(value.allocations, value.total.currency) || value.payments.length === 0
+    || sumAllocations(value.payments) !== BigInt(value.total.minorAmount) || sumAllocations(value.allocations) !== BigInt(value.total.minorAmount)
+    || !isNonEmptyString(value.category) || !isSplitMethod(value.splitMethod, value.total.currency) || !isRecurrence(value.recurrence)
+    || !isIsoDate(value.anchorDate) || !isIsoDate(value.nextDate) || !isPositiveInteger(value.revision)
+    || !isActorSnapshot(value.createdBy) || value.syncState !== 'fresh') return false
+  try {
+    if (!sameAllocations(computeAllocations(value.total, value.splitMethod), value.allocations)) return false
+  } catch { return false }
+  const anchor = `${String(value.recurrence.anchor.month).padStart(2, '0')}-${String(value.recurrence.anchor.day).padStart(2, '0')}`
+  if (value.anchorDate.slice(5) !== anchor) return false
+  if ((value.lastOccurrenceId === undefined) !== (value.lastOccurrenceDate === undefined)) return false
+  return value.lastOccurrenceId === undefined
+    || (isIsoDate(value.lastOccurrenceDate) && value.lastOccurrenceId === recurringOccurrenceId(value.id, value.lastOccurrenceDate))
 }
 
 function isSavedComment(value: Record<string, unknown>, envelope: Extract<CommandEnvelope, { kind: 'comment.add' | 'comment.delete' }>, deleted: boolean): boolean {

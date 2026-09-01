@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { CommandConflictError, CommandFailedError, CommandQueue, createBrowserCommandStorage, createMemoryCommandStorage, type CommandOperation, type CommandQueueOptions, type CommandStorage } from '../commandQueue'
 import { OperationReplayConflictError } from '../operationIdentity'
-import type { CommandEnvelope, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, RecurrenceMaterializeCommand } from '../repositories'
+import type { CommandEnvelope, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, RecurrenceMaterializeCommand, RecurringExpense } from '../repositories'
 
 const addExpense = (operationId: string): ExpenseAddCommand => ({
   kind: 'expense.add',
@@ -78,6 +78,49 @@ describe('CommandQueue', () => {
     }
 
     await expect(queue.submit(command).result()).rejects.toMatchObject({ code: 'validation' })
+  })
+
+  it('accepts and persists typed recurrence materialization and cancellation results', async () => {
+    const template: RecurringExpense = {
+      id: 'recurring-rent', groupId: 'lake-house-weekend', status: 'active', description: 'Rent',
+      total: { currency: 'USD', minorAmount: 2400 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2400 } }],
+      allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 2400 } }], category: 'Housing',
+      splitMethod: { type: 'equal', participantIds: ['maya-p'] }, recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' },
+      anchorDate: '2026-08-30', nextDate: '2026-10-30', revision: 2, createdBy: { id: 'maya-p', displayName: 'Maya P.' },
+      lastOccurrenceId: 'occ_recurring-rent_2026-09-30', lastOccurrenceDate: '2026-09-30', syncState: 'fresh',
+    }
+    const occurrence: ExpenseRow = {
+      ...expenseRow(), id: 'occ_recurring-rent_2026-09-30', date: '2026-09-30', recurrence: template.recurrence,
+      recurringTemplateId: template.id, createdBy: { id: 'maya-p', displayName: 'Maya P.' }, updatedBy: { id: 'maya-p', displayName: 'Maya P.' },
+    }
+    const materialize: RecurrenceMaterializeCommand = {
+      kind: 'recurrence.materialize', operationId: 'materialize-rent-september', groupId: 'lake-house-weekend', templateId: template.id, occurrenceDate: '2026-09-30',
+    }
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'recurrence.materialize': async () => ({ kind: materialize.kind, operationId: materialize.operationId, status: 'saved', template, occurrence }),
+        'recurrence.cancel': async () => ({ kind: 'recurrence.cancel', operationId: 'cancel-rent', status: 'saved', template: { ...template, status: 'cancelled', revision: 3 } }),
+      },
+    })
+
+    await expect(queue.submit(materialize).result()).resolves.toMatchObject({ status: 'saved', occurrence: { id: occurrence.id } })
+    await expect(queue.submit({
+      kind: 'recurrence.cancel', operationId: 'cancel-rent', groupId: 'lake-house-weekend', templateId: template.id, expectedRevision: 2,
+    }).result()).resolves.toMatchObject({ status: 'saved', template: { status: 'cancelled', revision: 3 } })
+    expect(queue.snapshot()).toHaveLength(2)
+
+    const semanticReplay = { ...materialize, operationId: 'materialize-rent-september-after-delete' }
+    const replayQueue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'recurrence.materialize': async () => ({
+          kind: semanticReplay.kind, operationId: semanticReplay.operationId, status: 'saved', template,
+          occurrence: { ...occurrence, updatedAt: '2026-10-02T12:00:00.000Z', revision: 2, deletedAt: '2026-10-02T12:00:00.000Z' },
+        }),
+      },
+    })
+    await expect(replayQueue.submit(semanticReplay).result()).resolves.toMatchObject({ occurrence: { deletedAt: '2026-10-02T12:00:00.000Z' } })
   })
 
   it('rejects submit and resume before an authenticated owner is bound', async () => {

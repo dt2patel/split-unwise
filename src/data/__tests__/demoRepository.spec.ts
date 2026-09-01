@@ -77,6 +77,114 @@ describe('demo repository', () => {
     )
   })
 
+  it('creates, catches up, and cancels a recurring series without duplicating ledger effects', async () => {
+    const repository = createDemoRepository()
+    const draft = firewoodDraft()
+    const recurrence = { frequency: 'monthly' as const, anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' }
+    const added = await repository.expenses.add({ kind: 'expense.add', operationId: 'add-recurring-firewood-series', ...draft, recurrence })
+    if (added.status !== 'saved') throw new Error('Expected recurring demo expense to save')
+
+    expect(added.expense.recurringTemplateId).toMatch(/^recurring-[a-f0-9]{48}$/)
+    await expect(repository.groups.listRecurring('lake-house-weekend')).resolves.toContainEqual(expect.objectContaining({
+      id: added.expense.recurringTemplateId, status: 'active', anchorDate: '2026-08-30', nextDate: '2026-09-30', revision: 1,
+    }))
+
+    const caughtUp = await repository.groups.materializeDue('lake-house-weekend', '2026-10-30')
+    expect({ ...caughtUp, occurrences: caughtUp.occurrences.filter(({ recurringTemplateId }) => recurringTemplateId === added.expense.recurringTemplateId) }).toMatchObject({
+      occurrences: [
+        { id: `occ_${added.expense.recurringTemplateId}_2026-09-30`, date: '2026-09-30', recurringTemplateId: added.expense.recurringTemplateId },
+        { id: `occ_${added.expense.recurringTemplateId}_2026-10-30`, date: '2026-10-30', recurringTemplateId: added.expense.recurringTemplateId },
+      ],
+      moreRemain: false,
+    })
+    expect((await repository.expenses.listForGroup('lake-house-weekend')).filter(({ recurringTemplateId }) => recurringTemplateId === added.expense.recurringTemplateId)).toHaveLength(3)
+    expect((await repository.activity.listForGroup('lake-house-weekend')).filter(({ expenseId }) => expenseId?.startsWith(`occ_${added.expense.recurringTemplateId}_`))).toHaveLength(2)
+    const advanced = (await repository.groups.listRecurring('lake-house-weekend')).find(({ id }) => id === added.expense.recurringTemplateId)!
+    expect(advanced).toMatchObject({ nextDate: '2026-11-30', revision: 3, lastOccurrenceDate: '2026-10-30' })
+
+    const cancellation = await repository.commands.execute({
+      kind: 'recurrence.cancel', operationId: 'cancel-recurring-firewood-series', groupId: 'lake-house-weekend',
+      templateId: advanced.id, expectedRevision: advanced.revision,
+    })
+    expect(cancellation).toMatchObject({ status: 'saved', template: { id: advanced.id, status: 'cancelled', revision: 4 } })
+    const afterCancellation = await repository.groups.materializeDue('lake-house-weekend', '2027-12-31')
+    expect(afterCancellation.occurrences.filter(({ recurringTemplateId }) => recurringTemplateId === advanced.id)).toEqual([])
+  })
+
+  it('caps recurrence catch-up and reports remaining due work', async () => {
+    const repository = createDemoRepository()
+
+    const result = await repository.groups.materializeDue('lake-house-weekend', '2026-11-28', 1)
+
+    expect(result).toMatchObject({ occurrences: [{ id: 'occ_cabin-deposit-monthly_2026-09-28' }], moreRemain: true })
+    await expect(repository.groups.materializeDue('lake-house-weekend', '2026-11-28', 25)).rejects.toThrow(/24/)
+  })
+
+  it('updates an active template only for a latest future-series edit', async () => {
+    const repository = createDemoRepository()
+    const materialized = await repository.groups.materializeDue('lake-house-weekend', '2026-09-28')
+    const latest = materialized.occurrences[0]!
+    const changed = {
+      ...firewoodDraft(),
+      date: '2026-09-28', description: 'Future cabin payment', category: 'Lodging',
+      recurrence: { frequency: 'fortnightly' as const, anchor: { month: 9, day: 28 }, timeZone: 'America/Chicago' },
+      occurrenceEditScope: 'future' as const,
+    }
+
+    const edited = await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-future-cabin-series', groupId: 'lake-house-weekend', expenseId: latest.id,
+      expectedRevision: latest.revision, draft: changed,
+    })
+
+    expect(edited).toMatchObject({ status: 'saved', expense: { description: 'Future cabin payment', occurrenceEditScope: 'future' } })
+    await expect(repository.groups.listRecurring('lake-house-weekend')).resolves.toContainEqual(expect.objectContaining({
+      id: 'cabin-deposit-monthly', description: 'Future cabin payment', recurrence: changed.recurrence, nextDate: '2026-10-12', revision: 3,
+    }))
+    await expect(repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'stale-source-future-edit', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit',
+      expectedRevision: 1, draft: changed,
+    })).rejects.toThrow(/latest/i)
+  })
+
+  it('keeps the recurring template unchanged for an occurrence-only edit', async () => {
+    const repository = createDemoRepository()
+    const materialized = await repository.groups.materializeDue('lake-house-weekend', '2026-09-28')
+    const occurrence = materialized.occurrences[0]!
+    const before = await repository.groups.listRecurring('lake-house-weekend')
+
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-only-september-cabin', groupId: 'lake-house-weekend', expenseId: occurrence.id,
+      expectedRevision: 1, draft: { ...firewoodDraft(), date: occurrence.date, occurrenceEditScope: 'occurrence' },
+    })
+
+    await expect(repository.groups.listRecurring('lake-house-weekend')).resolves.toEqual(before)
+  })
+
+  it('keeps the source expense eligible for a future edit before any occurrence exists', async () => {
+    const repository = createDemoRepository()
+    const source = await repository.expenses.add({
+      kind: 'expense.add', operationId: 'add-source-frontier-series', ...firewoodDraft(),
+      recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' },
+    })
+    if (source.status !== 'saved' || !source.expense.recurringTemplateId) throw new Error('Expected recurring source expense')
+
+    const occurrenceOnly = await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-source-occurrence-only', groupId: 'lake-house-weekend', expenseId: source.expense.id, expectedRevision: 1,
+      draft: { ...firewoodDraft(), date: '2026-08-31', occurrenceEditScope: 'occurrence' },
+    })
+    if (occurrenceOnly.status !== 'saved') throw new Error('Expected source occurrence edit')
+    await expect(repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'edit-source-future-after-occurrence', groupId: 'lake-house-weekend', expenseId: source.expense.id, expectedRevision: 2,
+      draft: {
+        ...firewoodDraft(), date: '2026-08-31', occurrenceEditScope: 'future',
+        recurrence: { frequency: 'weekly', anchor: { month: 8, day: 31 }, timeZone: 'America/Chicago' },
+      },
+    })).resolves.toMatchObject({ status: 'saved', expense: { revision: 3 } })
+    await expect(repository.groups.listRecurring('lake-house-weekend')).resolves.toContainEqual(expect.objectContaining({
+      id: source.expense.recurringTemplateId, nextDate: '2026-09-07', revision: 2,
+    }))
+  })
+
   it('persists add allocations recomputed from the split method', async () => {
     const repository = createDemoRepository()
     const draft = firewoodDraft()
@@ -172,26 +280,25 @@ describe('demo repository', () => {
     await expect(repository.expenses.getById('lake-house-weekend', 'groceries')).resolves.toMatchObject({ revision: 1, description: 'Groceries' })
   })
 
-  it('clears optional note, recurrence, and occurrence-scope fields when an edit removes them', async () => {
+  it('clears optional note and recurrence fields on an occurrence-only edit', async () => {
     const repository = createDemoRepository()
     const added = await repository.expenses.add({
       kind: 'expense.add', operationId: 'add-recurring-firewood', ...firewoodDraft(),
       notes: 'Bring a tarp',
       recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' },
-      occurrenceEditScope: 'future',
     })
     if (added.status !== 'saved') throw new Error('Expected demo add to save')
 
     const edited = await repository.expenses.edit({
       kind: 'expense.edit', operationId: 'clear-recurring-firewood', groupId: 'lake-house-weekend',
-      expenseId: added.expense.id, expectedRevision: 1, draft: firewoodDraft(),
+      expenseId: added.expense.id, expectedRevision: 1, draft: { ...firewoodDraft(), occurrenceEditScope: 'occurrence' },
     })
 
     expect(edited).toMatchObject({ status: 'saved', expense: { revision: 2 } })
     if (edited.status !== 'saved') throw new Error('Expected demo edit to save')
     expect(edited.expense.notes).toBeUndefined()
     expect(edited.expense.recurrence).toBeUndefined()
-    expect(edited.expense.occurrenceEditScope).toBeUndefined()
+    expect(edited.expense.occurrenceEditScope).toBe('occurrence')
   })
 
   it('returns a durable tombstone when deleting an expense', async () => {

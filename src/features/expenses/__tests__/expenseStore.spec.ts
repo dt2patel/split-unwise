@@ -312,8 +312,8 @@ describe('expense store lifecycle', () => {
     const repository = createDemoRepository()
     const receipts = createMemoryReceiptStore({ id: () => 'restored-receipt', now: () => '2026-08-30T12:00:00.000Z' })
     const reference = await receipts.put(new Blob(['image'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
-    const original = await repository.expenses.getById('lake-house-weekend', 'cabin-deposit')
-    if (!original) throw new Error('Expected cabin expense')
+    const original = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!original) throw new Error('Expected seeded expense')
     await repository.expenses.edit({
       kind: 'expense.edit', operationId: 'attach-local-receipt', groupId: original.groupId, expenseId: original.id, expectedRevision: original.revision,
       draft: {

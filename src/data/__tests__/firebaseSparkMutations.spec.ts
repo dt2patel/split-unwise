@@ -1,12 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
 
 describe('Firebase Spark mutations', () => {
+  it('generates bounded materialization operation IDs even for maximum-length template IDs', async () => {
+    const templateId = `r${'x'.repeat(127)}`
+
+    const first = await sparkMutations.buildSparkMaterializationOperationId('group-a', templateId, '2026-10-01')
+    const replay = await sparkMutations.buildSparkMaterializationOperationId('group-a', templateId, '2026-10-01')
+    const nextDate = await sparkMutations.buildSparkMaterializationOperationId('group-a', templateId, '2026-11-01')
+
+    expect(first).toMatch(/^recurrence-[a-f0-9]{64}$/)
+    expect(first).toHaveLength(75)
+    expect(replay).toBe(first)
+    expect(nextDate).not.toBe(first)
+  })
+
   it('derives a bounded public profile from the authenticated Firebase identity', () => {
     expect(buildFirebaseProfile({ uid: 'user-a', displayName: '  Maya   Patel  ', email: 'maya@example.com', photoURL: null })).toEqual({
       displayName: 'Maya Patel', initials: 'MP', avatarUrl: null,
@@ -91,10 +104,153 @@ describe('Firebase Spark mutations', () => {
     const identity: OperationIdentity = { userId: 'owner', operationId: base.operationId, kind: 'expense.add', groupId: 'group-a', requestFingerprint: 'c'.repeat(64), resourceId: `operation-${'d'.repeat(48)}` }
     const actor = { id: 'owner', displayName: 'Owner Account' }
 
-    expect(() => buildSparkExpenseRecord({ ...base, recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' } }, actor, identity, 'now')).toThrow(/recurring/i)
     expect(() => buildSparkExpenseRecord({ ...base, attachmentRefs: ['local-receipt:a'] }, actor, identity, 'now')).toThrow(/attachment/i)
     expect(() => buildSparkExpenseRecord(base, actor, { ...identity, userId: 'other' }, 'now')).toThrow(/identity/i)
+    expect(() => buildSparkExpenseRecord({
+      ...base,
+      recurrence: { frequency: 'monthly', anchor: { month: 9, day: 2 }, timeZone: 'UTC' },
+    }, actor, identity, 'now')).toThrow(/anchor/i)
     expect(() => buildSparkExpenseRecord({ ...base, allocations: Array.from({ length: 7 }, (_, index) => ({ participantId: `member-${index}`, money: { currency: 'USD' as const, minorAmount: index === 0 ? 1000 : 0 } })), splitMethod: { type: 'exact', allocations: Array.from({ length: 7 }, (_, index) => ({ participantId: `member-${index}`, money: { currency: 'USD' as const, minorAmount: index === 0 ? 1000 : 0 } })) } }, actor, identity, 'now')).toThrow(/six/i)
+  })
+
+  it('derives a deterministic active template and links it to the source expense', () => {
+    const command: ExpenseAddCommand = {
+      kind: 'expense.add', operationId: 'recurring-expense-operation', groupId: 'group-a', description: '  Monthly rent  ', date: '2026-09-01',
+      total: { currency: 'USD', minorAmount: 180000 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 180000 } }],
+      allocations: [
+        { participantId: 'owner', money: { currency: 'USD', minorAmount: 90000 } },
+        { participantId: 'friend', money: { currency: 'USD', minorAmount: 90000 } },
+      ],
+      category: 'Housing', splitMethod: { type: 'equal', participantIds: ['owner', 'friend'] }, attachmentRefs: [],
+      recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' },
+    }
+    const identity: OperationIdentity = {
+      userId: 'owner', operationId: command.operationId, kind: command.kind, groupId: command.groupId,
+      requestFingerprint: 'c'.repeat(64), resourceId: `operation-${'d'.repeat(48)}`,
+    }
+    const actor = { id: 'owner', displayName: 'Owner Account' }
+
+    const record = buildSparkExpenseRecord(command, actor, identity, 'now')
+
+    expect(record.templateId).toBe(`recurring-${'d'.repeat(48)}`)
+    expect(record.expenseDocument).toMatchObject({
+      recurrence: command.recurrence,
+      recurringTemplateId: `recurring-${'d'.repeat(48)}`,
+    })
+    expect(record.templateDocument).toEqual({
+      id: `recurring-${'d'.repeat(48)}`, groupId: 'group-a', sourceExpenseId: `expense-${'d'.repeat(48)}`,
+      operationId: command.operationId, requestFingerprint: 'c'.repeat(64), resourceToken: 'd'.repeat(48),
+      lastOperationId: command.operationId, lastRequestFingerprint: 'c'.repeat(64), lastResourceToken: 'd'.repeat(48),
+      status: 'active', description: 'Monthly rent', total: { currency: 'USD', minorAmount: 180000 },
+      payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 180000 } }],
+      allocations: [
+        { participantId: 'owner', money: { currency: 'USD', minorAmount: 90000 } },
+        { participantId: 'friend', money: { currency: 'USD', minorAmount: 90000 } },
+      ],
+      category: 'Housing', splitMethod: { type: 'equal', participantIds: ['owner', 'friend'] },
+      recurrence: command.recurrence, anchorDate: '2026-09-01', nextDate: '2026-10-01', revision: 1,
+      createdAt: 'now', createdBy: actor, updatedAt: 'now', updatedBy: actor,
+    })
+  })
+
+  it('builds one deterministic occurrence and advances its active template atomically', () => {
+    const templateId = `recurring-${'d'.repeat(48)}`
+    const template = {
+      id: templateId, groupId: 'group-a', sourceExpenseId: `expense-${'d'.repeat(48)}`,
+      operationId: 'recurring-expense-operation', requestFingerprint: 'c'.repeat(64), resourceToken: 'd'.repeat(48),
+      lastOperationId: 'recurring-expense-operation', lastRequestFingerprint: 'c'.repeat(64), lastResourceToken: 'd'.repeat(48),
+      status: 'active', description: 'Monthly rent', total: { currency: 'USD', minorAmount: 180000 },
+      payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 180000 } }],
+      allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 90000 } }, { participantId: 'friend', money: { currency: 'USD', minorAmount: 90000 } }],
+      category: 'Housing', splitMethod: { type: 'equal', participantIds: ['owner', 'friend'] },
+      recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' },
+      anchorDate: '2026-09-01', nextDate: '2026-10-01', revision: 1,
+      createdBy: { id: 'owner', displayName: 'Owner Account' }, updatedAt: 'created', updatedBy: { id: 'owner', displayName: 'Owner Account' },
+    } as const
+    const command: RecurrenceMaterializeCommand = {
+      kind: 'recurrence.materialize', operationId: 'materialize-rent-october', groupId: 'group-a', templateId, occurrenceDate: '2026-10-01',
+    }
+    const identity: OperationIdentity = {
+      userId: 'friend', operationId: command.operationId, kind: command.kind, groupId: command.groupId,
+      requestFingerprint: 'e'.repeat(64), resourceId: `operation-${'f'.repeat(48)}`,
+    }
+    const actor = { id: 'friend', displayName: 'Friend Account' }
+    const committedAt = { kind: 'committed-at' }
+
+    const record = sparkMutations.buildSparkRecurrenceMaterializationRecord(command, template, actor, identity, committedAt)
+
+    expect(record.occurrenceId).toBe(`${templateId.startsWith('recurring-') ? 'occ_' : ''}${templateId}_2026-10-01`)
+    expect(record.occurrenceDocument).toMatchObject({
+      id: `occ_${templateId}_2026-10-01`, date: '2026-10-01', recurringTemplateId: templateId,
+      operationId: command.operationId, resourceToken: 'f'.repeat(48), createdBy: actor, revision: 1,
+    })
+    expect(record.templateDocument).toMatchObject({
+      id: templateId, status: 'active', nextDate: '2026-11-01', revision: 2,
+      lastOccurrenceId: `occ_${templateId}_2026-10-01`, lastOccurrenceDate: '2026-10-01',
+      lastOperationId: command.operationId, lastResourceToken: 'f'.repeat(48), updatedBy: actor,
+    })
+    expect(record.activityDocument).toMatchObject({
+      operationId: command.operationId, kind: 'expense.created', expenseId: `occ_${templateId}_2026-10-01`, actor,
+    })
+  })
+
+  it('cancels only the expected active template revision', () => {
+    const templateId = 'recurring-rent'
+    const template = {
+      id: templateId, groupId: 'group-a', sourceExpenseId: 'expense-rent', status: 'active', description: 'Rent',
+      total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing',
+      splitMethod: { type: 'equal', participantIds: ['owner'] }, recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'UTC' },
+      anchorDate: '2026-09-01', nextDate: '2026-10-01', revision: 2, createdBy: { id: 'owner', displayName: 'Owner' },
+    } as const
+    const command: RecurrenceCancelCommand = { kind: 'recurrence.cancel', operationId: 'cancel-rent', groupId: 'group-a', templateId, expectedRevision: 2 }
+    const identity: OperationIdentity = {
+      userId: 'owner', operationId: command.operationId, kind: command.kind, groupId: command.groupId,
+      requestFingerprint: '1'.repeat(64), resourceId: `operation-${'2'.repeat(48)}`,
+    }
+
+    const cancelled = sparkMutations.buildSparkRecurrenceCancellationRecord(command, template, { id: 'owner', displayName: 'Owner' }, identity, 'now')
+
+    expect(cancelled).toMatchObject({ status: 'cancelled', revision: 3, lastOperationId: 'cancel-rent', lastResourceToken: '2'.repeat(48), updatedAt: 'now' })
+    expect(() => sparkMutations.buildSparkRecurrenceCancellationRecord({ ...command, expectedRevision: 1 }, template, { id: 'owner', displayName: 'Owner' }, identity, 'now')).toThrow(/changed remotely/i)
+  })
+
+  it('updates future template fields only from the latest generated occurrence', () => {
+    const templateId = 'recurring-rent'
+    const occurrenceId = `occ_${templateId}_2026-10-01`
+    const template = {
+      id: templateId, groupId: 'group-a', sourceExpenseId: 'expense-rent', status: 'active', description: 'Rent',
+      total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }],
+      allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }], category: 'Housing',
+      splitMethod: { type: 'equal', participantIds: ['owner'] }, recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'UTC' },
+      anchorDate: '2026-09-01', nextDate: '2026-11-01', revision: 2, createdBy: { id: 'owner', displayName: 'Owner' },
+      lastOccurrenceId: occurrenceId, lastOccurrenceDate: '2026-10-01',
+    } as const
+    const command: ExpenseEditCommand = {
+      kind: 'expense.edit', operationId: 'edit-future-rent', groupId: 'group-a', expenseId: occurrenceId, expectedRevision: 1,
+      draft: {
+        groupId: 'group-a', description: 'Rent plus parking', date: '2026-10-15', total: { currency: 'USD', minorAmount: 1200 },
+        payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1200 } }],
+        allocations: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1200 } }], category: 'Housing',
+        splitMethod: { type: 'equal', participantIds: ['owner'] }, attachmentRefs: [],
+        recurrence: { frequency: 'fortnightly', anchor: { month: 10, day: 15 }, timeZone: 'UTC' }, occurrenceEditScope: 'future',
+      },
+    }
+    const identity: OperationIdentity = {
+      userId: 'owner', operationId: command.operationId, kind: command.kind, groupId: command.groupId,
+      requestFingerprint: '3'.repeat(64), resourceId: `operation-${'4'.repeat(48)}`,
+    }
+
+    const changed = sparkMutations.buildSparkFutureRecurringTemplateRecord(command, { id: occurrenceId, recurringTemplateId: templateId }, template, { id: 'owner', displayName: 'Owner' }, identity, 'now')
+
+    expect(changed).toMatchObject({
+      description: 'Rent plus parking', total: { currency: 'USD', minorAmount: 1200 }, recurrence: command.draft.recurrence,
+      anchorDate: '2026-10-15', nextDate: '2026-10-29', revision: 3, lastOperationId: command.operationId, updatedBy: { id: 'owner' },
+    })
+    expect(() => sparkMutations.buildSparkFutureRecurringTemplateRecord(
+      { ...command, expenseId: 'expense-rent' }, { id: 'expense-rent', recurringTemplateId: templateId }, template,
+      { id: 'owner', displayName: 'Owner' }, identity, 'now',
+    )).toThrow(/latest/i)
   })
 
   it('builds replay-bound edit and soft-delete records while preserving every prior revision', () => {

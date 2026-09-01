@@ -3,14 +3,15 @@ import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebas
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement, type DecodedGroupProjection } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkNotificationReadAllRecord, buildSparkNotificationReadRecord, buildSparkProfileUpdateRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
+import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkFutureRecurringTemplateRecord, buildSparkGroupSettingsRecord, buildSparkMaterializationOperationId, buildSparkNotificationPreferencesRecord, buildSparkNotificationReadAllRecord, buildSparkNotificationReadRecord, buildSparkProfileUpdateRecord, buildSparkRecurrenceCancellationRecord, buildSparkRecurrenceMaterializationRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
 import { compareTimelineAscending } from './timeline'
+import { recurringOccurrenceId } from '../domain/recurrence'
 
 type FirestoreModule = typeof import('firebase/firestore')
 type AuthModule = typeof import('firebase/auth')
@@ -80,6 +81,11 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   }
   async function listExpenses(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
     return (await listExpenseHeads(groupId, readyContext)).filter(({ deletedAt }) => deletedAt === undefined)
+  }
+  async function listRecurring(groupId: string, readyContext = context()): Promise<readonly RecurringExpense[]> {
+    const { db, firestore } = await readyContext
+    const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'recurringTemplates'), firestore.limit(100)))
+    return snapshot.docs.map((document) => decodeRecurringExpense(groupId, document.id, document.data()))
   }
   async function listSettlements(groupId: string, readyContext = context()): Promise<readonly SettlementRecord[]> {
     const { db, firestore } = await readyContext
@@ -245,8 +251,12 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     }
     const record = buildSparkExpenseRecord(command, { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp())
     const reference = firestore.doc(db, 'groups', command.groupId, 'expenses', record.expenseId)
+    const templateReference = record.templateId ? firestore.doc(db, 'groups', command.groupId, 'recurringTemplates', record.templateId) : undefined
     await firestore.runTransaction(db, async (transaction) => {
-      const existing = await transaction.get(reference)
+      const [existing, existingTemplate] = await Promise.all([
+        transaction.get(reference),
+        templateReference ? transaction.get(templateReference) : Promise.resolve(undefined),
+      ])
       if (existing.exists()) {
         const data = existing.data()
         const creator = isRecord(data.createdBy) ? data.createdBy : undefined
@@ -254,15 +264,31 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           || data.requestFingerprint !== identity.requestFingerprint
           || data.resourceToken !== identity.resourceId.slice('operation-'.length)
           || creator?.id !== identity.userId) throw new OperationReplayConflictError()
+        if (templateReference) {
+          const templateData = existingTemplate?.data()
+          if (!existingTemplate?.exists() || !isRecord(templateData) || templateData.sourceExpenseId !== record.expenseId
+            || templateData.operationId !== identity.operationId || templateData.requestFingerprint !== identity.requestFingerprint
+            || templateData.resourceToken !== identity.resourceId.slice('operation-'.length)) throw new OperationReplayConflictError()
+        }
         return
       }
+      if (existingTemplate?.exists()) throw new OperationReplayConflictError()
       transaction.set(reference, record.expenseDocument)
+      if (templateReference && record.templateDocument) transaction.set(templateReference, record.templateDocument)
     })
-    const saved = await firestore.getDoc(reference)
+    const [saved, savedTemplate] = await Promise.all([
+      firestore.getDoc(reference),
+      templateReference ? firestore.getDoc(templateReference) : Promise.resolve(undefined),
+    ])
     if (!saved.exists()) throw new Error('Saved expense is unavailable')
     const savedData = saved.data()
     const expense = decodeExpense(command.groupId, saved.id, savedData)
     if (!expense.createdBy) throw new Error('Saved expense creator is unavailable')
+    if (templateReference) {
+      if (!savedTemplate?.exists()) throw new Error('Saved recurring template is unavailable')
+      const template = decodeRecurringExpense(command.groupId, templateReference.id, savedTemplate.data())
+      if (template.status !== 'active' || expense.recurringTemplateId !== template.id) throw new Error('Saved recurring expense linkage is unavailable')
+    }
     await persistSparkExpenseActivity(db, firestore, command.groupId, buildSparkExpenseActivityRecord({
       groupId: command.groupId, operationId: command.operationId, kind: 'expense.created', actor: expense.createdBy,
       expenseId: expense.id, resourceToken: identity.resourceId.slice('operation-'.length), revision: 1,
@@ -303,6 +329,14 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         if (headData.lastRequestFingerprint !== identity.requestFingerprint || headToken !== identity.resourceId.slice('operation-'.length)) throw new OperationReplayConflictError()
         return
       }
+      if (command.kind === 'expense.edit' && current.recurringTemplateId && !command.draft.occurrenceEditScope) {
+        throw new Error('Choose whether to edit this occurrence or future expenses')
+      }
+      const templateReference = command.kind === 'expense.edit' && command.draft.occurrenceEditScope === 'future' && current.recurringTemplateId
+        ? firestore.doc(db, 'groups', command.groupId, 'recurringTemplates', current.recurringTemplateId)
+        : undefined
+      const templateSnapshot = templateReference ? await transaction.get(templateReference) : undefined
+      if (templateReference && !templateSnapshot?.exists()) throw new Error('Linked recurring template is unavailable')
       try {
         const mutation = buildSparkExpenseMutationRecord(
           command,
@@ -317,8 +351,13 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId, 'revisions', mutation.revisionId),
           mutation.revisionDocument,
         )
+        if (templateReference && templateSnapshot?.exists() && command.kind === 'expense.edit') {
+          transaction.set(templateReference, buildSparkFutureRecurringTemplateRecord(
+            command, current, templateSnapshot.data(), { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp(),
+          ))
+        }
       } catch (error) {
-        if (error instanceof Error && /changed remotely/i.test(error.message)) throw new CommandConflictError(error.message, { remote: current })
+        if (error instanceof Error && /changed remotely|latest recurring occurrence/i.test(error.message)) throw new CommandConflictError(error.message, { remote: current })
         throw error
       }
     })
@@ -714,6 +753,83 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     }
   }
 
+  async function executeSparkRecurrenceMaterialize(command: RecurrenceMaterializeCommand): Promise<RecurrenceMaterializeResult> {
+    const { db, firestore, userId } = await context()
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const occurrenceId = recurringOccurrenceId(command.templateId, command.occurrenceDate)
+    const memberReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
+    const templateReference = firestore.doc(db, 'groups', command.groupId, 'recurringTemplates', command.templateId)
+    const occurrenceReference = firestore.doc(db, 'groups', command.groupId, 'expenses', occurrenceId)
+    const activityReference = firestore.doc(db, 'groups', command.groupId, 'activity', `activity-${token}`)
+    await firestore.runTransaction(db, async (transaction) => {
+      const [member, templateSnapshot, occurrenceSnapshot, activitySnapshot] = await Promise.all([
+        transaction.get(memberReference), transaction.get(templateReference), transaction.get(occurrenceReference), transaction.get(activityReference),
+      ])
+      const memberData = member.data()
+      if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active' || typeof memberData.displayName !== 'string') {
+        throw new Error('Only active group members can materialize a recurring expense')
+      }
+      if (!templateSnapshot.exists()) throw new Error('Recurring template was not found')
+      const currentTemplate = decodeRecurringExpense(command.groupId, command.templateId, templateSnapshot.data())
+      if (occurrenceSnapshot.exists()) {
+        const existing = decodeExpense(command.groupId, occurrenceId, occurrenceSnapshot.data())
+        if (existing.recurringTemplateId !== command.templateId || existing.date !== command.occurrenceDate
+          || currentTemplate.nextDate <= command.occurrenceDate) throw new OperationReplayConflictError()
+        return
+      }
+      if (activitySnapshot.exists()) throw new OperationReplayConflictError()
+      const record = buildSparkRecurrenceMaterializationRecord(
+        command, templateSnapshot.data(), { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp(),
+      )
+      transaction.set(occurrenceReference, record.occurrenceDocument)
+      transaction.set(templateReference, record.templateDocument)
+      transaction.set(activityReference, record.activityDocument)
+    })
+    const [savedOccurrence, savedTemplate] = await Promise.all([firestore.getDoc(occurrenceReference), firestore.getDoc(templateReference)])
+    if (!savedOccurrence.exists() || !savedTemplate.exists()) throw new Error('Saved recurring occurrence is unavailable')
+    const occurrence = await resolveSparkExpenseHead(db, firestore, command.groupId, occurrenceId, savedOccurrence.data())
+    const template = decodeRecurringExpense(command.groupId, command.templateId, savedTemplate.data())
+    if (occurrence.recurringTemplateId !== template.id || occurrence.date !== command.occurrenceDate) throw new OperationReplayConflictError()
+    return { kind: command.kind, operationId: command.operationId, status: 'saved', template, occurrence }
+  }
+
+  async function executeSparkRecurrenceCancel(command: RecurrenceCancelCommand): Promise<RecurrenceCancelResult> {
+    const { db, firestore, userId } = await context()
+    const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
+    const memberReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
+    const templateReference = firestore.doc(db, 'groups', command.groupId, 'recurringTemplates', command.templateId)
+    await firestore.runTransaction(db, async (transaction) => {
+      const [member, templateSnapshot] = await Promise.all([transaction.get(memberReference), transaction.get(templateReference)])
+      const memberData = member.data()
+      if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active' || typeof memberData.displayName !== 'string') {
+        throw new Error('Only active group members can cancel a recurring expense')
+      }
+      if (!templateSnapshot.exists()) throw new Error('Recurring template was not found')
+      const data = templateSnapshot.data()
+      if (data.lastOperationId === identity.operationId) {
+        if (data.lastRequestFingerprint !== identity.requestFingerprint || data.lastResourceToken !== token) throw new OperationReplayConflictError()
+        return
+      }
+      try {
+        transaction.set(templateReference, buildSparkRecurrenceCancellationRecord(
+          command, data, { id: userId, displayName: memberData.displayName }, identity, firestore.serverTimestamp(),
+        ))
+      } catch (error) {
+        if (error instanceof Error && /changed remotely/i.test(error.message)) {
+          throw new CommandConflictError(error.message, { remote: decodeRecurringExpense(command.groupId, command.templateId, data) })
+        }
+        throw error
+      }
+    })
+    const saved = await firestore.getDoc(templateReference)
+    if (!saved.exists()) throw new Error('Saved recurring template is unavailable')
+    const template = decodeRecurringExpense(command.groupId, command.templateId, saved.data())
+    if (template.status !== 'cancelled') throw new OperationReplayConflictError()
+    return { kind: command.kind, operationId: command.operationId, status: 'saved', template }
+  }
+
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
     if (!functionsRegion) {
       if (command.kind === 'expense.add') return executeSparkExpenseAdd(command)
@@ -727,6 +843,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       if (command.kind === 'notification.preferences') return executeSparkNotificationPreferences(command)
       if (command.kind === 'notification.read') return executeSparkNotificationRead(command)
       if (command.kind === 'notification.read-all') return executeSparkNotificationReadAll(command)
+      if (command.kind === 'recurrence.materialize') return executeSparkRecurrenceMaterialize(command)
+      if (command.kind === 'recurrence.cancel') return executeSparkRecurrenceCancel(command)
       throw new Error('Unsupported Spark command')
     }
     await context()
@@ -777,10 +895,25 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       getSettings: getGroupSettings,
       async getTotals(groupId) { const readyContext = context(); return buildCurrencyTotals(await listExpenses(groupId, readyContext), (await readyContext).userId) },
       async getCharts(groupId) { const readyContext = context(); return buildGroupCharts(await listExpenses(groupId, readyContext)) },
-      async listRecurring(groupId) {
-        const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'recurringTemplates'), firestore.limit(100)))
-        return snapshot.docs.map((document) => decodeRecurringExpense(groupId, document.id, document.data()))
+      listRecurring,
+      async materializeDue(groupId, throughDate, maxOccurrences = 24) {
+        assertMaterializationRequest(throughDate, maxOccurrences)
+        const occurrences: ExpenseRow[] = []
+        while (occurrences.length < maxOccurrences) {
+          const template = (await listRecurring(groupId)).filter((item) => item.status === 'active' && item.nextDate <= throughDate)
+            .sort((left, right) => left.nextDate.localeCompare(right.nextDate) || left.id.localeCompare(right.id))[0]
+          if (!template) break
+          const command: RecurrenceMaterializeCommand = {
+            kind: 'recurrence.materialize',
+            operationId: await buildSparkMaterializationOperationId(groupId, template.id, template.nextDate),
+            groupId, templateId: template.id, occurrenceDate: template.nextDate,
+          }
+          const result = await execute(command)
+          if (result.kind !== 'recurrence.materialize' || result.status !== 'saved') throw new Error('Recurring occurrence could not be materialized')
+          occurrences.push(result.occurrence)
+        }
+        const moreRemain = (await listRecurring(groupId)).some((template) => template.status === 'active' && template.nextDate <= throughDate)
+        return { occurrences, moreRemain }
       },
       setDefaultSplit: execute,
       setSimplifyDebts: execute,
@@ -911,6 +1044,16 @@ async function resolveSparkExpenseHead(
 
 function oldestExpenseFirst(left: ExpenseRow, right: ExpenseRow): number {
   return left.date.localeCompare(right.date) || left.id.localeCompare(right.id)
+}
+
+function assertMaterializationRequest(throughDate: string, maxOccurrences: number): void {
+  const parsed = new Date(`${throughDate}T00:00:00.000Z`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(throughDate) || Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== throughDate) {
+    throw new Error('Through date must be a valid ISO date')
+  }
+  if (!Number.isSafeInteger(maxOccurrences) || maxOccurrences < 1 || maxOccurrences > 24) {
+    throw new Error('Recurring catch-up limit must be between 1 and 24')
+  }
 }
 
 function newestActivityFirst(left: ActivityItem, right: ActivityItem): number {

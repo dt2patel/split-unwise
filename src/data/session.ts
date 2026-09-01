@@ -130,6 +130,8 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
       'notification.read',
       'notification.read-all',
       'profile.update',
+      'recurrence.cancel',
+      'recurrence.materialize',
       'settlement.record',
       'settlement.void',
     ]
@@ -427,6 +429,7 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       getTotals: (groupId) => call(() => source.groups.getTotals(groupId)),
       getCharts: (groupId) => call(() => source.groups.getCharts(groupId)),
       listRecurring: (groupId) => call(() => source.groups.listRecurring(groupId)),
+      materializeDue: (groupId, throughDate, maxOccurrences) => call(() => source.groups.materializeDue(groupId, throughDate, maxOccurrences)),
       setDefaultSplit: (command) => call(() => source.groups.setDefaultSplit(command)),
       setSimplifyDebts: (command) => call(() => source.groups.setSimplifyDebts(command)),
     },

@@ -1,6 +1,7 @@
 import { computeBalancePlans, computeBalances } from '../domain/balances'
 import { computeAllocations } from '../domain/splits'
 import { updateGroupSettings, type GroupSettings } from '../domain/groupSettings'
+import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
 import { CommandConflictError } from './commandQueue'
 import {
   LAKE_HOUSE_GROUP_ID,
@@ -14,9 +15,10 @@ import {
   lakeHouseRecurring,
 } from '../demo/lakeHouse'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
-import { decodeActivity, decodeBalanceSnapshot, decodeSettlement } from './firebaseDecoders'
+import { decodeActivity, decodeBalanceSnapshot, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { assertReplayIdentity, createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareFirestoreStrings, compareTimelineAscending, compareTimelineDescending, isAfterDescendingCursor } from './timeline'
+import { buildSparkMaterializationOperationId } from './firebaseSparkMutations'
 import type {
   ActivityFilter,
   ActivityItem,
@@ -35,6 +37,7 @@ import type {
   Member,
   NotificationItem,
   NotificationPreferences,
+  RecurringExpense,
   SettlementRecord,
   SettlementRecordResult,
   SettlementVoidResult,
@@ -66,6 +69,7 @@ interface DemoRepositoryStateDocument {
   readonly comments: readonly ExpenseComment[]
   readonly notifications: readonly NotificationItem[]
   readonly revisions: readonly ExpenseRevision[]
+  readonly recurring?: readonly RecurringExpense[]
   readonly operationLedger: readonly (readonly [string, { readonly identity: OperationIdentity; readonly result: CommandResult }])[]
   readonly groupSettings?: GroupSettings
 }
@@ -88,6 +92,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
   const comments = (restored?.comments ?? lakeHouseComments).map(clone)
   const notifications = (restored?.notifications ?? lakeHouseNotifications).map(clone)
   const revisions = (restored?.revisions ?? initialRevisions(expenses, activity)).map(clone)
+  const recurring = (restored?.recurring ?? lakeHouseRecurring).map(clone)
   const operationLedger = new Map<string, { readonly identity: OperationIdentity; readonly result: CommandResult }>((restored?.operationLedger ?? []).map(([id, value]) => [id, clone(value)]))
   let currentUser = restored?.currentUser ? clone(restored.currentUser) : { ...selectedUser, isCurrentUser: true }
   let notificationPreferences: NotificationPreferences = restored?.notificationPreferences ? { ...restored.notificationPreferences } : { emailEnabled: true, pushEnabled: true }
@@ -139,7 +144,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     }
     const before = captureState()
     try {
-      const result = executeNew(command)
+      const result = executeNew(command, identity)
       operationLedger.set(command.operationId, { identity, result })
       await options.stateStorage?.save(stateScope, captureState())
       return clone(result)
@@ -162,6 +167,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     comments: comments.map(clone),
     notifications: notifications.map(clone),
     revisions: revisions.map(clone),
+    recurring: recurring.map(clone),
     operationLedger: [...operationLedger.entries()].map(([id, value]) => [id, clone(value)] as const),
     groupSettings: clone(groupSettings),
   })
@@ -177,12 +183,13 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
     comments.splice(0, comments.length, ...state.comments.map(clone))
     notifications.splice(0, notifications.length, ...state.notifications.map(clone))
     revisions.splice(0, revisions.length, ...state.revisions.map(clone))
+    recurring.splice(0, recurring.length, ...(state.recurring ?? lakeHouseRecurring).map(clone))
     operationLedger.clear()
     state.operationLedger.forEach(([id, value]) => operationLedger.set(id, clone(value)))
     groupSettings = state.groupSettings ? clone(state.groupSettings) : { schemaVersion: 1, groupId: LAKE_HOUSE_GROUP_ID, revision: 1 }
   }
 
-  const executeNew = (command: CommandEnvelope): CommandResult => {
+  const executeNew = (command: CommandEnvelope, identity: OperationIdentity): CommandResult => {
     switch (command.kind) {
       case 'expense.add': {
         assertLakeHouseGroup(command.groupId)
@@ -190,8 +197,12 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         const allocations = validateDraft(command)
         const createdAt = checkedNow(now)
         const actor = actorSnapshot(currentUser)
+        const expenseId = `demo-expense-${String(nextExpenseNumber).padStart(3, '0')}`
+        const templateId = command.recurrence ? `recurring-${identity.resourceId.slice('operation-'.length)}` : undefined
+        if (command.occurrenceEditScope) throw new Error('Occurrence scope requires an existing recurring expense')
+        if (command.recurrence) assertRecurrenceAnchor(command.date, command.recurrence)
         const expense: ExpenseRow = {
-          id: `demo-expense-${String(nextExpenseNumber).padStart(3, '0')}`,
+          id: expenseId,
           groupId: command.groupId,
           description: command.description,
           date: command.date,
@@ -209,7 +220,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
           updatedBy: actor,
           ...(command.notes ? { notes: command.notes } : {}),
           ...(command.recurrence ? { recurrence: clone(command.recurrence) } : {}),
-          ...(command.occurrenceEditScope ? { occurrenceEditScope: command.occurrenceEditScope } : {}),
+          ...(templateId ? { recurringTemplateId: templateId } : {}),
         }
         const event = expenseActivity(command.operationId, expense, 'expense.created', actor, createdAt)
         const revision = expenseRevision(command.operationId, expense, 'created', actor, createdAt)
@@ -217,6 +228,13 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         expenses.push(expense)
         activity.push(event)
         revisions.push(revision)
+        if (command.recurrence && templateId) recurring.push({
+          id: templateId, groupId: command.groupId, status: 'active', description: expense.description,
+          total: { ...expense.total }, payments: expense.payments.map(cloneAllocation), allocations: expense.allocations.map(cloneAllocation),
+          category: expense.category, splitMethod: clone(command.splitMethod), recurrence: clone(command.recurrence),
+          anchorDate: command.date, nextDate: nextOccurrence(command.date, command.recurrence), revision: 1,
+          createdBy: actor, syncState: 'fresh',
+        })
         balanceRevision += 1
         return { kind: 'expense.add', operationId: command.operationId, status: 'saved', expense: cloneExpense(expense) }
       }
@@ -225,6 +243,16 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         assertExpenseMutationPermission(previous)
         if (command.expectedRevision !== previous.revision) throw new CommandConflictError('The expense changed remotely.', { local: clone(command.draft), remote: cloneExpense(previous) })
         const allocations = validateDraft(command.draft)
+        const template = previous.recurringTemplateId ? recurring.find(({ id }) => id === previous.recurringTemplateId) : undefined
+        if (previous.recurringTemplateId && !template) throw new Error('Linked recurring template is unavailable')
+        if (previous.recurringTemplateId && !command.draft.occurrenceEditScope) throw new Error('Choose whether to edit this occurrence or future expenses')
+        if (!previous.recurringTemplateId && (command.draft.recurrence || command.draft.occurrenceEditScope)) throw new Error('Recurrence requires a linked recurring expense')
+        if (command.draft.occurrenceEditScope === 'future') {
+          if (!template || template.status !== 'active') throw new Error('Recurring template is not active')
+          if (!command.draft.recurrence) throw new Error('A future-series edit requires recurrence settings')
+          assertLatestFutureEdit(previous, template, expenses)
+          assertRecurrenceAnchor(command.draft.date, command.draft.recurrence)
+        }
         const updatedAt = checkedNow(now)
         const actor = actorSnapshot(currentUser)
         const { notes: _notes, recurrence: _recurrence, occurrenceEditScope: _scope, updatedBy: _updatedBy, ...retained } = previous
@@ -250,6 +278,14 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         expenses[expenses.indexOf(previous)] = updated
         activity.push(event)
         revisions.push(revision)
+        if (template && command.draft.occurrenceEditScope === 'future' && command.draft.recurrence) {
+          recurring[recurring.indexOf(template)] = {
+            ...template, description: updated.description, total: { ...updated.total }, payments: updated.payments.map(cloneAllocation),
+            allocations: updated.allocations.map(cloneAllocation), category: updated.category, splitMethod: clone(command.draft.splitMethod),
+            recurrence: clone(command.draft.recurrence), anchorDate: command.draft.date,
+            nextDate: nextOccurrence(command.draft.date, command.draft.recurrence), revision: template.revision + 1,
+          }
+        }
         balanceRevision += 1
         return { kind: command.kind, operationId: command.operationId, status: 'saved', expense: cloneExpense(updated) }
       }
@@ -446,9 +482,50 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       case 'profile.update':
         currentUser = { ...currentUser, displayName: command.displayName, initials: command.initials ?? initials(command.displayName) }
         return saved(command, currentUser.id)
-      case 'recurrence.materialize':
-      case 'recurrence.cancel':
-        return { kind: command.kind, operationId: command.operationId, status: 'not-supported', reason: 'Recurring series mutations are not available in the demo repository yet.' }
+      case 'recurrence.materialize': {
+        assertLakeHouseGroup(command.groupId)
+        assertActiveMembership()
+        const template = recurring.find((item) => item.id === command.templateId && item.groupId === command.groupId)
+        if (!template) throw new Error('Recurring template was not found')
+        const occurrenceId = recurringOccurrenceId(command.templateId, command.occurrenceDate)
+        const existing = expenses.find((item) => item.id === occurrenceId && item.groupId === command.groupId)
+        if (existing) {
+          if (existing.recurringTemplateId !== template.id || existing.date !== command.occurrenceDate) throw new Error('Recurring occurrence identity conflicts with an existing expense')
+          return { kind: command.kind, operationId: command.operationId, status: 'saved', template: clone(template), occurrence: cloneExpense(existing) }
+        }
+        if (template.status !== 'active') throw new Error('Recurring template is not active')
+        if (template.nextDate !== command.occurrenceDate) throw new CommandConflictError('Recurring template changed remotely.', { remote: clone(template) })
+        const createdAt = checkedNow(now)
+        const actor = actorSnapshot(currentUser)
+        const occurrence: ExpenseRow = {
+          id: occurrenceId, groupId: command.groupId, description: template.description, date: command.occurrenceDate,
+          total: { ...template.total }, payments: template.payments.map(cloneAllocation), allocations: template.allocations.map(cloneAllocation),
+          category: template.category, splitMethod: clone(template.splitMethod), attachmentRefs: [], recurrence: clone(template.recurrence),
+          recurringTemplateId: template.id, createdAt, updatedAt: createdAt, createdBy: actor, updatedBy: actor,
+          revision: 1, syncState: 'fresh',
+        }
+        const advanced: RecurringExpense = {
+          ...template, nextDate: nextOccurrence(command.occurrenceDate, template.recurrence), revision: template.revision + 1,
+          lastOccurrenceId: occurrenceId, lastOccurrenceDate: command.occurrenceDate,
+        }
+        expenses.push(occurrence)
+        recurring[recurring.indexOf(template)] = advanced
+        activity.push(expenseActivity(command.operationId, occurrence, 'expense.created', actor, createdAt))
+        revisions.push(expenseRevision(command.operationId, occurrence, 'created', actor, createdAt))
+        balanceRevision += 1
+        return { kind: command.kind, operationId: command.operationId, status: 'saved', template: clone(advanced), occurrence: cloneExpense(occurrence) }
+      }
+      case 'recurrence.cancel': {
+        assertLakeHouseGroup(command.groupId)
+        assertActiveMembership()
+        const template = recurring.find((item) => item.id === command.templateId && item.groupId === command.groupId)
+        if (!template) throw new Error('Recurring template was not found')
+        if (template.status !== 'active') throw new Error('Recurring template is already cancelled')
+        if (template.revision !== command.expectedRevision) throw new CommandConflictError('Recurring template changed remotely.', { remote: clone(template) })
+        const cancelled: RecurringExpense = { ...template, status: 'cancelled', revision: template.revision + 1 }
+        recurring[recurring.indexOf(template)] = cancelled
+        return { kind: command.kind, operationId: command.operationId, status: 'saved', template: clone(cancelled) }
+      }
     }
   }
 
@@ -492,7 +569,27 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       async getSettings(groupId) { assertLakeHouseGroup(groupId); return clone(groupSettings) },
       async getTotals(groupId) { return buildCurrencyTotals(groupExpenses(groupId), currentUser.id) },
       async getCharts(groupId) { return buildGroupCharts(groupExpenses(groupId)) },
-      async listRecurring(groupId) { assertLakeHouseGroup(groupId); return lakeHouseRecurring.map(clone) },
+      async listRecurring(groupId) { assertLakeHouseGroup(groupId); return recurring.map(clone) },
+      async materializeDue(groupId, throughDate, maxOccurrences = 24) {
+        assertLakeHouseGroup(groupId)
+        checkedIsoDate(throughDate, 'Through date')
+        assertMaterializationLimit(maxOccurrences)
+        const occurrences: ExpenseRow[] = []
+        while (occurrences.length < maxOccurrences) {
+          const template = recurring.filter((item) => item.groupId === groupId && item.status === 'active' && item.nextDate <= throughDate)
+            .sort((left, right) => left.nextDate.localeCompare(right.nextDate) || left.id.localeCompare(right.id))[0]
+          if (!template) break
+          const command = {
+            kind: 'recurrence.materialize' as const, operationId: await buildSparkMaterializationOperationId(groupId, template.id, template.nextDate),
+            groupId, templateId: template.id, occurrenceDate: template.nextDate,
+          }
+          const result = await execute(command)
+          if (result.kind !== 'recurrence.materialize' || result.status !== 'saved') throw new Error('Recurring occurrence could not be materialized')
+          occurrences.push(cloneExpense(result.occurrence))
+        }
+        const moreRemain = recurring.some((item) => item.groupId === groupId && item.status === 'active' && item.nextDate <= throughDate)
+        return { occurrences, moreRemain }
+      },
       setDefaultSplit: execute,
       setSimplifyDebts: execute,
     },
@@ -633,6 +730,25 @@ function assertCursor(cursor: TimelineCursor): void {
 }
 
 function checkedNow(now: () => string): string { return checkedIsoTimestamp(now(), 'Commit timestamp') }
+function assertRecurrenceAnchor(date: string, recurrence: RecurringExpense['recurrence']): void {
+  checkedIsoDate(date, 'Recurring expense date')
+  const anchor = `${String(recurrence.anchor.month).padStart(2, '0')}-${String(recurrence.anchor.day).padStart(2, '0')}`
+  if (date.slice(5) !== anchor) throw new Error('Recurring expense date must match its recurrence anchor')
+  nextOccurrence(date, recurrence)
+}
+function assertLatestFutureEdit(expense: ExpenseRow, template: RecurringExpense, allExpenses: readonly ExpenseRow[]): void {
+  const expectedId = template.lastOccurrenceId ?? expensesSourceId(template, allExpenses)
+  if (expense.id !== expectedId) throw new CommandConflictError('Only the latest recurring occurrence can update future expenses.', { remote: clone(template) })
+}
+function expensesSourceId(template: RecurringExpense, allExpenses: readonly ExpenseRow[]): string {
+  if (template.lastOccurrenceId) return template.lastOccurrenceId
+  const seeded = allExpenses.find((expense) => expense.groupId === template.groupId && expense.recurringTemplateId === template.id)
+  if (seeded) return seeded.id
+  throw new Error('Recurring source expense is unavailable')
+}
+function assertMaterializationLimit(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 24) throw new Error('Recurring catch-up limit must be between 1 and 24')
+}
 function checkedIsoDate(value: string, label: string): string {
   const parsed = new Date(`${value}T00:00:00.000Z`)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== value) throw new Error(`${label} must be a valid ISO date`)
@@ -695,11 +811,16 @@ function decodeDemoState(value: unknown, principalId: string): DemoRepositorySta
     || !Number.isSafeInteger(value.balanceRevision) || (value.balanceRevision as number) < 0
     || !Array.isArray(value.expenses) || !Array.isArray(value.settlements) || !Array.isArray(value.activity) || !Array.isArray(value.comments) || !Array.isArray(value.notifications)
     || !Array.isArray(value.revisions) || !Array.isArray(value.operationLedger)
+    || (value.recurring !== undefined && !Array.isArray(value.recurring))
     || (value.groupSettings !== undefined && !isDemoGroupSettings(value.groupSettings))) {
     throw new Error('Persisted demo repository state is invalid')
   }
   const settlements = value.settlements.map(decodeDemoSettlement)
   const activities = value.activity.map(decodeDemoActivity)
+  if (Array.isArray(value.recurring)) value.recurring.forEach((template) => {
+    if (!isRecord(template) || typeof template.id !== 'string' || typeof template.groupId !== 'string') throw new Error('Persisted demo recurring template is invalid')
+    decodeRecurringExpense(template.groupId, template.id, template)
+  })
   assertSettlementActivityLinks(settlements, activities)
   value.operationLedger.forEach((entry) => assertDemoOperationLedgerEntry(entry, principalId, value.balanceRevision as number, settlements, activities))
   assertSettlementOperationProofs(settlements, value.operationLedger, principalId)

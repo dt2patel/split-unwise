@@ -5,11 +5,12 @@ import { decodeDefaultSplit, updateGroupSettings, type GroupSettings } from '../
 import { canonicalHttpsOrigin, generateInvitationSecret, hashInvitationSecret, type PreparedInvitation } from '../features/invitations/invitations'
 import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
-import { decodeExpense, decodeSettlement } from './firebaseDecoders'
+import { decodeExpense, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
+import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
 import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
 
 export interface FirebaseIdentity {
@@ -40,6 +41,8 @@ export interface SparkExpenseRecord {
   readonly expenseDocument: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
+  readonly templateId?: string
+  readonly templateDocument?: Readonly<Record<string, unknown>>
 }
 
 export interface SparkExpenseActivityRecord {
@@ -52,6 +55,14 @@ export interface SparkExpenseMutationRecord {
   readonly headDocument: Readonly<Record<string, unknown>>
   readonly revisionId: string
   readonly revisionDocument: Readonly<Record<string, unknown>> & { readonly expense: Readonly<Record<string, unknown>> }
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+export interface SparkRecurrenceMaterializationRecord {
+  readonly occurrenceId: string
+  readonly occurrenceDocument: Readonly<Record<string, unknown>>
+  readonly templateDocument: Readonly<Record<string, unknown>>
   readonly activityId: string
   readonly activityDocument: Readonly<Record<string, unknown>>
 }
@@ -87,22 +98,46 @@ export interface SparkNotificationReadRecord {
   readonly receiptDocument: Readonly<Record<string, unknown>>
 }
 
+/** Hashes the full recurrence key so queue operation IDs stay within the 128-character grammar. */
+export async function buildSparkMaterializationOperationId(groupId: string, templateId: string, occurrenceDate: string): Promise<string> {
+  if (!isStrictId(groupId)) throw new Error('Recurring group ID must be a strict ID')
+  recurringOccurrenceId(templateId, occurrenceDate)
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${groupId}\u0000${templateId}\u0000${occurrenceDate}`))
+  const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `recurrence-${hash}`
+}
+
 /** Builds the single immutable source document authorized by the Spark rules path. */
 export function buildSparkExpenseRecord(command: ExpenseAddCommand, actor: ActorSnapshot, identity: OperationIdentity, committedAt: unknown): SparkExpenseRecord {
   const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
   if (parsed.kind !== 'expense.add') throw new Error('Spark expense command is invalid.')
   const token = assertSparkOperationIdentity(parsed, actor, identity)
   const expenseId = `expense-${token}`
+  if (parsed.occurrenceEditScope) throw new Error('Occurrence scope requires an existing recurring expense.')
+  if (parsed.recurrence) assertSparkRecurrenceAnchor(parsed.date, parsed.recurrence)
+  const templateId = parsed.recurrence ? `recurring-${token}` : undefined
   const expenseDocument: Record<string, unknown> = {
     id: expenseId, groupId: parsed.groupId, operationId: parsed.operationId, requestFingerprint: identity.requestFingerprint, resourceToken: token,
     lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
-    ...normalizeSparkExpenseDraft(parsed, identity.resourceId),
+    ...normalizeSparkExpenseDraft(parsed, identity.resourceId, templateId),
     createdAt: committedAt, createdBy: normalizedActor(actor), updatedAt: committedAt, updatedBy: normalizedActor(actor), revision: 1,
   }
   const normalized = normalizedActor(actor)
+  const templateDocument = parsed.recurrence ? {
+    id: templateId!, groupId: parsed.groupId, sourceExpenseId: expenseId,
+    operationId: parsed.operationId, requestFingerprint: identity.requestFingerprint, resourceToken: token,
+    lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    status: 'active', description: String(expenseDocument.description), total: { ...parsed.total },
+    payments: parsed.payments.map(({ participantId, money }) => ({ participantId, money: { ...money } })),
+    allocations: parsed.allocations.map(({ participantId, money }) => ({ participantId, money: { ...money } })),
+    category: parsed.category.trim(), splitMethod: structuredClone(parsed.splitMethod), recurrence: structuredClone(parsed.recurrence),
+    anchorDate: parsed.date, nextDate: nextOccurrence(parsed.date, parsed.recurrence), revision: 1,
+    createdAt: committedAt, createdBy: normalized, updatedAt: committedAt, updatedBy: normalized,
+  } : undefined
   return {
     expenseId,
     expenseDocument,
+    ...(templateId && templateDocument ? { templateId, templateDocument } : {}),
     ...buildSparkExpenseActivityRecord({
       groupId: parsed.groupId, operationId: parsed.operationId, kind: 'expense.created', actor: normalized,
       expenseId, resourceToken: token, revision: 1, label: String(expenseDocument.description), committedAt,
@@ -136,7 +171,7 @@ export function buildSparkExpenseMutationRecord(
   const creationOperationId = strictInternalString(head.operationId, 'operationId')
   const creationFingerprint = strictHex(head.requestFingerprint, 64, 'request fingerprint')
   const creationToken = strictHex(head.resourceToken, 48, 'resource token')
-  const normalized = parsed.kind === 'expense.edit' ? normalizeSparkExpenseDraft(parsed.draft, identity.resourceId) : undefined
+  const normalized = parsed.kind === 'expense.edit' ? normalizeSparkExpenseDraft(parsed.draft, identity.resourceId, snapshot.recurringTemplateId) : undefined
   const revision = snapshot.revision + 1
   const expense: Record<string, unknown> = parsed.kind === 'expense.edit'
     ? {
@@ -199,6 +234,113 @@ export function buildSparkExpenseActivityRecord(input: {
       subject: { kind: 'expense', id: input.expenseId, label: input.label }, actor: normalizedActor(input.actor),
       expenseId: input.expenseId, resourceToken: input.resourceToken, revision: input.revision, createdAt: input.committedAt,
     },
+  }
+}
+
+/** Creates one deterministic occurrence and advances its template as one transaction bundle. */
+export function buildSparkRecurrenceMaterializationRecord(
+  command: RecurrenceMaterializeCommand,
+  currentTemplate: Readonly<Record<string, unknown>>,
+  actor: ActorSnapshot,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): SparkRecurrenceMaterializationRecord {
+  const parsed = command
+  if (parsed.kind !== 'recurrence.materialize' || !parsed.groupId.trim()) throw new Error('Spark recurrence materialization command is invalid.')
+  recurringOccurrenceId(parsed.templateId, parsed.occurrenceDate)
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  if (currentTemplate.id !== undefined && currentTemplate.id !== parsed.templateId) throw new Error('Recurring template identity is invalid.')
+  if (currentTemplate.groupId !== undefined && currentTemplate.groupId !== parsed.groupId) throw new Error('Recurring template group is invalid.')
+  const template = decodeRecurringExpense(parsed.groupId, parsed.templateId, currentTemplate)
+  if (template.status !== 'active') throw new Error('Recurring template is not active.')
+  if (template.nextDate !== parsed.occurrenceDate) throw new Error('Recurring template changed remotely. Reload it before trying again.')
+  const occurrenceId = recurringOccurrenceId(parsed.templateId, parsed.occurrenceDate)
+  const normalized = normalizeSparkExpenseDraft({
+    groupId: parsed.groupId, description: template.description, date: parsed.occurrenceDate,
+    total: template.total, payments: template.payments, allocations: template.allocations, category: template.category,
+    splitMethod: template.splitMethod, attachmentRefs: [], recurrence: template.recurrence,
+  }, identity.resourceId, parsed.templateId)
+  const normalizedActorValue = normalizedActor(actor)
+  const occurrenceDocument: Readonly<Record<string, unknown>> = {
+    id: occurrenceId, groupId: parsed.groupId, operationId: parsed.operationId, requestFingerprint: identity.requestFingerprint, resourceToken: token,
+    lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    ...normalized, createdAt: committedAt, createdBy: normalizedActorValue, updatedAt: committedAt, updatedBy: normalizedActorValue, revision: 1,
+  }
+  const templateDocument: Readonly<Record<string, unknown>> = {
+    ...currentTemplate,
+    lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    nextDate: nextOccurrence(parsed.occurrenceDate, template.recurrence), revision: template.revision + 1,
+    lastOccurrenceId: occurrenceId, lastOccurrenceDate: parsed.occurrenceDate, updatedAt: committedAt, updatedBy: normalizedActorValue,
+  }
+  return {
+    occurrenceId,
+    occurrenceDocument,
+    templateDocument,
+    ...buildSparkExpenseActivityRecord({
+      groupId: parsed.groupId, operationId: parsed.operationId, kind: 'expense.created', actor: normalizedActorValue,
+      expenseId: occurrenceId, resourceToken: token, revision: 1, label: template.description, committedAt,
+    }),
+  }
+}
+
+/** Applies the sole terminal template transition with optimistic revision checking. */
+export function buildSparkRecurrenceCancellationRecord(
+  command: RecurrenceCancelCommand,
+  currentTemplate: Readonly<Record<string, unknown>>,
+  actor: ActorSnapshot,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): Readonly<Record<string, unknown>> {
+  const parsed = command
+  if (parsed.kind !== 'recurrence.cancel' || !parsed.groupId.trim() || !isStrictId(parsed.templateId)
+    || !Number.isSafeInteger(parsed.expectedRevision) || parsed.expectedRevision < 1) throw new Error('Spark recurrence cancellation command is invalid.')
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  const template = decodeRecurringExpense(parsed.groupId, parsed.templateId, currentTemplate)
+  if (template.status !== 'active') throw new Error('Recurring template is already cancelled.')
+  if (template.revision !== parsed.expectedRevision) throw new Error('Recurring template changed remotely. Reload it before trying again.')
+  const normalizedActorValue = normalizedActor(actor)
+  return {
+    ...currentTemplate,
+    status: 'cancelled', revision: template.revision + 1,
+    lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    updatedAt: committedAt, updatedBy: normalizedActorValue,
+  }
+}
+
+/** Replaces the active template snapshot only when editing the current series frontier. */
+export function buildSparkFutureRecurringTemplateRecord(
+  command: ExpenseEditCommand,
+  currentExpense: Pick<ExpenseRow, 'id' | 'recurringTemplateId'>,
+  currentTemplate: Readonly<Record<string, unknown>>,
+  actor: ActorSnapshot,
+  identity: OperationIdentity,
+  committedAt: unknown,
+): Readonly<Record<string, unknown>> {
+  const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
+  if (parsed.kind !== 'expense.edit' || parsed.draft.occurrenceEditScope !== 'future' || !parsed.draft.recurrence) {
+    throw new Error('Spark future recurrence edit command is invalid.')
+  }
+  const token = assertSparkOperationIdentity(parsed, actor, identity)
+  const template = decodeRecurringExpense(parsed.groupId, currentExpense.recurringTemplateId ?? '', currentTemplate)
+  if (!currentExpense.recurringTemplateId || currentExpense.recurringTemplateId !== template.id) throw new Error('Expense is not linked to this recurring template.')
+  if (template.status !== 'active') throw new Error('Recurring template is not active.')
+  const sourceExpenseId = typeof currentTemplate.sourceExpenseId === 'string' ? currentTemplate.sourceExpenseId : undefined
+  const latestExpenseId = template.lastOccurrenceId ?? sourceExpenseId
+  if (!latestExpenseId || currentExpense.id !== latestExpenseId || parsed.expenseId !== currentExpense.id) {
+    throw new Error('Only the latest recurring occurrence can update future expenses.')
+  }
+  assertSparkRecurrenceAnchor(parsed.draft.date, parsed.draft.recurrence)
+  const normalized = normalizeSparkExpenseDraft(parsed.draft, identity.resourceId, template.id)
+  const normalizedActorValue = normalizedActor(actor)
+  return {
+    ...currentTemplate,
+    description: normalized.description, total: { ...parsed.draft.total },
+    payments: parsed.draft.payments.map(({ participantId, money }) => ({ participantId, money: { ...money } })),
+    allocations: parsed.draft.allocations.map(({ participantId, money }) => ({ participantId, money: { ...money } })),
+    category: normalized.category, splitMethod: structuredClone(parsed.draft.splitMethod), recurrence: structuredClone(parsed.draft.recurrence),
+    anchorDate: parsed.draft.date, nextDate: nextOccurrence(parsed.draft.date, parsed.draft.recurrence), revision: template.revision + 1,
+    lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+    updatedAt: committedAt, updatedBy: normalizedActorValue,
   }
 }
 
@@ -482,10 +624,9 @@ function decodeSparkSettingsBalance(groupId: string, settings: GroupSettings, va
   return { balanceRevision: Number(value.balanceRevision), pairwise: value.pairwise, simplified: value.simplified }
 }
 
-function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string): Readonly<Record<string, unknown>> {
+function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string, recurringTemplateId?: string): Readonly<Record<string, unknown>> {
   if (draft.attachmentRefs.length) throw new Error('Spark expense attachments require the secure cloud asset service.')
-  if (draft.recurrence) throw new Error('Recurring Spark expenses require the secure recurrence service.')
-  if (draft.occurrenceEditScope) throw new Error('Occurrence scope requires a recurring expense.')
+  if ((draft.recurrence || draft.occurrenceEditScope) && !recurringTemplateId) throw new Error('Recurrence requires a linked recurring expense.')
   validateLedgerExpense({ id: resourceId, total: draft.total, payments: draft.payments, allocations: draft.allocations })
   assertSplitMatchesAllocations(draft.total, draft.splitMethod, draft.allocations)
   const payerIds = draft.payments.map(({ participantId }) => participantId)
@@ -499,7 +640,15 @@ function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string): Re
     payments: draft.payments.map(({ participantId, money }) => ({ participantId, money: { ...money } })), allocations: exactAllocations,
     payerIds, participantIds, involvedMemberIds, category: draft.category.trim(), splitType: draft.splitMethod.type,
     splitMethod: { type: 'exact', allocations: exactAllocations }, attachmentRefs: [], ...(notes ? { notes } : {}),
+    ...(draft.recurrence ? { recurrence: structuredClone(draft.recurrence) } : {}),
+    ...(draft.occurrenceEditScope ? { occurrenceEditScope: draft.occurrenceEditScope } : {}),
+    ...(recurringTemplateId ? { recurringTemplateId } : {}),
   }
+}
+
+function assertSparkRecurrenceAnchor(date: string, recurrence: NonNullable<ExpenseDraft['recurrence']>): void {
+  const anchor = `${String(recurrence.anchor.month).padStart(2, '0')}-${String(recurrence.anchor.day).padStart(2, '0')}`
+  if (date.slice(5) !== anchor) throw new Error('Recurring expense date must match its recurrence anchor.')
 }
 
 function assertSparkOperationIdentity(command: { readonly kind: string; readonly operationId: string; readonly groupId: string }, actor: ActorSnapshot, identity: OperationIdentity): string {

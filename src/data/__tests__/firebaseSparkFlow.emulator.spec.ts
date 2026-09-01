@@ -451,4 +451,137 @@ describe('Firebase Spark two-account flow', () => {
       expect.objectContaining({ operationId: voidCommand.operationId, kind: 'settlement.voided', settlementId: recorded.settlement.settlementId }),
     ]))
   }, 30_000)
+
+  emulatorIt('creates one recurring template and one occurrence when clients race, then semantically replays across users', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `recurrence-owner-${suffix}@example.com`
+    const friendEmail = `recurrence-friend-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Recurrence Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `recurrence-${suffix}`, name: 'Recurring Household', currency: 'USD' })
+    const invitation = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    const invitationToken = new URL(invitation.link).hash.slice('#token='.length)
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Recurrence Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, invitation.invitationId, invitationToken)
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+
+    const ownerRepository = createFirebaseRepository(configuration, owner.user.uid)
+    const recurringCommand = {
+      kind: 'expense.add' as const, operationId: `recurring-rent-${suffix}`, groupId: created.groupId, description: 'Monthly rent', date: '2026-09-01',
+      total: { currency: 'USD' as const, minorAmount: 2000 }, payments: [{ participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 2000 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 1000 } },
+        { participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 1000 } },
+      ],
+      category: 'Housing', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+      recurrence: { frequency: 'monthly' as const, anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' },
+    }
+    const added = await ownerRepository.expenses.add(recurringCommand)
+    expect(added).toMatchObject({ status: 'saved', expense: { recurringTemplateId: expect.stringMatching(/^recurring-[a-f0-9]{48}$/) } })
+    if (added.status !== 'saved' || !added.expense.recurringTemplateId) throw new Error('Expected recurring Spark expense to save')
+    const templateId = added.expense.recurringTemplateId
+    await expect(ownerRepository.expenses.add(recurringCommand)).resolves.toEqual(added)
+    await expect(ownerRepository.groups.listRecurring(created.groupId)).resolves.toEqual([
+      expect.objectContaining({ id: templateId, nextDate: '2026-10-01', revision: 1, status: 'active' }),
+    ])
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
+    const firstRace = friendRepository.commands.execute({
+      kind: 'recurrence.materialize', operationId: `race-a-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
+    })
+    const secondRace = friendRepository.commands.execute({
+      kind: 'recurrence.materialize', operationId: `race-b-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
+    })
+    const [first, second] = await Promise.all([firstRace, secondRace])
+    expect(first).toMatchObject({ status: 'saved', occurrence: { id: `occ_${templateId}_2026-10-01` } })
+    expect(second).toMatchObject({ status: 'saved', occurrence: { id: `occ_${templateId}_2026-10-01` } })
+    await expect(friendRepository.groups.listRecurring(created.groupId)).resolves.toEqual([
+      expect.objectContaining({ id: templateId, nextDate: '2026-11-01', revision: 2, lastOccurrenceDate: '2026-10-01' }),
+    ])
+    expect((await friendRepository.expenses.listForGroup(created.groupId)).filter(({ recurringTemplateId }) => recurringTemplateId === templateId)).toHaveLength(2)
+    await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
+      pairwise: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2000 } }],
+    })
+    expect((await friendRepository.activity.listForGroup(created.groupId)).filter(({ expenseId }) => expenseId === `occ_${templateId}_2026-10-01`)).toHaveLength(1)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const crossUserReplay = await ownerRepository.commands.execute({
+      kind: 'recurrence.materialize', operationId: `owner-replay-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
+    })
+    expect(crossUserReplay).toMatchObject({ status: 'saved', occurrence: { id: `occ_${templateId}_2026-10-01` }, template: { revision: 2 } })
+    expect((await ownerRepository.activity.listForGroup(created.groupId)).filter(({ expenseId }) => expenseId === `occ_${templateId}_2026-10-01`)).toHaveLength(1)
+  }, 45_000)
+
+  emulatorIt('isolates occurrence edits, gates future edits to the series frontier, and cancels without touching expenses', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const email = `recurrence-edit-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+    const owner = await createUserWithEmailAndPassword(auth, email, password)
+    await updateProfile(owner.user, { displayName: 'Series Editor' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `series-edit-${suffix}`, name: 'Series Editing', currency: 'USD' })
+    const repository = createFirebaseRepository(configuration, owner.user.uid)
+    const baseDraft = {
+      groupId: created.groupId, description: 'Storage unit', date: '2026-09-01', total: { currency: 'USD' as const, minorAmount: 1200 },
+      payments: [{ participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 1200 } }],
+      allocations: [{ participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 1200 } }],
+      category: 'Housing', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid] }, attachmentRefs: [],
+      recurrence: { frequency: 'monthly' as const, anchor: { month: 9, day: 1 }, timeZone: 'UTC' },
+    }
+    const added = await repository.expenses.add({ kind: 'expense.add', operationId: `series-source-${suffix}`, ...baseDraft })
+    if (added.status !== 'saved' || !added.expense.recurringTemplateId) throw new Error('Expected recurring Spark source to save')
+    const templateId = added.expense.recurringTemplateId
+
+    const sourceFuture = await repository.expenses.edit({
+      kind: 'expense.edit', operationId: `source-future-${suffix}`, groupId: created.groupId, expenseId: added.expense.id, expectedRevision: 1,
+      draft: { ...baseDraft, date: '2026-09-15', description: 'Storage plus insurance', recurrence: { frequency: 'fortnightly', anchor: { month: 9, day: 15 }, timeZone: 'UTC' }, occurrenceEditScope: 'future' },
+    })
+    expect(sourceFuture).toMatchObject({ status: 'saved', expense: { revision: 2, occurrenceEditScope: 'future' } })
+    await expect(repository.groups.listRecurring(created.groupId)).resolves.toEqual([
+      expect.objectContaining({ id: templateId, description: 'Storage plus insurance', nextDate: '2026-09-29', revision: 2 }),
+    ])
+
+    const catchUp = await repository.groups.materializeDue(created.groupId, '2026-09-29')
+    expect(catchUp).toMatchObject({ occurrences: [{ id: `occ_${templateId}_2026-09-29` }], moreRemain: false })
+    const occurrence = catchUp.occurrences[0]!
+    const beforeOccurrenceEdit = (await repository.groups.listRecurring(created.groupId))[0]!
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: `one-occurrence-${suffix}`, groupId: created.groupId, expenseId: occurrence.id, expectedRevision: 1,
+      draft: { ...baseDraft, date: occurrence.date, description: 'One-off discounted storage', recurrence: undefined, occurrenceEditScope: 'occurrence' },
+    })
+    await expect(repository.groups.listRecurring(created.groupId)).resolves.toEqual([beforeOccurrenceEdit])
+
+    await expect(repository.expenses.edit({
+      kind: 'expense.edit', operationId: `stale-source-${suffix}`, groupId: created.groupId, expenseId: added.expense.id, expectedRevision: 2,
+      draft: { ...baseDraft, date: '2026-09-29', occurrenceEditScope: 'future' },
+    })).rejects.toThrow(/latest/i)
+
+    await repository.expenses.edit({
+      kind: 'expense.edit', operationId: `latest-future-${suffix}`, groupId: created.groupId, expenseId: occurrence.id, expectedRevision: 2,
+      draft: { ...baseDraft, date: '2026-09-29', recurrence: { frequency: 'weekly', anchor: { month: 9, day: 29 }, timeZone: 'UTC' }, occurrenceEditScope: 'future' },
+    })
+    const latestTemplate = (await repository.groups.listRecurring(created.groupId))[0]!
+    expect(latestTemplate).toMatchObject({ nextDate: '2026-10-06', revision: 4 })
+    const expensesBeforeCancel = await repository.expenses.listForGroup(created.groupId)
+    await expect(repository.commands.execute({
+      kind: 'recurrence.cancel', operationId: `cancel-series-${suffix}`, groupId: created.groupId, templateId, expectedRevision: latestTemplate.revision,
+    })).resolves.toMatchObject({ status: 'saved', template: { status: 'cancelled', revision: 5 } })
+    await expect(repository.expenses.listForGroup(created.groupId)).resolves.toEqual(expensesBeforeCancel)
+    await expect(repository.groups.materializeDue(created.groupId, '2026-12-31')).resolves.toEqual({ occurrences: [], moreRemain: false })
+  }, 45_000)
 })

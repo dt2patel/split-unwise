@@ -180,6 +180,11 @@ export interface RecurringExpense {
   readonly syncState: SyncState
 }
 
+export interface MaterializeDueResult {
+  readonly occurrences: readonly ExpenseRow[]
+  readonly moreRemain: boolean
+}
+
 export interface GroupBalanceSnapshot {
   readonly groupId: string
   readonly balanceRevision: number
@@ -342,6 +347,7 @@ export interface GroupRepository {
   getTotals(groupId: string): Promise<readonly CurrencyTotals[]>
   getCharts(groupId: string): Promise<GroupCharts>
   listRecurring(groupId: string): Promise<readonly RecurringExpense[]>
+  materializeDue(groupId: string, throughDate: string, maxOccurrences?: number): Promise<MaterializeDueResult>
   setDefaultSplit(command: GroupDefaultSplitCommand): Promise<CommandResult>
   setSimplifyDebts(command: GroupSimplifyDebtsCommand): Promise<CommandResult>
 }
