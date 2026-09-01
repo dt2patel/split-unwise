@@ -1,5 +1,5 @@
 import type { FirebaseConfiguration } from './firebase'
-import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
+import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebaseBootstrap'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
@@ -234,8 +234,8 @@ function activityFilterConstraints(firestore: FirestoreModule, filter: ActivityF
 }
 
 async function connect(configuration: FirebaseConfiguration): Promise<FirebaseClient> {
-  const [app, authModule, firestore] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth'), import('firebase/firestore')])
-  return { auth: authModule.getAuth(app), db: firestore.getFirestore(app), firestore }
+  const [app, auth, firestore] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), getSplitUnwiseFirebaseAuth(configuration), import('firebase/firestore')])
+  return { auth, db: firestore.getFirestore(app), firestore }
 }
 
 async function connectExecuteCommand(configuration: FirebaseConfiguration, region: string): Promise<(request: unknown) => Promise<{ readonly data: unknown }>> {

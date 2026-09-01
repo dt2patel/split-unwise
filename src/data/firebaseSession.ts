@@ -1,5 +1,5 @@
 import type { FirebaseConfiguration } from './firebase'
-import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
+import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebaseBootstrap'
 import type { AppPrincipal } from './principal'
 import { bootstrapFirebaseProfile } from './firebaseSparkMutations'
 
@@ -53,8 +53,7 @@ export function createFirebasePrincipalSource(options: FirebasePrincipalSourceOp
 
 /** Real Firebase connection used by the app composition root. */
 export async function connectFirebasePrincipalSource(configuration: FirebaseConfiguration, functionsRegion?: string): Promise<FirebasePrincipalSource> {
-  const [app, authModule, functionsModule] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth'), functionsRegion ? import('firebase/functions') : Promise.resolve(undefined)])
-  const auth = authModule.getAuth(app)
+  const [app, auth, authModule, functionsModule] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), getSplitUnwiseFirebaseAuth(configuration), import('firebase/auth'), functionsRegion ? import('firebase/functions') : Promise.resolve(undefined)])
   const bootstrap = functionsModule && functionsRegion
     ? functionsModule.httpsCallable(functionsModule.getFunctions(app, functionsRegion), 'bootstrapProfile', { limitedUseAppCheckTokens: true })
     : undefined

@@ -1,5 +1,5 @@
 import type { FirebaseConfiguration } from './firebase'
-import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
+import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebaseBootstrap'
 import { callSplitUnwiseFunction } from './firebaseCallables'
 import type { LocalReceiptReference, ReceiptBlobStore, ReceiptProvider, ReceiptRecognitionResult } from './receipts'
 
@@ -13,8 +13,8 @@ export function createFirebaseReceiptProvider(configuration: FirebaseConfigurati
         const asset = await store.get(reference)
         if (!asset) throw new Error('The local receipt is no longer available.')
         if (!configuration.storageBucket) throw new Error('Receipt upload is not configured for this build.')
-        const [app, authModule, storageModule] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth'), import('firebase/storage')])
-        const user = authModule.getAuth(app).currentUser
+        const [app, auth, storageModule] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), getSplitUnwiseFirebaseAuth(configuration), import('firebase/storage')])
+        const user = auth.currentUser
         if (!user) throw new Error('Sign in before uploading a receipt.')
         const operationId = await deterministicUuid(reference)
         const assetId = assetIdFor(reference)
@@ -59,8 +59,8 @@ export function createFirebaseReceiptProvider(configuration: FirebaseConfigurati
 }
 
 export async function waitForPrivateJob(configuration: FirebaseConfiguration, jobId: string, timeoutMs = 120_000): Promise<Record<string, unknown>> {
-  const [app, authModule, firestore] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth'), import('firebase/firestore')])
-  const user = authModule.getAuth(app).currentUser
+  const [app, auth, firestore] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), getSplitUnwiseFirebaseAuth(configuration), import('firebase/firestore')])
+  const user = auth.currentUser
   if (!user) throw new Error('Sign in to monitor this job.')
   const reference = firestore.doc(firestore.getFirestore(app), 'users', user.uid, 'jobs', jobId)
   return new Promise((resolve, reject) => {

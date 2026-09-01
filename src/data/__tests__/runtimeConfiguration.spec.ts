@@ -53,6 +53,16 @@ describe('runtime configuration', () => {
     })
   })
 
+  it('keeps browser OAuth out of the native Auth bootstrap', () => {
+    expect(readFirebaseHostingConfiguration({
+      apiKey: 'AIzaSyExampleKey', authDomain: 'split-unwise-aditya.firebaseapp.com', projectId: 'split-unwise-aditya',
+      appId: '1:906824460273:web:ac56072d30a1dd5e72c650', messagingSenderId: '906824460273',
+    }, false)).toMatchObject({
+      kind: 'firebase', googleEnabled: false,
+      capabilities: { auth: 'available', firestore: 'available', google: 'unavailable' },
+    })
+  })
+
   it('discovers auto-init from same-origin Hosting and from the native Capacitor shell', () => {
     expect(firebaseHostingInitUrl({ hostname: 'split-unwise-aditya.web.app', protocol: 'https:' }, false)).toBe('/__/firebase/init.json')
     expect(firebaseHostingInitUrl({ hostname: 'localhost', protocol: 'capacitor:' }, true)).toBe('https://split-unwise-aditya.web.app/__/firebase/init.json')

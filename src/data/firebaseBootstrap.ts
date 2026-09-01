@@ -1,10 +1,12 @@
 import type { FirebaseApp, FirebaseOptions } from 'firebase/app'
+import type { Auth } from 'firebase/auth'
 import type { FirebaseConfiguration } from './firebase'
 
 export const SPLIT_UNWISE_FIREBASE_APP_NAME = 'split-unwise'
 
 let activeConfiguration: FirebaseConfiguration | undefined
 let appPromise: Promise<FirebaseApp> | undefined
+let authPromise: Promise<Auth> | undefined
 let appCheckSiteKey: string | undefined
 let appCheckPromise: Promise<void> | undefined
 
@@ -20,6 +22,17 @@ export function getSplitUnwiseFirebaseApp(configuration: FirebaseConfiguration):
     }
     return firebase.initializeApp(configuration, SPLIT_UNWISE_FIREBASE_APP_NAME)
   })
+}
+
+/** Uses a resolver-free Auth instance in the native WebView so email/password startup never depends on a browser OAuth iframe. */
+export function getSplitUnwiseFirebaseAuth(configuration: FirebaseConfiguration): Promise<Auth> {
+  return authPromise ??= Promise.all([
+    getSplitUnwiseFirebaseApp(configuration),
+    import('firebase/auth'),
+    import('@capacitor/core'),
+  ]).then(([app, firebase, { Capacitor }]) => Capacitor.isNativePlatform()
+    ? firebase.initializeAuth(app, { persistence: firebase.browserLocalPersistence })
+    : firebase.getAuth(app))
 }
 
 /** App Check is initialized on the same named app before any protected callable is used. */
@@ -60,6 +73,7 @@ function normalized(value: string | undefined): string { return value ?? '' }
 export function resetFirebaseBootstrapForTesting(): void {
   activeConfiguration = undefined
   appPromise = undefined
+  authPromise = undefined
   appCheckSiteKey = undefined
   appCheckPromise = undefined
 }

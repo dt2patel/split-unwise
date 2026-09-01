@@ -92,8 +92,9 @@ export function readRuntimeConfiguration(environment?: PublicEnvironment): Runti
 /** Resolves Firebase Hosting's same-origin auto-init payload without embedding public project configuration in source. */
 export async function resolveRuntimeConfiguration(environment?: PublicEnvironment): Promise<RuntimeConfiguration> {
   const configured = readRuntimeConfiguration(environment)
+  const nativePlatform = environment === undefined && configured.kind === 'demo' ? await runningNatively() : false
   const initUrl = environment === undefined && configured.kind === 'demo'
-    ? firebaseHostingInitUrl(typeof location === 'undefined' ? undefined : location, await runningNatively())
+    ? firebaseHostingInitUrl(typeof location === 'undefined' ? undefined : location, nativePlatform)
     : undefined
   if (environment !== undefined || configured.kind !== 'demo' || !initUrl) {
     activeRuntimeConfiguration = configured
@@ -104,7 +105,7 @@ export async function resolveRuntimeConfiguration(environment?: PublicEnvironmen
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const value: unknown = await response.json()
     if (!isRecord(value)) throw new Error('invalid JSON object')
-    const discovered = readFirebaseHostingConfiguration(value)
+    const discovered = readFirebaseHostingConfiguration(value, !nativePlatform)
     if (discovered.kind !== 'firebase') throw new Error(discovered.kind === 'error' ? discovered.message : 'Firebase Hosting returned an empty configuration')
     activeRuntimeConfiguration = discovered
     return discovered
@@ -117,7 +118,7 @@ export async function resolveRuntimeConfiguration(environment?: PublicEnvironmen
 }
 
 /** Maps Hosting's public auto-init document to the deliberately Spark-safe client capability set. */
-export function readFirebaseHostingConfiguration(value: unknown): RuntimeConfiguration {
+export function readFirebaseHostingConfiguration(value: unknown, googleEnabled = true): RuntimeConfiguration {
   if (!isRecord(value)) return { kind: 'error', fields: ['/__/firebase/init.json'], message: 'Firebase Hosting configuration is not a JSON object' }
   try {
     return readRuntimeConfiguration({
@@ -126,7 +127,7 @@ export function readFirebaseHostingConfiguration(value: unknown): RuntimeConfigu
       VITE_FIREBASE_PROJECT_ID: stringField(value, 'projectId'),
       VITE_FIREBASE_APP_ID: stringField(value, 'appId'),
       VITE_FIREBASE_MESSAGING_SENDER_ID: optionalStringField(value, 'messagingSenderId'),
-      VITE_FIREBASE_GOOGLE_ENABLED: 'true',
+      VITE_FIREBASE_GOOGLE_ENABLED: googleEnabled ? 'true' : 'false',
     })
   } catch (reason) {
     return { kind: 'error', fields: ['/__/firebase/init.json'], message: reason instanceof Error ? reason.message : 'Firebase Hosting configuration is invalid' }

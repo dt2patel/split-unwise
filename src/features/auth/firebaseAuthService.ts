@@ -1,14 +1,13 @@
 import type { Auth, User } from 'firebase/auth'
 import type { RuntimeCapabilities } from '../../data/firebase'
-import { getSplitUnwiseFirebaseApp } from '../../data/firebaseBootstrap'
+import { getSplitUnwiseFirebaseAuth } from '../../data/firebaseBootstrap'
 import type { FirebaseConfiguration } from '../../data/firebase'
 import { sanitizeInternalReturnPath, storeReturnPath } from './returnPath'
 import { sanitizeAuthIdentity, type AuthActionResult, type AuthIdentity, type AuthService, type AuthState } from './authService'
 import { synchronizeFirebaseProfile } from '../../data/firebaseSparkMutations'
 
 export async function createFirebaseAuthService(configuration: FirebaseConfiguration, capabilities: RuntimeCapabilities): Promise<AuthService> {
-  const [app, firebase] = await Promise.all([getSplitUnwiseFirebaseApp(configuration), import('firebase/auth')])
-  const auth = firebase.getAuth(app)
+  const [auth, firebase] = await Promise.all([getSplitUnwiseFirebaseAuth(configuration), import('firebase/auth')])
   let state: AuthState = { status: 'loading', mode: 'firebase' }
   const listeners = new Set<(state: AuthState) => void>()
   let unsubscribe: () => void = () => undefined
