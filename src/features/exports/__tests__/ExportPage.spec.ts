@@ -26,8 +26,9 @@ describe('premium export page', () => {
     expect(wrapper.text()).toContain('Download CSV')
     expect(wrapper.text()).toContain('Download JSON')
     expect(wrapper.text()).toContain('Transaction import')
-    expect(wrapper.text()).toContain('Live currency conversion')
-    expect(wrapper.findAll('.provider-card span').every((row) => row.text() === 'Unavailable')).toBe(true)
+    expect(wrapper.text()).toContain('Reference currency conversion')
+    expect(wrapper.text()).toContain('European Central Bank via Frankfurter')
+    expect(wrapper.findAll('.provider-card span').map((row) => row.text())).toEqual(['Unavailable', 'Available'])
     expect(wrapper.text()).not.toMatch(/upgrade|subscribe|premium plan/i)
   })
 

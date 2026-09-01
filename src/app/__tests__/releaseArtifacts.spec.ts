@@ -54,6 +54,7 @@ describe('PWA and Hosting release contracts', () => {
     expect(global?.get('X-Content-Type-Options')).toBe('nosniff')
     expect(global?.get('Cross-Origin-Opener-Policy')).toBe('same-origin-allow-popups')
     expect(global?.get('Content-Security-Policy')).toContain("frame-ancestors 'none'")
+    expect(global?.get('Content-Security-Policy')).toContain('https://api.frankfurter.dev')
   })
 })
 

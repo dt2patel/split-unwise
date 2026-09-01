@@ -118,6 +118,7 @@ describe('Lake House group journal', () => {
     expect(wrapper.get('[data-action="balances"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/balances')
     expect(wrapper.get('[data-action="totals"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/totals')
     expect(wrapper.get('[data-action="charts"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/charts')
+    expect(wrapper.get('[data-action="convert"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/convert')
     expect(wrapper.get('[data-action="export"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend/export')
     expect(wrapper.get('[aria-label="Add expense"]').attributes('href')).toBe('/tabs/groups/expenses/new?groupId=lake-house-weekend')
   })
