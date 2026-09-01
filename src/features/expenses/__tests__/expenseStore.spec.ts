@@ -340,6 +340,26 @@ describe('expense store lifecycle', () => {
     expect(store.editor.occurrenceEditScope).toBeUndefined()
   })
 
+  it('does not carry a recurring edit schedule into a later add draft in the same store', async () => {
+    const session = createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting(session)
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
+    store.editor.recurrence = { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' }
+    store.editor.occurrenceEditScope = 'future'
+
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', today: '2026-09-01' })
+
+    expect(store.mode).toBe('add')
+    expect(store.editor.recurrence).toBeUndefined()
+    expect(store.editor.occurrenceEditScope).toBeUndefined()
+    completeValidEditor(store)
+    expect(await store.submit('fresh-add-after-recurring-edit')).toBe(true)
+    expect(session.queue.get('fresh-add-after-recurring-edit')?.envelope).toMatchObject({ kind: 'expense.add' })
+    expect(session.queue.get('fresh-add-after-recurring-edit')?.envelope).not.toHaveProperty('recurrence')
+    expect(session.queue.get('fresh-add-after-recurring-edit')?.envelope).not.toHaveProperty('occurrenceEditScope')
+  })
+
   it('hydrates an existing revision for edit without losing persisted premium fields', async () => {
     const store = useExpenseStore()
     await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
