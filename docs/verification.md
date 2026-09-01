@@ -1,6 +1,6 @@
 # Split Unwise release verification
 
-Verified release candidate: `73016574a5a4b9b563a5aa145accd4aca87927af`
+Verified release candidate: `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`
 
 Date: 2026-08-31 (America/Chicago)
 
@@ -8,16 +8,17 @@ Date: 2026-08-31 (America/Chicago)
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Unit and component suite | Pass | `pnpm test`: 72 files passed, 5 skipped; 667 tests passed, 23 skipped |
+| Unit and component suite | Pass | `pnpm test`: 72 files passed, 5 skipped; 675 tests passed, 25 skipped |
 | Type safety | Pass | `pnpm typecheck` |
 | Firestore rules | Pass | `pnpm test:firebase`: 5 emulator-backed rules tests |
-| Functions and service behavior | Pass | `pnpm test:firebase`: 14 emulator-backed tests |
+| Functions and service behavior | Pass | `pnpm test:firebase`: 16 emulator-backed tests |
 | Production web bundle | Pass | `pnpm build`: 502 modules transformed; Workbox generated 98 precache entries |
 | Artifact policy | Pass | 100 files checked for required icons/shell, source maps, private URLs, hashing, cache boundaries, and JavaScript transfer budgets |
 | Reference-rate provider | Pass | Live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS |
 | Capacitor synchronization | Pass | `pnpm exec cap sync ios`; local `dist` copied with no production `server.url` |
 | Native compile | Pass | `pnpm ios:build`; unsigned Debug build for a generic iOS simulator |
-| Simulator package | Pass | `artifacts/Split-Unwise-Simulator.zip`; embedded build commit `73016574a5a4b9b563a5aa145accd4aca87927af`; SHA-256 `89a024538d1d7f495fbdf0269857a5622afd05957ad473bc5eb9f0d85216fc16` |
+| Simulator package | Pass | `artifacts/Split-Unwise-Simulator.zip`; embedded build commit `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`; SHA-256 `273ed146d73b1b77ba52d8a2e002a2aebb0c4383a7e73fb0d22770b19092dabe` |
+| Firebase Hosting | Pass | Both production domains serve the exact release; root, deep link, manifest, service worker, build metadata, security headers, and hashed-asset cache policy were checked live |
 | Whitespace integrity | Pass | `git diff --check` and `git diff --cached --check` |
 
 The largest natural framework chunk is 1,133,240 bytes raw and about 242 KB gzip, below the enforced 1.2 MB raw / 300 KB gzip ceilings. Manually partitioning Ionic/Vue vendor cycles caused runtime failures in JavaScriptCore, so the release keeps Vite's valid framework graph while retaining route-level lazy loading.
@@ -37,6 +38,8 @@ The compiled `App.app` was installed and launched, not inferred from a web build
 
 The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`; the iPad simulator identifier was `348D09B8-FC5D-4936-8ED8-69FC1D92AF5C`. Both ran the Apple iOS 26.5 simulator runtime installed through Xcode.
 
+The final `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4` native build was installed again on the iPhone simulator after deployment, launched as bundle `app.splitunwise.mobile`, and rendered the mobile home shell at 390 × 844 points. The packaged `App.app` contains the same build identifier.
+
 ## PWA, offline, and update behavior
 
 - A real Workbox service worker precaches only the public shell and local build assets. It has no background-sync owner for financial commands.
@@ -54,6 +57,21 @@ The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`
 - Conversion uses rational `BigInt` arithmetic and both ISO currency exponents; the release suite explicitly covers USD-to-JPY zero-decimal conversion.
 - Converted values are informational previews only. The feature does not create commands, relabel money, combine currencies, alter balances, or change settlement values.
 
+## Debt simplification
+
+- Group settings expose a native Ionic toggle for the saved Simplify Debts preference. Any active member may toggle it; only a manager may change the default split.
+- A toggle is a versioned, replay-safe `group.simplify-debts` command. It atomically advances settings and balance revisions, preserves the saved default split and both pairwise/simplified plans, and records deterministic group activity.
+- Balances open the group's saved plan by default while keeping both plans inspectable. The behavior remains per-currency and never nets unlike currencies together.
+- Domain, demo persistence/quarantine, strict queue hydration, Firebase decoding, UI permissions, saved-plan selection, transaction replay, and stale-revision conflict behavior are covered by the release suites.
+
+## Hosted release evidence
+
+- Production: `https://split-unwise-aditya.web.app` and `https://split-unwise-aditya.firebaseapp.com`.
+- Both hosts returned `200` for `/`, `/manifest.webmanifest`, `/sw.js`, `/tabs/activity`, `/build-info.json`, and a hashed JavaScript asset.
+- Root and nested app-shell responses have `no-cache, no-store, must-revalidate`; the manifest revalidates; the service worker is non-cacheable; hashed assets retain `public, max-age=31536000, immutable`.
+- Root and nested route bodies were byte-identical, proving the Hosting rewrite. The live build metadata reports commit `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`.
+- The reviewed CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy` headers were observed on both production domains.
+
 ## Accessibility and interaction evidence
 
 - Native Dynamic Type was exercised at the maximum simulator setting. Content reflows and remains scrollable; the persistent add button can overlay content while scrolling, consistent with a floating action control.
@@ -66,4 +84,4 @@ The final iPhone simulator identifier was `DDFB4C2D-624E-4783-BBD5-1EAC2EE9A904`
 
 The iPad split-pane/master-detail contract is component-tested, but the iPad screenshot proves the home shell only; no tap automation was authorized for this pass. VoiceOver traversal, Full Keyboard Access, Switch Control, physical-device haptics/camera, landscape tablet master/detail, keyboard-driven sheets, and same-viewport reference-image comparison still require an interactive device session. They are not claimed as passed.
 
-Hosted install, cold-offline navigation, Cache Storage inspection, real Firebase sign-in, and durable add/edit/settle proof depend on the Firebase deployment recorded in [firebase-deployment.md](firebase-deployment.md). Until that deployment is complete, the locally launched build is verified native demo behavior, not live cloud persistence.
+Hosting, Firestore, and Auth configuration are live as recorded in [firebase-deployment.md](firebase-deployment.md), but the deployed app intentionally remains in demo mode. Cloud Functions and Storage could not be provisioned on the project's current no-billing tier, so real Firebase sign-in plus durable add/edit/settle/replay proof is not claimed. Hosted install UI, cold-offline navigation, and Cache Storage inspection also remain unobserved because browser interaction was not authorized for this pass.

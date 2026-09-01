@@ -3,6 +3,7 @@ dist/
 functions/lib/
 *-debug.log
 .playwright-cli/
+.firebase/
 artifacts/
 .DS_Store
 *.local

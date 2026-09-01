@@ -1,12 +1,12 @@
 # Firebase deployment record
 
-Release candidate: `73016574a5a4b9b563a5aa145accd4aca87927af`
+Release candidate: `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`
 
 ## Current state
 
-The secure Firebase architecture and local emulator matrix are complete. Production project creation and deployment are waiting only for completion of normal Firebase browser OAuth. No project was selected by guess, no credential or SDK configuration was committed, and no existing Firebase environment was mutated.
+Firebase access was reauthorized as `heyadityapatel@gmail.com`. A dedicated `split-unwise-aditya` project was created, its exact identity was selected for every mutation, and no existing Firebase project was modified. Firestore rules/indexes and Firebase Hosting are deployed. The hosted build is live on both Firebase domains.
 
-This means the current release is a native/local demo build. It must not be described as live Firebase persistence yet.
+The project has no billing account. Cloud Functions deployment was therefore rejected at the required Artifact Registry/Cloud Build enablement boundary, and Storage could not be provisioned. Because secure financial writes are owned by callable Functions, the hosted bundle intentionally omits production Firebase runtime configuration and runs in demo mode. It must not be described as live Firebase persistence.
 
 ## Deployment invariants
 
@@ -20,12 +20,12 @@ This means the current release is a native/local demo build. It must not be desc
 
 ## Reviewable deployment order
 
-After OAuth completes:
+Executed release order:
 
 1. Bind the Firebase tooling to this exact repository and the new exact project ID.
-2. Create the Web app and iOS app (`app.splitunwise.mobile`), then write the Web config to `.env.production.local`.
+2. Create the Web app and iOS app (`app.splitunwise.mobile`). Keep the Web config out of the production bundle until callable Functions can be deployed.
 3. Initialize Auth and Firestore without overwriting the reviewed local rules, indexes, Storage rules, Functions, or Hosting configuration.
-4. Build with `VITE_BUILD_COMMIT=73016574a5a4b9b563a5aa145accd4aca87927af`.
+4. Build with `VITE_BUILD_COMMIT=128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`.
 5. Deploy Firestore rules/indexes, then any billing-permitted Storage/Functions resources.
 6. Deploy a seven-day Hosting preview and inspect it before production promotion.
 7. Deploy Hosting production and record the project, region, preview URL, production URL, release identifier, providers, billing tier, and App Check state here.
@@ -40,12 +40,16 @@ Rollback Hosting through Firebase release history or redeploy the prior exact co
 
 | Field | Value |
 | --- | --- |
-| Exact project ID | Pending OAuth |
-| Firestore location / delete protection | Pending OAuth |
-| Auth providers | Pending OAuth |
-| Preview URL / release | Pending OAuth |
-| Production URL / release | Pending OAuth |
-| Storage | Pending billing check |
-| Functions | Pending billing check |
-| App Check | Pending project creation |
-| Authenticated add/edit/settle replay | Not run; no live project yet |
+| Exact project | `split-unwise-aditya` (`906824460273`), display name `Split Unwise` |
+| Registered apps | Web `1:906824460273:web:ac56072d30a1dd5e72c650`; iOS `1:906824460273:ios:ff6f05e1bc4e087872c650`; bundle `app.splitunwise.mobile` |
+| Billing | No billing account / Spark-compatible resources only |
+| Firestore | Native mode, Standard edition, `nam5`, free tier, pessimistic concurrency, delete protection enabled |
+| Firestore rules / indexes | Deployed successfully from the reviewed repository files; deployment job `1788226382428` |
+| Auth providers | Email/Password and Google configured; runtime sign-in not exercised because the hosted bundle remains in demo mode |
+| Preview URL / release | `https://split-unwise-aditya--split-unwise-rc-iy5k2wwr.web.app`; commit `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4`; expires 2026-09-08T01:36:43.187899648Z |
+| Production URL / release | `https://split-unwise-aditya.web.app` and `https://split-unwise-aditya.firebaseapp.com`; Hosting version `73b4ef77f867c406`; commit `128506f6d1143e3e69bf7146fb89b9c3d3bdabd4` |
+| Production health | Root, manifest, service worker, hashed asset, build metadata, nested-route rewrite, cache policy, CSP, and security headers passed on both domains |
+| Storage | Not provisioned; deployment was rejected at project setup/billing, and local security rules were not weakened |
+| Functions | Source build and 16 emulator tests pass; production deployment blocked because Blaze is required to enable Artifact Registry/Cloud Build |
+| App Check | Not configured; enforcement is not claimed |
+| Authenticated add/edit/settle replay | Not run against production because callable Functions are not deployed; transaction/replay/conflict behavior is emulator-verified only |
