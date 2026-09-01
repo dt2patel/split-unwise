@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonPage, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
+import { IonBackButton, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonItem, IonLabel, IonList, IonNote, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
@@ -30,6 +30,9 @@ function selectKind(next: DefaultKind): void {
   if (kind.value === next) return
   kind.value = next
   seedRatios(next)
+}
+function changeKind(event: CustomEvent<{ value?: string | number }>): void {
+  if (event.detail.value === 'equal' || event.detail.value === 'percentage' || event.detail.value === 'shares') selectKind(event.detail.value)
 }
 function toggle(id: string, checked: boolean): void {
   selectedIds.value = checked ? [...new Set([...selectedIds.value, id])] : selectedIds.value.filter((value) => value !== id)
@@ -97,28 +100,121 @@ function isConflict(reason: unknown, failure: string): boolean {
 </script>
 
 <template>
-  <ion-page><ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="backPath" text="Group" /></ion-buttons><ion-title>Group settings</ion-title></ion-toolbar></ion-header>
-    <ion-content :fullscreen="true"><main class="settings-main"><p class="eyebrow">{{ snapshot?.group.name ?? 'Group' }}</p><h1>Group settings</h1><p class="intro">Choose how new expenses start. Existing expenses, payers, recurrence, and receipt itemization never change.</p>
-      <p v-if="loading" role="status">Loading group settings…</p><p v-else-if="error && !snapshot" role="alert" class="error">{{ error }}</p>
-      <template v-else-if="snapshot"><section class="settings-card simplify-card" aria-labelledby="simplify-heading"><header><div><h2 id="simplify-heading">Simplify debts</h2><p>Settings revision {{ snapshot.settings.revision }}</p></div><span class="unlocked">Everyone</span></header>
-          <div class="toggle-setting"><span><strong>Use fewer payments</strong><small>Rearranges who pays whom without changing anyone’s total balance. You can still inspect both views.</small></span><ion-toggle data-testid="simplify-debts-toggle" aria-label="Simplify debts" :model-value="simplifyDebtsEnabled" :disabled="simplifying" @ion-change="updateSimplification" /></div>
-        </section>
-        <section class="settings-card" aria-labelledby="default-heading"><header><div><h2 id="default-heading">Default split</h2><p>Settings revision {{ snapshot.settings.revision }}</p></div><span class="unlocked">Included</span></header>
-          <p v-if="!canManage" class="permission-note">Only an active group manager can change this shared default.</p>
-          <fieldset :disabled="!canManage || saving"><legend>Method</legend><div class="method-grid"><label v-for="option in (['equal', 'percentage', 'shares'] as const)" :key="option"><input :checked="kind === option" type="radio" name="default-kind" :value="option" @change="selectKind(option)"><span>{{ option === 'equal' ? 'Equally' : option === 'percentage' ? 'By percentage' : 'By shares' }}</span></label></div></fieldset>
-          <fieldset :disabled="!canManage || saving"><legend>People included</legend><div class="member-list"><label v-for="member in snapshot.members" :key="member.id"><input type="checkbox" :checked="selectedIds.includes(member.id)" @change="toggle(member.id, ($event.target as HTMLInputElement).checked)"><span>{{ member.displayName }}</span><input v-if="kind !== 'equal'" v-model="ratios[member.id]" class="ratio-input" inputmode="decimal" :aria-label="`${member.displayName} ${kind === 'percentage' ? 'percentage' : 'shares'}`" :disabled="!selectedIds.includes(member.id)"><small v-if="kind === 'percentage'">%</small></label></div></fieldset>
-          <p v-if="error" role="alert" class="error">{{ error }}</p><p class="status" role="status" aria-live="polite">{{ status }}</p>
-          <div class="actions"><ion-button expand="block" :disabled="!canManage || saving" @click="saveDefault">{{ saving ? 'Saving…' : 'Save default' }}</ion-button><button type="button" :disabled="!canManage || saving || !snapshot.settings.defaultSplit" @click="clearDefault">Clear default</button></div>
-        </section>
-        <section class="truth-card"><h2>How defaults work</h2><ul><li>They seed only future expense drafts.</li><li>Receipt itemization always wins.</li><li>Membership changes clear an invalid default instead of redistributing it.</li></ul></section>
-      </template>
-    </main></ion-content></ion-page>
+  <ion-page>
+    <ion-header translucent>
+      <ion-toolbar>
+        <ion-buttons slot="start"><ion-back-button :default-href="backPath" text="Group" /></ion-buttons>
+        <ion-title>Group settings</ion-title>
+      </ion-toolbar>
+    </ion-header>
+    <ion-content :fullscreen="true">
+      <main class="settings-main">
+        <p class="eyebrow">{{ snapshot?.group.name ?? 'Group' }}</p>
+        <h1>Group settings</h1>
+        <p class="intro">Choose how new expenses start. Existing expenses, payers, recurrence, and receipt itemization never change.</p>
+        <p v-if="loading" role="status" class="load-status">Loading group settings…</p>
+        <p v-else-if="error && !snapshot" role="alert" class="error error--standalone">{{ error }}</p>
+
+        <template v-else-if="snapshot">
+          <section class="settings-section simplify-section" aria-labelledby="simplify-heading">
+            <header class="section-heading">
+              <div><h2 id="simplify-heading">Simplify debts</h2><p>Settings revision {{ snapshot.settings.revision }}</p></div>
+              <span class="access-pill">Everyone</span>
+            </header>
+            <ion-list inset lines="none" class="settings-list simplify-list">
+              <ion-item class="settings-row simplify-row">
+                <ion-label class="settings-row__copy"><strong>Use fewer payments</strong><p>Rearranges who pays whom without changing anyone’s total balance. Both views stay available.</p></ion-label>
+                <ion-toggle slot="end" data-testid="simplify-debts-toggle" aria-label="Simplify debts" :model-value="simplifyDebtsEnabled" :disabled="simplifying" @ion-change="updateSimplification" />
+              </ion-item>
+            </ion-list>
+          </section>
+
+          <section class="settings-section" aria-labelledby="default-heading">
+            <header class="section-heading">
+              <div><h2 id="default-heading">Default split</h2><p>Settings revision {{ snapshot.settings.revision }}</p></div>
+              <span class="access-pill">Included</span>
+            </header>
+            <ion-note v-if="!canManage" class="permission-note">Only an active group manager can change this shared default.</ion-note>
+
+            <fieldset class="method-fieldset" :disabled="!canManage || saving">
+              <legend>Method</legend>
+              <ion-segment data-testid="group-default-methods" aria-label="Default split method" :value="kind" :disabled="!canManage || saving" @ion-change="changeKind">
+                <ion-segment-button v-for="option in (['equal', 'percentage', 'shares'] as const)" :key="option" :value="option" @click="selectKind(option)">
+                  <ion-label>{{ option === 'equal' ? 'Equally' : option === 'percentage' ? 'Percentage' : 'Shares' }}</ion-label>
+                </ion-segment-button>
+              </ion-segment>
+            </fieldset>
+
+            <fieldset class="people-fieldset" :disabled="!canManage || saving">
+              <legend>People included</legend>
+              <ion-list data-testid="group-settings-list" inset lines="full" class="settings-list member-list">
+                <ion-item v-for="member in snapshot.members" :key="member.id" data-testid="group-member-row" class="settings-row member-row" :disabled="!canManage || saving">
+                  <ion-checkbox slot="start" :checked="selectedIds.includes(member.id)" :disabled="!canManage || saving" :aria-label="`Include ${member.displayName}`" @ion-change="toggle(member.id, $event.detail.checked)" />
+                  <ion-label>{{ member.displayName }}</ion-label>
+                  <label v-if="kind !== 'equal'" slot="end" class="ratio-control">
+                    <span class="su-visually-hidden">{{ member.displayName }} {{ kind === 'percentage' ? 'percentage' : 'shares' }}</span>
+                    <input v-model="ratios[member.id]" class="ratio-input" inputmode="decimal" :aria-label="`${member.displayName} ${kind === 'percentage' ? 'percentage' : 'shares'}`" :disabled="!canManage || saving || !selectedIds.includes(member.id)">
+                    <small v-if="kind === 'percentage'">%</small>
+                  </label>
+                </ion-item>
+              </ion-list>
+            </fieldset>
+
+            <p v-if="error" role="alert" class="error">{{ error }}</p>
+            <p class="status" role="status" aria-live="polite">{{ status }}</p>
+            <div class="actions">
+              <ion-button expand="block" shape="round" :disabled="!canManage || saving" @click="saveDefault">{{ saving ? 'Saving…' : 'Save default' }}</ion-button>
+              <ion-button data-testid="clear-default-button" expand="block" fill="clear" color="danger" :disabled="!canManage || saving || !snapshot.settings.defaultSplit" @click="clearDefault">Clear default</ion-button>
+            </div>
+          </section>
+
+          <section class="truth-card" aria-labelledby="defaults-help-heading">
+            <h2 id="defaults-help-heading">How defaults work</h2>
+            <ul><li>They seed only future expense drafts.</li><li>Receipt itemization always wins.</li><li>Membership changes clear an invalid default instead of redistributing it.</li></ul>
+          </section>
+        </template>
+      </main>
+    </ion-content>
+  </ion-page>
 </template>
 
 <style scoped>
-.settings-main { width: min(100%, 640px); margin: 0 auto; padding: 22px 18px calc(42px + env(safe-area-inset-bottom)); }.eyebrow { margin: 0 0 4px; color: var(--su-accent); font-size: .78rem; font-weight: 700; text-transform: uppercase; }.settings-main h1 { margin: 0; font-size: clamp(2rem, 9vw, 2.55rem); letter-spacing: -.045em; }.intro { margin: 8px 0 20px; color: var(--ion-color-medium); line-height: 1.45; }.settings-card, .truth-card { margin-top: 14px; padding: 16px; border: 1px solid color-mix(in srgb, var(--su-divider) 35%, transparent); border-radius: 18px; }.settings-card > header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }.settings-card h2, .truth-card h2 { margin: 0; font-size: 1.05rem; }.settings-card header p { margin: 3px 0 0; color: var(--ion-color-medium); font-size: .78rem; }.unlocked { padding: 5px 9px; border-radius: 12px; background: var(--su-lilac); color: var(--su-category-fg); font-size: .72rem; font-weight: 700; }.settings-card fieldset { margin: 18px 0 0; border: 0; padding: 0; }.settings-card legend { margin-bottom: 8px; font-size: .82rem; font-weight: 700; }.method-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }.method-grid label { min-height: 44px; }.method-grid input { position: absolute; opacity: 0; }.method-grid span { display: grid; min-height: 44px; place-items: center; border: 1px solid var(--su-divider); border-radius: 12px; padding: 0 6px; font-size: .78rem; text-align: center; }.method-grid input:checked + span { border-color: var(--su-accent); background: var(--su-lilac); color: var(--su-category-fg); font-weight: 700; }.member-list { display: grid; }.member-list label { display: grid; grid-template-columns: 28px minmax(0, 1fr) 72px 16px; min-height: 50px; align-items: center; border-top: 1px solid color-mix(in srgb, var(--su-divider) 28%, transparent); }.member-list input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--su-accent); }.ratio-input { min-height: 40px; min-width: 0; border: 1px solid var(--su-divider); border-radius: 10px; padding: 0 8px; background: var(--su-surface); color: inherit; font: inherit; text-align: right; }.actions { display: grid; gap: 8px; margin-top: 8px; }.actions ion-button, .actions button { min-height: 44px; margin: 0; }.actions button { border: 0; background: transparent; color: var(--su-owing); font: inherit; }.permission-note, .truth-card, .status { color: var(--ion-color-medium); font-size: .88rem; line-height: 1.45; }.truth-card ul { margin: 10px 0 0; padding-left: 20px; }.error { color: var(--su-owing); }
-.toggle-setting { display: grid; min-height: 62px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; margin-top: 10px; }.toggle-setting > span { display: grid; gap: 3px; }.toggle-setting strong { font-size: .94rem; }.toggle-setting small { color: var(--ion-color-medium); font-size: .78rem; line-height: 1.35; }.toggle-setting ion-toggle { min-width: 51px; min-height: 44px; }.simplify-card { animation: settings-rise var(--su-motion-slow) cubic-bezier(.2,.75,.25,1) both; }
+.settings-main { width: min(100%, 640px); margin: 0 auto; padding: 20px 0 calc(42px + env(safe-area-inset-bottom)); }
+.eyebrow, .settings-main > h1, .intro, .load-status, .error--standalone { margin-inline: 18px; }
+.eyebrow { margin-block: 0 4px; color: var(--su-accent); font-size: .75rem; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+.settings-main > h1 { margin-block: 0; font-size: clamp(1.9rem, 8vw, 2.45rem); letter-spacing: -.045em; }
+.intro { margin-block: 7px 22px; color: var(--ion-color-medium); font-size: .92rem; line-height: 1.45; }
+.settings-section { margin-top: 20px; }
+.section-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin: 0 18px 8px; }
+.section-heading h2, .truth-card h2 { margin: 0; font-size: 1rem; }
+.section-heading p { margin: 3px 0 0; color: var(--ion-color-medium); font-size: .75rem; }
+.access-pill { padding: 4px 8px; border-radius: 999px; background: var(--su-lilac); color: var(--su-category-fg); font-size: .68rem; font-weight: 700; }
+.settings-list { overflow: hidden; margin-block: 0; border: 1px solid color-mix(in srgb, var(--su-divider) 72%, transparent); border-radius: 13px; background: var(--su-surface); box-shadow: 0 1px 3px rgb(40 31 93 / 7%); }
+.settings-row { --background: var(--su-surface); --border-color: color-mix(in srgb, var(--su-divider) 76%, transparent); --inner-padding-end: 12px; --min-height: 52px; --padding-start: 12px; }
+.simplify-row { --min-height: 88px; }
+.settings-row__copy { min-width: 0; margin-block: 12px; white-space: normal; }
+.settings-row__copy strong { font-size: .94rem; }
+.settings-row__copy p { margin: 3px 0 0; color: var(--ion-color-medium); font-size: .76rem; line-height: 1.35; white-space: normal; }
+.simplify-row ion-toggle { min-width: 51px; min-height: 44px; margin-inline-start: 12px; }
+.method-fieldset, .people-fieldset { margin: 18px 0 0; border: 0; padding: 0; }
+.method-fieldset legend, .people-fieldset legend { margin: 0 18px 8px; font-size: .78rem; font-weight: 700; }
+.method-fieldset ion-segment { width: auto; margin-inline: 18px; padding: 3px; border-radius: 11px; background: color-mix(in srgb, var(--su-lilac) 42%, var(--su-surface)); }
+.method-fieldset ion-segment-button { min-width: 0; min-height: 40px; --border-radius: 8px; --indicator-box-shadow: 0 1px 3px rgb(40 31 93 / 12%); --indicator-color: var(--su-surface); --padding-start: 6px; --padding-end: 6px; font-size: .75rem; text-transform: none; }
+.member-row ion-checkbox { width: 22px; height: 22px; margin-inline-end: 12px; }
+.member-row ion-label { min-width: 0; font-size: .92rem; }
+.ratio-control { display: flex; min-height: 44px; align-items: center; gap: 5px; margin-inline-start: 10px; }
+.ratio-input { box-sizing: border-box; width: 72px; min-height: 38px; border: 1px solid var(--su-divider); border-radius: 9px; padding: 0 8px; background: var(--su-surface); color: inherit; font: inherit; text-align: right; }
+.ratio-control small { width: 12px; color: var(--ion-color-medium); }
+.permission-note { display: block; margin: 0 18px 4px; color: var(--ion-color-medium); font-size: .8rem; line-height: 1.4; }
+.actions { display: grid; gap: 2px; margin: 10px 18px 0; }
+.actions ion-button { min-height: 44px; margin: 0; text-transform: none; }
+.truth-card { margin: 22px 18px 0; padding: 14px 15px; border: 1px solid color-mix(in srgb, var(--su-divider) 48%, transparent); border-radius: 13px; color: var(--ion-color-medium); font-size: .8rem; line-height: 1.45; }
+.truth-card ul { margin: 8px 0 0; padding-left: 18px; }
+.status { min-height: 19px; margin: 8px 18px 0; color: var(--ion-color-medium); font-size: .8rem; line-height: 1.4; }
+.error { margin: 10px 18px 0; color: var(--ion-color-danger); font-size: .82rem; }
+.load-status { padding: 28px 0; color: var(--ion-color-medium); text-align: center; }
+.simplify-section { animation: settings-rise var(--su-motion-slow) cubic-bezier(.2,.75,.25,1) both; }
 @keyframes settings-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-@media (max-width: 360px) { .method-grid { grid-template-columns: 1fr; } }
-@media (prefers-reduced-motion: reduce) { .simplify-card { animation: none; } }
+@media (max-width: 360px) { .intro { font-size: .87rem; }.method-fieldset ion-segment-button { font-size: .68rem; }.ratio-input { width: 62px; } }
+@media (prefers-reduced-motion: reduce) { .simplify-section { animation: none; } }
 </style>
