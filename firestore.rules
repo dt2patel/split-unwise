@@ -250,6 +250,46 @@ service cloud.firestore {
         && (after.headDeleted ? data.expense.deletedAt == request.time : !('deletedAt' in data.expense));
     }
 
+    function validSparkExpenseActivityShape(groupId, activityId, data) {
+      return data.keys().hasOnly(['groupId', 'operationId', 'kind', 'subject', 'actor', 'expenseId', 'resourceToken', 'revision', 'createdAt'])
+        && data.groupId == groupId && strictId(data.expenseId)
+        && data.resourceToken is string && data.resourceToken.matches('^[a-f0-9]{48}$')
+        && activityId == 'activity-' + data.resourceToken
+        && data.operationId is string && data.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && (data.kind == 'expense.created' || data.kind == 'expense.updated' || data.kind == 'expense.deleted')
+        && data.subject.keys().hasOnly(['kind', 'id', 'label'])
+        && data.subject.kind == 'expense' && data.subject.id == data.expenseId && validName(data.subject.label)
+        && validSparkActorShape(data.actor) && data.revision is int && data.revision > 0
+        && data.createdAt is timestamp;
+    }
+    function validSparkCreatedExpenseActivity(groupId, data) {
+      let expense = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(data.expenseId)).data;
+      return expense.createdAt == data.createdAt && expense.updatedAt == data.createdAt
+        && expense.resourceToken == data.resourceToken && expense.lastResourceToken == data.resourceToken
+        && expense.operationId == data.operationId && expense.lastOperationId == data.operationId
+        && expense.createdBy == data.actor && expense.updatedBy == data.actor
+        && expense.revision == 1 && data.revision == 1
+        && expense.description == data.subject.label;
+    }
+    function validSparkRevisedExpenseActivity(groupId, data) {
+      let version = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(data.expenseId)/revisions/$(data.resourceToken)).data;
+      return version.createdAt == data.createdAt && version.operationId == data.operationId
+        && version.action == (data.kind == 'expense.deleted' ? 'deleted' : 'updated')
+        && version.actor == data.actor && version.revision == data.revision
+        && version.expense.lastResourceToken == data.resourceToken
+        && version.expense.lastOperationId == data.operationId
+        && version.expense.updatedAt == data.createdAt && version.expense.updatedBy == data.actor
+        && version.expense.revision == data.revision && version.expense.description == data.subject.label
+        && (data.kind == 'expense.deleted' ? version.expense.deletedAt == data.createdAt : !('deletedAt' in version.expense));
+    }
+    function validSparkExpenseActivityCreate(groupId, activityId, data) {
+      return validSparkExpenseActivityShape(groupId, activityId, data)
+        && (
+          (data.kind == 'expense.created' && validSparkCreatedExpenseActivity(groupId, data))
+          || ((data.kind == 'expense.updated' || data.kind == 'expense.deleted') && validSparkRevisedExpenseActivity(groupId, data))
+        );
+    }
+
     function validSparkCommentStructure(groupId, commentId, data) {
       return data.keys().hasOnly([
           'groupId', 'expenseId', 'operationId', 'requestFingerprint', 'resourceToken',
@@ -615,7 +655,9 @@ service cloud.firestore {
       match /activity/{activityId} {
         allow get: if activeMember(groupId); allow list: if activeMember(groupId) && bounded(100);
         allow create: if (
-          (request.resource.data.kind == 'group.event'
+          ((request.resource.data.kind == 'expense.created' || request.resource.data.kind == 'expense.updated' || request.resource.data.kind == 'expense.deleted')
+            && validSparkExpenseActivityCreate(groupId, activityId, request.resource.data))
+          || (request.resource.data.kind == 'group.event'
             && validSparkSettingsActivityCreate(groupId, activityId, request.resource.data))
           || ((request.resource.data.kind == 'comment.added' || request.resource.data.kind == 'comment.deleted')
             && validSparkCommentActivityCreate(groupId, activityId, request.resource.data))

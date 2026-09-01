@@ -129,23 +129,28 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(getDocs(query(collectionGroup(active, 'expenses'), limit(10))))
   })
 
-  emulatorIt('allows one strictly validated immutable expense record from an active member', async () => {
+  emulatorIt('allows one strictly validated expense and immutable activity bundle from an active member', async () => {
     const active = environment.authenticatedContext('active').firestore()
     const outsider = environment.authenticatedContext('outsider').firestore()
-    await assertSucceeds(setDoc(doc(active, 'groups/group-a/expenses/expense-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), sparkExpense()))
+    const valid = sparkExpense()
+    await assertSucceeds(setDoc(doc(active, `groups/group-a/expenses/${valid.id}`), valid))
+    await assertSucceeds(setDoc(doc(active, `groups/group-a/activity/activity-${valid.lastResourceToken}`), sparkExpenseActivity(valid, 'expense.created', (await getDoc(doc(active, `groups/group-a/expenses/${valid.id}`))).data()!.createdAt)))
     await assertSucceeds(getDoc(doc(active, 'groups/group-a/expenses/expense-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')))
 
-    await assertFails(setDoc(doc(outsider, 'groups/group-a/expenses/expense-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'), sparkExpense('b')))
-    await assertFails(setDoc(doc(active, 'groups/group-a/expenses/expense-cccccccccccccccccccccccccccccccccccccccccccccccc'), sparkExpense('c', { allocations: [
+    const outsiderExpense = sparkExpense('b')
+    await assertFails(setDoc(doc(outsider, `groups/group-a/expenses/${outsiderExpense.id}`), outsiderExpense))
+    const mismatchedLedger = sparkExpense('c', { allocations: [
       { participantId: 'active', money: { currency: 'USD', minorAmount: 400 } },
       { participantId: 'friend', money: { currency: 'USD', minorAmount: 599 } },
-    ] })))
-    await assertFails(setDoc(doc(active, 'groups/group-a/expenses/expense-dddddddddddddddddddddddddddddddddddddddddddddddd'), sparkExpense('d', {
+    ] })
+    await assertFails(setDoc(doc(active, `groups/group-a/expenses/${mismatchedLedger.id}`), mismatchedLedger))
+    const removedParticipant = sparkExpense('d', {
       participantIds: ['active', 'removed'], involvedMemberIds: ['active', 'removed'], allocations: [
         { participantId: 'active', money: { currency: 'USD', minorAmount: 400 } },
         { participantId: 'removed', money: { currency: 'USD', minorAmount: 600 } },
       ],
-    })))
+    })
+    await assertFails(setDoc(doc(active, `groups/group-a/expenses/${removedParticipant.id}`), removedParticipant))
   })
 
   emulatorIt('requires an authorized head advance plus an immutable full version and keeps physical deletes denied', async () => {
@@ -161,34 +166,42 @@ describe('Firestore rules in the emulator', () => {
       ...beforeEdit, description: 'Audited change', lastOperationId: 'edit-operation-f', lastRequestFingerprint: 'f'.repeat(64), lastResourceToken: editToken,
       updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 2,
     }
-    await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, editToken, {
+    const editHead = {
       ...beforeEdit, lastOperationId: 'edit-operation-f', lastRequestFingerprint: 'f'.repeat(64), lastResourceToken: editToken,
       headRevision: 2, headDeleted: false,
-    }, sparkExpenseVersion(editedExpense, 'edit-operation-f', 'updated', { id: 'active', displayName: 'Active Member' })))
+    }
+    const editVersion = sparkExpenseVersion(editedExpense, 'edit-operation-f', 'updated', { id: 'active', displayName: 'Active Member' })
+    await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, editToken, editHead, editVersion))
+    const savedEditVersion = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()!
+    await assertSucceeds(setDoc(doc(active, `groups/group-a/activity/activity-${editToken}`), sparkExpenseActivity(editedExpense, 'expense.updated', savedEditVersion.createdAt)))
     expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 2, headDeleted: false })
     expect((await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense).toMatchObject({ description: 'Audited change', revision: 2 })
 
     const beforeDeniedEdit = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}`))).data()!
     const currentEditedExpense = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense as Record<string, unknown>
     const deniedToken = 'd'.repeat(48)
+    const forgedExpense = {
+      ...currentEditedExpense, description: 'Friend forged edit', lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: deniedToken,
+      updatedAt: serverTimestamp(), updatedBy: { id: 'friend', displayName: 'Friend' }, revision: 3,
+    }
     await assertFails(commitSparkExpenseMutation(friend, expense.id as string, deniedToken, {
       ...beforeDeniedEdit, lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: deniedToken,
       headRevision: 3, headDeleted: false,
-    }, sparkExpenseVersion({
-      ...currentEditedExpense, description: 'Friend forged edit', lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: deniedToken,
-      updatedAt: serverTimestamp(), updatedBy: { id: 'friend', displayName: 'Friend' }, revision: 3,
-    }, 'friend-edit-d', 'updated', { id: 'friend', displayName: 'Friend' })))
+    }, sparkExpenseVersion(forgedExpense, 'friend-edit-d', 'updated', { id: 'friend', displayName: 'Friend' })))
 
     const beforeDelete = (await getDoc(reference)).data()!
     const beforeDeleteExpense = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense as Record<string, unknown>
     const deleteToken = '1'.repeat(48)
+    const deletedExpense = {
+      ...beforeDeleteExpense, lastOperationId: 'delete-operation-1', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: deleteToken,
+      updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 3, deletedAt: serverTimestamp(),
+    }
     await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, deleteToken, {
       ...beforeDelete, lastOperationId: 'delete-operation-1', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: deleteToken,
       headRevision: 3, headDeleted: true,
-    }, sparkExpenseVersion({
-      ...beforeDeleteExpense, lastOperationId: 'delete-operation-1', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: deleteToken,
-      updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 3, deletedAt: serverTimestamp(),
-    }, 'delete-operation-1', 'deleted', { id: 'active', displayName: 'Active Member' })))
+    }, sparkExpenseVersion(deletedExpense, 'delete-operation-1', 'deleted', { id: 'active', displayName: 'Active Member' })))
+    const savedDeleteVersion = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()!
+    await assertSucceeds(setDoc(doc(active, `groups/group-a/activity/activity-${deleteToken}`), sparkExpenseActivity(deletedExpense, 'expense.deleted', savedDeleteVersion.createdAt)))
     expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 3, headDeleted: true })
     expect((await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()?.expense).toMatchObject({ description: 'Audited change', revision: 3 })
     await assertFails(deleteDoc(reference))
@@ -348,6 +361,15 @@ function sparkExpenseVersion(expense: Record<string, unknown>, operationId: stri
   return {
     groupId: 'group-a', expenseId: expense.id, revision: expense.revision,
     operationId, action, actor, createdAt: serverTimestamp(), expense,
+  }
+}
+
+function sparkExpenseActivity(expense: Record<string, unknown>, kind: 'expense.created' | 'expense.updated' | 'expense.deleted', createdAt: unknown): Record<string, unknown> {
+  const actor = kind === 'expense.created' ? expense.createdBy : expense.updatedBy
+  return {
+    groupId: 'group-a', operationId: expense.lastOperationId, kind,
+    subject: { kind: 'expense', id: expense.id, label: expense.description },
+    actor, expenseId: expense.id, resourceToken: expense.lastResourceToken, revision: expense.revision, createdAt,
   }
 }
 

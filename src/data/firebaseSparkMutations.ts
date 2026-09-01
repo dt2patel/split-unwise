@@ -33,6 +33,13 @@ export interface SparkInvitationPreview {
 export interface SparkExpenseRecord {
   readonly expenseId: string
   readonly expenseDocument: Readonly<Record<string, unknown>>
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
+}
+
+export interface SparkExpenseActivityRecord {
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
 }
 
 export interface SparkExpenseMutationRecord {
@@ -40,6 +47,8 @@ export interface SparkExpenseMutationRecord {
   readonly headDocument: Readonly<Record<string, unknown>>
   readonly revisionId: string
   readonly revisionDocument: Readonly<Record<string, unknown>> & { readonly expense: Readonly<Record<string, unknown>> }
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
 }
 
 export interface SparkCommentRecord {
@@ -73,7 +82,15 @@ export function buildSparkExpenseRecord(command: ExpenseAddCommand, actor: Actor
     ...normalizeSparkExpenseDraft(parsed, identity.resourceId),
     createdAt: committedAt, createdBy: normalizedActor(actor), updatedAt: committedAt, updatedBy: normalizedActor(actor), revision: 1,
   }
-  return { expenseId, expenseDocument }
+  const normalized = normalizedActor(actor)
+  return {
+    expenseId,
+    expenseDocument,
+    ...buildSparkExpenseActivityRecord({
+      groupId: parsed.groupId, operationId: parsed.operationId, kind: 'expense.created', actor: normalized,
+      expenseId, resourceToken: token, revision: 1, label: String(expenseDocument.description), committedAt,
+    }),
+  }
 }
 
 /** Advances the small mutable head pointer and creates one immutable full expense version. */
@@ -115,6 +132,17 @@ export function buildSparkExpenseMutationRecord(
         updatedAt: committedAt, updatedBy: normalizedActor(authorization.actor), revision, deletedAt: committedAt,
       }
   const actor = normalizedActor(authorization.actor)
+  const activity = buildSparkExpenseActivityRecord({
+    groupId: parsed.groupId,
+    operationId: parsed.operationId,
+    kind: parsed.kind === 'expense.delete' ? 'expense.deleted' : 'expense.updated',
+    actor,
+    expenseId: parsed.expenseId,
+    resourceToken: token,
+    revision,
+    label: String(expense.description),
+    committedAt,
+  })
   return {
     expenseId: parsed.expenseId,
     headDocument: {
@@ -129,6 +157,29 @@ export function buildSparkExpenseMutationRecord(
     revisionDocument: {
       groupId: parsed.groupId, expenseId: parsed.expenseId, revision, operationId: parsed.operationId,
       action: parsed.kind === 'expense.delete' ? 'deleted' : 'updated', actor, createdAt: committedAt, expense,
+    },
+    ...activity,
+  }
+}
+
+/** Reconstructs the exact immutable activity event from a committed expense or revision. */
+export function buildSparkExpenseActivityRecord(input: {
+  readonly groupId: string
+  readonly operationId: string
+  readonly kind: 'expense.created' | 'expense.updated' | 'expense.deleted'
+  readonly actor: ActorSnapshot
+  readonly expenseId: string
+  readonly resourceToken: string
+  readonly revision: number
+  readonly label: string
+  readonly committedAt: unknown
+}): SparkExpenseActivityRecord {
+  return {
+    activityId: `activity-${input.resourceToken}`,
+    activityDocument: {
+      groupId: input.groupId, operationId: input.operationId, kind: input.kind,
+      subject: { kind: 'expense', id: input.expenseId, label: input.label }, actor: normalizedActor(input.actor),
+      expenseId: input.expenseId, resourceToken: input.resourceToken, revision: input.revision, createdAt: input.committedAt,
     },
   }
 }

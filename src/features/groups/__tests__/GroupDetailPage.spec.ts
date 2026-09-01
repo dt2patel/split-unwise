@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import type { Component } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -50,11 +50,13 @@ const ionicStubs = {
     props: ['routerLink'],
     template: '<a :href="routerLink"><slot /></a>',
   },
+  IonSkeletonText: { template: '<span class="skeleton-text"><slot /></span>' },
 }
 
 beforeEach(() => {
   setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
 })
+afterEach(() => { vi.unstubAllGlobals() })
 
 async function mountRoute(path: string): Promise<VueWrapper> {
   const router = createAppRouter()
@@ -74,6 +76,43 @@ async function mountRoute(path: string): Promise<VueWrapper> {
 }
 
 describe('Lake House group journal', () => {
+  it('does not fetch the desktop group menu on a mobile viewport', async () => {
+    const repository = createDemoRepository()
+    const list = vi.fn(() => repository.groups.list())
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
+    setAppSessionForTesting(createAppSession({
+      repository: { ...repository, groups: { ...repository.groups, list } },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+
+    await mountRoute('/tabs/groups/lake-house-weekend')
+
+    expect(list).not.toHaveBeenCalled()
+  })
+
+  it('shows the usable group shell while the slower journal is still loading', async () => {
+    let releaseActivity!: () => void
+    const activityGate = new Promise<readonly never[]>((resolve) => { releaseActivity = () => resolve([]) })
+    const repository = createDemoRepository()
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...repository,
+        activity: { ...repository.activity, async listForGroup() { return activityGate } },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+
+    expect(wrapper.find('[data-testid="group-cover"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="journal-loading"]').attributes('role')).toBe('status')
+
+    releaseActivity()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="journal-loading"]').exists()).toBe(false)
+  })
+
   it('renders the selected group hierarchy with one newest-first August journal', async () => {
     const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
 

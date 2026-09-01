@@ -86,23 +86,27 @@ export const useGroupStore = defineStore('groups', () => {
     const request = ++latestGroupRequest
     isLoading.value = true
     error.value = undefined
-    clearActiveGroup()
+    if (activeGroup.value?.id !== groupId) clearActiveGroup()
     try {
       await (session as typeof session & { readonly ready?: Promise<void> }).ready
       if (request !== latestGroupRequest) return
-      const [group, user, loadedMembers, loadedExpenses, loadedActivity] = await Promise.all([
-        repository.groups.getById(groupId),
+      const groupRequest = repository.groups.getById(groupId)
+      const journalRequest = Promise.all([
         repository.app.getCurrentUser(),
         repository.groups.listMembers(groupId),
         repository.expenses.listForGroup(groupId),
         repository.activity.listForGroup(groupId),
       ])
+      void journalRequest.catch(() => undefined)
+      const group = await groupRequest
       if (request !== latestGroupRequest) return
       if (!group) throw new Error('This group is not available.')
       if (group.id !== groupId) throw new Error('The loaded group did not match the requested group.')
+      activeGroup.value = group
+      const [user, loadedMembers, loadedExpenses, loadedActivity] = await journalRequest
+      if (request !== latestGroupRequest) return
       // Preserve deterministic load errors for malformed/overflowing repository data.
       netsByCurrency(loadedExpenses, user.id, group.currency)
-      activeGroup.value = group
       currentUser.value = user
       members.value = loadedMembers
       expenses.value = loadedExpenses

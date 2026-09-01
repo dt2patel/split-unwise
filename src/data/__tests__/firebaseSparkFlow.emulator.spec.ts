@@ -230,6 +230,9 @@ describe('Firebase Spark two-account flow', () => {
     await expect(friendRepository.expenses.listForGroup(created.groupId)).resolves.toEqual([
       expect.objectContaining({ description: 'Shared dinner', total: { currency: 'USD', minorAmount: 2400 } }),
     ])
+    await expect(friendRepository.activity.listForAccount({ filter: 'expenses', limit: 20 })).resolves.toMatchObject({
+      items: [{ kind: 'expense.created', operationId, expenseId: first.expense.id, revision: 1, subject: { kind: 'expense', id: first.expense.id, label: 'Shared dinner' } }],
+    })
     await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
       simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } }],
     })
@@ -312,6 +315,14 @@ describe('Firebase Spark two-account flow', () => {
     await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({ balanceRevision: 3, pairwise: [], simplified: [] })
     await expect(ownerRepository.expenses.listRevisions(created.groupId, first.expense.id)).resolves.toMatchObject([
       { revision: 1, action: 'created' }, { revision: 2, action: 'updated' }, { revision: 3, action: 'deleted' },
+    ])
+    const expenseActivity = (await ownerRepository.activity.listForGroup(created.groupId))
+      .filter(({ kind }) => kind === 'expense.created' || kind === 'expense.updated' || kind === 'expense.deleted')
+      .map(({ kind, operationId: activityOperationId, expenseId, revision, subject }) => ({ kind, operationId: activityOperationId, expenseId, revision, subject }))
+    expect(expenseActivity).toEqual([
+      { kind: 'expense.created', operationId, expenseId: first.expense.id, revision: 1, subject: { kind: 'expense', id: first.expense.id, label: 'Shared dinner' } },
+      { kind: 'expense.updated', operationId: editCommand.operationId, expenseId: first.expense.id, revision: 2, subject: { kind: 'expense', id: first.expense.id, label: 'Shared dinner and dessert' } },
+      { kind: 'expense.deleted', operationId: deleteCommand.operationId, expenseId: first.expense.id, revision: 3, subject: { kind: 'expense', id: first.expense.id, label: 'Shared dinner and dessert' } },
     ])
   }, 30_000)
 })

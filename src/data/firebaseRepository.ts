@@ -6,7 +6,7 @@ import { resolveFirebaseSession } from './firebaseSession'
 import type { ActivityFilter, ActivityItem, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, GroupDefaultSplitCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationPreferencesResult, ProfileUpdateCommand, SavedCommandResult, SettlementRecord, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { computeBalancePlans } from '../domain/balances'
-import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkProfileUpdateRecord } from './firebaseSparkMutations'
+import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkGroupSettingsRecord, buildSparkNotificationPreferencesRecord, buildSparkProfileUpdateRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
 import { parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
@@ -20,6 +20,7 @@ type FirebaseContext = FirebaseClient & { readonly userId: string }
 export function createFirebaseRepository(configuration: FirebaseConfiguration, expectedUserId?: string, functionsRegion?: string): AppRepository {
   let clientPromise: Promise<FirebaseClient> | undefined
   let callablePromise: Promise<(request: unknown) => Promise<{ readonly data: unknown }>> | undefined
+  let currentUserPromise: Promise<Member> | undefined
   const client = () => clientPromise ??= connect(configuration)
 
   async function context(): Promise<FirebaseContext> {
@@ -28,11 +29,19 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (expectedUserId !== undefined && userId !== expectedUserId) throw new Error('Firebase authenticated principal changed')
     return { ...firebase, userId }
   }
-  async function currentUser(): Promise<Member> {
-    const { db, firestore, userId } = await context()
-    const snapshot = await firestore.getDoc(firestore.doc(db, 'users', userId))
-    if (!snapshot.exists()) throw new Error('Current Firebase user profile is missing')
-    return decodeMember(userId, snapshot.data(), true)
+  function currentUser(): Promise<Member> {
+    if (currentUserPromise) return currentUserPromise
+    const pending = (async () => {
+      const { db, firestore, userId } = await context()
+      const snapshot = await firestore.getDoc(firestore.doc(db, 'users', userId))
+      if (!snapshot.exists()) throw new Error('Current Firebase user profile is missing')
+      return decodeMember(userId, snapshot.data(), true)
+    })()
+    currentUserPromise = pending
+    void pending.catch(() => {
+      if (currentUserPromise === pending) currentUserPromise = undefined
+    })
+    return pending
   }
   async function listExpenseHeads(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
     const { db, firestore } = await readyContext
@@ -65,6 +74,21 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (!snapshot.exists() || !isRecord(data) || data.groupId !== groupId || !Number.isSafeInteger(data.balanceRevision) || Number(data.balanceRevision) < 0) throw new Error('Stored group balance is invalid')
     return Number(data.balanceRevision)
   }
+  async function persistSparkExpenseActivity(db: FirebaseClient['db'], firestore: FirestoreModule, groupId: string, record: SparkExpenseActivityRecord): Promise<void> {
+    const reference = firestore.doc(db, 'groups', groupId, 'activity', record.activityId)
+    const expected = decodeActivity(groupId, record.activityId, record.activityDocument)
+    const resourceToken = record.activityDocument.resourceToken
+    if (typeof resourceToken !== 'string') throw new Error('Spark expense activity identity is invalid')
+    await firestore.runTransaction(db, async (transaction) => {
+      const existing = await transaction.get(reference)
+      if (existing.exists()) {
+        const data = existing.data()
+        if (data.resourceToken !== resourceToken || !sameExpenseActivity(decodeActivity(groupId, existing.id, data), expected)) throw new OperationReplayConflictError()
+        return
+      }
+      transaction.set(reference, record.activityDocument)
+    })
+  }
 
   async function executeSparkExpenseAdd(command: ExpenseAddCommand): Promise<ExpenseAddResult> {
     const readyContext = context()
@@ -92,12 +116,21 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     })
     const saved = await firestore.getDoc(reference)
     if (!saved.exists()) throw new Error('Saved expense is unavailable')
-    return { kind: 'expense.add', operationId: command.operationId, status: 'saved', expense: decodeExpense(command.groupId, saved.id, saved.data()) }
+    const savedData = saved.data()
+    const expense = decodeExpense(command.groupId, saved.id, savedData)
+    if (!expense.createdBy) throw new Error('Saved expense creator is unavailable')
+    await persistSparkExpenseActivity(db, firestore, command.groupId, buildSparkExpenseActivityRecord({
+      groupId: command.groupId, operationId: command.operationId, kind: 'expense.created', actor: expense.createdBy,
+      expenseId: expense.id, resourceToken: identity.resourceId.slice('operation-'.length), revision: 1,
+      label: expense.description, committedAt: savedData.createdAt,
+    }))
+    return { kind: 'expense.add', operationId: command.operationId, status: 'saved', expense }
   }
 
   async function executeSparkExpenseMutation(command: ExpenseEditCommand | ExpenseDeleteCommand): Promise<ExpenseEditResult | ExpenseDeleteResult> {
     const { db, firestore, userId } = await context()
     const identity = await createOperationIdentity(userId, command)
+    const token = identity.resourceId.slice('operation-'.length)
     const memberReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
     const expenseReference = firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId)
     await firestore.runTransaction(db, async (transaction) => {
@@ -144,9 +177,19 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         throw error
       }
     })
-    const savedHead = await firestore.getDoc(expenseReference)
-    if (!savedHead.exists()) throw new Error('Saved expense is unavailable')
+    const revisionReference = firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId, 'revisions', token)
+    const [savedHead, savedVersion] = await Promise.all([firestore.getDoc(expenseReference), firestore.getDoc(revisionReference)])
+    if (!savedHead.exists() || !savedVersion.exists()) throw new Error('Saved expense revision is unavailable')
     const saved = await resolveSparkExpenseHead(db, firestore, command.groupId, command.expenseId, savedHead.data())
+    const revision = decodeExpenseRevision(command.groupId, command.expenseId, token, savedVersion.data())
+    const expectedAction = command.kind === 'expense.delete' ? 'deleted' : 'updated'
+    if (revision.action !== expectedAction || revision.operationId !== command.operationId) throw new OperationReplayConflictError()
+    await persistSparkExpenseActivity(db, firestore, command.groupId, buildSparkExpenseActivityRecord({
+      groupId: command.groupId, operationId: command.operationId,
+      kind: command.kind === 'expense.delete' ? 'expense.deleted' : 'expense.updated', actor: revision.actor,
+      expenseId: command.expenseId, resourceToken: token, revision: revision.revision,
+      label: revision.expense.description, committedAt: savedVersion.data().createdAt,
+    }))
     if (command.kind === 'expense.edit') {
       return { kind: 'expense.edit', operationId: command.operationId, status: 'saved', expense: saved }
     }
@@ -350,7 +393,14 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   return {
     mode: 'firebase',
     projectId: configuration.projectId,
-    app: { getCurrentUser: currentUser, updateProfile: execute },
+    app: {
+      getCurrentUser: currentUser,
+      async updateProfile(command) {
+        const result = await execute(command)
+        currentUserPromise = undefined
+        return result
+      },
+    },
     groups: {
       async list() {
         const { db, firestore, userId } = await context()
@@ -557,6 +607,13 @@ function oldestExpenseFirst(left: ExpenseRow, right: ExpenseRow): number {
 
 function newestActivityFirst(left: ActivityItem, right: ActivityItem): number {
   return descendingText(left.createdAt, right.createdAt) || descendingText(left.id, right.id) || descendingText(left.groupId, right.groupId)
+}
+
+function sameExpenseActivity(left: ActivityItem, right: ActivityItem): boolean {
+  return left.id === right.id && left.groupId === right.groupId && left.operationId === right.operationId
+    && left.kind === right.kind && left.subject.kind === right.subject.kind && left.subject.id === right.subject.id
+    && left.subject.label === right.subject.label && left.actor.id === right.actor.id && left.actor.displayName === right.actor.displayName
+    && left.expenseId === right.expenseId && left.revision === right.revision && left.createdAt === right.createdAt
 }
 
 function descendingText(left: string, right: string): number { return left === right ? 0 : left < right ? 1 : -1 }

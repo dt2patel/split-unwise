@@ -16,6 +16,7 @@ import {
   IonPage,
   IonSegment,
   IonSegmentButton,
+  IonSkeletonText,
   IonTitle,
   IonToolbar,
   IonSplitPane,
@@ -60,11 +61,15 @@ const groupedActivity = computed(() => {
 watch(groupId, (id) => {
   if (id) void store.loadGroup(id)
 }, { immediate: true })
-onMounted(() => { if (!groups.value.length) void store.loadGroupList() })
+onMounted(() => { if (!groups.value.length && usesDesktopGroupMenu()) void store.loadGroupList() })
 onIonViewWillEnter(() => { void refreshOnViewEntry() })
 
 async function refreshOnViewEntry(): Promise<void> {
   if (isStrictId(groupId.value)) await store.loadGroup(groupId.value)
+}
+
+function usesDesktopGroupMenu(): boolean {
+  return typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 768px)').matches
 }
 
 function selectView(view: GroupView): void {
@@ -148,6 +153,18 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
         <action-rail :group-id="groupId" />
 
         <section class="group-detail__ledger" aria-label="Group journal">
+          <div v-if="isLoading && selectedView === 'expenses' && journalExpenses.length === 0" class="journal-loading" data-testid="journal-loading" role="status" aria-label="Loading expenses">
+            <span class="su-visually-hidden">Loading expenses…</span>
+            <div v-for="index in 3" :key="index" class="journal-loading__row" aria-hidden="true">
+              <ion-skeleton-text animated class="journal-loading__date" />
+              <ion-skeleton-text animated class="journal-loading__icon" />
+              <span class="journal-loading__summary">
+                <ion-skeleton-text animated />
+                <ion-skeleton-text animated />
+              </span>
+              <ion-skeleton-text animated class="journal-loading__amount" />
+            </div>
+          </div>
           <h2 v-if="selectedView === 'expenses' && monthLabel" class="month-divider" data-testid="month-divider">{{ monthLabel }}</h2>
 
           <transition name="journal-fade" mode="out-in">
@@ -225,7 +242,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
 <style scoped>
 .group-detail { --su-journal-gutter: 18px; }
 .group-detail ion-split-pane { --side-width: 310px; --side-max-width: 340px; --border: 1px solid color-mix(in srgb, var(--su-divider) 28%, transparent); }
-.group-detail__detail { position: relative; min-width: 0; background: var(--su-surface); }
+.group-detail__detail { position: relative; width: 100%; min-width: 0; background: var(--su-surface); }
 .group-detail__master { --width: 310px; --max-width: 340px; }.group-detail__master ion-toolbar { --min-height: 58px; }.group-detail__master ion-list { padding: 8px; background: transparent; }
 .master-group { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 11px; min-height: 64px; padding: 7px 9px; border-radius: 14px; color: inherit; text-decoration: none; }.master-group img,.master-group__monogram { display: grid; width: 48px; height: 48px; place-items: center; border-radius: 14px; object-fit: cover; background: var(--su-indigo); color: #fff; font-weight: 700; }.master-group>span:last-child { display: grid; min-width: 0; gap: 3px; }.master-group strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.master-group small { color: var(--ion-color-medium); }.master-group--active { background: color-mix(in srgb, var(--su-lilac) 78%, var(--su-surface)); color: var(--ion-color-primary); }
 .group-detail__header ion-toolbar { --min-height: 58px; --border-color: color-mix(in srgb, var(--su-divider) 34%, transparent); }
@@ -235,6 +252,15 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
 .group-detail__main > :deep(.action-rail) { margin-top: 16px; }
 .group-detail__ledger { padding: 0 var(--su-journal-gutter) 10px; }
 .month-divider { margin: 20px 0 0; padding: 0 3px 7px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); color: var(--ion-color-medium); font-size: 0.82rem; font-weight: 520; line-height: 1.2; }
+.journal-loading { margin-top: 18px; }
+.journal-loading__row { display: grid; grid-template-columns: 30px 44px minmax(0, 1fr) 62px; min-height: 83px; align-items: center; gap: 8px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 42%, transparent); }
+.journal-loading ion-skeleton-text { margin: 0; border-radius: 7px; }
+.journal-loading__date { width: 24px; height: 30px; justify-self: center; }
+.journal-loading__icon { width: 44px; height: 44px; border-radius: 50% !important; }
+.journal-loading__summary { display: grid; gap: 8px; }
+.journal-loading__summary ion-skeleton-text:first-child { width: min(132px, 92%); height: 14px; }
+.journal-loading__summary ion-skeleton-text:last-child { width: min(104px, 76%); height: 10px; }
+.journal-loading__amount { width: 54px; height: 14px; justify-self: end; }
 .activity-day__heading { margin: 18px 0 0; padding: 0 3px 7px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); color: var(--ion-color-medium); font-size: 0.82rem; font-weight: 520; }
 .activity-list { margin: 0; padding: 0; list-style: none; }
 .activity-list li { border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); font-size: 0.9rem; }

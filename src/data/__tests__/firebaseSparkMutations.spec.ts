@@ -53,6 +53,7 @@ describe('Firebase Spark mutations', () => {
     const record = buildSparkExpenseRecord(command, { id: 'owner', displayName: 'Owner Account' }, identity, committedAt)
 
     expect(record.expenseId).toBe(`expense-${'b'.repeat(48)}`)
+    expect(record.activityId).toBe(`activity-${'b'.repeat(48)}`)
     expect(record.expenseDocument).toEqual({
       id: record.expenseId, groupId: 'group-a', operationId: 'expense-operation-1', requestFingerprint: 'a'.repeat(64), resourceToken: 'b'.repeat(48),
       lastOperationId: 'expense-operation-1', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: 'b'.repeat(48),
@@ -68,6 +69,11 @@ describe('Firebase Spark mutations', () => {
         { participantId: 'friend', money: { currency: 'USD', minorAmount: 2400 } },
       ] }, notes: 'Team dinner', attachmentRefs: [],
       createdAt: committedAt, createdBy: { id: 'owner', displayName: 'Owner Account' }, updatedAt: committedAt, updatedBy: { id: 'owner', displayName: 'Owner Account' }, revision: 1,
+    })
+    expect(record.activityDocument).toEqual({
+      groupId: 'group-a', operationId: 'expense-operation-1', kind: 'expense.created',
+      subject: { kind: 'expense', id: record.expenseId, label: 'Dinner downtown' },
+      actor: { id: 'owner', displayName: 'Owner Account' }, expenseId: record.expenseId, resourceToken: 'b'.repeat(48), revision: 1, createdAt: committedAt,
     })
   })
 
@@ -129,6 +135,12 @@ describe('Firebase Spark mutations', () => {
       splitMethod: { type: 'exact', allocations: editCommand.draft.allocations }, createdAt, createdBy: creator, updatedAt, updatedBy: creator, revision: 2,
     })
     expect(edit.revisionDocument.expense).not.toHaveProperty('notes')
+    expect(edit.activityId).toBe(`activity-${'d'.repeat(48)}`)
+    expect(edit.activityDocument).toEqual({
+      groupId: 'group-a', operationId: 'edit-expense', kind: 'expense.updated',
+      subject: { kind: 'expense', id: current.id, label: 'Updated dinner' },
+      actor: creator, expenseId: current.id, resourceToken: 'd'.repeat(48), revision: 2, createdAt: updatedAt,
+    })
 
     const deleteCommand: ExpenseDeleteCommand = { kind: 'expense.delete', operationId: 'delete-expense', groupId: 'group-a', expenseId: String(current.id), expectedRevision: 2 }
     const deleteIdentity: OperationIdentity = { userId: 'owner', operationId: deleteCommand.operationId, kind: 'expense.delete', groupId: 'group-a', requestFingerprint: 'e'.repeat(64), resourceId: `operation-${'f'.repeat(48)}` }
@@ -144,6 +156,12 @@ describe('Firebase Spark mutations', () => {
     expect(removed.revisionDocument.expense).toMatchObject({
       lastOperationId: 'delete-expense', lastRequestFingerprint: 'e'.repeat(64), lastResourceToken: 'f'.repeat(48),
       description: 'Updated dinner', revision: 3, updatedAt: deletedAt, updatedBy: creator, deletedAt,
+    })
+    expect(removed.activityId).toBe(`activity-${'f'.repeat(48)}`)
+    expect(removed.activityDocument).toEqual({
+      groupId: 'group-a', operationId: 'delete-expense', kind: 'expense.deleted',
+      subject: { kind: 'expense', id: current.id, label: 'Updated dinner' },
+      actor: creator, expenseId: current.id, resourceToken: 'f'.repeat(48), revision: 3, createdAt: deletedAt,
     })
   })
 
@@ -322,6 +340,8 @@ type SparkMutationBuilder = (
   readonly headDocument: Readonly<Record<string, unknown>>
   readonly revisionId: string
   readonly revisionDocument: Readonly<Record<string, unknown>> & { readonly expense: Readonly<Record<string, unknown>> }
+  readonly activityId: string
+  readonly activityDocument: Readonly<Record<string, unknown>>
 }
 
 type SparkCommentBuilder = (

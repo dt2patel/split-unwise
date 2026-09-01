@@ -10,6 +10,8 @@ const firebase = vi.hoisted(() => ({
   groupProjectionDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
   groupActivityDocuments: {} as Record<string, Array<{ id: string; data: () => Record<string, unknown> }>>,
   notificationDocuments: [] as Array<{ id: string; data: () => Record<string, unknown> }>,
+  profileDocument: undefined as { data: () => Record<string, unknown> } | undefined,
+  documentReads: [] as string[],
 }))
 
 vi.mock('firebase/app', () => ({
@@ -59,7 +61,9 @@ vi.mock('firebase/firestore', () => {
     return { docs, size: docs.length }
   }
   const getDoc = async (reference: { path: string; id: string }) => {
-    const found = reference.path.endsWith('/balance/current') ? firebase.balanceDocument
+    firebase.documentReads.push(reference.path)
+    const found = reference.path === 'users/maya-p' ? firebase.profileDocument
+      : reference.path.endsWith('/balance/current') ? firebase.balanceDocument
       : reference.path.endsWith('/settings/defaults') ? firebase.settingsDocument
       : reference.path.includes('/expenses/') ? firebase.expenseDocuments.find(({ id }) => id === reference.id)
         : reference.path.includes('/settlements/') ? firebase.settlementDocuments.find(({ id }) => id === reference.id) : undefined
@@ -104,6 +108,18 @@ describe('Task 7 Firebase repository query boundaries', () => {
       document('notification.Z', notificationData('2026-08-31T13:00:00.000Z', '2026-08-31T12:00:00.000Z')),
       document('notification-B', notificationData(null, '2026-08-30T12:00:00.000Z')),
     ]
+    firebase.profileDocument = document('maya-p', { displayName: 'Maya P.', initials: 'MP' })
+    firebase.documentReads.length = 0
+  })
+
+  it('memoizes the authenticated profile across feature reads', async () => {
+    const repository = createFirebaseRepository(configuration)
+
+    const [first, second] = await Promise.all([repository.app.getCurrentUser(), repository.app.getCurrentUser()])
+    await expect(repository.app.getCurrentUser()).resolves.toEqual(first)
+
+    expect(second).toEqual(first)
+    expect(firebase.documentReads.filter((path) => path === 'users/maya-p')).toHaveLength(1)
   })
 
   it('excludes expense tombstones from live journals and aggregates while retaining direct audit lookup', async () => {

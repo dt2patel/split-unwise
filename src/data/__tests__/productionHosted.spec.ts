@@ -10,6 +10,7 @@ import type { FirebaseConfiguration } from '../firebase'
 
 const suffix = process.env.LIVE_PROOF_SUFFIX ?? 'disabled'
 const hostedIt = process.env.LIVE_PROOF_SUFFIX ? it : it.skip
+const keepLiveProof = process.env.KEEP_LIVE_PROOF === '1'
 const password = 'SplitUnwise-Live-Proof-42!'
 const ownerEmail = `live-owner-${suffix}@example.com`
 const friendEmail = `live-friend-${suffix}@example.com`
@@ -24,6 +25,11 @@ async function restartHostedClient(configuration: FirebaseConfiguration) {
 
 afterAll(async () => {
   if (!app) return
+  if (keepLiveProof) {
+    await deleteApp(app)
+    resetFirebaseBootstrapForTesting()
+    return
+  }
   const auth = getAuth(app)
   for (const email of [friendEmail, ownerEmail]) {
     try {
@@ -92,4 +98,52 @@ hostedIt('proves the deployed two-account and private-account paths', async () =
     expect.objectContaining({ id: ownerUid, displayName: 'Live Renamed Owner', initials: 'LR' }),
     expect.objectContaining({ id: friendUid, displayName: 'Live Proof Friend' }),
   ]))
-}, 30_000)
+  const expenseCommand = {
+    kind: 'expense.add' as const, operationId: `live-expense-${suffix}`, groupId: group.groupId,
+    description: 'Hosted mobile dinner', date: '2026-09-01', total: { currency: 'USD' as const, minorAmount: 2400 },
+    payments: [{ participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 2400 } }],
+    allocations: [
+      { participantId: ownerUid, money: { currency: 'USD' as const, minorAmount: 1200 } },
+      { participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 1200 } },
+    ],
+    category: 'Food', splitMethod: { type: 'equal' as const, participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+  }
+  const added = await friendRepository.expenses.add(expenseCommand)
+  await expect(friendRepository.expenses.add(expenseCommand)).resolves.toEqual(added)
+  if (added.status !== 'saved') throw new Error('Expected hosted expense creation to save')
+  const editCommand = {
+    kind: 'expense.edit' as const, operationId: `live-expense-edit-${suffix}`, groupId: group.groupId,
+    expenseId: added.expense.id, expectedRevision: 1,
+    draft: {
+      groupId: group.groupId, description: 'Hosted mobile dinner and dessert', date: '2026-09-01',
+      total: { currency: 'USD' as const, minorAmount: 3000 },
+      payments: [{ participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 3000 } }],
+      allocations: [
+        { participantId: ownerUid, money: { currency: 'USD' as const, minorAmount: 1500 } },
+        { participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 1500 } },
+      ],
+      category: 'Food', splitMethod: { type: 'equal' as const, participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+    },
+  }
+  const edited = await friendRepository.expenses.edit(editCommand)
+  await expect(friendRepository.expenses.edit(editCommand)).resolves.toEqual(edited)
+  const readStartedAt = performance.now()
+  const [loadedGroup, loadedProfile, loadedMembers, loadedExpenses, loadedActivity] = await Promise.all([
+    friendRepository.groups.getById(group.groupId),
+    friendRepository.app.getCurrentUser(),
+    friendRepository.groups.listMembers(group.groupId),
+    friendRepository.expenses.listForGroup(group.groupId),
+    friendRepository.activity.listForGroup(group.groupId),
+  ])
+  const groupReadMs = Math.round(performance.now() - readStartedAt)
+  console.log('HOSTED_GROUP_READ_MS', groupReadMs)
+  expect(groupReadMs).toBeLessThan(10_000)
+  expect(loadedGroup).toMatchObject({ id: group.groupId, name: 'Live Account Proof' })
+  expect(loadedProfile).toMatchObject({ id: friendUid, displayName: 'Live Proof Friend' })
+  expect(loadedMembers).toHaveLength(2)
+  expect(loadedExpenses).toEqual([expect.objectContaining({ id: added.expense.id, description: 'Hosted mobile dinner and dessert', revision: 2 })])
+  expect(loadedActivity).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'expense.created', operationId: expenseCommand.operationId, expenseId: added.expense.id, revision: 1 }),
+    expect.objectContaining({ kind: 'expense.updated', operationId: editCommand.operationId, expenseId: added.expense.id, revision: 2 }),
+  ]))
+}, 60_000)

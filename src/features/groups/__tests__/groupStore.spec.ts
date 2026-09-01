@@ -57,6 +57,98 @@ beforeEach(() => {
 })
 
 describe('group load identity', () => {
+  it('coalesces concurrent reads for the same group', async () => {
+    const request = deferred<GroupSnapshot>()
+    const base = repositoryFor({ a: request.promise })
+    const calls = { group: 0, user: 0, members: 0, expenses: 0, activity: 0 }
+    repositoryHarness.current = {
+      ...base,
+      app: {
+        ...base.app,
+        async getCurrentUser() {
+          calls.user += 1
+          return base.app.getCurrentUser()
+        },
+      },
+      groups: {
+        ...base.groups,
+        async getById(groupId: string) {
+          calls.group += 1
+          return base.groups.getById(groupId)
+        },
+        async listMembers(groupId: string) {
+          calls.members += 1
+          return base.groups.listMembers(groupId)
+        },
+      },
+      expenses: {
+        ...base.expenses,
+        async listForGroup(groupId: string) {
+          calls.expenses += 1
+          return base.expenses.listForGroup(groupId)
+        },
+      },
+      activity: {
+        ...base.activity,
+        async listForGroup(groupId: string) {
+          calls.activity += 1
+          return base.activity.listForGroup(groupId)
+        },
+      },
+    }
+    const store = useGroupStore()
+
+    const first = store.loadGroup('a')
+    const second = store.loadGroup('a')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(calls).toEqual({ group: 1, user: 1, members: 1, expenses: 1, activity: 1 })
+
+    request.resolve(snapshot('a', 'Group A'))
+    await Promise.all([first, second])
+    expect(store.activeGroup?.id).toBe('a')
+  })
+
+  it('reveals the group shell before the slower journal reads finish', async () => {
+    const activity = deferred<readonly ActivityItem[]>()
+    const base = repositoryFor({ a: Promise.resolve(snapshot('a', 'Group A')) })
+    repositoryHarness.current = {
+      ...base,
+      activity: { ...base.activity, async listForGroup() { return activity.promise } },
+    }
+    const store = useGroupStore()
+
+    const loading = store.loadGroup('a')
+    await flushPromises()
+
+    expect(store.activeGroup?.id).toBe('a')
+    expect(store.isLoading).toBe(true)
+
+    activity.resolve([])
+    await loading
+    expect(store.isLoading).toBe(false)
+  })
+
+  it('keeps an already loaded group usable while refreshing it', async () => {
+    const requests: Record<string, Promise<GroupSnapshot>> = { a: Promise.resolve(snapshot('a', 'Group A')) }
+    repositoryHarness.current = repositoryFor(requests)
+    const store = useGroupStore()
+    await store.loadGroup('a')
+    const refresh = deferred<GroupSnapshot>()
+    requests.a = refresh.promise
+
+    const refreshing = store.loadGroup('a')
+    await flushPromises()
+
+    expect(store.activeGroup?.id).toBe('a')
+    expect(store.isLoading).toBe(true)
+
+    refresh.resolve(snapshot('a', 'Group A refreshed'))
+    await refreshing
+    expect(store.activeGroup?.name).toBe('Group A refreshed')
+  })
+
   it('clears stale content and lets the latest B request win after delayed A resolves', async () => {
     const requestA = deferred<GroupSnapshot>()
     const requestB = deferred<GroupSnapshot>()
