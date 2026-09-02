@@ -19,7 +19,7 @@ const session = getAppSession()
 const { locale, t } = useI18n()
 const groupId = computed(() => String(route.params.groupId ?? ''))
 const email = ref('')
-const groupName = ref('Group')
+const groupName = ref('')
 const canManage = ref(false)
 const invitation = ref<PreparedInvitation>()
 const status = ref<ApplicationMessage>()
@@ -99,7 +99,7 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
     <ion-content :fullscreen="true">
       <main class="invite-page">
         <div class="invite-icon"><ion-icon :icon="shareOutline" aria-hidden="true" /></div>
-        <h1>{{ t('invite.heading', { group: groupName }) }}</h1>
+        <h1 v-if="groupName">{{ t('invite.heading', { group: groupName }) }}</h1>
         <p>{{ t('invite.intro') }}</p>
 
         <section class="invite-card">

@@ -64,6 +64,21 @@ describe('invitation preparation page', () => {
     expect(wrapper.text()).toContain('Preparar invitación')
   })
 
+  it('keeps invalid-group presentation semantic across locale changes', async () => {
+    localeController.setPreference('es')
+    const wrapper = await mountInvitationSheet('invalid group id')
+
+    expect(wrapper.find('h1').exists()).toBe(false)
+    expect(wrapper.get('[role="alert"]').text()).toBe('Este grupo no está disponible.')
+    expect(wrapper.text()).not.toContain('Invitar a Group')
+
+    localeController.setPreference('de')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('h1').exists()).toBe(false)
+    expect(wrapper.get('[role="alert"]').text()).toBe('Diese Gruppe ist nicht verfügbar.')
+  })
+
   it('hides an ordinary preparation diagnostic and retranslates the retained failure without preparing again', async () => {
     localeController.setPreference('es')
     firebaseMocks.createSparkInvitation.mockRejectedValueOnce(new Error('Firebase internal diagnostic'))
@@ -110,7 +125,7 @@ describe('invitation preparation page', () => {
   })
 })
 
-async function mountInvitationSheet() {
+async function mountInvitationSheet(groupId = LAKE_HOUSE_GROUP_ID) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -118,7 +133,7 @@ async function mountInvitationSheet() {
       { path: '/tabs/groups/:groupId', component: { template: '<div>Group</div>' } },
     ],
   })
-  await router.push(`/tabs/groups/${LAKE_HOUSE_GROUP_ID}/invite`)
+  await router.push(`/tabs/groups/${encodeURIComponent(groupId)}/invite`)
   await router.isReady()
   const wrapper = mount(InviteSheet, { global: { plugins: [router], stubs } })
   await flushPromises()
