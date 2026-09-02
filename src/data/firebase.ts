@@ -241,8 +241,9 @@ function firebaseHostingConfigurationSource(
 function matchesHostingProject(projectId: string, source: string): boolean {
   try {
     const hostname = new URL(source).hostname
-    const match = hostname.match(/^([a-z][a-z0-9-]{4,29})\.(?:firebaseapp\.com|web\.app)$/)
-    return match?.[1] === projectId
+    const match = hostname.match(/^([a-z0-9-]{1,63})\.(?:firebaseapp\.com|web\.app)$/)
+    const site = match?.[1]
+    return site === projectId || site?.startsWith(`${projectId}--`) === true
   } catch { return false }
 }
 

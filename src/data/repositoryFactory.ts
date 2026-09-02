@@ -35,8 +35,8 @@ export async function createRepositorySessionRuntime(environment?: PublicEnviron
     }
   }
   if (runtime.kind === 'firebase') {
-    await getSplitUnwiseFirebaseFirestore(runtime.firebase)
     await initializeSplitUnwiseAppCheck(runtime.firebase, runtime.appCheckSiteKey)
+    await getSplitUnwiseFirebaseFirestore(runtime.firebase)
     const [principals, auth] = await Promise.all([
       connectFirebasePrincipalSource(runtime.firebase, runtime.functionsRegion),
       createFirebaseAuthService(runtime.firebase, runtime.capabilities),

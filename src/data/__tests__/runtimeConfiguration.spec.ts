@@ -137,4 +137,62 @@ describe('runtime configuration', () => {
       fetch: async () => { throw new TypeError('Failed to fetch') },
     })).resolves.toMatchObject({ kind: 'error', fields: ['/__/firebase/init.json'] })
   })
+
+  it('recognizes the project portion of an official Firebase Hosting preview channel host', async () => {
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+    }
+    const previewLocation = { hostname: 'split-unwise-aditya--offline-proof-123.web.app', protocol: 'https:' }
+
+    await expect(resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: previewLocation,
+      online: true,
+      storage,
+      fetch: async () => new Response(JSON.stringify(hostedInit), { status: 200, headers: { 'content-type': 'application/json' } }),
+    })).resolves.toMatchObject({ kind: 'firebase', firebase: { projectId: 'split-unwise-aditya' } })
+
+    await expect(resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: previewLocation,
+      online: false,
+      storage,
+      fetch: async () => { throw new TypeError('Failed to fetch') },
+    })).resolves.toMatchObject({ kind: 'firebase', firebase: { projectId: 'split-unwise-aditya' } })
+  })
+
+  it('rejects a cached Hosting configuration whose project identity was changed', async () => {
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+    }
+    const hostedLocation = { hostname: 'split-unwise-aditya.web.app', protocol: 'https:' }
+    await resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: hostedLocation,
+      online: true,
+      storage,
+      fetch: async () => new Response(JSON.stringify(hostedInit), { status: 200, headers: { 'content-type': 'application/json' } }),
+    })
+    const [key] = values.keys()
+    if (!key) throw new Error('Expected the online Hosting configuration to be cached.')
+    const cached = JSON.parse(values.get(key)!) as { configuration: { projectId: string } }
+    cached.configuration.projectId = 'another-split-unwise'
+    values.set(key, JSON.stringify(cached))
+
+    await expect(resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: hostedLocation,
+      online: false,
+      storage,
+      fetch: async () => { throw new TypeError('Failed to fetch') },
+    })).resolves.toMatchObject({ kind: 'error', fields: ['/__/firebase/init.json'] })
+  })
 })

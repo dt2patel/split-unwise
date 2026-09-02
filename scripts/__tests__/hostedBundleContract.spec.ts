@@ -106,6 +106,34 @@ describe('hosted bundle proof contract', () => {
     expect(browser).toContain("getByTestId('account-deletion-modal')")
   })
 
+  it('proves a cold offline reload and then requires unseen server data after reconnecting', () => {
+    const browser = readFileSync(resolve(process.cwd(), 'scripts/runHostedBrowserProof.mjs'), 'utf8')
+    const functionBody = (name: string) => {
+      const start = browser.indexOf(`async function ${name}(`)
+      const end = browser.indexOf('\nasync function ', start + 1)
+      expect(start, `missing hosted proof helper ${name}`).toBeGreaterThanOrEqual(0)
+      return browser.slice(start, end === -1 ? undefined : end)
+    }
+    const coldReload = functionBody('verifyColdOfflineGroupReload')
+    const remoteWrite = functionBody('createReconnectExpenseFromFriend')
+
+    for (const expected of [
+      'navigator.serviceWorker.getRegistration()',
+      '{ timeout: 30_000 }',
+      'await setBrowserOffline(context, cdp, true)',
+      "getByText('Offline', { exact: true })",
+      'await createReconnectExpenseFromFriend(browser)',
+      'await setBrowserOffline(context, cdp, false)',
+      'reconnectExpenseDescription',
+    ]) expect(coldReload).toContain(expected)
+    for (const expected of [
+      'await signIn(page, friendEmail)',
+      "getByRole('link', { name: 'Add expense', exact: true })",
+      "page.locator('#expense-amount').fill('1.23')",
+      "'.expense-row[data-sync-state=\"fresh\"]'",
+    ]) expect(remoteWrite).toContain(expected)
+  })
+
   it('keeps the hosted Spanish Friends and invitation journeys exact-SHA verified', () => {
     const browser = readFileSync(resolve(process.cwd(), 'scripts/runHostedBrowserProof.mjs'), 'utf8')
     const functionBody = (name: string) => {

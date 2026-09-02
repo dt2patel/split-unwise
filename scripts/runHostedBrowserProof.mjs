@@ -34,7 +34,7 @@ const intentionalHorizontalScrollHosts = new Set()
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, persisted eight-locale language selection, opt-in payment-handle persistence and real PayPal/Venmo handoffs, native group-creation card modal with built-in covers, authenticated mobile group, cold offline deep-route reload with cached expense data and online recovery, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, persisted eight-locale language selection, opt-in payment-handle persistence and real PayPal/Venmo handoffs, native group-creation card modal with built-in covers, authenticated mobile group, cold offline deep-route reload with cached expense data and online recovery of an unseen remote expense, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -151,7 +151,7 @@ async function verifyAuthenticatedMobileJourney() {
     await persistedExpense.getByText(browserExpenseDescription, { exact: true }).waitFor({ state: 'visible' })
     const restoredOfflineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
     if (await restoredOfflineReadyDismiss.isVisible()) await restoredOfflineReadyDismiss.click()
-    await verifyColdOfflineGroupReload(context, page, browserExpenseDescription)
+    await verifyColdOfflineGroupReload(browser, context, page, browserExpenseDescription)
     await verifyExpenseMove(page, persistedExpense, browserExpenseDescription)
     await verifyReimbursementWorkflow(page)
     await verifySwipeBackGesture(context, page)
@@ -183,12 +183,27 @@ async function verifyAuthenticatedMobileJourney() {
   }
 }
 
-async function verifyColdOfflineGroupReload(context, page, expenseDescription) {
+async function verifyColdOfflineGroupReload(browser, context, page, expenseDescription) {
+  try {
+    await page.waitForFunction(async () => {
+      if (!('serviceWorker' in navigator) || !('caches' in globalThis)) return false
+      const registration = await navigator.serviceWorker.getRegistration()
+      return Boolean(registration?.active && navigator.serviceWorker.controller && (await caches.keys()).length > 0)
+    }, undefined, { timeout: 30_000 })
+  } catch (cause) {
+    const diagnostic = await page.evaluate(async () => ({
+      serviceWorkerAvailable: 'serviceWorker' in navigator,
+      active: Boolean((await navigator.serviceWorker?.getRegistration())?.active),
+      controlled: Boolean(navigator.serviceWorker?.controller),
+      cacheNames: 'caches' in globalThis ? await caches.keys() : [],
+    }))
+    throw new Error(`Hosted offline installation did not become ready: ${JSON.stringify(diagnostic)}`, { cause })
+  }
   const install = await page.evaluate(async () => {
-    const registration = await navigator.serviceWorker.ready
+    const registration = await navigator.serviceWorker.getRegistration()
     const cacheNames = await caches.keys()
     return {
-      active: Boolean(registration.active),
+      active: Boolean(registration?.active),
       controlled: Boolean(navigator.serviceWorker.controller),
       cacheNames,
     }
@@ -198,8 +213,9 @@ async function verifyColdOfflineGroupReload(context, page, expenseDescription) {
   }
 
   const cdp = await context.newCDPSession(page)
-  await setBrowserOffline(context, cdp, true)
+  let reconnectExpenseDescription
   try {
+    await setBrowserOffline(context, cdp, true)
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })
     if (await page.evaluate(() => navigator.onLine)) throw new Error('Hosted browser did not enter offline mode.')
     await page.locator('.app-status').getByText('Offline', { exact: true }).waitFor({ state: 'visible' })
@@ -208,27 +224,60 @@ async function verifyColdOfflineGroupReload(context, page, expenseDescription) {
     await offlineGroup.locator('.expense-row', { hasText: expenseDescription }).waitFor({ state: 'visible', timeout: 120_000 })
     if (await page.getByText('Split Unwise couldn\u2019t open', { exact: true }).isVisible()) throw new Error('Hosted cold offline reload reached the startup fallback.')
     await assertNoHorizontalOverflow(page, 'cold offline group at 390px')
+    reconnectExpenseDescription = await createReconnectExpenseFromFriend(browser)
   } finally {
-    await setBrowserOffline(context, cdp, false)
-    await cdp.detach()
+    try { await setBrowserOffline(context, cdp, false) } finally { await cdp.detach() }
   }
 
+  if (!reconnectExpenseDescription) throw new Error('Hosted reconnect proof did not create its remote expense.')
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })
   const reconnectedGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
   await reconnectedGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
   await reconnectedGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: expenseDescription }).waitFor({ state: 'visible', timeout: 120_000 })
+  await reconnectedGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: reconnectExpenseDescription }).waitFor({ state: 'visible', timeout: 120_000 })
+}
+
+async function createReconnectExpenseFromFriend(browser) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
+  const page = await context.newPage()
+  const assertPageClean = monitorBrowserErrors(page, 'offline reconnect friend journey')
+  const description = `Hosted reconnect ${suffix}`
+  try {
+    const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
+    if (!navigation?.ok()) throw new Error(`Hosted reconnect browser root navigation failed with ${navigation?.status() ?? 'no response'}.`)
+    await page.locator('#auth-email').waitFor({ state: 'visible' })
+    await signIn(page, friendEmail)
+    await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+    await page.goto(deepUrl, { waitUntil: 'domcontentloaded' })
+    const group = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+    await group.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
+    if (await group.locator('.expense-row', { hasText: description }).count()) throw new Error('Hosted reconnect expense unexpectedly existed before the remote write.')
+    await group.getByRole('link', { name: 'Add expense', exact: true }).click()
+    await page.waitForURL(new RegExp(`/tabs/groups/expenses/new\\?groupId=${escapeRegExp(groupId)}$`))
+    await page.locator('#expense-description').fill(description)
+    await page.locator('#expense-amount').fill('1.23')
+    await page.locator('#expense-category').selectOption({ label: 'Other' })
+    await dismissAppStatus(page)
+    await page.locator('[data-action="save-expense"]').click()
+    await page.waitForURL(deepUrl, { timeout: 120_000 })
+    const restoredGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+    await restoredGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: description }).waitFor({ state: 'visible', timeout: 120_000 })
+    assertPageClean()
+    return description
+  } finally {
+    await context.close()
+  }
 }
 
 async function setBrowserOffline(context, cdp, offline) {
-  await Promise.all([
-    context.setOffline(offline),
-    cdp.send('Network.overrideNetworkState', {
-      offline,
-      latency: 0,
-      downloadThroughput: -1,
-      uploadThroughput: -1,
-    }),
-  ])
+  await context.setOffline(offline)
+  await cdp.send('Network.overrideNetworkState', {
+    offline,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  })
   const navigatorState = await cdp.send('Runtime.evaluate', {
     expression: `new Promise(requestAnimationFrame).then(() => navigator.onLine === ${String(!offline)})`,
     awaitPromise: true,
