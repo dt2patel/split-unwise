@@ -8,6 +8,7 @@ import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkFriendship,
 import { getSplitUnwiseFirebaseApp, resetFirebaseBootstrapForTesting } from '../firebaseBootstrap'
 import { createFirebaseRepository } from '../firebaseRepository'
 import type { FirebaseConfiguration } from '../firebase'
+import { projectAccountBalances } from '../../domain/accountBalances'
 
 const suffix = process.env.LIVE_PROOF_SUFFIX ?? 'disabled'
 const hostedIt = process.env.LIVE_PROOF_SUFFIX ? it : it.skip
@@ -182,6 +183,33 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
     expect.objectContaining({ kind: 'expense.updated', operationId: editCommand.operationId, expenseId: added.expense.id, revision: 2 }),
   ]))
   const beforeSettlement = await friendRepository.groups.getBalanceSnapshot(ledgerGroupId)
+  const accountReadStartedAt = performance.now()
+  const accountGroups = await friendRepository.groups.list()
+  const accountContexts = await Promise.all(accountGroups.map(async (accountGroup) => {
+    const [members, snapshot] = await Promise.all([
+      friendRepository.groups.listMembers(accountGroup.id),
+      friendRepository.groups.getBalanceSnapshot(accountGroup.id),
+    ])
+    return { group: accountGroup, members, snapshot }
+  }))
+  const accountReadMs = Math.round(performance.now() - accountReadStartedAt)
+  console.log('HOSTED_ACCOUNT_BALANCE_READ_MS', accountReadMs)
+  expect(accountReadMs).toBeLessThan(15_000)
+  const accountProjection = projectAccountBalances(friendUid, accountContexts)
+  expect(accountProjection.currencies).toEqual([{ currency: 'USD', netMinor: 1500, owedToUserMinor: 1500, userOwesMinor: 0 }])
+  expect(accountProjection.friends).toEqual([
+    expect.objectContaining({
+      id: ownerUid,
+      displayName: 'Live Renamed Owner',
+      directContextId: ledgerGroupId,
+      pending: false,
+      positions: [{ currency: 'USD', minorAmount: 1500 }],
+      breakdowns: expect.arrayContaining([
+        expect.objectContaining({ contextId: group.groupId, contextKind: 'group', currency: 'USD', minorAmount: 0 }),
+        expect.objectContaining({ contextId: ledgerGroupId, contextKind: 'friendship', currency: 'USD', minorAmount: 1500 }),
+      ]),
+    }),
+  ])
   await expect(friendRepository.groups.getTotals(ledgerGroupId)).resolves.toEqual([{
     currency: 'USD', totalPaid: 3000, currentUserPaid: 3000, currentUserShare: 1500, currentUserNet: 1500,
   }])

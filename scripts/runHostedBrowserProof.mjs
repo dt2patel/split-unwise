@@ -28,7 +28,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense, atomic cross-group expense move, and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, authenticated mobile group, Add Expense, atomic cross-group expense move, and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -78,6 +78,7 @@ async function verifyAuthenticatedMobileJourney() {
     await signIn(page, ownerEmail)
     await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
     await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+    await verifyAccountBalanceDashboard(page)
 
     const groupLink = page.getByRole('link', { name: /Live Account Proof/ }).first()
     await groupLink.waitFor({ state: 'visible' })
@@ -143,6 +144,36 @@ async function verifyAuthenticatedMobileJourney() {
   } finally {
     await browser.close()
   }
+}
+
+async function verifyAccountBalanceDashboard(page) {
+  const summary = page.locator('[data-testid="account-summary"][aria-label="Account balance"]')
+  await summary.waitFor({ state: 'visible', timeout: 120_000 })
+  const summaryText = (await summary.textContent()) ?? ''
+  for (const label of ['Overall,', 'You owe', 'You are owed']) {
+    if (!summaryText.includes(label)) throw new Error(`Hosted account balance summary did not include ${label}.`)
+  }
+  const homeOverflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (homeOverflow > 1) throw new Error(`Hosted Home balance dashboard overflowed the 390px mobile viewport by ${homeOverflow}px.`)
+
+  await page.getByTestId('friends-link').click()
+  await page.waitForURL(new RegExp(`${escapeRegExp(hostedOrigin)}/tabs/home/friends(?:[?#].*)?$`))
+  await page.getByRole('heading', { name: 'Friends', exact: true }).waitFor({ state: 'visible' })
+  const friendEntry = page.locator('.friend-entry').filter({ hasText: 'Live Proof Friend' }).first()
+  await friendEntry.waitFor({ state: 'visible', timeout: 120_000 })
+  await friendEntry.getByRole('button', { name: /Live Proof Friend/ }).click()
+  const breakdown = friendEntry.locator('.friend-breakdown')
+  await breakdown.waitFor({ state: 'visible' })
+  const breakdownText = (await breakdown.textContent()) ?? ''
+  if (!breakdownText.includes('Live Account Proof') || !breakdownText.includes('Live Proof Friend')) {
+    throw new Error('Hosted friend balance did not include both shared-group and direct-expense breakdowns.')
+  }
+  if (await breakdown.locator('.friend-breakdown__link').count() < 2) throw new Error('Hosted friend balance did not expose both account contexts.')
+  const friendsOverflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (friendsOverflow > 1) throw new Error(`Hosted Friends balance breakdown overflowed the 390px mobile viewport by ${friendsOverflow}px.`)
+
+  await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
 }
 
 async function verifyExpenseMove(page, sourceRow, description) {
