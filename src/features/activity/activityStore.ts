@@ -117,8 +117,35 @@ export function activityDestination(item: ActivityItem, origin: 'account' | 'act
   return `/tabs/${origin}/expenses/${encodeURIComponent(item.expenseId)}?groupId=${encodeURIComponent(item.groupId)}`
 }
 
-export function activityText(item: ActivityItem): string {
+type ActivityTextKey =
+  | 'activity.event.added'
+  | 'activity.event.updated'
+  | 'activity.event.deleted'
+  | 'activity.event.restored'
+  | 'activity.event.commented'
+  | 'activity.event.commentDeleted'
+  | 'activity.event.recorded'
+  | 'activity.event.voided'
+  | 'activity.event.membership'
+type ActivityTextTranslator = (key: ActivityTextKey, values: Readonly<Record<string, string>>) => string
+
+export function activityText(item: ActivityItem, translate?: ActivityTextTranslator): string {
   const label = item.subject.label ?? item.subject.id
+  if (translate) {
+    const values = { actor: item.actor.displayName, label }
+    if (item.kind === 'expense.created') return translate('activity.event.added', values)
+    if (item.kind === 'expense.updated') return translate('activity.event.updated', values)
+    if (item.kind === 'expense.deleted') return translate('activity.event.deleted', values)
+    if (item.kind === 'expense.restored') return translate('activity.event.restored', values)
+    if (item.kind === 'comment.added') return translate('activity.event.commented', values)
+    if (item.kind === 'comment.deleted') return translate('activity.event.commentDeleted', values)
+    if (item.kind === 'settlement.created') return translate('activity.event.recorded', values)
+    if (item.kind === 'settlement.voided') return translate('activity.event.voided', values)
+    if (item.kind === 'membership.changed') return translate('activity.event.membership', values)
+    if (item.kind === 'group.deleted') return translate('activity.event.deleted', values)
+    if (item.kind === 'group.restored') return translate('activity.event.restored', values)
+    return translate('activity.event.updated', values)
+  }
   if (item.kind === 'expense.created') return `${item.actor.displayName} added ${label}`
   if (item.kind === 'expense.updated') return `${item.actor.displayName} updated ${label}`
   if (item.kind === 'expense.deleted') return `${item.actor.displayName} deleted ${label}`

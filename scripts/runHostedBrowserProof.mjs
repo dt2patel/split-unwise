@@ -215,20 +215,56 @@ async function verifyPaymentHandleProfile(page) {
 
 async function verifyLanguagePreference(page) {
   const languageUrl = new URL('/tabs/account/language', hostedOrigin).href
+  const accountUrl = new URL('/tabs/account', hostedOrigin).href
+  const localeExpectations = {
+    de: { languageHeading: 'App-Sprache', deleteAccount: 'Konto löschen' },
+    nl: { languageHeading: 'App-taal', deleteAccount: 'Account verwijderen' },
+    fr: { languageHeading: 'Langue de l’app', deleteAccount: 'Supprimer le compte' },
+    it: { languageHeading: 'Lingua dell’app', deleteAccount: 'Elimina account' },
+    'pt-BR': { languageHeading: 'Idioma do app', deleteAccount: 'Excluir conta' },
+    'pt-PT': { languageHeading: 'Idioma da aplicação', deleteAccount: 'Eliminar conta' },
+    es: { languageHeading: 'Idioma de la app', deleteAccount: 'Eliminar cuenta' },
+  }
   await page.goto(languageUrl, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'App language', exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
   if (await page.locator('[data-locale]').count() !== 9) throw new Error('Hosted language settings did not expose system plus eight supported locales.')
 
-  for (const locale of ['de', 'nl', 'fr', 'it', 'pt-BR', 'pt-PT', 'es']) {
+  for (const [locale, expectation] of Object.entries(localeExpectations)) {
     await page.locator(`[data-locale="${locale}"] ion-radio`).click()
     await page.waitForFunction((expected) => document.documentElement.lang === expected, locale)
-    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
-    if (overflow > 1) throw new Error(`Hosted ${locale} language settings overflowed the 390px mobile viewport by ${overflow}px.`)
+    await assertNoHorizontalOverflow(page, `${locale} language settings at 390px`)
+
+    await page.goto(accountUrl, { waitUntil: 'domcontentloaded' })
+    await page.getByTestId('open-account-delete').getByText(expectation.deleteAccount, { exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
+    await assertNoHorizontalOverflow(page, `${locale} Account at 390px`)
+    if (locale === 'de') {
+      await page.setViewportSize({ width: 320, height: 844 })
+      await assertNoHorizontalOverflow(page, 'German Account at 320px')
+      await page.setViewportSize({ width: 390, height: 844 })
+    }
+
+    await page.goto(languageUrl, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('heading', { name: expectation.languageHeading, exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
   }
   await page.getByRole('heading', { name: 'Idioma de la app', exact: true }).waitFor({ state: 'visible' })
   if (await page.locator('html').getAttribute('lang') !== 'es') throw new Error('Hosted Spanish preference did not update the document language.')
   await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
   await page.locator('ion-tab-bar').getByText('Inicio', { exact: true }).waitFor({ state: 'visible' })
+  await page.getByRole('heading', { name: 'Inicio', exact: true }).waitFor({ state: 'visible' })
+  await page.getByRole('heading', { name: 'Saldos con amigos', exact: true }).waitFor({ state: 'visible' })
+  await assertNoHorizontalOverflow(page, 'Spanish Home at 390px')
+  await page.goto(new URL('/tabs/groups', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByText('Viajes, hogares y planes cotidianos, todo en un diario claro.', { exact: true }).waitFor({ state: 'visible' })
+  await assertNoHorizontalOverflow(page, 'Spanish Groups at 390px')
+  await page.goto(new URL('/tabs/activity', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Actividad', exact: true }).waitFor({ state: 'visible' })
+  await page.getByText('Un registro permanente de los cambios en todos tus grupos.', { exact: true }).waitFor({ state: 'visible' })
+  await assertNoHorizontalOverflow(page, 'Spanish Activity at 390px')
+  await page.goto(accountUrl, { waitUntil: 'domcontentloaded' })
+  await page.getByText('Exportar tus datos', { exact: true }).waitFor({ state: 'visible' })
+  await page.getByText('Cambios sin conexión', { exact: true }).waitFor({ state: 'visible' })
+  await assertNoHorizontalOverflow(page, 'Spanish Account at 390px')
+  await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.locator('ion-tab-bar').getByText('Cuenta', { exact: true }).waitFor({ state: 'visible' })
 
@@ -239,6 +275,11 @@ async function verifyLanguagePreference(page) {
   if (await page.locator('html').getAttribute('lang') !== 'en') throw new Error('Hosted language settings did not restore English for the remaining proof.')
   await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+}
+
+async function assertNoHorizontalOverflow(page, label) {
+  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (overflow > 1) throw new Error(`Hosted ${label} overflowed the mobile viewport by ${overflow}px.`)
 }
 
 async function verifyPaymentProviderHandoffs(page) {

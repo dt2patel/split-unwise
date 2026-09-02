@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -41,6 +42,7 @@ const stubs = {
 }
 
 beforeEach(() => {
+  localeController.setPreference('en')
   firebaseMocks.createSparkGroup.mockClear()
   const repository = { ...createDemoRepository(), mode: 'firebase' as const }
   setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
@@ -48,6 +50,29 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('mobile group creation', () => {
+  it('reactively localizes the group journal and native create card while preserving group data', async () => {
+    const router = createAppRouter()
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.groups-page > p').text()).toBe('Viajes, hogares y planes cotidianos, todo en un diario claro.')
+    expect(wrapper.find('[aria-label="Crear grupo"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="lake-house-link"]').text()).toContain('5 personas')
+    expect(wrapper.get('[data-testid="lake-house-link"]').text()).toContain('Lake House Weekend')
+
+    await wrapper.get('[aria-label="Crear grupo"]').trigger('click')
+
+    expect(wrapper.get('[role="dialog"] h1').text()).toBe('Crear un grupo')
+    expect(wrapper.get('#group-kind-heading').text()).toBe('¿Qué tipo de grupo?')
+    expect(wrapper.get('[data-cover-choice="trip"]').text()).toContain('Viaje')
+    expect(wrapper.get('#group-details-heading').text()).toBe('Detalles del grupo')
+    expect(wrapper.find('[aria-label="Nombre del grupo"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="create-group-submit"]').text()).toBe('Crear')
+  })
+
   it('uses one iOS card modal with original cover choices instead of expanding the group list', async () => {
     const router = createAppRouter()
     const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), router], stubs } })

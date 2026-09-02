@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonInput, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonSearchbar, IonTitle, IonToolbar } from '@ionic/vue'
 import { add, checkmarkCircle, chevronDown, chevronForward } from 'ionicons/icons'
+import { useI18n } from '../../app/i18n'
 import { useGroupStore } from './groupStore'
 import { getAppSession } from '../../data/session'
 import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
@@ -16,6 +17,7 @@ import type { CurrencyCode } from '../../domain/money'
 import { GROUP_COVER_CHOICES, groupCoverChoice, type GroupCoverId } from './groupCovers'
 
 const store = useGroupStore()
+const { t } = useI18n()
 const { groups, error, isLoading } = storeToRefs(store)
 const visibleGroups = computed(() => groupContexts(groups.value))
 const session = getAppSession()
@@ -70,7 +72,7 @@ async function canDismissCreate(): Promise<boolean> {
   if (dismissingCommittedCreate.value) return true
   if (creating.value) return false
   if (!hasCreateDraft.value) return true
-  return window.confirm('Discard this group draft?')
+  return window.confirm(t('groups.discardDraft'))
 }
 async function finishCreateDismissal(): Promise<void> {
   showingCreate.value = false
@@ -109,38 +111,51 @@ async function dismissCreateBeforeNavigation(): Promise<void> {
 
 async function createGroup(): Promise<void> {
   const name = groupName.value.trim()
-  if (!name) { createError.value = 'Enter a group name.'; return }
+  if (!name) { createError.value = t('groups.error.enterName'); return }
   creating.value = true; createError.value = ''
   try {
     const runtime = getActiveRuntimeConfiguration()
-    if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for group creation.')
+    if (runtime.kind !== 'firebase') throw new Error(t('groups.error.firebaseNotReady'))
     const operationId = createClientOperationId('group')
     const value = runtime.functionsRegion
       ? await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId, kind: 'group', name, currency: currency.value, coverImageUrl: selectedCover.value.imageUrl }, { replayProtected: true })
       : await createSparkGroup(runtime.firebase, { operationId, name, currency: currency.value, coverImageUrl: selectedCover.value.imageUrl })
-    if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error('Group service returned an invalid response.')
+    if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error(t('groups.error.invalidResponse'))
     await dismissCreateBeforeNavigation()
     await store.loadOverview()
     await router.push(`/tabs/groups/${encodeURIComponent(value.groupId)}`)
-  } catch (reason) { createError.value = reason instanceof Error ? reason.message : 'The group could not be created.' } finally { creating.value = false }
+  } catch (reason) { createError.value = reason instanceof Error ? reason.message : t('groups.error.createFailed') } finally { creating.value = false }
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+function peopleCount(count: number): string { return t(count === 1 ? 'groups.person.one' : 'groups.person.other', { count }) }
+function coverLabel(id: GroupCoverId): string {
+  if (id === 'trip') return t('groups.cover.trip.label')
+  if (id === 'home') return t('groups.cover.home.label')
+  if (id === 'couple') return t('groups.cover.couple.label')
+  return t('groups.cover.other.label')
+}
+function coverDescription(id: GroupCoverId): string {
+  if (id === 'trip') return t('groups.cover.trip.description')
+  if (id === 'home') return t('groups.cover.home.description')
+  if (id === 'couple') return t('groups.cover.couple.description')
+  return t('groups.cover.other.description')
+}
 </script>
 
 <template>
   <ion-page :ref="setPresentingElement">
     <ion-header translucent>
       <ion-toolbar>
-        <ion-title>Groups</ion-title>
-        <ion-buttons v-if="session.repository.mode === 'firebase'" slot="end"><ion-button aria-label="Create group" @click="openCreate"><ion-icon :icon="add" /></ion-button></ion-buttons>
+        <ion-title>{{ t('groups.title') }}</ion-title>
+        <ion-buttons v-if="session.repository.mode === 'firebase'" slot="end"><ion-button :aria-label="t('groups.createAction')" @click="openCreate"><ion-icon :icon="add" /></ion-button></ion-buttons>
       </ion-toolbar>
     </ion-header>
     <ion-content :fullscreen="true">
       <main class="groups-page">
-        <h1>Groups</h1>
-        <p>Trips, homes, and everyday plans—all in one clear journal.</p>
+        <h1>{{ t('groups.title') }}</h1>
+        <p>{{ t('groups.intro') }}</p>
 
-        <p v-if="isLoading" role="status">Loading groups…</p>
+        <p v-if="isLoading" role="status">{{ t('groups.loading') }}</p>
         <p v-else-if="error" role="alert">{{ error }}</p>
         <div v-else class="groups-page__list">
           <router-link
@@ -153,7 +168,7 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
             <img v-if="group.coverImageUrl" :src="group.coverImageUrl" alt="" aria-hidden="true">
             <span class="group-row__copy">
               <strong>{{ group.name }}</strong>
-              <small>{{ group.memberIds.length }} people · {{ group.currency }}</small>
+              <small>{{ peopleCount(group.memberIds.length) }} · {{ group.currency }}</small>
             </span>
             <ion-icon :icon="chevronForward" aria-hidden="true" />
           </router-link>
@@ -170,22 +185,22 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
     >
       <ion-header translucent>
         <ion-toolbar>
-          <ion-buttons slot="start"><ion-button :disabled="creating" @click="requestCreateDismissal">Cancel</ion-button></ion-buttons>
-          <ion-title>New group</ion-title>
-          <ion-buttons slot="end"><ion-button strong :disabled="creating" data-testid="create-group-submit" @click="createGroup">{{ creating ? 'Creating…' : 'Create' }}</ion-button></ion-buttons>
+          <ion-buttons slot="start"><ion-button :disabled="creating" @click="requestCreateDismissal">{{ t('groups.cancel') }}</ion-button></ion-buttons>
+          <ion-title>{{ t('groups.newGroup') }}</ion-title>
+          <ion-buttons slot="end"><ion-button strong :disabled="creating" data-testid="create-group-submit" @click="createGroup">{{ creating ? t('groups.creating') : t('groups.create') }}</ion-button></ion-buttons>
         </ion-toolbar>
       </ion-header>
       <ion-content :fullscreen="true">
         <main class="create-group-card">
           <header class="create-group-card__intro">
-            <p>START SHARING</p>
-            <h1>Create a group</h1>
-            <span>Give shared expenses a home. You can invite people after the group is ready.</span>
+            <p>{{ t('groups.startSharing') }}</p>
+            <h1>{{ t('groups.createTitle') }}</h1>
+            <span>{{ t('groups.createIntro') }}</span>
           </header>
 
           <section class="cover-section" aria-labelledby="group-kind-heading">
-            <div class="create-section-heading"><h2 id="group-kind-heading">What kind of group?</h2><ion-note>Sets the cover photo</ion-note></div>
-            <div class="cover-grid" role="group" aria-label="Group cover">
+            <div class="create-section-heading"><h2 id="group-kind-heading">{{ t('groups.kindTitle') }}</h2><ion-note>{{ t('groups.coverNote') }}</ion-note></div>
+            <div class="cover-grid" role="group" :aria-label="t('groups.coverAria')">
               <button
                 v-for="choice in GROUP_COVER_CHOICES"
                 :key="choice.id"
@@ -197,39 +212,39 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
                 @click="selectCover(choice.id)"
               >
                 <span class="cover-choice__image"><img :src="choice.imageUrl" alt=""><ion-icon v-if="coverId === choice.id" :icon="checkmarkCircle" aria-hidden="true" /></span>
-                <strong>{{ choice.label }}</strong>
-                <small>{{ choice.description }}</small>
+                <strong>{{ coverLabel(choice.id) }}</strong>
+                <small>{{ coverDescription(choice.id) }}</small>
               </button>
             </div>
           </section>
 
           <section aria-labelledby="group-details-heading">
-            <div class="create-section-heading"><h2 id="group-details-heading">Group details</h2><ion-note>Required</ion-note></div>
+            <div class="create-section-heading"><h2 id="group-details-heading">{{ t('groups.details') }}</h2><ion-note>{{ t('groups.required') }}</ion-note></div>
             <ion-list inset lines="full" class="create-fields">
               <ion-item>
-                <ion-input v-model="groupName" label="Group name" label-placement="stacked" autocomplete="off" :maxlength="120" placeholder="Weekend in Chicago" />
+                <ion-input v-model="groupName" :label="t('groups.name')" label-placement="stacked" autocomplete="off" :maxlength="120" :placeholder="t('groups.namePlaceholder')" />
               </ion-item>
               <ion-item button :detail="false" data-testid="currency-trigger" @click="choosingCurrency = !choosingCurrency">
-                <ion-label><span>Currency</span><strong>{{ currency }}</strong></ion-label>
+                <ion-label><span>{{ t('groups.currency') }}</span><strong>{{ currency }}</strong></ion-label>
                 <ion-icon slot="end" :icon="chevronDown" aria-hidden="true" />
               </ion-item>
             </ion-list>
 
-            <section v-if="choosingCurrency" class="currency-picker" aria-label="Choose group currency">
-              <ion-searchbar v-model="currencyQuery" inputmode="search" placeholder="Search all currencies" :debounce="0" />
-              <p>{{ currencyQuery.trim() ? 'Matching ISO currencies' : 'Your preferred currencies' }}</p>
+            <section v-if="choosingCurrency" class="currency-picker" :aria-label="t('groups.chooseCurrency')">
+              <ion-searchbar v-model="currencyQuery" inputmode="search" :placeholder="t('groups.searchCurrencies')" :debounce="0" />
+              <p>{{ currencyQuery.trim() ? t('groups.matchingCurrencies') : t('groups.preferredCurrencies') }}</p>
               <ion-list data-testid="currency-options" lines="full">
                 <ion-item v-for="code in visibleCurrencies" :key="code" button :detail="false" :data-currency-choice="code" @click="selectCurrency(code)">
                   <ion-label>{{ code }}</ion-label>
                   <ion-icon v-if="currency === code" slot="end" :icon="checkmarkCircle" aria-hidden="true" />
                 </ion-item>
               </ion-list>
-              <ion-note v-if="currencyQuery.trim() && !visibleCurrencies.length">No supported currency matches that search.</ion-note>
+              <ion-note v-if="currencyQuery.trim() && !visibleCurrencies.length">{{ t('groups.noCurrencyMatch') }}</ion-note>
             </section>
           </section>
 
           <p v-if="createError" role="alert" class="create-error">{{ createError }}</p>
-          <p class="create-footnote">The group currency seeds new expenses. Individual expenses can still use any supported currency.</p>
+          <p class="create-footnote">{{ t('groups.footnote') }}</p>
         </main>
       </ion-content>
     </ion-modal>

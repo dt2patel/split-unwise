@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -22,6 +23,7 @@ const stubs = {
 }
 
 beforeEach(() => {
+  localeController.setPreference('en')
   setActivePinia(createPinia())
   const demo = createDemoRepository()
   setAppSessionForTesting(createAppSession({
@@ -42,6 +44,28 @@ beforeEach(() => {
 })
 
 describe('Home account balances', () => {
+  it('reactively localizes balance, friend, and recent-group copy without changing shared data', async () => {
+    const router = createAppRouter()
+    await router.push('/tabs/home')
+    await router.isReady()
+    const wrapper = mount(HomePage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('h1').text()).toBe('Inicio')
+    expect(wrapper.get('.browse-page__intro').text()).toBe('Tus saldos de todos los grupos y amistades, sin mezclar monedas.')
+    expect(wrapper.get('[data-testid="account-summary"]').text()).toContain('En total, te deben')
+    expect(wrapper.get('[data-testid="account-summary"]').text()).toContain('Debes')
+    expect(wrapper.get('[data-testid="account-summary"]').text()).toContain('Te deben')
+    expect(wrapper.get('#friends-title').text()).toBe('Saldos con amigos')
+    expect(wrapper.get('[data-testid="friends-link"]').text()).toContain('Ver todo')
+    expect(wrapper.get('#recent-groups-title').text()).toBe('Grupos recientes')
+    expect(wrapper.find('[aria-label="Buscar gastos"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="lake-house-link"]').text()).toContain('5 miembros')
+  })
+
   it('shows the saved overall position, prioritizes unsettled friends, and labels each group balance', async () => {
     const router = createAppRouter()
     await router.push('/tabs/home')

@@ -37,7 +37,7 @@ let unsubscribeQueue: () => void = () => undefined
 const authState = computed(() => auth?.getState())
 const privateIdentity = computed(() => authState.value?.status === 'signed-in' ? authState.value.identity : undefined)
 const initials = computed(() => member.value?.initials ?? displayName.value.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase())
-const modeCopy = computed(() => session.repository.mode === 'demo' ? 'Demo mode · data stays on this device' : 'Firebase account · cloud data enabled')
+const modeCopy = computed(() => session.repository.mode === 'demo' ? t('account.mode.demo') : t('account.mode.firebase'))
 const deletionProvider = computed<'password' | 'google' | 'unsupported'>(() => {
   const providers = privateIdentity.value?.providerIds ?? []
   if (providers.includes('password')) return 'password'
@@ -78,7 +78,7 @@ async function saveProfile(): Promise<void> {
   error.value = ''; status.value = ''
   try {
     const name = displayName.value.trim()
-    if (!name) throw new Error('Enter your name')
+    if (!name) throw new Error(t('account.error.enterName'))
     const paypal = normalizePaymentHandle(paypalHandle.value, 'PayPal')
     const venmo = normalizePaymentHandle(venmoHandle.value, 'Venmo')
     const paymentHandles = { ...(paypal ? { paypal } : {}), ...(venmo ? { venmo } : {}) }
@@ -89,14 +89,14 @@ async function saveProfile(): Promise<void> {
     paypalHandle.value = paypal ?? ''
     venmoHandle.value = venmo ?? ''
     if (member.value) member.value = { ...member.value, displayName: name, initials: initials.value, paymentHandles }
-    status.value = 'Profile saved.'
+    status.value = t('account.status.profileSaved')
   } catch (reason) { error.value = message(reason) }
 }
 
 function normalizePaymentHandle(value: string, label: string): string | undefined {
   const token = value.trim().replace(/^@/, '')
   if (!token) return undefined
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(token)) throw new Error(`${label} handle can use letters, numbers, periods, underscores, and hyphens.`)
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(token)) throw new Error(t('account.error.handle', { label }))
   return token
 }
 
@@ -104,7 +104,7 @@ async function saveNotifications(): Promise<void> {
   error.value = ''; status.value = ''
   try {
     await session.queue.submit({ kind: 'notification.preferences', operationId: createClientOperationId('notification-preferences'), preferences: { ...notificationPreferences.value } }).result()
-    status.value = 'Notification preferences saved.'
+    status.value = t('account.status.notificationsSaved')
   } catch (reason) { error.value = message(reason) }
 }
 
@@ -120,7 +120,7 @@ async function finishSignOut(choice: 'cancel' | 'keep' | 'discard'): Promise<voi
   if (choice === 'cancel') { session.resumeWork(); await restoreFocus(); return }
   try {
     if (choice === 'discard') unresolved.value = await session.discardTerminalWork()
-    if (!auth) throw new Error('Authentication is not initialized')
+    if (!auth) throw new Error(t('account.error.authNotInitialized'))
     await auth.signOut()
   } catch (reason) {
     session.resumeWork()
@@ -134,13 +134,13 @@ async function clearLocalData(): Promise<void> {
   clearDecision.value = false
   error.value = ''; status.value = ''
   const summary = session.quiesce()
-  if (summary.pending > 0) { session.resumeWork(); error.value = 'Wait for in-flight changes before clearing local data.'; await restoreFocus(); return }
+  if (summary.pending > 0) { session.resumeWork(); error.value = t('account.error.waitClear'); await restoreFocus(); return }
   try {
     const principal = await session.principal
     await session.clearLocalData()
     await createBrowserPrincipalLocalDataPort().clear(principal)
     session.resumeWork()
-    status.value = 'Local data for this account was cleared. Cloud data was not deleted.'
+    status.value = t('account.status.cleared')
   } catch (reason) { session.resumeWork(); error.value = message(reason) }
   await restoreFocus()
 }
@@ -175,7 +175,7 @@ async function deleteAccount(): Promise<void> {
   unresolved.value = summary
   if (summary.pending > 0) {
     session.resumeWork()
-    deletionError.value = 'Wait for in-flight changes before deleting your account.'
+    deletionError.value = t('account.error.waitDelete')
     return
   }
   const principal = await session.principal
@@ -198,111 +198,111 @@ async function deleteAccount(): Promise<void> {
   }
 }
 async function restoreFocus(): Promise<void> { await nextTick(); trigger.value?.focus() }
-function message(reason: unknown): string { return reason instanceof Error ? reason.message : 'The account action could not be completed.' }
+function message(reason: unknown): string { return reason instanceof Error ? reason.message : t('account.error.actionFailed') }
 function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
-  if (stage === 'starting') return 'Preparing your account…'
-  if (stage === 'shared-data') return 'Removing your identity from shared history…'
-  if (stage === 'group-continuity') return 'Keeping shared groups usable…'
-  if (stage === 'private-data') return 'Removing private account data…'
-  if (stage === 'prepared') return 'Finishing account deletion…'
-  return 'Reauthenticating your account…'
+  if (stage === 'starting') return t('account.progress.starting')
+  if (stage === 'shared-data') return t('account.progress.shared')
+  if (stage === 'group-continuity') return t('account.progress.group')
+  if (stage === 'private-data') return t('account.progress.private')
+  if (stage === 'prepared') return t('account.progress.prepared')
+  return t('account.progress.reauth')
 }
 </script>
 
 <template>
   <ion-page :ref="setPresentingElement">
-    <ion-header translucent><ion-toolbar><ion-title>Account</ion-title><ion-buttons slot="end"><ion-button router-link="/tabs/account/export">Export</ion-button></ion-buttons></ion-toolbar></ion-header>
+    <ion-header translucent><ion-toolbar><ion-title>{{ t('nav.account') }}</ion-title><ion-buttons slot="end"><ion-button router-link="/tabs/account/export">{{ t('account.export') }}</ion-button></ion-buttons></ion-toolbar></ion-header>
     <ion-content :fullscreen="true">
       <main class="account-page">
-        <h1 class="su-visually-hidden">Account</h1>
+        <h1 class="su-visually-hidden">{{ t('nav.account') }}</h1>
         <header class="profile-card">
           <span class="profile-avatar" aria-hidden="true">{{ initials }}</span>
-          <span><strong>{{ member?.displayName ?? 'Your account' }}</strong><small v-if="privateIdentity?.email">{{ privateIdentity.email }}<em v-if="privateIdentity.emailVerified">Verified</em></small><small>{{ modeCopy }}</small></span>
+          <span><strong>{{ member?.displayName ?? t('account.yourAccount') }}</strong><small v-if="privateIdentity?.email">{{ privateIdentity.email }}<em v-if="privateIdentity.emailVerified">{{ t('account.verified') }}</em></small><small>{{ modeCopy }}</small></span>
         </header>
 
         <p v-if="error" class="account-error" role="alert" tabindex="-1">{{ error }}</p>
         <p v-if="status" class="account-status" role="status" aria-live="polite">{{ status }}</p>
 
-        <p class="section-label">Profile</p>
+        <p class="section-label">{{ t('account.profile') }}</p>
         <section class="settings-group" :aria-busy="!profileReady">
-          <label class="input-row" for="account-name"><span>Name</span><input id="account-name" v-model="displayName" autocomplete="name" :disabled="!profileReady"></label>
-          <label class="input-row" for="paypal-handle"><span>PayPal</span><input id="paypal-handle" v-model="paypalHandle" data-testid="paypal-handle" autocomplete="off" inputmode="text" maxlength="65" placeholder="Optional handle" :disabled="!profileReady"></label>
-          <label class="input-row" for="venmo-handle"><span>Venmo</span><input id="venmo-handle" v-model="venmoHandle" data-testid="venmo-handle" autocomplete="off" inputmode="text" maxlength="65" placeholder="Optional handle" :disabled="!profileReady"></label>
-          <p class="profile-help">Payment handles are optional and visible to people who share a group with you. Links never record a payment automatically.</p>
-          <button class="text-action" data-action="save-profile" type="button" :disabled="!profileReady" @click="saveProfile">{{ profileReady ? 'Save profile' : 'Loading profile…' }}</button>
+          <label class="input-row" for="account-name"><span>{{ t('auth.name') }}</span><input id="account-name" v-model="displayName" autocomplete="name" :disabled="!profileReady"></label>
+          <label class="input-row" for="paypal-handle"><span>PayPal</span><input id="paypal-handle" v-model="paypalHandle" data-testid="paypal-handle" autocomplete="off" inputmode="text" maxlength="65" :placeholder="t('account.optionalHandle')" :disabled="!profileReady"></label>
+          <label class="input-row" for="venmo-handle"><span>Venmo</span><input id="venmo-handle" v-model="venmoHandle" data-testid="venmo-handle" autocomplete="off" inputmode="text" maxlength="65" :placeholder="t('account.optionalHandle')" :disabled="!profileReady"></label>
+          <p class="profile-help">{{ t('account.paymentHelp') }}</p>
+          <button class="text-action" data-action="save-profile" type="button" :disabled="!profileReady" @click="saveProfile">{{ profileReady ? t('account.saveProfile') : t('account.loadingProfile') }}</button>
         </section>
 
-        <p class="section-label">Preferences</p>
+        <p class="section-label">{{ t('account.preferences') }}</p>
         <section class="settings-group">
-          <label class="toggle-row"><span class="row-icon"><ion-icon :icon="notificationsOutline" /></span><span><strong>Email notifications</strong><small>Important shared expense updates</small></span><input v-model="notificationPreferences.emailEnabled" type="checkbox" aria-label="Email notifications"></label>
-          <label class="toggle-row"><span class="row-icon"><ion-icon :icon="notificationsOutline" /></span><span><strong>Push notifications</strong><small>Alerts on supported devices</small></span><input v-model="notificationPreferences.pushEnabled" type="checkbox" aria-label="Push notifications"></label>
-          <button class="text-action" type="button" @click="saveNotifications">Save notifications</button>
-          <router-link class="nav-row" to="/tabs/account/appearance"><span class="row-icon"><ion-icon :icon="colorPaletteOutline" /></span><span><strong>Appearance</strong><small>Automatic, light, or dark</small></span><ion-icon :icon="chevronForward" /></router-link>
+          <label class="toggle-row"><span class="row-icon"><ion-icon :icon="notificationsOutline" /></span><span><strong>{{ t('account.emailNotifications') }}</strong><small>{{ t('account.emailDetail') }}</small></span><input v-model="notificationPreferences.emailEnabled" type="checkbox" :aria-label="t('account.emailNotifications')"></label>
+          <label class="toggle-row"><span class="row-icon"><ion-icon :icon="notificationsOutline" /></span><span><strong>{{ t('account.pushNotifications') }}</strong><small>{{ t('account.pushDetail') }}</small></span><input v-model="notificationPreferences.pushEnabled" type="checkbox" :aria-label="t('account.pushNotifications')"></label>
+          <button class="text-action" type="button" @click="saveNotifications">{{ t('account.saveNotifications') }}</button>
+          <router-link class="nav-row" to="/tabs/account/appearance"><span class="row-icon"><ion-icon :icon="colorPaletteOutline" /></span><span><strong>{{ t('account.appearance') }}</strong><small>{{ t('account.appearanceDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
           <router-link class="nav-row" to="/tabs/account/language"><span class="row-icon"><ion-icon :icon="languageOutline" /></span><span><strong>{{ t('language.title') }}</strong><small>{{ t('language.accountDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
-          <router-link class="nav-row" to="/tabs/account/currencies"><span class="row-icon"><ion-icon :icon="cardOutline" /></span><span><strong>Currencies</strong><small>Default and preferred order</small></span><ion-icon :icon="chevronForward" /></router-link>
+          <router-link class="nav-row" to="/tabs/account/currencies"><span class="row-icon"><ion-icon :icon="cardOutline" /></span><span><strong>{{ t('account.currencies') }}</strong><small>{{ t('account.currenciesDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
         </section>
 
-        <p class="section-label">Data</p>
+        <p class="section-label">{{ t('account.data') }}</p>
         <section class="settings-group">
-          <router-link class="nav-row" to="/tabs/account/transactions/import"><span class="row-icon"><ion-icon :icon="documentAttachOutline" /></span><span><strong>Import transactions</strong><small>Review a bank statement CSV on this device</small></span><ion-icon :icon="chevronForward" /></router-link>
-          <router-link class="nav-row" to="/tabs/account/export"><span class="row-icon"><ion-icon :icon="archiveOutline" /></span><span><strong>Export your data</strong><small>CSV or JSON, separated by currency</small></span><ion-icon :icon="chevronForward" /></router-link>
-          <div class="info-row"><span class="row-icon"><ion-icon :icon="cloudOfflineOutline" /></span><span><strong>Offline changes</strong><small>{{ unresolved.total ? `${unresolved.pending} pending · ${unresolved.failed} failed · ${unresolved.conflicted} conflicted` : 'Everything on this device is settled' }}</small></span></div>
-          <button class="danger-row" type="button" @click="beginClear"><span class="row-icon"><ion-icon :icon="trashOutline" /></span><span><strong>Clear local data</strong><small>Only this signed-in account on this device</small></span></button>
+          <router-link class="nav-row" to="/tabs/account/transactions/import"><span class="row-icon"><ion-icon :icon="documentAttachOutline" /></span><span><strong>{{ t('account.importTransactions') }}</strong><small>{{ t('account.importDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
+          <router-link class="nav-row" to="/tabs/account/export"><span class="row-icon"><ion-icon :icon="archiveOutline" /></span><span><strong>{{ t('account.exportData') }}</strong><small>{{ t('account.exportDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
+          <div class="info-row"><span class="row-icon"><ion-icon :icon="cloudOfflineOutline" /></span><span><strong>{{ t('account.offlineChanges') }}</strong><small>{{ unresolved.total ? t('account.offlineSummary', unresolved) : t('account.deviceSettled') }}</small></span></div>
+          <button class="danger-row" type="button" @click="beginClear"><span class="row-icon"><ion-icon :icon="trashOutline" /></span><span><strong>{{ t('account.clearLocal') }}</strong><small>{{ t('account.clearLocalDetail') }}</small></span></button>
         </section>
 
-        <p class="section-label">Account</p>
+        <p class="section-label">{{ t('nav.account') }}</p>
         <section class="settings-group">
-          <button class="danger-row" type="button" :disabled="session.repository.mode === 'demo'" @click="beginSignOut"><span class="row-icon"><ion-icon :icon="logOutOutline" /></span><span><strong>Sign out</strong><small>{{ session.repository.mode === 'demo' ? 'Unavailable for the fixed demo identity' : 'Review offline drafts first' }}</small></span></button>
-          <button data-testid="open-account-delete" class="danger-row" type="button" :disabled="!deletionAvailable" @click="beginAccountDeletion"><span class="row-icon"><ion-icon :icon="personCircleOutline" /></span><span><strong>Delete account</strong><small>{{ session.repository.mode === 'demo' ? 'Unavailable for the fixed demo identity' : deletionProvider === 'unsupported' ? 'This sign-in provider is not supported yet' : 'Permanently remove your account and private data' }}</small></span><ion-icon :icon="chevronForward" /></button>
+          <button class="danger-row" type="button" :disabled="session.repository.mode === 'demo'" @click="beginSignOut"><span class="row-icon"><ion-icon :icon="logOutOutline" /></span><span><strong>{{ t('account.signOut') }}</strong><small>{{ session.repository.mode === 'demo' ? t('account.demoUnavailable') : t('account.reviewDrafts') }}</small></span></button>
+          <button data-testid="open-account-delete" class="danger-row" type="button" :disabled="!deletionAvailable" @click="beginAccountDeletion"><span class="row-icon"><ion-icon :icon="personCircleOutline" /></span><span><strong>{{ t('account.delete') }}</strong><small>{{ session.repository.mode === 'demo' ? t('account.demoUnavailable') : deletionProvider === 'unsupported' ? t('account.unsupportedProvider') : t('account.deleteDetail') }}</small></span><ion-icon :icon="chevronForward" /></button>
         </section>
       </main>
     </ion-content>
 
-    <ion-alert :is-open="signOutDecision" header="Sign out with local work?" :message="`${unresolved.pending} pending, ${unresolved.failed} failed, and ${unresolved.conflicted} conflicted changes are stored for this account. Pending work cannot be discarded while its result is unknown.`" :buttons="[
-      { text: 'Cancel', role: 'cancel', handler: () => finishSignOut('cancel') },
-      { text: 'Keep drafts', handler: () => finishSignOut('keep') },
-      { text: 'Discard terminal drafts', role: 'destructive', handler: () => finishSignOut('discard') },
+    <ion-alert :is-open="signOutDecision" :header="t('account.signOutHeader')" :message="t('account.signOutMessage', unresolved)" :buttons="[
+      { text: t('activity.cancel'), role: 'cancel', handler: () => finishSignOut('cancel') },
+      { text: t('account.keepDrafts'), handler: () => finishSignOut('keep') },
+      { text: t('account.discardTerminal'), role: 'destructive', handler: () => finishSignOut('discard') },
     ]" @did-dismiss="signOutDecision = false" />
-    <ion-alert :is-open="clearDecision" header="Clear local data?" message="This removes only this account’s offline queue, local receipt images, and device currency preferences. It does not delete cloud data." :buttons="[
-      { text: 'Cancel', role: 'cancel', handler: () => { clearDecision = false; restoreFocus() } },
-      { text: 'Clear local data', role: 'destructive', handler: clearLocalData },
+    <ion-alert :is-open="clearDecision" :header="t('account.clearHeader')" :message="t('account.clearMessage')" :buttons="[
+      { text: t('activity.cancel'), role: 'cancel', handler: () => { clearDecision = false; restoreFocus() } },
+      { text: t('account.clearAction'), role: 'destructive', handler: clearLocalData },
     ]" @did-dismiss="clearDecision = false" />
 
     <ion-modal :is-open="deletionOpen" :presenting-element="presentingElement" :can-dismiss="canDismissAccountDeletion" @did-dismiss="closeAccountDeletion">
       <ion-header translucent>
         <ion-toolbar>
-          <ion-buttons slot="start"><ion-button :disabled="deletingAccount" @click="closeAccountDeletion">Cancel</ion-button></ion-buttons>
-          <ion-title>Delete account</ion-title>
+          <ion-buttons slot="start"><ion-button :disabled="deletingAccount" @click="closeAccountDeletion">{{ t('activity.cancel') }}</ion-button></ion-buttons>
+          <ion-title>{{ t('account.delete') }}</ion-title>
         </ion-toolbar>
       </ion-header>
       <ion-content>
         <main class="account-deletion-card" data-testid="account-deletion-modal">
           <span class="deletion-mark" aria-hidden="true"><ion-icon :icon="trashOutline" /></span>
-          <h2>Delete your account?</h2>
-          <p>This is permanent. Your private account data and sign-in will be removed.</p>
-          <section class="deletion-summary" aria-label="What happens when this account is deleted">
-            <strong>Shared balances stay accurate</strong>
-            <p>Expenses and payments remain for the people you shared them with. Your name becomes “Deleted user,” and you cannot be added to new expenses.</p>
+          <h2>{{ t('account.deleteQuestion') }}</h2>
+          <p>{{ t('account.deletePermanent') }}</p>
+          <section class="deletion-summary" :aria-label="t('account.deleteAria')">
+            <strong>{{ t('account.sharedBalances') }}</strong>
+            <p>{{ t('account.deleteHistory') }}</p>
           </section>
           <ion-input
             v-if="deletionProvider === 'password'"
             v-model="deletionPassword"
             data-testid="account-delete-password"
             type="password"
-            label="Current password"
+            :label="t('account.currentPassword')"
             label-placement="stacked"
             fill="outline"
             autocomplete="current-password"
             :disabled="deletingAccount"
           />
-          <p v-else-if="deletionProvider === 'google'" class="google-reauth">Continue with Google to confirm it’s you.</p>
+          <p v-else-if="deletionProvider === 'google'" class="google-reauth">{{ t('account.googleConfirm') }}</p>
           <ion-checkbox v-model="deletionAcknowledged" data-testid="account-delete-ack" label-placement="end" alignment="start" :disabled="deletingAccount">
-            I understand this account cannot be recovered.
+            {{ t('account.deleteAcknowledge') }}
           </ion-checkbox>
           <p v-if="deletionError" class="deletion-error" role="alert">{{ deletionError }}</p>
           <p v-if="deletingAccount" class="deletion-progress" role="status" aria-live="polite"><ion-spinner name="crescent" />{{ deletionProgressCopy }}</p>
           <ion-button data-testid="confirm-account-delete" expand="block" shape="round" color="danger" :disabled="!canConfirmDeletion" @click="deleteAccount">
-            {{ deletingAccount ? 'Deleting account…' : deletionProvider === 'google' ? 'Continue with Google' : 'Permanently delete account' }}
+            {{ deletingAccount ? t('account.deleting') : deletionProvider === 'google' ? t('account.continueGoogle') : t('account.permanentDelete') }}
           </ion-button>
         </main>
       </ion-content>

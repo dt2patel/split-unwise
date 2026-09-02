@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, shallowRef, type ComponentPublicIns
 import { storeToRefs } from 'pinia'
 import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonLabel, IonModal, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToolbar } from '@ionic/vue'
 import { arrowUndoOutline } from 'ionicons/icons'
+import { useI18n } from '../../app/i18n'
 import { activityDestination, activityText, useActivityStore } from './activityStore'
 import NotificationCenter from '../notifications/NotificationCenter.vue'
 import type { ActivityFilter, ActivityItem } from '../../data/repositories'
@@ -10,6 +11,7 @@ import { createClientOperationId } from '../../data/clientOperationId'
 import { getAppSession } from '../../data'
 
 const store = useActivityStore()
+const { locale, t } = useI18n()
 const { allItems, error, filter, isFiltering, isLoading, isLoadingMore, items, nextCursor } = storeToRefs(store)
 const presentingElement = shallowRef<HTMLElement>()
 const restoreTarget = ref<ActivityItem>()
@@ -18,13 +20,13 @@ const restoreError = ref('')
 const feedback = ref('')
 const restoreKind = computed<'group' | 'expense'>(() => restoreTarget.value?.kind === 'expense.deleted' ? 'expense' : 'group')
 
-const filters: readonly { value: ActivityFilter; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'expenses', label: 'Expenses' },
-  { value: 'comments', label: 'Comments' },
-  { value: 'payments', label: 'Payments' },
-]
-const status = computed(() => isLoading.value || isFiltering.value ? 'Loading activity…' : error.value)
+const filters = computed<readonly { value: ActivityFilter; label: string }[]>(() => [
+  { value: 'all', label: t('activity.filter.all') },
+  { value: 'expenses', label: t('activity.filter.expenses') },
+  { value: 'comments', label: t('activity.filter.comments') },
+  { value: 'payments', label: t('activity.filter.payments') },
+])
+const status = computed(() => isLoading.value || isFiltering.value ? t('activity.loading') : error.value)
 
 onMounted(() => { void store.load() })
 
@@ -61,10 +63,10 @@ async function restoreItem(): Promise<void> {
       : { kind: 'group.restore' as const, operationId: createClientOperationId('group-restore'), groupId: target.groupId }
     const result = await getAppSession().queue.submit(command).result()
     if (result.status !== 'saved') throw new Error(result.reason)
-    const label = target.subject.label ?? (target.kind === 'expense.deleted' ? 'Expense' : 'Group')
+    const label = target.subject.label ?? (target.kind === 'expense.deleted' ? t('activity.defaultExpense') : t('groups.title'))
     await store.load('all')
     restoreTarget.value = undefined
-    feedback.value = target.kind === 'expense.deleted' ? `${label} was restored.` : `${label} was restored for everyone.`
+    feedback.value = target.kind === 'expense.deleted' ? t('activity.restored', { label }) : t('activity.restoredForEveryone', { label })
     await nextTick()
   } catch (reason) { restoreError.value = reason instanceof Error ? reason.message : String(reason) } finally { restoring.value = false }
 }
@@ -76,7 +78,14 @@ function onSegmentChange(event: CustomEvent<{ value?: string | number }>): void 
   if (value === 'all' || value === 'expenses' || value === 'comments' || value === 'payments') selectFilter(value)
 }
 function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  return new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+}
+function syncStateLabel(value: ActivityItem['syncState']): string {
+  if (value === 'fresh') return t('activity.sync.fresh')
+  if (value === 'pending') return t('activity.sync.pending')
+  if (value === 'stale') return t('activity.sync.stale')
+  if (value === 'failed') return t('activity.sync.failed')
+  return t('activity.sync.conflicted')
 }
 </script>
 
@@ -84,16 +93,16 @@ function formatDate(value: string): string {
   <ion-page :ref="setPresentingElement" data-testid="activity-page">
     <ion-header translucent>
       <ion-toolbar>
-        <ion-title>Activity</ion-title>
+        <ion-title>{{ t('activity.title') }}</ion-title>
       </ion-toolbar>
     </ion-header>
 
     <ion-content :fullscreen="true">
       <main class="activity-page">
-        <h1>Activity</h1>
-        <p class="activity-page__intro">A permanent record of changes across your groups.</p>
+        <h1>{{ t('activity.title') }}</h1>
+        <p class="activity-page__intro">{{ t('activity.intro') }}</p>
 
-        <ion-segment :value="filter" aria-label="Filter activity" @ion-change="onSegmentChange">
+        <ion-segment :value="filter" :aria-label="t('activity.filterAria')" @ion-change="onSegmentChange">
           <ion-segment-button
             v-for="option in filters"
             :key="option.value"
@@ -106,27 +115,27 @@ function formatDate(value: string): string {
 
         <p v-if="status" class="activity-page__status" :role="error ? 'alert' : 'status'">{{ status }}</p>
         <p v-if="feedback" class="activity-page__feedback" role="status" aria-live="polite">{{ feedback }}</p>
-        <p v-if="!status && items.length === 0" class="activity-page__status">No activity matches this filter.</p>
-        <ol v-else-if="!status" class="activity-list" aria-label="Account activity">
+        <p v-if="!status && items.length === 0" class="activity-page__status">{{ t('activity.empty') }}</p>
+        <ol v-else-if="!status" class="activity-list" :aria-label="t('activity.accountAria')">
           <li v-for="item in items" :key="item.id" :data-activity-id="item.id" :data-sync-state="item.syncState">
             <button v-if="isRestorable(item)" type="button" class="activity-list__body activity-list__restore" :data-action="item.kind === 'expense.deleted' ? 'restore-expense' : 'restore-group'" @click="openRestore(item)">
-              <span class="activity-list__copy"><strong>{{ activityText(item) }}</strong><time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time></span>
-              <span class="activity-list__restore-action"><ion-icon :icon="arrowUndoOutline" aria-hidden="true" />Restore</span>
+              <span class="activity-list__copy"><strong>{{ activityText(item, t) }}</strong><time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time></span>
+              <span class="activity-list__restore-action"><ion-icon :icon="arrowUndoOutline" aria-hidden="true" />{{ t('activity.restore') }}</span>
             </button>
             <router-link v-else-if="activityDestination(item, 'activity')" :to="activityDestination(item, 'activity')!" class="activity-list__body">
-              <strong>{{ activityText(item) }}</strong>
+              <strong>{{ activityText(item, t) }}</strong>
               <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
-              <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ item.syncState }}</span>
+              <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ syncStateLabel(item.syncState) }}</span>
             </router-link>
             <div v-else class="activity-list__body">
-              <strong>{{ activityText(item) }}</strong>
+              <strong>{{ activityText(item, t) }}</strong>
               <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
-              <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ item.syncState }}</span>
+              <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ syncStateLabel(item.syncState) }}</span>
             </div>
           </li>
         </ol>
         <ion-button v-if="nextCursor" expand="block" fill="outline" data-action="load-more-activity" :disabled="isLoading || isFiltering || isLoadingMore" @click="store.loadMore">
-          {{ isLoadingMore ? 'Loading…' : 'Load more activity' }}
+          {{ isLoadingMore ? t('activity.loadingMore') : t('activity.loadMore') }}
         </ion-button>
         <notification-center />
       </main>
@@ -135,19 +144,19 @@ function formatDate(value: string): string {
     <ion-modal :is-open="Boolean(restoreTarget)" :presenting-element="presentingElement" :can-dismiss="canDismissRestore" @did-dismiss="closeRestore">
       <ion-header translucent>
         <ion-toolbar>
-          <ion-buttons slot="start"><ion-button :disabled="restoring" @click="closeRestore">Cancel</ion-button></ion-buttons>
-          <ion-title>Restore {{ restoreKind }}</ion-title>
+          <ion-buttons slot="start"><ion-button :disabled="restoring" @click="closeRestore">{{ t('activity.cancel') }}</ion-button></ion-buttons>
+          <ion-title>{{ t(restoreKind === 'group' ? 'activity.restoreTitle.group' : 'activity.restoreTitle.expense') }}</ion-title>
         </ion-toolbar>
       </ion-header>
       <ion-content>
         <main v-if="restoreTarget" class="restore-card" :data-testid="restoreKind === 'expense' ? 'restore-expense-modal' : 'restore-group-modal'">
           <span class="restore-card__mark" aria-hidden="true"><ion-icon :icon="arrowUndoOutline" /></span>
-          <h2>Restore {{ restoreTarget.subject.label ?? 'this group' }}?</h2>
-          <p v-if="restoreKind === 'group'">This restores the group for everyone, including all expenses and payments.</p>
-          <p v-else>This returns the deleted expense to the shared ledger with its balances and history intact.</p>
-          <div class="restore-card__note"><strong>{{ restoreKind === 'group' ? 'Everything comes back together' : 'No history is rewritten' }}</strong><p>{{ restoreKind === 'group' ? 'Members, recurring expenses, comments, and payment history return exactly as they were.' : 'The original expense, comments, and every prior revision stay in the permanent activity record.' }}</p></div>
+          <h2>{{ t('activity.question', { label: restoreTarget.subject.label ?? t('activity.defaultGroup') }) }}</h2>
+          <p v-if="restoreKind === 'group'">{{ t('activity.restoreGroupDescription') }}</p>
+          <p v-else>{{ t('activity.restoreExpenseDescription') }}</p>
+          <div class="restore-card__note"><strong>{{ t(restoreKind === 'group' ? 'activity.restoreGroupNoteTitle' : 'activity.restoreExpenseNoteTitle') }}</strong><p>{{ t(restoreKind === 'group' ? 'activity.restoreGroupNote' : 'activity.restoreExpenseNote') }}</p></div>
           <p v-if="restoreError" class="restore-card__error" role="alert">{{ restoreError }}</p>
-          <ion-button :data-testid="restoreKind === 'expense' ? 'confirm-expense-restore' : 'confirm-group-restore'" expand="block" shape="round" :disabled="restoring" @click="restoreItem">{{ restoring ? `Restoring ${restoreKind}…` : `Restore ${restoreKind}` }}</ion-button>
+          <ion-button :data-testid="restoreKind === 'expense' ? 'confirm-expense-restore' : 'confirm-group-restore'" expand="block" shape="round" :disabled="restoring" @click="restoreItem">{{ restoring ? t(restoreKind === 'group' ? 'activity.restoringGroup' : 'activity.restoringExpense') : t(restoreKind === 'group' ? 'activity.restoreGroup' : 'activity.restoreExpense') }}</ion-button>
         </main>
       </ion-content>
     </ion-modal>

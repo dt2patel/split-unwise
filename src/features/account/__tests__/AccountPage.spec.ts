@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { localeController } from '../../../app/i18n'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import { setAppSessionForTesting, type AppDataSession, type UnresolvedWorkSummary } from '../../../data/session'
@@ -14,12 +15,39 @@ vi.mock('../../../data/localData', () => ({ createBrowserPrincipalLocalDataPort:
 const settled: UnresolvedWorkSummary = { pending: 0, failed: 0, conflicted: 0, total: 0 }
 
 beforeEach(() => {
+  localeController.setPreference('en')
   localData.clear.mockReset().mockResolvedValue({ commandKeys: 1, receiptDatabase: true, preferences: true })
   setAuthService(undefined)
   setAppSessionForTesting(undefined)
 })
 
 describe('Account page', () => {
+  it('reactively localizes native settings rows and the account-deletion card', async () => {
+    useSession('firebase')
+    useAuth(['password'])
+    const wrapper = mountPage()
+    await flushPromises()
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('h1').text()).toBe('Cuenta')
+    expect(wrapper.text()).toContain('Perfil')
+    expect(wrapper.text()).toContain('Preferencias')
+    expect(wrapper.text()).toContain('Apariencia')
+    expect(wrapper.text()).toContain('Monedas')
+    expect(wrapper.text()).toContain('Exportar tus datos')
+    expect(wrapper.text()).toContain('Cambios sin conexión')
+    expect(wrapper.text()).toContain('Cerrar sesión')
+    expect(wrapper.get('[data-testid="open-account-delete"]').text()).toContain('Eliminar cuenta')
+
+    await wrapper.get('[data-testid="open-account-delete"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="account-deletion-modal"] h2').text()).toBe('¿Eliminar tu cuenta?')
+    expect(wrapper.get('[data-testid="account-deletion-modal"]').text()).toContain('Los saldos compartidos se mantienen correctos')
+    expect(wrapper.get('[data-testid="confirm-account-delete"]').text()).toBe('Eliminar cuenta permanentemente')
+  })
+
   it('composes native grouped profile, preferences, export, offline data, and account controls', async () => {
     useSession('demo')
     const wrapper = mountPage()

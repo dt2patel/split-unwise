@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -26,11 +27,50 @@ const ionicStubs = {
 }
 
 beforeEach(() => {
+  localeController.setPreference('en')
   setActivePinia(createPinia())
   setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
 })
 
 describe('global Activity page', () => {
+  it('reactively localizes a pending activity sync state', async () => {
+    const source = createDemoRepository()
+    const pending: ActivityItem = {
+      id: 'activity-pending-localization', groupId: 'lake-house-weekend', operationId: 'pending-localization', kind: 'expense.created',
+      subject: { kind: 'expense', id: 'pending-localization', label: 'Firewood' }, actor: { id: 'maya-p', displayName: 'Maya P.' },
+      createdAt: '2026-08-31T12:00:00.000Z', syncState: 'pending',
+    }
+    const repository = { ...source, activity: { ...source.activity, async listForAccount() { return { items: [pending] } } } }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[data-activity-id="activity-pending-localization"] .activity-list__state').text()).toBe('Pendiente')
+  })
+
+  it('reactively localizes filters, durable event verbs, and the native restore card', async () => {
+    const repository = createDemoRepository()
+    await repository.commands.execute({ kind: 'group.delete', operationId: 'delete-for-spanish', groupId: 'lake-house-weekend' })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('h1').text()).toBe('Actividad')
+    expect(wrapper.get('.activity-page__intro').text()).toBe('Un registro permanente de los cambios en todos tus grupos.')
+    expect(wrapper.findAll('[data-filter]').map((button) => button.text())).toEqual(['Todo', 'Gastos', 'Comentarios', 'Pagos'])
+    expect(wrapper.text()).toContain('Maya P. eliminó Lake House Weekend')
+
+    await wrapper.get('[data-action="restore-group"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="restore-group-modal"] h2').text()).toBe('¿Restaurar Lake House Weekend?')
+    expect(wrapper.get('[data-testid="restore-group-modal"]').text()).toContain('todos los gastos y pagos')
+    expect(wrapper.get('[data-testid="confirm-group-restore"]').text()).toBe('Restaurar grupo')
+  })
+
   it('renders immutable self-actions in stable newest-first order with semantic times and validated expense links', async () => {
     const wrapper = await mountActivity()
     const rows = wrapper.findAll('[data-activity-id]')

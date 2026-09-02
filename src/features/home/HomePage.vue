@@ -21,6 +21,7 @@ import {
   onIonViewWillEnter,
 } from '@ionic/vue'
 import { chevronForward, peopleOutline, searchOutline } from 'ionicons/icons'
+import { useI18n } from '../../app/i18n'
 import MoneyAmount, { formatMoney, type DebtDirection } from '../../components/MoneyAmount.vue'
 import type { AccountFriendBalance, SignedCurrencyPosition } from '../../domain/accountBalances'
 import { friendshipContexts, groupContexts } from '../../domain/expenseContexts'
@@ -30,6 +31,7 @@ import { useAccountBalanceStore } from './accountBalanceStore'
 
 const groupStore = useGroupStore()
 const balanceStore = useAccountBalanceStore()
+const { t } = useI18n()
 const { groups, currentUser, error, isLoading } = storeToRefs(groupStore)
 const { projection, isLoading: balancesLoading, notice: balanceNotice } = storeToRefs(balanceStore)
 const recentGroups = computed(() => groupContexts(groups.value))
@@ -55,22 +57,31 @@ function direction(position: SignedCurrencyPosition): DebtDirection {
 }
 
 function directionLabel(position: SignedCurrencyPosition): string {
-  return position.minorAmount > 0 ? 'owes you' : position.minorAmount < 0 ? 'you owe' : 'settled'
+  return position.minorAmount > 0 ? t('home.direction.owesYou') : position.minorAmount < 0 ? t('home.direction.youOwe') : t('home.direction.settled')
 }
 
 function groupDirectionLabel(position: SignedCurrencyPosition): string {
-  return position.minorAmount > 0 ? 'you are owed' : position.minorAmount < 0 ? 'you owe' : 'settled'
+  return position.minorAmount > 0 ? t('home.direction.youAreOwed') : position.minorAmount < 0 ? t('home.direction.youOwe') : t('home.direction.settled')
 }
 
 function overallLabel(netMinor: number): string {
-  return netMinor > 0 ? 'Overall, you are owed' : netMinor < 0 ? 'Overall, you owe' : 'Overall, you are settled up'
+  return netMinor > 0 ? t('home.overallOwed') : netMinor < 0 ? t('home.overallOwing') : t('home.overallSettled')
 }
 
 function friendStatus(friend: AccountFriendBalance): string {
-  if (friend.pending) return 'Invitation pending'
+  if (friend.pending) return t('home.invitationPending')
   const groups = new Set(friend.breakdowns.map(({ contextId }) => contextId)).size
-  return `${groups} shared ${groups === 1 ? 'context' : 'contexts'}`
+  return t(groups === 1 ? 'home.sharedContext.one' : 'home.sharedContext.other', { count: groups })
 }
+
+function friendSummary(): string {
+  const friends = projection.value.friends.length
+  if (friends) return t(friends === 1 ? 'home.friendAcrossGroups.one' : 'home.friendAcrossGroups.other', { count: friends })
+  if (directFriendCount.value) return t(directFriendCount.value === 1 ? 'home.directFriendship.one' : 'home.directFriendship.other', { count: directFriendCount.value })
+  return t('home.addSomeone')
+}
+
+function memberCount(count: number): string { return t(count === 1 ? 'home.member.one' : 'home.member.other', { count }) }
 
 function friendDestination(friend: AccountFriendBalance): string {
   const open = friend.breakdowns.find(({ minorAmount }) => minorAmount !== 0)
@@ -87,46 +98,46 @@ function absolute(position: SignedCurrencyPosition): SignedCurrencyPosition { re
     <ion-header translucent>
       <ion-toolbar>
         <ion-title>Split Unwise</ion-title>
-        <ion-buttons slot="end"><ion-button class="home-search-button" router-link="/tabs/home/search" aria-label="Search expenses"><ion-icon :icon="searchOutline" aria-hidden="true" /></ion-button></ion-buttons>
+        <ion-buttons slot="end"><ion-button class="home-search-button" router-link="/tabs/home/search" :aria-label="t('home.searchExpenses')"><ion-icon :icon="searchOutline" aria-hidden="true" /></ion-button></ion-buttons>
       </ion-toolbar>
     </ion-header>
     <ion-content :fullscreen="true">
       <main class="browse-page">
-        <p class="browse-page__eyebrow">{{ currentUser ? `Welcome back, ${currentUser.displayName}` : 'Your shared expenses' }}</p>
-        <h1>Home</h1>
-        <p class="browse-page__intro">Your balances across every group and friendship, without mixing currencies.</p>
+        <p class="browse-page__eyebrow">{{ currentUser ? t('home.welcomeBack', { name: currentUser.displayName }) : t('home.sharedExpenses') }}</p>
+        <h1>{{ t('home.title') }}</h1>
+        <p class="browse-page__intro">{{ t('home.intro') }}</p>
 
-        <p v-if="isLoading" role="status">Loading your groups…</p>
+        <p v-if="isLoading" role="status">{{ t('home.loadingGroups') }}</p>
         <p v-else-if="error" role="alert">{{ error }}</p>
         <template v-else>
-          <ion-card v-if="projection.currencies.length" class="balance-card" data-testid="account-summary" aria-label="Account balance">
+          <ion-card v-if="projection.currencies.length" class="balance-card" data-testid="account-summary" :aria-label="t('home.accountBalance')">
             <ion-card-content>
               <div v-for="balance in projection.currencies" :key="balance.currency" class="balance-card__currency">
                 <div class="balance-card__headline">
-                  <p>{{ balance.currency }} balance</p>
+                  <p>{{ t('home.currencyBalance', { currency: balance.currency }) }}</p>
                   <span>{{ overallLabel(balance.netMinor) }}</span>
                   <strong :class="balance.netMinor > 0 ? 'is-owed' : balance.netMinor < 0 ? 'is-owing' : ''">{{ formatMoney({ currency: balance.currency, minorAmount: Math.abs(balance.netMinor) }) }}</strong>
                 </div>
                 <dl class="balance-card__details">
-                  <div><dt>You owe</dt><dd class="is-owing">{{ formatMoney({ currency: balance.currency, minorAmount: balance.userOwesMinor }) }}</dd></div>
-                  <div><dt>You are owed</dt><dd class="is-owed">{{ formatMoney({ currency: balance.currency, minorAmount: balance.owedToUserMinor }) }}</dd></div>
+                  <div><dt>{{ t('home.youOwe') }}</dt><dd class="is-owing">{{ formatMoney({ currency: balance.currency, minorAmount: balance.userOwesMinor }) }}</dd></div>
+                  <div><dt>{{ t('home.youAreOwed') }}</dt><dd class="is-owed">{{ formatMoney({ currency: balance.currency, minorAmount: balance.owedToUserMinor }) }}</dd></div>
                 </dl>
               </div>
-              <small v-if="balancesLoading" class="balance-card__updating" role="status">Updating balances…</small>
+              <small v-if="balancesLoading" class="balance-card__updating" role="status">{{ t('home.updatingBalances') }}</small>
             </ion-card-content>
           </ion-card>
-          <ion-card v-else-if="balancesLoading" class="balance-card balance-card--loading" data-testid="account-summary" aria-label="Loading account balance">
+          <ion-card v-else-if="balancesLoading" class="balance-card balance-card--loading" data-testid="account-summary" :aria-label="t('home.loadingAccountBalance')">
             <ion-card-content><ion-skeleton-text animated style="width: 34%" /><ion-skeleton-text animated style="width: 72%; height: 28px" /><ion-skeleton-text animated style="width: 100%; height: 54px" /></ion-card-content>
           </ion-card>
-          <ion-card v-else class="balance-card balance-card--settled" data-testid="account-summary" aria-label="Account balance">
-            <ion-card-content><p>Overall balance</p><h2>You’re all settled up</h2><span>Add a group or friend when there’s something new to split.</span></ion-card-content>
+          <ion-card v-else class="balance-card balance-card--settled" data-testid="account-summary" :aria-label="t('home.accountBalance')">
+            <ion-card-content><p>{{ t('home.overallBalance') }}</p><h2>{{ t('home.allSettled') }}</h2><span>{{ t('home.addGroupFriend') }}</span></ion-card-content>
           </ion-card>
           <p v-if="balanceNotice" class="balance-notice" role="status">{{ balanceNotice }}</p>
 
           <section class="friends-card" aria-labelledby="friends-title">
             <div class="section-heading">
-              <div><h2 id="friends-title">Balances with friends</h2><p>{{ projection.friends.length ? `${projection.friends.length} ${projection.friends.length === 1 ? 'friend' : 'friends'} across your groups` : directFriendCount ? `${directFriendCount} direct ${directFriendCount === 1 ? 'friendship' : 'friendships'}` : 'Add someone for direct expenses' }}</p></div>
-              <router-link data-testid="friends-link" to="/tabs/home/friends">View all <ion-icon :icon="chevronForward" aria-hidden="true" /></router-link>
+              <div><h2 id="friends-title">{{ t('home.friendsTitle') }}</h2><p>{{ friendSummary() }}</p></div>
+              <router-link data-testid="friends-link" to="/tabs/home/friends">{{ t('home.viewAll') }} <ion-icon :icon="chevronForward" aria-hidden="true" /></router-link>
             </div>
             <ion-list v-if="homeFriends.length" class="context-list" lines="none">
               <ion-item v-for="friend in homeFriends.slice(0, 3)" :key="friend.id" :router-link="friendDestination(friend)" :data-testid="`friend-balance-${friend.id}`" detail>
@@ -141,7 +152,7 @@ function absolute(position: SignedCurrencyPosition): SignedCurrencyPosition { re
           </section>
 
           <section aria-labelledby="recent-groups-title">
-            <h2 id="recent-groups-title">Recent groups</h2>
+            <h2 id="recent-groups-title">{{ t('home.recentGroups') }}</h2>
             <ion-list class="context-list group-list" lines="none">
               <ion-item
                 v-for="group in recentGroups"
@@ -151,12 +162,12 @@ function absolute(position: SignedCurrencyPosition): SignedCurrencyPosition { re
                 detail
               >
                 <ion-avatar slot="start" class="group-avatar"><img v-if="group.coverImageUrl" :src="group.coverImageUrl" alt=""><ion-icon v-else :icon="peopleOutline" aria-hidden="true" /></ion-avatar>
-                <ion-label><strong>{{ group.name }}</strong><ion-note>{{ group.memberIds.length }} members</ion-note></ion-label>
+                <ion-label><strong>{{ group.name }}</strong><ion-note>{{ memberCount(group.memberIds.length) }}</ion-note></ion-label>
                 <div slot="end" class="position-stack" :data-testid="`group-balance-${group.id}`">
                   <template v-if="balanceByGroup.get(group.id)">
                     <MoneyAmount v-for="position in balanceByGroup.get(group.id)!.positions" :key="position.currency" :money="absolute(position)" :direction="direction(position)" :label="groupDirectionLabel(position)" />
                   </template>
-                  <small v-else>{{ balancesLoading ? 'Calculating…' : 'Balance unavailable' }}</small>
+                  <small v-else>{{ balancesLoading ? t('home.calculating') : t('home.balanceUnavailable') }}</small>
                 </div>
               </ion-item>
             </ion-list>
