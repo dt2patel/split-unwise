@@ -57,6 +57,32 @@ beforeEach(() => {
 })
 
 describe('group load identity', () => {
+  it.each([
+    ['a missing group', async (base: AppRepository) => undefined],
+    ['a group returned with a mismatched identity', async (base: AppRepository) => ({ ...(await base.groups.getById('lake-house-weekend'))!, id: 'other-group' })],
+  ])('uses the unavailable semantic message for %s', async (_case, getById) => {
+    const base = createDemoRepository()
+    repositoryHarness.current = { ...base, groups: { ...base.groups, getById: () => getById(base) } }
+    const store = useGroupStore()
+
+    await store.loadGroup('missing-group')
+
+    expect(store.error).toEqual({ kind: 'application', key: 'groups.error.unavailable' })
+  })
+
+  it('keeps the generic load message for a failed group repository request', async () => {
+    const base = createDemoRepository()
+    repositoryHarness.current = {
+      ...base,
+      groups: { ...base.groups, async getById() { throw new Error('network interruption') } },
+    }
+    const store = useGroupStore()
+
+    await store.loadGroup('missing-group')
+
+    expect(store.error).toEqual({ kind: 'application', key: 'groups.error.load' })
+  })
+
   it('coalesces concurrent reads for the same group', async () => {
     const request = deferred<GroupSnapshot>()
     const base = repositoryFor({ a: request.promise })

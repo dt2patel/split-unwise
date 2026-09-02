@@ -97,12 +97,12 @@ describe('Lake House group journal', () => {
   it('reactively localizes the actual missing-group application error', async () => {
     const wrapper = await mountRoute('/tabs/groups/missing-group')
 
-    expect(wrapper.get('.group-detail__status').text()).toBe('The group could not be loaded.')
+    expect(wrapper.get('.group-detail__status').text()).toBe('This group is not available.')
 
     localeController.setPreference('es')
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.get('.group-detail__status').text()).toBe('No se pudo cargar el grupo.')
+    expect(wrapper.get('.group-detail__status').text()).toBe('Este grupo no está disponible.')
   })
 
   it('uses friendship language and removes the invite action after the second person joins', async () => {

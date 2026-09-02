@@ -107,8 +107,8 @@ export const useGroupStore = defineStore('groups', () => {
       void journalRequest.catch(() => undefined)
       const group = await groupRequest
       if (request !== latestGroupRequest) return
-      if (!group) throw new ApplicationError('groups.error.load')
-      if (group.id !== groupId) throw new ApplicationError('groups.error.load')
+      if (!group) throw new ApplicationError('groups.error.unavailable')
+      if (group.id !== groupId) throw new ApplicationError('groups.error.unavailable')
       activeGroup.value = group
       const [user, loadedMembers, loadedExpenses] = await journalRequest
       if (request !== latestGroupRequest) return
