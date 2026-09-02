@@ -51,6 +51,28 @@ describe('Account page', () => {
     expect(wrapper.get('[role="status"]').text()).toContain('Profile saved')
   })
 
+  it('keeps profile editing disabled until the account snapshot finishes hydrating', async () => {
+    const session = useSession('demo')
+    let release!: () => void
+    const hydration = new Promise<void>((resolve) => { release = resolve })
+    session.repository.app.getCurrentUser.mockImplementation(async () => {
+      await hydration
+      return { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true }
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.get('#account-name').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="paypal-handle"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="venmo-handle"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-action="save-profile"]').attributes('disabled')).toBeDefined()
+
+    release()
+    await flushPromises()
+    expect(wrapper.get('#account-name').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-action="save-profile"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('presents a native iOS card and requires password plus acknowledgement', async () => {
     useSession('firebase')
     useAuth(['password'])

@@ -185,6 +185,12 @@ async function verifyPaymentHandleProfile(page) {
   const paypal = page.getByTestId('paypal-handle')
   const venmo = page.getByTestId('venmo-handle')
   await paypal.waitFor({ state: 'visible' })
+  await page.waitForFunction(() => {
+    const name = document.querySelector('#account-name')
+    const save = document.querySelector('[data-action="save-profile"]')
+    return name instanceof HTMLInputElement && name.value.length > 0
+      && save instanceof HTMLButtonElement && !save.disabled
+  }, undefined, { timeout: 120_000 })
   await paypal.fill('@hosted.owner.paypal')
   await venmo.fill('@hosted-owner-venmo')
   await page.locator('[data-action="save-profile"]').click()
