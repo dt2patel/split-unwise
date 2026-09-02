@@ -110,9 +110,7 @@ describe('invitation landing page', () => {
 
     await vi.waitFor(() => expect(wrapper.text()).toContain('Te invitaron a unirte a Viaje Ñandú.'))
     await wrapper.get('button').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('No se pudo aceptar esta invitación.')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('No se pudo aceptar esta invitación.'))
     expect(wrapper.text()).not.toContain('sensitive internal acceptance detail')
   })
 })
