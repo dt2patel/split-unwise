@@ -240,7 +240,14 @@ async function verifyPaymentProviderHandoffs(page) {
     }
   }
   if (await page.getByTestId('outside-payment-confirmation').isChecked()) throw new Error('Hosted payment handoff pre-confirmed an outside payment.')
-  if (!(await page.locator('[data-action="record-payment"]').isDisabled())) throw new Error('Hosted payment handoff enabled ledger recording without confirmation.')
+  const recordPaymentDisabled = await page.locator('[data-action="record-payment"]').evaluate((element) => ({
+    host: 'disabled' in element && element.disabled === true && element.hasAttribute('disabled'),
+    accessibility: element.getAttribute('aria-disabled') === 'true',
+    native: element.shadowRoot?.querySelector('button')?.disabled === true,
+  }))
+  if (!Object.values(recordPaymentDisabled).every(Boolean)) {
+    throw new Error(`Hosted payment handoff enabled ledger recording without confirmation: ${JSON.stringify(recordPaymentDisabled)}`)
+  }
   if (await page.locator('[data-operation-id]').count()) throw new Error('Hosted payment handoff created a ledger operation without confirmation.')
   const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
   if (overflow > 1) throw new Error(`Hosted payment handoff overflowed the 390px mobile viewport by ${overflow}px.`)
