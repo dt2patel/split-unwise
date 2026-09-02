@@ -175,8 +175,9 @@ async function verifyReimbursementWorkflow(page) {
   await reimbursementRow.getByText(description, { exact: true }).waitFor({ state: 'visible' })
   await reimbursementRow.getByText('Refund received by Live Renamed Owner', { exact: true }).waitFor({ state: 'visible' })
   if (!(await reimbursementRow.textContent())?.includes('Reimbursed to 2 of you')) throw new Error('Hosted reimbursement row did not retain its allocation summary.')
-  await reimbursementRow.locator('.expense-row__amount--balance .money-amount__direction').getByText('You owe', { exact: true }).waitFor({ state: 'visible' })
-  await reimbursementRow.locator('.expense-row__amount--balance .money-amount__value').getByText('$10.00', { exact: true }).waitFor({ state: 'visible' })
+  const reimbursementBalance = reimbursementRow.locator('.expense-row__amount--balance.money-amount--owing')
+  await reimbursementBalance.getByText('you borrowed', { exact: true }).waitFor({ state: 'visible' })
+  await reimbursementBalance.getByText('$10.00', { exact: true }).waitFor({ state: 'visible' })
 
   await reimbursementRow.locator('a.expense-row__body').click()
   await page.waitForURL(new RegExp(`/tabs/groups/expenses/[^/?]+\\?groupId=${escapeRegExp(groupId)}$`))
