@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
@@ -10,6 +10,13 @@ import type { Group, GroupBalanceSnapshot } from '../../../data/repositories'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import FriendsPage from '../FriendsPage.vue'
 import { SafeRemoteDisplayError } from '../../../app/displayMessages'
+
+const firebaseMocks = vi.hoisted(() => ({
+  createSparkFriendship: vi.fn(),
+  getActiveRuntimeConfiguration: vi.fn(() => ({ kind: 'firebase', firebase: {} })),
+}))
+vi.mock('../../../data/firebaseSparkMutations', () => ({ createSparkFriendship: firebaseMocks.createSparkFriendship }))
+vi.mock('../../../data/firebase', () => ({ getActiveRuntimeConfiguration: firebaseMocks.getActiveRuntimeConfiguration }))
 
 const friendship: Group = { id: 'friend-jordan', kind: 'friendship', name: 'Jordan Lee', currency: 'USD', memberIds: ['maya-p'], syncState: 'fresh' }
 const stubs = {
@@ -25,6 +32,7 @@ const stubs = {
 
 beforeEach(() => {
   localeController.setPreference('en')
+  firebaseMocks.createSparkFriendship.mockReset()
   setActivePinia(createPinia())
   const demo = createDemoRepository()
   setAppSessionForTesting(createAppSession({
@@ -123,21 +131,85 @@ describe('Friends page', () => {
     expect(unavailable.text()).toContain('Jordan Lee')
   })
 
-  it('shows pending two-person contexts and a mobile add-friend form', async () => {
+  it('localizes pending two-person contexts and the mobile add-friend form without changing friend data', async () => {
+    localeController.setPreference('es')
     const router = createAppRouter()
     await router.push('/tabs/home/friends')
     await router.isReady()
     const wrapper = mount(FriendsPage, { global: { plugins: [createPinia(), router], stubs } })
     await flushPromises()
 
-    expect(wrapper.get('h1').text()).toBe('Friends')
-    expect(wrapper.get('[data-friend-id="friend-jordan"]').text()).toContain('Invitation pending')
+    expect(wrapper.get('h1').text()).toBe('Amigos')
+    expect(wrapper.get('[data-friend-id="friend-jordan"]').text()).toContain('Invitación pendiente')
+    expect(wrapper.text()).toContain('Jordan Lee')
     await wrapper.get('[data-friend-id="friend-jordan"]').trigger('click')
     await nextTick()
     expect(wrapper.get('[data-breakdown-for="pending:friend-jordan"] a').attributes('href')).toBe('/tabs/groups/friend-jordan')
-    await wrapper.get('[aria-label="Add friend"]').trigger('click')
-    expect(wrapper.get('form').text()).toContain('Friend’s name')
+    await wrapper.get('[aria-label="Añadir amigo"]').trigger('click')
+    expect(wrapper.get('form').text()).toContain('Nombre del amigo')
     expect(wrapper.get('input[type="email"]').attributes('inputmode')).toBe('email')
+  })
+
+  it('hides an ordinary add diagnostic and retranslates the retained failure without creating again', async () => {
+    localeController.setPreference('es')
+    firebaseMocks.createSparkFriendship.mockRejectedValueOnce(new Error('Firestore secret diagnostic'))
+    const source = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository: { ...source, mode: 'firebase' as const }, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+    const wrapper = mount(FriendsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+
+    await wrapper.get('[aria-label="Añadir amigo"]').trigger('click')
+    await wrapper.get('input[autocomplete="name"]').setValue('Ravi Patel')
+    await wrapper.get('input[type="email"]').setValue('ravi@example.com')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('No se pudo añadir a tu amigo.')
+    expect(wrapper.text()).not.toContain('Firestore secret diagnostic')
+    expect(firebaseMocks.createSparkFriendship).toHaveBeenCalledOnce()
+
+    localeController.setPreference('de')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('Dein Freund konnte nicht hinzugefügt werden.')
+    expect(firebaseMocks.createSparkFriendship).toHaveBeenCalledOnce()
+  })
+
+  it('retranslates invitation-ready feedback without creating again or changing the target email', async () => {
+    localeController.setPreference('es')
+    firebaseMocks.createSparkFriendship.mockResolvedValueOnce({
+      status: 'ready',
+      groupId: 'friend-maya',
+      invitation: {
+        invitationId: 'invite-maya',
+        groupId: 'friend-maya',
+        link: 'https://split-unwise-aditya.web.app/invite/invite-maya#token=secret',
+        expiresAt: '2026-09-09T12:00:00.000Z',
+        capability: 'firebase-client',
+        targetEmail: 'Maya+Friend@Example.com',
+      },
+    })
+    const source = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository: { ...source, mode: 'firebase' as const }, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+    const wrapper = mount(FriendsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+
+    await wrapper.get('[aria-label="Añadir amigo"]').trigger('click')
+    await wrapper.get('input[autocomplete="name"]').setValue('Maya Chen')
+    await wrapper.get('input[type="email"]').setValue('Maya+Friend@Example.com')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Invitación privada lista para Maya+Friend@Example.com.')
+    expect(firebaseMocks.createSparkFriendship).toHaveBeenCalledOnce()
+
+    localeController.setPreference('de')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Private Einladung für Maya+Friend@Example.com ist bereit.')
+    expect(firebaseMocks.createSparkFriendship).toHaveBeenCalledOnce()
   })
 
   it('includes friends from shared groups and expands their per-group balance', async () => {

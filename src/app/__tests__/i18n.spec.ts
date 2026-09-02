@@ -59,4 +59,21 @@ describe('locale controller', () => {
     expect(controller.locale.value).toBe('it')
     expect(stored.get(LOCALE_STORAGE_KEY)).toBe('system')
   })
+
+  it.each([
+    ['fr', 'Restauration terminée : Dépense.', 'Restauration terminée pour tout le monde : Dépense.'],
+    ['it', 'Ripristino completato: Spesa.', 'Ripristino completato per tutti: Spesa.'],
+    ['pt-BR', 'Restauração concluída: Despesa.', 'Restauração concluída para todos: Despesa.'],
+    ['pt-PT', 'Restauro concluído: Despesa.', 'Restauro concluído para todos: Despesa.'],
+  ] as const)('keeps the fallback expense restore notice gender-neutral in %s', (locale, restored, restoredForEveryone) => {
+    const controller = createLocaleController({
+      document: document.implementation.createHTMLDocument('Split Unwise'),
+      languages: ['en-US'],
+      storage: { getItem: () => locale, setItem: () => undefined },
+    })
+    const label = controller.t('activity.defaultExpense')
+
+    expect(controller.t('activity.restored', { label })).toBe(restored)
+    expect(controller.t('activity.restoredForEveryone', { label })).toBe(restoredForEveryone)
+  })
 })

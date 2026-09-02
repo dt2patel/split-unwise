@@ -18,7 +18,7 @@ import { useAccountBalanceStore } from '../home/accountBalanceStore'
 import { compareFirestoreStrings } from '../../data/timeline'
 import type { Group } from '../../data/repositories'
 import { useI18n } from '../../app/i18n'
-import { displayMessageText } from '../../app/displayMessages'
+import { ApplicationError, displayMessageFor, displayMessageText, type ApplicationMessage, type DisplayMessage } from '../../app/displayMessages'
 
 interface UnavailableFriendContext {
   readonly contextId: string
@@ -79,9 +79,11 @@ const displayName = ref('')
 const email = ref('')
 const currency = ref('USD')
 const creating = ref(false)
-const createError = ref('')
+const createError = ref<DisplayMessage>()
 const invitation = ref<PreparedInvitation>()
-const notice = ref('')
+const notice = ref<ApplicationMessage>()
+const createErrorCopy = computed(() => displayMessageText(createError.value, t))
+const noticeCopy = computed(() => displayMessageText(notice.value, t))
 
 onMounted(async () => {
   currency.value = loadCurrencyPreferences(await session.principal).defaultCurrency
@@ -95,25 +97,28 @@ onIonViewWillEnter(() => {
 function toggleFriend(friend: AccountFriendBalance): void { expandedFriendId.value = expandedFriendId.value === friend.id ? undefined : friend.id }
 function friendDomId(friend: AccountFriendBalance): string { return friend.directContextId ?? friend.id }
 function friendStatus(friend: AccountFriendBalance): string {
-  if (friend.pending) return 'Invitation pending'
+  if (friend.pending) return t('home.invitationPending')
   const count = new Set(friend.breakdowns.map(({ contextId }) => contextId)).size
-  if (count === 0 && (friend as FriendListItem).unavailableContexts?.length) return balancesLoading.value ? 'Updating balance…' : 'Balance unavailable'
-  if ((friend as FriendListItem).unavailableContexts?.length) return `Across ${count} ${count === 1 ? 'shared context' : 'shared contexts'} · some unavailable`
-  return `Across ${count} ${count === 1 ? 'shared context' : 'shared contexts'}`
+  if (count === 0 && (friend as FriendListItem).unavailableContexts?.length) return balancesLoading.value ? t('home.updatingBalances') : t('home.balanceUnavailable')
+  const unavailable = Boolean((friend as FriendListItem).unavailableContexts?.length)
+  const key = unavailable
+    ? count === 1 ? 'friends.contextUnavailable.one' : 'friends.contextUnavailable.other'
+    : count === 1 ? 'friends.context.one' : 'friends.context.other'
+  return t(key, { count })
 }
 function direction(position: SignedCurrencyPosition | FriendBalanceBreakdown): DebtDirection { return position.minorAmount > 0 ? 'owed' : position.minorAmount < 0 ? 'owing' : 'settled' }
-function directionLabel(position: SignedCurrencyPosition | FriendBalanceBreakdown): string { return position.minorAmount > 0 ? 'owes you' : position.minorAmount < 0 ? 'you owe' : 'settled' }
+function directionLabel(position: SignedCurrencyPosition | FriendBalanceBreakdown): string { return position.minorAmount > 0 ? t('home.direction.owesYou') : position.minorAmount < 0 ? t('home.direction.youOwe') : t('home.direction.settled') }
 function absolute<T extends SignedCurrencyPosition | FriendBalanceBreakdown>(position: T): T { return { ...position, minorAmount: Math.abs(position.minorAmount) } }
 function initialsFor(displayName: string): string { return displayName.trim().split(/\s+/u).filter(Boolean).slice(0, 2).map((part) => part.slice(0, 1).toUpperCase()).join('') || '?' }
 
 async function createFriend(): Promise<void> {
   const name = displayName.value.trim()
-  if (!name) { createError.value = 'Enter your friend’s name.'; return }
-  if (!email.value.trim()) { createError.value = 'Enter the email your friend uses for Split Unwise.'; return }
-  creating.value = true; createError.value = ''; notice.value = ''
   try {
+    if (!name) throw new ApplicationError('friends.error.enterName')
+    if (!email.value.trim()) throw new ApplicationError('friends.error.enterEmail')
+    creating.value = true; createError.value = undefined; notice.value = undefined
     const runtime = getActiveRuntimeConfiguration()
-    if (session.repository.mode !== 'firebase' || runtime.kind !== 'firebase') throw new Error('Sign in to add a friend.')
+    if (session.repository.mode !== 'firebase' || runtime.kind !== 'firebase') throw new ApplicationError('friends.error.firebaseNotReady')
     const result = await createSparkFriendship(runtime.firebase, {
       operationId: createClientOperationId('friend'), displayName: name, email: email.value, currency: currency.value,
       canonicalOrigin: String(import.meta.env.VITE_CANONICAL_ORIGIN ?? 'https://split-unwise-aditya.web.app'),
@@ -124,19 +129,18 @@ async function createFriend(): Promise<void> {
       return
     }
     invitation.value = result.invitation
-    notice.value = `Private invitation ready for ${result.invitation.targetEmail}.`
+    notice.value = { kind: 'application', key: 'friends.status.readyFor', values: { email: result.invitation.targetEmail ?? email.value } }
     showingCreate.value = false
     await store.loadOverview()
     if (currentUser.value) await balanceStore.load(groups.value, currentUser.value.id, { force: true })
   } catch (reason) {
-    createError.value = reason instanceof Error ? reason.message : 'Your friend could not be added.'
+    createError.value = displayMessageFor(reason, 'friends.error.addFailed')
   } finally { creating.value = false }
 }
 
 async function shareInvitation(): Promise<void> {
   if (!invitation.value) return
-  const result = await sharePreparedInvitation(invitation.value.link)
-  notice.value = result.status === 'shared' ? 'Invitation shared.' : result.status === 'copied' ? 'Invitation copied.' : result.status === 'cancelled' ? 'Sharing cancelled.' : 'Select and copy the invitation link.'
+  await sharePreparedInvitation(invitation.value.link)
 }
 </script>
 
@@ -144,38 +148,38 @@ async function shareInvitation(): Promise<void> {
   <ion-page>
     <ion-header translucent>
       <ion-toolbar>
-        <ion-title>Friends</ion-title>
-        <ion-buttons slot="end"><ion-button aria-label="Add friend" @click="showingCreate = !showingCreate"><ion-icon :icon="add" aria-hidden="true" /></ion-button></ion-buttons>
+        <ion-title>{{ t('friends.title') }}</ion-title>
+        <ion-buttons slot="end"><ion-button :aria-label="t('friends.add')" @click="showingCreate = !showingCreate"><ion-icon :icon="add" aria-hidden="true" /></ion-button></ion-buttons>
       </ion-toolbar>
     </ion-header>
     <ion-content :fullscreen="true">
       <main class="friends-page">
         <div class="friends-page__heading">
           <span class="friends-page__icon" aria-hidden="true"><ion-icon :icon="peopleOutline" /></span>
-          <div><p>FRIEND BALANCES</p><h1>Friends</h1></div>
+          <div><p>{{ t('friends.eyebrow') }}</p><h1>{{ t('friends.title') }}</h1></div>
         </div>
-        <p class="friends-page__intro">See what you owe each person across direct expenses and every shared group.</p>
+        <p class="friends-page__intro">{{ t('friends.intro') }}</p>
 
         <form v-if="showingCreate" class="friend-form" @submit.prevent="createFriend">
-          <label><span>Friend’s name</span><input v-model="displayName" autocomplete="name" maxlength="120" placeholder="Jordan Lee"></label>
-          <label><span>Email</span><input v-model="email" type="email" inputmode="email" autocomplete="email" placeholder="jordan@example.com"></label>
-          <label><span>Currency</span><select v-model="currency"><option v-for="code in SUPPORTED_CURRENCIES" :key="code" :value="code">{{ code }}</option></select></label>
-          <p v-if="createError" role="alert">{{ createError }}</p>
-          <div class="friend-form__actions"><ion-button type="button" fill="clear" @click="showingCreate = false">Cancel</ion-button><ion-button type="submit" shape="round" :disabled="creating">{{ creating ? 'Adding…' : 'Add friend' }}</ion-button></div>
+          <label><span>{{ t('friends.name') }}</span><input v-model="displayName" autocomplete="name" maxlength="120" :placeholder="t('friends.namePlaceholder')"></label>
+          <label><span>{{ t('auth.email') }}</span><input v-model="email" type="email" inputmode="email" autocomplete="email" :placeholder="t('friends.emailPlaceholder')"></label>
+          <label><span>{{ t('groups.currency') }}</span><select v-model="currency"><option v-for="code in SUPPORTED_CURRENCIES" :key="code" :value="code">{{ code }}</option></select></label>
+          <p v-if="createErrorCopy" role="alert">{{ createErrorCopy }}</p>
+          <div class="friend-form__actions"><ion-button type="button" fill="clear" @click="showingCreate = false">{{ t('groups.cancel') }}</ion-button><ion-button type="submit" shape="round" :disabled="creating">{{ creating ? t('friends.adding') : t('friends.add') }}</ion-button></div>
         </form>
 
         <section v-if="invitation" class="invitation-ready" aria-labelledby="friend-invitation-title">
-          <div><h2 id="friend-invitation-title">Invitation ready</h2><p>Send this private seven-day link to {{ invitation.targetEmail }}.</p></div>
-          <ion-button shape="round" @click="shareInvitation"><ion-icon slot="start" :icon="copyOutline" />Share link</ion-button>
+          <div><h2 id="friend-invitation-title">{{ t('friends.invitationReady') }}</h2><p>{{ t('friends.sendPrivateLink', { email: invitation.targetEmail ?? email }) }}</p></div>
+          <ion-button shape="round" @click="shareInvitation"><ion-icon slot="start" :icon="copyOutline" />{{ t('friends.shareLink') }}</ion-button>
         </section>
-        <p v-if="notice" class="friends-page__notice" role="status" aria-live="polite">{{ notice }}</p>
-        <p v-if="isLoading" role="status">Loading friends…</p>
+        <p v-if="noticeCopy" class="friends-page__notice" role="status" aria-live="polite">{{ noticeCopy }}</p>
+        <p v-if="isLoading" role="status">{{ t('friends.loading') }}</p>
         <p v-else-if="groupError" role="alert">{{ groupError }}</p>
         <section v-else aria-labelledby="friend-list-title">
-          <div class="section-title"><h2 id="friend-list-title">Your friends</h2><span>{{ friends.length }}</span></div>
+          <div class="section-title"><h2 id="friend-list-title">{{ t('friends.yourFriends') }}</h2><span>{{ friends.length }}</span></div>
           <p v-if="balanceNoticeCopy" class="friends-page__balance-notice" role="status">{{ balanceNoticeCopy }}</p>
           <div v-if="balancesLoading && friends.length === 0" class="friend-skeletons" aria-hidden="true"><ion-skeleton-text animated /><ion-skeleton-text animated /><ion-skeleton-text animated /></div>
-          <p v-else-if="friends.length === 0" class="empty-friends">No shared balances yet. Add a friend or join a group to get started.</p>
+          <p v-else-if="friends.length === 0" class="empty-friends">{{ t('friends.empty') }}</p>
           <ion-list v-else class="friend-list" lines="none">
             <div v-for="friend in friends" :key="friend.id" class="friend-entry">
               <ion-item
@@ -192,19 +196,19 @@ async function shareInvitation(): Promise<void> {
                   <div v-if="friend.positions.length" class="friend-row__amounts">
                     <MoneyAmount v-for="position in friend.positions" :key="position.currency" :money="absolute(position)" :direction="direction(position)" :label="directionLabel(position)" />
                   </div>
-                  <ion-note v-else class="friend-row__unavailable">{{ balancesLoading ? 'Updating…' : 'Unavailable' }}</ion-note>
+                  <ion-note v-else class="friend-row__unavailable">{{ balancesLoading ? t('friends.updating') : t('friends.unavailable') }}</ion-note>
                   <ion-icon :icon="expandedFriendId === friend.id ? chevronUp : chevronDown" aria-hidden="true" />
                 </div>
               </ion-item>
               <div v-if="expandedFriendId === friend.id" class="friend-breakdown" :data-breakdown-for="friend.id">
                 <router-link v-for="item in friend.breakdowns" :key="`${item.contextId}:${item.currency}`" class="friend-breakdown__link" :to="`/tabs/groups/${encodeURIComponent(item.contextId)}`">
-                  <span><strong>{{ item.contextName }}</strong><small>{{ item.contextKind === 'friendship' ? (friend.pending ? 'Invitation' : 'Direct expenses') : 'Shared group' }}</small></span>
+                  <span><strong>{{ item.contextName }}</strong><small>{{ item.contextKind === 'friendship' ? (friend.pending ? t('home.invitationPending') : t('friends.directExpenses')) : t('friends.sharedGroup') }}</small></span>
                   <MoneyAmount :money="absolute(item)" :direction="direction(item)" :label="directionLabel(item)" />
                   <ion-icon :icon="chevronForward" aria-hidden="true" />
                 </router-link>
                 <router-link v-for="item in friend.unavailableContexts" :key="`unavailable:${item.contextId}`" class="friend-breakdown__link" :to="`/tabs/groups/${encodeURIComponent(item.contextId)}`">
-                  <span><strong>{{ item.contextName }}</strong><small>{{ friend.pending ? 'Invitation' : 'Direct expenses' }}</small></span>
-                  <small class="friend-breakdown__unavailable">{{ balancesLoading ? 'Updating balance…' : 'Balance unavailable' }}</small>
+                  <span><strong>{{ item.contextName }}</strong><small>{{ friend.pending ? t('home.invitationPending') : t('friends.directExpenses') }}</small></span>
+                  <small class="friend-breakdown__unavailable">{{ balancesLoading ? t('home.updatingBalances') : t('home.balanceUnavailable') }}</small>
                   <ion-icon :icon="chevronForward" aria-hidden="true" />
                 </router-link>
               </div>
