@@ -105,6 +105,7 @@ describe('hosted bundle proof contract', () => {
     expect(browser).toContain("'German Account deletion card at 320px'")
     expect(browser).toContain("getByTestId('account-deletion-modal')")
     expect(browser).toContain("getAnimations({ subtree: true })")
+    expect(browser).toContain("setTimeout(() => reject(new Error('Hosted account deletion modal animations did not settle.')), 5_000)")
   })
 
   it('proves a cold offline reload and then requires unseen server data after reconnecting', () => {

@@ -344,7 +344,14 @@ async function verifyLanguagePreference(page) {
       await deletionCard.waitFor({ state: 'visible' })
       await deletionCard.evaluate(async (element) => {
         const modal = element.closest('ion-modal')
-        await Promise.all((modal?.getAnimations({ subtree: true }) ?? []).map((animation) => animation.finished.catch(() => undefined)))
+        const animations = modal?.getAnimations({ subtree: true }) ?? []
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Hosted account deletion modal animations did not settle.')), 5_000)
+          Promise.all(animations.map((animation) => animation.finished.catch(() => undefined))).then(() => {
+            clearTimeout(timeout)
+            resolve(undefined)
+          })
+        })
       })
       await assertNoHorizontalOverflow(page, 'German Account deletion card at 320px')
       await page.setViewportSize({ width: 390, height: 844 })
