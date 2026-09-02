@@ -43,6 +43,10 @@ async function verifyDeployedBundle() {
   requireResponse(rootResponse, 'root shell')
   requireResponse(deepResponse, 'deep-route shell')
 
+  const contentSecurityPolicy = rootResponse.headers.get('content-security-policy') ?? ''
+  if (!contentSecurityPolicy.includes("script-src 'self' 'wasm-unsafe-eval'")) throw new Error('Hosted CSP does not allow the self-hosted WebAssembly receipt scanner.')
+  if (/(?:^|\s)'unsafe-eval'(?:;|\s|$)/.test(contentSecurityPolicy)) throw new Error('Hosted CSP grants unrestricted script evaluation instead of the narrow WebAssembly permission.')
+
   const build = await buildResponse.json()
   if (build?.app !== 'Split Unwise' || build?.commit !== expectedCommit) {
     throw new Error(`Hosted build metadata does not match expected deployed commit ${expectedCommit}.`)
@@ -63,6 +67,17 @@ async function verifyDeployedBundle() {
     if (!response.headers.get('content-type')?.includes(expectedType)) throw new Error(`Hosted startup asset returned the wrong content type: ${new URL(assetUrl).pathname}`)
     if ((await response.arrayBuffer()).byteLength === 0) throw new Error(`Hosted startup asset was empty: ${new URL(assetUrl).pathname}`)
   }))
+
+  for (const [pathname, expectedType] of [
+    ['/ocr/worker.min.js', 'javascript'],
+    ['/ocr/lang/eng.traineddata.gz', 'application/gzip'],
+    ['/ocr/core/tesseract-core-simd-lstm.wasm', 'application/wasm'],
+  ]) {
+    const response = await fetch(new URL(pathname, hostedOrigin), noStore)
+    requireResponse(response, pathname)
+    if (!response.headers.get('content-type')?.includes(expectedType)) throw new Error(`Hosted OCR asset returned the wrong content type: ${pathname}`)
+    if ((await response.arrayBuffer()).byteLength === 0) throw new Error(`Hosted OCR asset was empty: ${pathname}`)
+  }
 }
 
 async function verifyAuthenticatedMobileJourney() {

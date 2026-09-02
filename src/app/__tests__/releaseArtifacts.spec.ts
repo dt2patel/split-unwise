@@ -56,6 +56,8 @@ describe('PWA and Hosting release contracts', () => {
     expect(global?.get('Cross-Origin-Opener-Policy')).toBe('same-origin-allow-popups')
     expect(global?.get('Content-Security-Policy')).toContain("frame-ancestors 'none'")
     expect(global?.get('Content-Security-Policy')).toContain('https://api.frankfurter.dev')
+    expect(global?.get('Content-Security-Policy')).toContain("script-src 'self' 'wasm-unsafe-eval'")
+    expect(global?.get('Content-Security-Policy')).not.toMatch(/(?:^|\s)'unsafe-eval'(?:;|\s|$)/)
   })
 })
 
