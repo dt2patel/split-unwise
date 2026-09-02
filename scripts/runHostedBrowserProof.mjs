@@ -1024,7 +1024,7 @@ async function verifyInvitationVerificationGate(browser, invitationUrl) {
     const recovery = page.locator('[data-testid="invitation-verification-required"]')
     await recovery.getByText('Email verification required', { exact: true }).waitFor({ state: 'visible' })
     await recovery.getByRole('button', { name: 'Resend verification email', exact: true }).waitFor({ state: 'visible' })
-    await recovery.getByRole('button', { name: 'I’ve verified my email', exact: true }).waitFor({ state: 'visible' })
+    await recovery.getByRole('button', { name: "I've verified my email", exact: true }).waitFor({ state: 'visible' })
     if (!(await recovery.textContent())?.includes(unverifiedEmail)) throw new Error('Hosted verification recovery did not identify the invited account.')
     assertPageClean()
   } finally {

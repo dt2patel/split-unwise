@@ -207,4 +207,17 @@ describe('hosted bundle proof contract', () => {
     expect(contract).toContain(awaitedLocaleClick('es'))
     expect(contract).toContain(awaitedLocaleClick('en'))
   })
+
+  it('requires the straight-apostrophe verification action locator in the unverified recovery helper', () => {
+    const browser = readFileSync(resolve(process.cwd(), 'scripts/runHostedBrowserProof.mjs'), 'utf8')
+    const start = browser.indexOf('async function verifyInvitationVerificationGate(')
+    const end = browser.indexOf('\nasync function ', start + 1)
+    expect(start, 'missing hosted proof helper verifyInvitationVerificationGate').toBeGreaterThanOrEqual(0)
+    const recoveryHelper = browser.slice(start, end === -1 ? undefined : end)
+    const straightApostropheLocator = `getByRole('button', { name: "I've verified my email", exact: true })`
+    const curlyApostropheLocator = "getByRole('button', { name: 'I’ve verified my email', exact: true })"
+
+    expect(recoveryHelper).toContain(straightApostropheLocator)
+    expect(recoveryHelper).not.toContain(curlyApostropheLocator)
+  })
 })
