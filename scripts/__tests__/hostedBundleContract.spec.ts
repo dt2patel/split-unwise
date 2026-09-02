@@ -143,14 +143,14 @@ describe('hosted bundle proof contract', () => {
       'await page.setViewportSize({ width: 390, height: 844 })',
     ], 'Spanish Friends proof')
     expectInOrder(invitationPreparation, [
-      "[data-locale=\"es\"] ion-radio",
+      `await page.locator('[data-locale="es"] ion-radio').click()`,
       "document.documentElement.lang === 'es'",
       "name: 'Invitar a Live Account Proof', exact: true",
       "name: 'Preparar invitación', exact: true",
       'aria-label="URL de invitación preparada"',
       "await assertNoHorizontalOverflow(page, 'Spanish invitation preparation at 390px')",
       "name: 'Idioma de la app', exact: true",
-      "[data-locale=\"en\"] ion-radio",
+      `await page.locator('[data-locale="en"] ion-radio').click()`,
       "name: 'App language', exact: true",
       "getAttribute('lang') !== 'en'",
     ], 'Spanish invitation preparation')
@@ -176,5 +176,17 @@ describe('hosted bundle proof contract', () => {
       'await verifyInvitationAcceptance(browser, verifiedInvitationUrl)',
       'await verifyInvitationVerificationGate(browser, unverifiedInvitationUrl)',
     ], 'authenticated hosted journey')
+  })
+
+  it('requires the structural invitation contract to assert both awaited locale clicks', () => {
+    const contract = readFileSync(resolve(process.cwd(), 'scripts/__tests__/hostedBundleContract.spec.ts'), 'utf8')
+    const awaitedLocaleClick = (locale: 'es' | 'en') => [
+      'await page.locator(',
+      `'[data-locale="${locale}"] ion-radio'`,
+      ').click()',
+    ].join('')
+
+    expect(contract).toContain(awaitedLocaleClick('es'))
+    expect(contract).toContain(awaitedLocaleClick('en'))
   })
 })
