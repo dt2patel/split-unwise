@@ -1,4 +1,5 @@
 import type { RuntimeCapabilities } from '../../data/firebase'
+import type { AccountDeletionProgress } from '../../data/firebaseAccountDeletion'
 
 export interface AuthIdentity {
   readonly uid: string
@@ -17,6 +18,11 @@ export type AuthState =
 
 export type AuthActionResult = { readonly status: 'complete' } | { readonly status: 'cancelled' } | { readonly status: 'redirecting' }
 
+export interface AccountDeletionInput {
+  readonly password?: string
+  readonly onProgress?: (progress: AccountDeletionProgress) => void
+}
+
 export interface AuthService {
   readonly mode: 'demo' | 'firebase'
   readonly capabilities: RuntimeCapabilities
@@ -28,6 +34,7 @@ export interface AuthService {
   sendPasswordReset(email: string): Promise<void>
   sendVerification(): Promise<void>
   refreshIdentity(): Promise<AuthIdentity | undefined>
+  deleteAccount(input: AccountDeletionInput): Promise<void>
   signOut(): Promise<void>
   reportSessionError?(message: string): void
   dispose(): void
@@ -61,6 +68,7 @@ function staticService(state: AuthState, capabilities: RuntimeCapabilities): Aut
     async sendPasswordReset() {},
     async sendVerification() {},
     async refreshIdentity() { return state.status === 'signed-in' ? state.identity : undefined },
+    async deleteAccount() { throw new Error('Demo mode uses a fixed local identity') },
     async signOut() { throw new Error('Demo mode uses a fixed local identity') },
     reportSessionError() {},
     dispose() {},
