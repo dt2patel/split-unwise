@@ -13,7 +13,7 @@ import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAdd
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
-import { assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense } from '@split-unwise/shared'
+import { assertGroupCoverImageUrl, assertSplitMatchesAllocations, parseExecuteCommandRequest, validateLedgerExpense, type GroupCoverImageUrl } from '@split-unwise/shared'
 
 export interface FirebaseIdentity {
   readonly uid: string
@@ -930,7 +930,7 @@ function profileInitials(displayName: string): string {
   return displayName.split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('').slice(0, 4) || 'SU'
 }
 
-export function normalizeSparkGroup(input: { readonly operationId: string; readonly kind?: ExpenseContextKind; readonly name: string; readonly currency: string }): { readonly groupId: string; readonly kind: ExpenseContextKind; readonly name: string; readonly currency: string } {
+export function normalizeSparkGroup(input: { readonly operationId: string; readonly kind?: ExpenseContextKind; readonly name: string; readonly currency: string; readonly coverImageUrl?: GroupCoverImageUrl }): { readonly groupId: string; readonly kind: ExpenseContextKind; readonly name: string; readonly currency: string; readonly coverImageUrl?: GroupCoverImageUrl } {
   if (!isStrictId(input.operationId)) throw new Error('Group operation ID is invalid.')
   const groupId = `grp-${input.operationId}`
   if (!isStrictId(groupId)) throw new Error('Group operation ID is too long.')
@@ -940,7 +940,8 @@ export function normalizeSparkGroup(input: { readonly operationId: string; reado
   if (kind !== 'group' && kind !== 'friendship') throw new Error('Expense context kind is invalid.')
   const currency = input.currency.trim().toUpperCase()
   try { assertCurrencyCode(currency) } catch { throw new Error('Choose a supported group currency.') }
-  return { groupId, kind, name, currency }
+  if (input.coverImageUrl !== undefined) assertGroupCoverImageUrl(input.coverImageUrl)
+  return { groupId, kind, name, currency, ...(input.coverImageUrl ? { coverImageUrl: input.coverImageUrl } : {}) }
 }
 
 export async function buildSparkInvitation(input: { readonly groupId: string; readonly canonicalOrigin: string; readonly targetEmail?: string; readonly now?: Date; readonly random?: (bytes: Uint8Array) => void }): Promise<PreparedInvitation & { readonly secret: string }> {
@@ -1005,7 +1006,7 @@ async function firebaseProfileSyncOperationId(uid: string, profile: FirebaseProf
   return `auth-profile-${token}`
 }
 
-export async function createSparkGroup(configuration: FirebaseConfiguration, input: { readonly operationId: string; readonly kind?: ExpenseContextKind; readonly name: string; readonly currency: string }): Promise<{ readonly groupId: string }> {
+export async function createSparkGroup(configuration: FirebaseConfiguration, input: { readonly operationId: string; readonly kind?: ExpenseContextKind; readonly name: string; readonly currency: string; readonly coverImageUrl?: GroupCoverImageUrl }): Promise<{ readonly groupId: string }> {
   const normalized = normalizeSparkGroup(input)
   const app = await getSplitUnwiseFirebaseApp(configuration)
   const auth = getAuth(app)
@@ -1017,7 +1018,8 @@ export async function createSparkGroup(configuration: FirebaseConfiguration, inp
   const profile = requireProfile(profileSnapshot.data())
   const batch = writeBatch(db)
   batch.set(doc(db, `groups/${normalized.groupId}`), {
-    id: normalized.groupId, kind: normalized.kind, name: normalized.name, currency: normalized.currency, memberIds: [user.uid], createdByUid: user.uid,
+    id: normalized.groupId, kind: normalized.kind, name: normalized.name, currency: normalized.currency,
+    ...(normalized.coverImageUrl ? { coverImageUrl: normalized.coverImageUrl } : {}), memberIds: [user.uid], createdByUid: user.uid,
     createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
   })
   batch.set(doc(db, `groups/${normalized.groupId}/members/${user.uid}`), {

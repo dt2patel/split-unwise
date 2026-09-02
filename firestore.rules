@@ -1090,10 +1090,13 @@ service cloud.firestore {
 
     function validNewGroup(groupId, data) {
       return signedIn() && strictId(groupId)
-        && data.keys().hasOnly(['id', 'kind', 'name', 'currency', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'kind', 'name', 'currency', 'coverImageUrl', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
         && data.keys().hasAll(['id', 'kind', 'name', 'currency', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
         && data.id == groupId && data.kind in ['group', 'friendship'] && validName(data.name)
         && data.currency is string && data.currency.matches('^[A-Z]{3}$')
+        && (!('coverImageUrl' in data) || data.coverImageUrl in [
+          '/covers/group-trip.jpg', '/covers/group-home.jpg', '/covers/group-couple.jpg', '/covers/group-other.jpg'
+        ])
         && data.memberIds == [request.auth.uid] && data.createdByUid == request.auth.uid
         && data.createdAt == request.time && data.updatedAt == request.time;
     }

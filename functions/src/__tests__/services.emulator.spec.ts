@@ -70,6 +70,27 @@ suite('Firebase services against the emulators', () => {
     expect((await db.doc(`groups/${String(first.groupId)}`).get()).data()).toMatchObject({ kind: 'group' })
   })
 
+  it('stores an allowlisted cover with a newly created group and rejects remote cover URLs', async () => {
+    const request = {
+      schemaVersion: 1 as const,
+      operationId: 'covered-group-create',
+      name: 'Covered trip',
+      currency: 'USD',
+      coverImageUrl: '/covers/group-trip.jpg',
+    }
+    const result = await createGroupService(db, 'owner', request, new Date('2026-09-01T12:00:00.000Z'))
+
+    expect((await db.doc(`groups/${String(result.groupId)}`).get()).data()).toMatchObject({
+      name: 'Covered trip',
+      coverImageUrl: '/covers/group-trip.jpg',
+    })
+    await expect(createGroupService(db, 'owner', {
+      ...request,
+      operationId: 'remote-cover-create',
+      coverImageUrl: 'https://example.com/tracker.jpg',
+    }, new Date('2026-09-01T12:01:00.000Z'))).rejects.toMatchObject({ code: 'invalid-argument' })
+  })
+
   it('validates job authorization and type-specific inputs before creating a private idempotent job', async () => {
     await db.doc('groups/group-a/assets/receipt-a').set({ status: 'ready', groupId: 'group-a', ownerUid: 'owner' })
     const ocrRequest = { schemaVersion: 1, operationId: 'ocr-operation', groupId: 'group-a', assetId: 'receipt-a' }

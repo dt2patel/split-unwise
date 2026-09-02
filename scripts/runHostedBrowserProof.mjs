@@ -28,7 +28,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, authenticated mobile group, Add Expense, atomic cross-group expense move, and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, native group-creation card modal with built-in covers, authenticated mobile group, Add Expense, atomic cross-group expense move, and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -79,9 +79,16 @@ async function verifyAuthenticatedMobileJourney() {
     await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
     await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
     await verifyAccountBalanceDashboard(page)
+    await verifyCreateGroupCardModal(page)
 
     const groupLink = page.getByRole('link', { name: /Live Account Proof/ }).first()
     await groupLink.waitFor({ state: 'visible' })
+    const groupCover = groupLink.locator('img')
+    await groupCover.waitFor({ state: 'visible' })
+    if (await groupCover.getAttribute('src') !== '/covers/group-trip.jpg'
+      || !(await groupCover.evaluate((element) => element.complete && element.naturalWidth > 0))) {
+      throw new Error('Hosted group list did not render the persisted built-in cover.')
+    }
     await groupLink.click()
     await page.waitForURL(deepUrl)
     const activeGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
@@ -144,6 +151,43 @@ async function verifyAuthenticatedMobileJourney() {
   } finally {
     await browser.close()
   }
+}
+
+async function verifyCreateGroupCardModal(page) {
+  await page.goto(new URL('/tabs/groups', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Groups', exact: true }).waitFor({ state: 'visible' })
+  await page.getByRole('button', { name: 'Create group', exact: true }).click()
+  const modal = page.locator('ion-modal.show-modal')
+  await modal.waitFor({ state: 'visible' })
+  await modal.getByRole('heading', { name: 'Create a group', exact: true }).waitFor({ state: 'visible' })
+  if (!(await modal.evaluate((element) => element.classList.contains('modal-card')))) throw new Error('Hosted group creator did not use the Ionic iOS card modal.')
+
+  const coverGroup = modal.getByRole('group', { name: 'Group cover' })
+  const expected = [
+    ['Trip Travel and weekends', '/covers/group-trip.jpg'],
+    ['Home Rent and household bills', '/covers/group-home.jpg'],
+    ['Couple Everyday shared costs', '/covers/group-couple.jpg'],
+    ['Other Friends, events, and more', '/covers/group-other.jpg'],
+  ]
+  for (const [name, source] of expected) {
+    const choice = coverGroup.getByRole('button', { name, exact: true })
+    await choice.waitFor({ state: 'visible' })
+    const image = choice.locator('img')
+    if (await image.getAttribute('src') !== source || !(await image.evaluate((element) => element.complete && element.naturalWidth > 0))) {
+      throw new Error(`Hosted group creator did not render ${source}.`)
+    }
+  }
+  const trip = coverGroup.getByRole('button', { name: expected[0][0], exact: true })
+  const home = coverGroup.getByRole('button', { name: expected[1][0], exact: true })
+  if (await trip.getAttribute('aria-pressed') !== 'true') throw new Error('Hosted group creator did not select the Trip cover by default.')
+  await home.click()
+  if (await home.getAttribute('aria-pressed') !== 'true') throw new Error('Hosted group creator did not retain the selected cover.')
+  await trip.click()
+
+  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (overflow > 1) throw new Error(`Hosted group creator overflowed the 390px mobile viewport by ${overflow}px.`)
+  await modal.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await modal.waitFor({ state: 'hidden' })
 }
 
 async function verifyAccountBalanceDashboard(page) {

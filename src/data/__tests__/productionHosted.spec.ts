@@ -63,7 +63,9 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   await updateProfile(owner.user, { displayName: 'Live Original Owner' })
   await bootstrapFirebaseProfile(configuration, owner.user)
   await synchronizeFirebaseProfile(configuration, owner.user)
-  const group = await createSparkGroup(configuration, { operationId: `live-${suffix}`, name: 'Live Account Proof', currency: 'USD' })
+  const group = await createSparkGroup(configuration, {
+    operationId: `live-${suffix}`, name: 'Live Account Proof', currency: 'USD', coverImageUrl: '/covers/group-trip.jpg',
+  })
   console.log('LIVE_PROOF_RESOURCE', JSON.stringify({ ownerUid, groupId: group.groupId }))
   await expect(getDoc(doc(db, `groups/${group.groupId}`))).resolves.toMatchObject({ exists: expect.any(Function) })
   const invitation = await createSparkInvitation(configuration, { groupId: group.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
@@ -81,7 +83,7 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   const thirdToken = new URL(thirdInvitation.link).hash.slice('#token='.length)
   console.log('LIVE_PROOF_RESOURCE', JSON.stringify({ thirdInvitationId: thirdInvitation.invitationId }))
   await expect(createFirebaseRepository(configuration, ownerUid).groups.list()).resolves.toEqual(expect.arrayContaining([
-    expect.objectContaining({ id: group.groupId, kind: 'group' }),
+    expect.objectContaining({ id: group.groupId, kind: 'group', coverImageUrl: '/covers/group-trip.jpg' }),
     expect.objectContaining({ id: friendship.groupId, kind: 'friendship', memberIds: [ownerUid] }),
   ]))
 
@@ -127,7 +129,7 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   await expect(getDoc(doc(db, `groups/${ledgerGroupId}/members/${friendUid}`))).resolves.toMatchObject({ exists: expect.any(Function) })
   await expect(getDocs(query(collection(db, `groups/${ledgerGroupId}/members`), limit(100)))).resolves.toMatchObject({ size: 2 })
   await expect(friendRepository.groups.list()).resolves.toEqual(expect.arrayContaining([
-    expect.objectContaining({ id: group.groupId, name: 'Live Account Proof' }),
+    expect.objectContaining({ id: group.groupId, name: 'Live Account Proof', coverImageUrl: '/covers/group-trip.jpg' }),
     expect.objectContaining({ id: ledgerGroupId, kind: 'friendship', name: 'Live Renamed Owner' }),
   ]))
   await expect(friendRepository.groups.listMembers(ledgerGroupId)).resolves.toEqual(expect.arrayContaining([

@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import { FieldValue, type Firestore, type DocumentData } from 'firebase-admin/firestore'
 import type { Storage } from 'firebase-admin/storage'
 import { z } from 'zod'
-import { assertCurrencyCode, canonicalize } from '@split-unwise/shared'
+import { assertCurrencyCode, canonicalize, GROUP_COVER_IMAGE_URLS } from '@split-unwise/shared'
 import { LedgerError, executeLedgerCommand, nextOccurrence } from './ledger.js'
 
 const id = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/)
@@ -132,7 +132,11 @@ export async function bootstrapProfileService(db: Firestore, uid: string, identi
   })
 }
 
-const createGroupSchema = z.strictObject({ schemaVersion: z.literal(1), operationId, kind: z.enum(['group', 'friendship']).optional(), name: z.string().trim().min(1).max(120), currency: z.string().length(3).toUpperCase() })
+const createGroupSchema = z.strictObject({
+  schemaVersion: z.literal(1), operationId, kind: z.enum(['group', 'friendship']).optional(),
+  name: z.string().trim().min(1).max(120), currency: z.string().length(3).toUpperCase(),
+  coverImageUrl: z.enum(GROUP_COVER_IMAGE_URLS).optional(),
+})
 export async function createGroupService(db: Firestore, uid: string, raw: unknown, now = new Date()): Promise<DocumentData> {
   const input = parse(createGroupSchema, raw)
   try { assertCurrencyCode(input.currency) } catch { throw new LedgerError('invalid-argument', 'Group currency must be a supported ISO 4217 code.') }
@@ -148,7 +152,11 @@ export async function createGroupService(db: Firestore, uid: string, raw: unknow
       if (data.kind !== 'group.create' || data.requestHash !== hash) throw new LedgerError('already-exists', 'This operation ID was already used.')
       return data.result
     }
-    const group = { id: groupId, kind: input.kind ?? 'group', name: input.name, currency: input.currency, memberIds: [uid], createdAt: now.toISOString(), createdByUid: uid, updatedAt: now.toISOString() }
+    const group = {
+      id: groupId, kind: input.kind ?? 'group', name: input.name, currency: input.currency,
+      ...(input.coverImageUrl ? { coverImageUrl: input.coverImageUrl } : {}),
+      memberIds: [uid], createdAt: now.toISOString(), createdByUid: uid, updatedAt: now.toISOString(),
+    }
     const result = { status: 'created', groupId }
     transaction.create(db.doc(`groups/${groupId}`), group)
     const profileData = profile.data()!

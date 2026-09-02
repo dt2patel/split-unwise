@@ -42,6 +42,26 @@ describe('Firebase Spark mutations', () => {
     expect(() => normalizeSparkGroup({ operationId: 'bad-kind-12345678', kind: 'household' as never, name: 'Trip', currency: 'USD' })).toThrow('kind')
   })
 
+  it('persists only an allowlisted built-in cover on a new group', () => {
+    const covered = normalizeSparkGroup({
+      operationId: 'covered-12345678-1234-1234-1234-123456789012',
+      name: 'Chicago Weekend',
+      currency: 'usd',
+      coverImageUrl: '/covers/group-trip.jpg',
+    } as Parameters<typeof normalizeSparkGroup>[0])
+
+    expect(covered).toEqual({
+      groupId: 'grp-covered-12345678-1234-1234-1234-123456789012',
+      kind: 'group',
+      name: 'Chicago Weekend',
+      currency: 'USD',
+      coverImageUrl: '/covers/group-trip.jpg',
+    })
+    expect(() => normalizeSparkGroup({
+      operationId: 'remote-cover-12345678', name: 'Remote cover', currency: 'USD', coverImageUrl: 'https://example.com/tracker.jpg',
+    } as unknown as Parameters<typeof normalizeSparkGroup>[0])).toThrow('cover')
+  })
+
   it('makes the SHA-256 capability document ID match the private fragment token', async () => {
     const invitation = await buildSparkInvitation({ groupId: 'group-a', canonicalOrigin: 'https://split-unwise-aditya.web.app', random: fill, now: new Date('2026-09-01T00:00:00.000Z') })
     expect(invitation.capability).toBe('firebase-client')

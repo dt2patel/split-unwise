@@ -117,6 +117,14 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(commitGroupBundle(owner, 'group-forged', 'new-owner', 'New Owner', 'NO', ['new-owner', 'victim']))
   })
 
+  emulatorIt('allows only built-in group cover paths during owner bootstrap', async () => {
+    const owner = environment.authenticatedContext('cover-owner').firestore()
+    await assertSucceeds(setDoc(doc(owner, 'users/cover-owner'), profile('Cover Owner', 'CO')))
+    await assertSucceeds(commitGroupBundle(owner, 'group-covered', 'cover-owner', 'Cover Owner', 'CO', ['cover-owner'], 'group', '/covers/group-home.jpg'))
+    expect((await getDoc(doc(owner, 'groups/group-covered'))).data()).toMatchObject({ coverImageUrl: '/covers/group-home.jpg' })
+    await assertFails(commitGroupBundle(owner, 'group-remote-cover', 'cover-owner', 'Cover Owner', 'CO', ['cover-owner'], 'group', 'https://example.com/tracker.jpg'))
+  })
+
   emulatorIt('supports a private invitation that adds a second signed-in user atomically', async () => {
     const owner = environment.authenticatedContext('new-owner', { email: 'owner@example.com', email_verified: true }).firestore()
     const invitee = environment.authenticatedContext('invitee', { email: 'friend@example.com', email_verified: true }).firestore()
@@ -757,14 +765,14 @@ function sparkNotificationReadCursor(revision: number, operationId: string, toke
   }
 }
 
-function group(groupId: string, ownerUid: string, memberIds: readonly string[], kind: 'group' | 'friendship' = 'group'): Record<string, unknown> {
-  return { id: groupId, kind, name: 'Shared group', currency: 'USD', memberIds, createdByUid: ownerUid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
+function group(groupId: string, ownerUid: string, memberIds: readonly string[], kind: 'group' | 'friendship' = 'group', coverImageUrl?: string): Record<string, unknown> {
+  return { id: groupId, kind, name: 'Shared group', currency: 'USD', ...(coverImageUrl ? { coverImageUrl } : {}), memberIds, createdByUid: ownerUid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
 }
 
-function commitGroupBundle(source: unknown, groupId: string, ownerUid: string, displayName: string, initials: string, memberIds: readonly string[] = [ownerUid], kind: 'group' | 'friendship' = 'group'): Promise<void> {
+function commitGroupBundle(source: unknown, groupId: string, ownerUid: string, displayName: string, initials: string, memberIds: readonly string[] = [ownerUid], kind: 'group' | 'friendship' = 'group', coverImageUrl?: string): Promise<void> {
   const db = source as Firestore
   const batch = writeBatch(db)
-  batch.set(doc(db, `groups/${groupId}`), group(groupId, ownerUid, memberIds, kind))
+  batch.set(doc(db, `groups/${groupId}`), group(groupId, ownerUid, memberIds, kind, coverImageUrl))
   batch.set(doc(db, `groups/${groupId}/members/${ownerUid}`), { status: 'active', role: 'owner', canManage: true, displayName, initials, avatarUrl: null, joinedAt: serverTimestamp() })
   batch.set(doc(db, `groups/${groupId}/settings/defaults`), { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true, updatedAt: serverTimestamp() })
   batch.set(doc(db, `groups/${groupId}/balance/current`), { groupId, balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })

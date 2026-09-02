@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, shallowRef, type ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
-import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
-import { add, chevronForward } from 'ionicons/icons'
+import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonInput, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonSearchbar, IonTitle, IonToolbar } from '@ionic/vue'
+import { add, checkmarkCircle, chevronDown, chevronForward } from 'ionicons/icons'
 import { useGroupStore } from './groupStore'
 import { getAppSession } from '../../data/session'
 import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
 import { createClientOperationId } from '../../data/clientOperationId'
-import { loadCurrencyPreferences, SUPPORTED_CURRENCIES } from '../account/currencyPreferences'
+import { currencyPickerOrder, loadCurrencyPreferences } from '../account/currencyPreferences'
 import { getActiveRuntimeConfiguration } from '../../data/firebase'
 import { createSparkGroup } from '../../data/firebaseSparkMutations'
 import { groupContexts } from '../../domain/expenseContexts'
+import type { CurrencyCode } from '../../domain/money'
+import { GROUP_COVER_CHOICES, groupCoverChoice, type GroupCoverId } from './groupCovers'
 
 const store = useGroupStore()
 const { groups, error, isLoading } = storeToRefs(store)
@@ -20,14 +22,72 @@ const session = getAppSession()
 const router = useRouter()
 const showingCreate = ref(false)
 const groupName = ref('')
-const currency = ref('USD')
+const currency = ref<CurrencyCode>('USD')
+const defaultCurrency = ref<CurrencyCode>('USD')
+const currencyOrder = ref<readonly CurrencyCode[]>(['USD'])
+const preferredCurrencies = ref<readonly CurrencyCode[]>(['USD'])
+const currencyQuery = ref('')
+const choosingCurrency = ref(false)
+const coverId = ref<GroupCoverId>('trip')
 const createError = ref('')
 const creating = ref(false)
+const presentingElement = shallowRef<HTMLElement>()
+const createTrigger = shallowRef<HTMLElement>()
+const selectedCover = computed(() => groupCoverChoice(coverId.value))
+const hasCreateDraft = computed(() => Boolean(groupName.value.trim()) || coverId.value !== 'trip' || currency.value !== defaultCurrency.value)
+const visibleCurrencies = computed(() => {
+  const query = currencyQuery.value.trim().toUpperCase()
+  return query
+    ? currencyOrder.value.filter((code) => code.includes(query)).slice(0, 40)
+    : preferredCurrencies.value
+})
 
 onMounted(async () => {
-  currency.value = loadCurrencyPreferences(await session.principal).defaultCurrency
+  const preferences = loadCurrencyPreferences(await session.principal)
+  defaultCurrency.value = preferences.defaultCurrency
+  currency.value = preferences.defaultCurrency
+  preferredCurrencies.value = [...preferences.preferredCurrencies]
+  currencyOrder.value = currencyPickerOrder(preferences)
   await store.loadOverview()
 })
+
+function setPresentingElement(value: Element | ComponentPublicInstance | null): void {
+  const element = value && '$el' in value ? value.$el : value
+  presentingElement.value = element instanceof HTMLElement ? element : undefined
+}
+function openCreate(event: Event): void {
+  createTrigger.value = event.currentTarget as HTMLElement
+  resetCreateDraft()
+  showingCreate.value = true
+}
+async function requestCreateDismissal(): Promise<void> {
+  if (await canDismissCreate()) showingCreate.value = false
+}
+async function canDismissCreate(): Promise<boolean> {
+  if (creating.value) return false
+  if (!hasCreateDraft.value) return true
+  return window.confirm('Discard this group draft?')
+}
+async function finishCreateDismissal(): Promise<void> {
+  showingCreate.value = false
+  resetCreateDraft()
+  await nextTick()
+  createTrigger.value?.focus()
+}
+function resetCreateDraft(): void {
+  groupName.value = ''
+  currency.value = defaultCurrency.value
+  currencyQuery.value = ''
+  choosingCurrency.value = false
+  coverId.value = 'trip'
+  createError.value = ''
+}
+function selectCover(id: GroupCoverId): void { coverId.value = id }
+function selectCurrency(code: CurrencyCode): void {
+  currency.value = code
+  choosingCurrency.value = false
+  currencyQuery.value = ''
+}
 
 async function createGroup(): Promise<void> {
   const name = groupName.value.trim()
@@ -38,9 +98,10 @@ async function createGroup(): Promise<void> {
     if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for group creation.')
     const operationId = createClientOperationId('group')
     const value = runtime.functionsRegion
-      ? await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId, kind: 'group', name, currency: currency.value }, { replayProtected: true })
-      : await createSparkGroup(runtime.firebase, { operationId, name, currency: currency.value })
+      ? await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId, kind: 'group', name, currency: currency.value, coverImageUrl: selectedCover.value.imageUrl }, { replayProtected: true })
+      : await createSparkGroup(runtime.firebase, { operationId, name, currency: currency.value, coverImageUrl: selectedCover.value.imageUrl })
     if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error('Group service returned an invalid response.')
+    showingCreate.value = false
     await store.loadOverview()
     await router.push(`/tabs/groups/${encodeURIComponent(value.groupId)}`)
   } catch (reason) { createError.value = reason instanceof Error ? reason.message : 'The group could not be created.' } finally { creating.value = false }
@@ -49,24 +110,17 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
 </script>
 
 <template>
-  <ion-page>
+  <ion-page :ref="setPresentingElement">
     <ion-header translucent>
       <ion-toolbar>
         <ion-title>Groups</ion-title>
-        <ion-buttons v-if="session.repository.mode === 'firebase'" slot="end"><ion-button aria-label="Create group" @click="showingCreate = !showingCreate"><ion-icon :icon="add" /></ion-button></ion-buttons>
+        <ion-buttons v-if="session.repository.mode === 'firebase'" slot="end"><ion-button aria-label="Create group" @click="openCreate"><ion-icon :icon="add" /></ion-button></ion-buttons>
       </ion-toolbar>
     </ion-header>
     <ion-content :fullscreen="true">
       <main class="groups-page">
         <h1>Groups</h1>
         <p>Trips, homes, and everyday plans—all in one clear journal.</p>
-
-        <form v-if="showingCreate" class="create-group" @submit.prevent="createGroup">
-          <label><span>Group name</span><input v-model="groupName" autocomplete="off" maxlength="120" placeholder="Weekend in Chicago"></label>
-          <label><span>Currency</span><select v-model="currency"><option v-for="code in SUPPORTED_CURRENCIES" :key="code" :value="code">{{ code }}</option></select></label>
-          <p v-if="createError" role="alert">{{ createError }}</p>
-          <div><ion-button type="button" fill="clear" @click="showingCreate = false">Cancel</ion-button><ion-button type="submit" shape="round" :disabled="creating">{{ creating ? 'Creating…' : 'Create group' }}</ion-button></div>
-        </form>
 
         <p v-if="isLoading" role="status">Loading groups…</p>
         <p v-else-if="error" role="alert">{{ error }}</p>
@@ -88,6 +142,78 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
         </div>
       </main>
     </ion-content>
+
+    <ion-modal
+      :is-open="showingCreate"
+      :presenting-element="presentingElement"
+      :can-dismiss="canDismissCreate"
+      @did-dismiss="finishCreateDismissal"
+    >
+      <ion-header translucent>
+        <ion-toolbar>
+          <ion-buttons slot="start"><ion-button :disabled="creating" @click="requestCreateDismissal">Cancel</ion-button></ion-buttons>
+          <ion-title>New group</ion-title>
+          <ion-buttons slot="end"><ion-button strong :disabled="creating" data-testid="create-group-submit" @click="createGroup">{{ creating ? 'Creating…' : 'Create' }}</ion-button></ion-buttons>
+        </ion-toolbar>
+      </ion-header>
+      <ion-content :fullscreen="true">
+        <main class="create-group-card">
+          <header class="create-group-card__intro">
+            <p>START SHARING</p>
+            <h1>Create a group</h1>
+            <span>Give shared expenses a home. You can invite people after the group is ready.</span>
+          </header>
+
+          <section class="cover-section" aria-labelledby="group-kind-heading">
+            <div class="create-section-heading"><h2 id="group-kind-heading">What kind of group?</h2><ion-note>Sets the cover photo</ion-note></div>
+            <div class="cover-grid" role="group" aria-label="Group cover">
+              <button
+                v-for="choice in GROUP_COVER_CHOICES"
+                :key="choice.id"
+                type="button"
+                class="cover-choice"
+                :class="{ 'cover-choice--selected': coverId === choice.id }"
+                :aria-pressed="coverId === choice.id"
+                :data-cover-choice="choice.id"
+                @click="selectCover(choice.id)"
+              >
+                <span class="cover-choice__image"><img :src="choice.imageUrl" alt=""><ion-icon v-if="coverId === choice.id" :icon="checkmarkCircle" aria-hidden="true" /></span>
+                <strong>{{ choice.label }}</strong>
+                <small>{{ choice.description }}</small>
+              </button>
+            </div>
+          </section>
+
+          <section aria-labelledby="group-details-heading">
+            <div class="create-section-heading"><h2 id="group-details-heading">Group details</h2><ion-note>Required</ion-note></div>
+            <ion-list inset lines="full" class="create-fields">
+              <ion-item>
+                <ion-input v-model="groupName" label="Group name" label-placement="stacked" autocomplete="off" :maxlength="120" placeholder="Weekend in Chicago" />
+              </ion-item>
+              <ion-item button :detail="false" data-testid="currency-trigger" @click="choosingCurrency = !choosingCurrency">
+                <ion-label><span>Currency</span><strong>{{ currency }}</strong></ion-label>
+                <ion-icon slot="end" :icon="chevronDown" aria-hidden="true" />
+              </ion-item>
+            </ion-list>
+
+            <section v-if="choosingCurrency" class="currency-picker" aria-label="Choose group currency">
+              <ion-searchbar v-model="currencyQuery" inputmode="search" placeholder="Search all currencies" :debounce="0" />
+              <p>{{ currencyQuery.trim() ? 'Matching ISO currencies' : 'Your preferred currencies' }}</p>
+              <ion-list data-testid="currency-options" lines="full">
+                <ion-item v-for="code in visibleCurrencies" :key="code" button :detail="false" :data-currency-choice="code" @click="selectCurrency(code)">
+                  <ion-label>{{ code }}</ion-label>
+                  <ion-icon v-if="currency === code" slot="end" :icon="checkmarkCircle" aria-hidden="true" />
+                </ion-item>
+              </ion-list>
+              <ion-note v-if="currencyQuery.trim() && !visibleCurrencies.length">No supported currency matches that search.</ion-note>
+            </section>
+          </section>
+
+          <p v-if="createError" role="alert" class="create-error">{{ createError }}</p>
+          <p class="create-footnote">The group currency seeds new expenses. Individual expenses can still use any supported currency.</p>
+        </main>
+      </ion-content>
+    </ion-modal>
   </ion-page>
 </template>
 
@@ -96,17 +222,12 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
 .groups-page h1 { margin: 0; font-size: 2rem; letter-spacing: -0.035em; }
 .groups-page > p { margin: 8px 0 24px; color: var(--ion-color-medium); line-height: 1.45; }
 .groups-page__list { border-top: 1px solid var(--su-divider); }
-.create-group{display:grid;grid-template-columns:minmax(0,1fr) 100px;gap:12px;margin:0 0 22px;padding:16px;border:1px solid color-mix(in srgb,var(--su-divider) 35%,transparent);border-radius:20px;background:var(--su-surface);box-shadow:0 12px 30px rgb(37 29 87 / 8%);animation:group-create-in 220ms cubic-bezier(.2,.8,.2,1) both}.create-group label{display:grid;gap:6px;color:var(--ion-color-medium);font-size:.75rem;font-weight:650}.create-group input,.create-group select{box-sizing:border-box;width:100%;min-height:46px;padding:0 12px;border:1px solid color-mix(in srgb,var(--su-divider) 40%,transparent);border-radius:12px;background:var(--su-surface);color:var(--su-text);font:inherit;font-size:16px}.create-group>p{grid-column:1/-1;margin:0;color:var(--ion-color-danger);font-size:.78rem}.create-group>div{display:flex;grid-column:1/-1;justify-content:flex-end}.create-group ion-button{text-transform:none}@keyframes group-create-in{from{opacity:0;transform:translateY(-8px) scale(.985)}}
 .group-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) 18px; align-items: center; gap: 12px; min-height: 88px; border-bottom: 1px solid var(--su-divider); color: inherit; text-decoration: none; }
 .group-row img { width: 64px; height: 64px; border-radius: 18px; object-fit: cover; object-position: 50% 88%; }
 .group-row__copy { display: grid; gap: 4px; }
 .group-row__copy strong { font-size: 1rem; }
 .group-row__copy small { color: var(--ion-color-medium); }
 .group-row > ion-icon { color: var(--su-accent); font-size: 1.05rem; }
-@media (max-width: 520px) {
-  .create-group { grid-template-columns: 1fr; padding: 14px; border-radius: 16px; }
-  .create-group > p,.create-group > div { grid-column: 1; }
-  .create-group > div { justify-content: stretch; }
-  .create-group > div ion-button { flex: 1; }
-}
+.create-group-card{box-sizing:border-box;width:min(100%,620px);margin:auto;padding:22px 16px calc(38px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--su-lilac) 24%,var(--su-surface));min-height:100%}.create-group-card__intro{padding:4px 4px 24px}.create-group-card__intro p{margin:0 0 7px;color:var(--ion-color-primary);font-size:.68rem;font-weight:800;letter-spacing:.13em}.create-group-card__intro h1{margin:0;font-size:2rem;letter-spacing:-.045em}.create-group-card__intro span{display:block;max-width:32rem;margin-top:8px;color:var(--ion-color-medium);font-size:.86rem;line-height:1.45}.create-section-heading{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:0 4px 10px}.create-section-heading h2{margin:0;font-size:.94rem}.create-section-heading ion-note{font-size:.7rem}.cover-section{margin-bottom:26px}.cover-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.cover-choice{display:grid;min-width:0;gap:3px;padding:0 0 11px;overflow:hidden;border:1px solid color-mix(in srgb,var(--su-divider) 28%,transparent);border-radius:17px;background:var(--su-surface);color:var(--su-text);font:inherit;text-align:left;box-shadow:0 8px 22px rgb(34 26 76 / 7%);transition:transform var(--su-motion-fast) ease,border-color var(--su-motion-fast) ease,box-shadow var(--su-motion-fast) ease}.cover-choice:active{transform:scale(.98)}.cover-choice--selected{border-color:var(--ion-color-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--ion-color-primary) 20%,transparent),0 10px 24px rgb(34 26 76 / 11%)}.cover-choice__image{position:relative;display:block;width:100%;aspect-ratio:2.17/1;overflow:hidden;background:var(--su-lilac)}.cover-choice__image img{width:100%;height:100%;object-fit:cover}.cover-choice__image ion-icon{position:absolute;right:8px;bottom:7px;padding:2px;border-radius:50%;background:var(--su-surface);color:var(--ion-color-primary);font-size:1.3rem}.cover-choice strong,.cover-choice small{padding:0 11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cover-choice strong{margin-top:5px;font-size:.86rem}.cover-choice small{color:var(--ion-color-medium);font-size:.66rem}.create-fields{overflow:hidden;margin:0;border-radius:16px;background:var(--su-surface);box-shadow:0 0 0 1px color-mix(in srgb,var(--su-divider) 20%,transparent)}.create-fields ion-item{--background:transparent;--min-height:64px;--padding-start:14px;--inner-padding-end:12px;color:var(--su-text)}.create-fields ion-input{--padding-top:7px;--padding-bottom:9px;font-size:16px}.create-fields ion-label{display:grid;gap:3px}.create-fields ion-label span{color:var(--ion-color-medium);font-size:.69rem}.create-fields ion-label strong{font-size:.98rem}.create-fields ion-icon{color:var(--ion-color-primary)}.currency-picker{margin-top:12px;padding:8px 8px 10px;border-radius:18px;background:var(--su-surface);box-shadow:0 12px 30px rgb(34 26 76 / 9%);animation:currency-picker-in 180ms cubic-bezier(.2,.8,.2,1) both}.currency-picker ion-searchbar{--background:color-mix(in srgb,var(--su-lilac) 64%,var(--su-surface));--border-radius:12px;--box-shadow:none;padding:4px}.currency-picker>p{margin:5px 10px 3px;color:var(--ion-color-medium);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.currency-picker ion-list{max-height:270px;overflow:auto;background:transparent}.currency-picker ion-item{--background:transparent;--min-height:48px;color:var(--su-text)}.currency-picker ion-icon{color:var(--ion-color-primary)}.currency-picker>ion-note{display:block;padding:14px 10px}.create-error{margin:14px 2px 0;padding:11px 12px;border-radius:12px;background:color-mix(in srgb,var(--ion-color-danger) 10%,var(--su-surface));color:var(--ion-color-danger);font-size:.8rem}.create-footnote{margin:16px 4px 0;color:var(--ion-color-medium);font-size:.72rem;line-height:1.45}@keyframes currency-picker-in{from{opacity:0;transform:translateY(-6px)}}@media(max-width:350px){.cover-grid{grid-template-columns:1fr}.cover-choice__image{aspect-ratio:2.7/1}}@media(prefers-reduced-motion:reduce){.cover-choice,.currency-picker{transition:none;animation:none}.cover-choice:active{transform:none}}
+@media(max-width:350px){.cover-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.cover-choice__image{aspect-ratio:2.17/1}}
 </style>
