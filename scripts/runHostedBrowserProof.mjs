@@ -254,6 +254,13 @@ async function verifyLanguagePreference(page) {
   await page.getByRole('heading', { name: 'Inicio', exact: true }).waitFor({ state: 'visible' })
   await page.getByRole('heading', { name: 'Saldos con amigos', exact: true }).waitFor({ state: 'visible' })
   await assertNoHorizontalOverflow(page, 'Spanish Home at 390px')
+  await page.goto(new URL('/tabs/home/friends', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Amigos', exact: true }).waitFor({ state: 'visible' })
+  await page.getByText('Consulta lo que debes a cada persona entre los gastos directos y todos los grupos compartidos.', { exact: true }).waitFor({ state: 'visible' })
+  await assertNoHorizontalOverflow(page, 'Spanish Friends at 390px')
+  await page.setViewportSize({ width: 320, height: 844 })
+  await assertNoHorizontalOverflow(page, 'Spanish Friends at 320px')
+  await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(new URL('/tabs/groups', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
   await page.getByText('Viajes, hogares y planes cotidianos, todo en un diario claro.', { exact: true }).waitFor({ state: 'visible' })
   await assertNoHorizontalOverflow(page, 'Spanish Groups at 390px')
@@ -790,16 +797,27 @@ async function dismissAppStatus(page) {
 }
 
 async function prepareInvitation(page, targetEmail) {
+  const languageUrl = new URL('/tabs/account/language', hostedOrigin).href
+  await page.goto(languageUrl, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'App language', exact: true }).waitFor({ state: 'visible' })
+  await page.locator('[data-locale="es"] ion-radio').click()
+  await page.waitForFunction(() => document.documentElement.lang === 'es')
   await page.goto(`${deepUrl}/invite`, { waitUntil: 'domcontentloaded' })
-  await page.getByRole('heading', { name: 'Invite to Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+  await page.getByRole('heading', { name: 'Invitar a Live Account Proof', exact: true }).waitFor({ state: 'visible' })
   await page.locator('#invite-email').fill(targetEmail)
-  await page.getByRole('button', { name: 'Prepare invitation', exact: true }).click()
-  const invitation = page.locator('[aria-label="Prepared invitation URL"]')
+  await page.getByRole('button', { name: 'Preparar invitación', exact: true }).click()
+  const invitation = page.locator('[aria-label="URL de invitación preparada"]')
   await invitation.waitFor({ state: 'visible' })
+  await assertNoHorizontalOverflow(page, 'Spanish invitation preparation at 390px')
   const invitationUrl = await invitation.inputValue()
   if (!invitationUrl.startsWith(`${hostedOrigin}/invite/`) || !invitationUrl.includes('#token=')) {
     throw new Error(`Hosted invitation UI prepared an invalid link for ${targetEmail}.`)
   }
+  await page.goto(languageUrl, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Idioma de la app', exact: true }).waitFor({ state: 'visible' })
+  await page.locator('[data-locale="en"] ion-radio').click()
+  await page.getByRole('heading', { name: 'App language', exact: true }).waitFor({ state: 'visible' })
+  if (await page.locator('html').getAttribute('lang') !== 'en') throw new Error('Hosted invitation preparation did not restore English for the remaining proof.')
   return invitationUrl
 }
 
@@ -814,8 +832,22 @@ async function verifyInvitationAcceptance(browser, invitationUrl) {
     await page.waitForURL(/\/auth(?:[?#].*)?$/)
     await signIn(page, thirdEmail)
     await page.waitForURL(/\/invite\/join(?:[?#].*)?$/)
-    await page.getByText('You’re invited to join Live Account Proof.', { exact: true }).waitFor({ state: 'visible' })
-    await page.getByRole('button', { name: 'Join group', exact: true }).click()
+    const invitationId = new URL(invitationUrl).pathname.split('/').at(-1)
+    const invitationToken = new URL(invitationUrl).hash.slice('#token='.length)
+    if (!invitationId || !/^[A-Za-z0-9._~-]+$/.test(invitationId) || !/^[A-Za-z0-9_-]{43}$/.test(invitationToken)) {
+      throw new Error('Hosted verified invitation link did not expose a valid resumable token.')
+    }
+    if (new URL(page.url()).hash) throw new Error('Hosted verified invitation route retained its private token fragment.')
+    const persistedInvitationToken = await page.evaluate((invitationId) => sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`), invitationId)
+    if (persistedInvitationToken !== invitationToken) throw new Error('Hosted verified invitation did not preserve its token in per-tab storage before reload.')
+    await page.evaluate(() => localStorage.setItem('split-unwise.locale', 'es'))
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.waitForURL(/\/invite\/join(?:[?#].*)?$/)
+    if (new URL(page.url()).hash) throw new Error('Hosted localized invitation reload restored its private token fragment.')
+    const restoredInvitationToken = await page.evaluate((invitationId) => sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`), invitationId)
+    if (restoredInvitationToken !== invitationToken) throw new Error('Hosted localized invitation reload did not retain its per-tab token.')
+    await page.getByText('Te invitaron a unirte a Live Account Proof.', { exact: true }).waitFor({ state: 'visible' })
+    await page.getByRole('button', { name: 'Unirse al grupo', exact: true }).click()
     await page.waitForURL(deepUrl)
     const group = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
     await group.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })

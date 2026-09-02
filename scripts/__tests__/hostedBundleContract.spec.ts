@@ -105,4 +105,23 @@ describe('hosted bundle proof contract', () => {
     expect(browser).toContain("'German Account deletion card at 320px'")
     expect(browser).toContain("getByTestId('account-deletion-modal')")
   })
+
+  it('keeps the hosted Spanish Friends and invitation journeys exact-SHA verified', () => {
+    const browser = readFileSync(resolve(process.cwd(), 'scripts/runHostedBrowserProof.mjs'), 'utf8')
+    const requiredProofMarkers = [
+      "new URL('/tabs/home/friends', hostedOrigin)",
+      "name: 'Amigos', exact: true",
+      "'Spanish Friends at 390px'",
+      "'Spanish Friends at 320px'",
+      "name: 'Invitar a Live Account Proof', exact: true",
+      "name: 'Preparar invitación', exact: true",
+      "aria-label=\"URL de invitación preparada\"",
+      "sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`)",
+      "localStorage.setItem('split-unwise.locale', 'es')",
+      "'Te invitaron a unirte a Live Account Proof.'",
+      "name: 'Unirse al grupo', exact: true",
+    ]
+
+    expect(requiredProofMarkers.filter((marker) => !browser.includes(marker))).toEqual([])
+  })
 })
