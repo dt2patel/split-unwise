@@ -7,6 +7,13 @@ import { createDemoRepository } from '../../../data/demoRepository'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import GroupsPage from '../GroupsPage.vue'
 
+const firebaseMocks = vi.hoisted(() => ({
+  createSparkGroup: vi.fn(async () => ({ groupId: 'grp-hosted-cover' })),
+  getActiveRuntimeConfiguration: vi.fn(() => ({ kind: 'firebase', firebase: {} })),
+}))
+vi.mock('../../../data/firebaseSparkMutations', () => ({ createSparkGroup: firebaseMocks.createSparkGroup }))
+vi.mock('../../../data/firebase', () => ({ getActiveRuntimeConfiguration: firebaseMocks.getActiveRuntimeConfiguration }))
+
 const stubs = {
   IonPage: { template: '<div class="ion-page"><slot /></div>' },
   IonHeader: { template: '<header><slot /></header>' },
@@ -23,7 +30,10 @@ const stubs = {
     name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement', 'initialBreakpoint', 'breakpoints'], emits: ['didDismiss'],
     template: '<aside v-if="isOpen" role="dialog"><slot /></aside>',
   },
-  IonInput: { template: '<input><slot /></input>' },
+  IonInput: {
+    props: ['modelValue', 'label', 'labelPlacement', 'autocomplete', 'maxlength', 'placeholder'], emits: ['update:modelValue'],
+    template: '<input :aria-label="label" :value="modelValue" :autocomplete="autocomplete" :maxlength="maxlength" :placeholder="placeholder" @input="$emit(\'update:modelValue\', $event.target.value)">',
+  },
   IonSearchbar: { template: '<input><slot /></input>' },
   IonList: { template: '<section><slot /></section>' },
   IonItem: { template: '<div><slot /></div>' },
@@ -31,6 +41,7 @@ const stubs = {
 }
 
 beforeEach(() => {
+  firebaseMocks.createSparkGroup.mockClear()
   const repository = { ...createDemoRepository(), mode: 'firebase' as const }
   setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
 })
@@ -55,6 +66,32 @@ describe('mobile group creation', () => {
     expect(wrapper.get('[data-cover-choice="trip"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.find('main .create-group').exists()).toBe(false)
 
+    wrapper.unmount()
+  })
+
+  it('waits for the card to finish dismissing before navigating to the saved group', async () => {
+    const router = createAppRouter()
+    const push = vi.spyOn(router, 'push')
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="Create group"]').trigger('click')
+    await wrapper.get('[aria-label="Group name"]').setValue('Hosted cover QA')
+    const modal = wrapper.getComponent({ name: 'IonModal' })
+
+    let finishDismissal: (() => void) | undefined
+    const onDidDismiss = vi.fn(() => new Promise<void>((resolve) => { finishDismissal = resolve }))
+    Object.assign(wrapper.get('[role="dialog"]').element, { onDidDismiss })
+    await wrapper.get('[data-testid="create-group-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(firebaseMocks.createSparkGroup).toHaveBeenCalledOnce()
+    expect(onDidDismiss).toHaveBeenCalledOnce()
+    expect(await (modal.props('canDismiss') as () => Promise<boolean>)()).toBe(true)
+    expect(push).not.toHaveBeenCalledWith('/tabs/groups/grp-hosted-cover')
+
+    finishDismissal?.()
+    await flushPromises()
+    expect(push).toHaveBeenCalledWith('/tabs/groups/grp-hosted-cover')
     wrapper.unmount()
   })
 })

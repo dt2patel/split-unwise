@@ -108,6 +108,23 @@ async function invitationDocumentsFor(groupIds) {
   })).documents
 }
 
+function registerBrowserProofResources(output) {
+  let registered = 0
+  for (const line of String(output ?? '').split(/\r?\n/)) {
+    const prefix = 'LIVE_PROOF_RESOURCE '
+    if (!line.startsWith(prefix)) continue
+    try {
+      const resource = JSON.parse(line.slice(prefix.length))
+      if (typeof resource.browserGroupId === 'string' && /^grp-group-[A-Za-z0-9-]+$/.test(resource.browserGroupId)
+        && !expectedGroupIds.includes(resource.browserGroupId)) {
+        expectedGroupIds.push(resource.browserGroupId)
+        registered += 1
+      }
+    } catch { /* malformed child output is ignored here and fails the exact-count gate below */ }
+  }
+  return registered
+}
+
 async function assertFixturesAvailable() {
   for (const email of [ownerEmail, friendEmail, thirdEmail, unverifiedEmail]) {
     try {
@@ -245,9 +262,18 @@ try {
       if (iosFailure) throw iosFailure
       if (restoreFailure) throw restoreFailure
     }
-    await run(process.execPath, ['scripts/runHostedBrowserProof.mjs'], {
-      stdio: ['ignore', 'pipe', 'pipe'], killProcessGroup: true, env: proofEnvironment,
-    })
+    let browserProofResult
+    try {
+      browserProofResult = await run(process.execPath, ['scripts/runHostedBrowserProof.mjs'], {
+        stdio: ['ignore', 'pipe', 'pipe'], killProcessGroup: true, env: proofEnvironment,
+      })
+    } catch (error) {
+      registerBrowserProofResources(error?.stdout)
+      throw error
+    }
+    if (registerBrowserProofResources(browserProofResult.stdout) !== 1) {
+      throw new Error('Hosted browser proof did not register exactly one UI-created group for cleanup.')
+    }
   } catch (error) {
     testFailure = error
   }

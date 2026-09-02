@@ -182,12 +182,25 @@ async function verifyCreateGroupCardModal(page) {
   if (await trip.getAttribute('aria-pressed') !== 'true') throw new Error('Hosted group creator did not select the Trip cover by default.')
   await home.click()
   if (await home.getAttribute('aria-pressed') !== 'true') throw new Error('Hosted group creator did not retain the selected cover.')
-  await trip.click()
 
   const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
   if (overflow > 1) throw new Error(`Hosted group creator overflowed the 390px mobile viewport by ${overflow}px.`)
-  await modal.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await modal.getByLabel('Group name').fill(`Hosted card group ${suffix}`)
+  await modal.getByRole('button', { name: 'Create', exact: true }).click()
+  await page.waitForURL(new RegExp(`${escapeRegExp(hostedOrigin)}/tabs/groups/(grp-group-[A-Za-z0-9-]+)$`), { timeout: 120_000 })
+  const createdGroupId = new URL(page.url()).pathname.split('/').at(-1)
+  if (!createdGroupId || !/^grp-group-[A-Za-z0-9-]+$/.test(createdGroupId)) throw new Error('Hosted group creator returned an invalid group route.')
+  console.log('LIVE_PROOF_RESOURCE', JSON.stringify({ browserGroupId: createdGroupId }))
   await modal.waitFor({ state: 'hidden' })
+  const savedCover = page.getByTestId('group-cover')
+  await savedCover.waitFor({ state: 'visible' })
+  if (await savedCover.getAttribute('src') !== '/covers/group-home.jpg'
+    || !(await savedCover.evaluate((element) => element.complete && element.naturalWidth > 0))) {
+    throw new Error('Hosted group creator did not persist the selected cover through the real UI save.')
+  }
+  await page.goto(new URL('/tabs/groups', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Groups', exact: true }).waitFor({ state: 'visible' })
+  return createdGroupId
 }
 
 async function verifyAccountBalanceDashboard(page) {

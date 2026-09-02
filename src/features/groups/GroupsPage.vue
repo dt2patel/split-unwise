@@ -31,8 +31,10 @@ const choosingCurrency = ref(false)
 const coverId = ref<GroupCoverId>('trip')
 const createError = ref('')
 const creating = ref(false)
+const dismissingCommittedCreate = ref(false)
 const presentingElement = shallowRef<HTMLElement>()
 const createTrigger = shallowRef<HTMLElement>()
+const createModal = shallowRef<ComponentPublicInstance>()
 const selectedCover = computed(() => groupCoverChoice(coverId.value))
 const hasCreateDraft = computed(() => Boolean(groupName.value.trim()) || coverId.value !== 'trip' || currency.value !== defaultCurrency.value)
 const visibleCurrencies = computed(() => {
@@ -57,6 +59,7 @@ function setPresentingElement(value: Element | ComponentPublicInstance | null): 
 }
 function openCreate(event: Event): void {
   createTrigger.value = event.currentTarget as HTMLElement
+  dismissingCommittedCreate.value = false
   resetCreateDraft()
   showingCreate.value = true
 }
@@ -64,6 +67,7 @@ async function requestCreateDismissal(): Promise<void> {
   if (await canDismissCreate()) showingCreate.value = false
 }
 async function canDismissCreate(): Promise<boolean> {
+  if (dismissingCommittedCreate.value) return true
   if (creating.value) return false
   if (!hasCreateDraft.value) return true
   return window.confirm('Discard this group draft?')
@@ -88,6 +92,20 @@ function selectCurrency(code: CurrencyCode): void {
   choosingCurrency.value = false
   currencyQuery.value = ''
 }
+async function dismissCreateBeforeNavigation(): Promise<void> {
+  dismissingCommittedCreate.value = true
+  const element: unknown = createModal.value?.$el
+  const dismissed = element instanceof HTMLElement && 'onDidDismiss' in element && typeof element.onDidDismiss === 'function'
+    ? element.onDidDismiss()
+    : undefined
+  showingCreate.value = false
+  await nextTick()
+  try {
+    if (dismissed) await dismissed
+  } finally {
+    dismissingCommittedCreate.value = false
+  }
+}
 
 async function createGroup(): Promise<void> {
   const name = groupName.value.trim()
@@ -101,7 +119,7 @@ async function createGroup(): Promise<void> {
       ? await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId, kind: 'group', name, currency: currency.value, coverImageUrl: selectedCover.value.imageUrl }, { replayProtected: true })
       : await createSparkGroup(runtime.firebase, { operationId, name, currency: currency.value, coverImageUrl: selectedCover.value.imageUrl })
     if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error('Group service returned an invalid response.')
-    showingCreate.value = false
+    await dismissCreateBeforeNavigation()
     await store.loadOverview()
     await router.push(`/tabs/groups/${encodeURIComponent(value.groupId)}`)
   } catch (reason) { createError.value = reason instanceof Error ? reason.message : 'The group could not be created.' } finally { creating.value = false }
@@ -144,6 +162,7 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
     </ion-content>
 
     <ion-modal
+      ref="createModal"
       :is-open="showingCreate"
       :presenting-element="presentingElement"
       :can-dismiss="canDismissCreate"
