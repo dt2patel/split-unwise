@@ -145,7 +145,8 @@ describe('hosted bundle proof contract', () => {
       'await friendRow.click()',
       "friendEntry.locator('.friend-breakdown')",
       "await breakdown.waitFor({ state: 'visible' })",
-      "getByRole('button', { name: 'Añadir amigo', exact: true })",
+      "const friendsToolbar = page.locator('ion-header:visible ion-toolbar')",
+      "const addFriendButton = friendsToolbar.getByRole('button', { name: 'Añadir amigo', exact: true })",
       'await addFriendButton.click()',
       "page.locator('.friend-form')",
       "await friendForm.waitFor({ state: 'visible' })",
@@ -158,6 +159,7 @@ describe('hosted bundle proof contract', () => {
       'await friendRow.click()',
       "await breakdown.waitFor({ state: 'hidden' })",
     ], 'Spanish Friends proof')
+    expect(spanishFriends).not.toContain("const addFriendButton = page.getByRole('button', { name: 'Añadir amigo', exact: true })")
     expectInOrder(invitationPreparation, [
       `await page.locator('[data-locale="es"] ion-radio').click()`,
       "document.documentElement.lang === 'es'",
