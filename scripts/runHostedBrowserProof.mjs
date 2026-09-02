@@ -248,7 +248,12 @@ async function verifyCreateGroupCardModal(page) {
     const choice = coverGroup.getByRole('button', { name, exact: true })
     await choice.waitFor({ state: 'visible' })
     const image = choice.locator('img')
-    if (await image.getAttribute('src') !== source || !(await image.evaluate((element) => element.complete && element.naturalWidth > 0))) {
+    await image.waitFor({ state: 'visible' })
+    const rendered = await image.evaluate(async (element) => {
+      try { await element.decode() } catch { return false }
+      return element.complete && element.naturalWidth > 0
+    })
+    if (await image.getAttribute('src') !== source || !rendered) {
       throw new Error(`Hosted group creator did not render ${source}.`)
     }
   }
