@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  accountDeletionFirestorePathSegments,
   createAccountDeletionPreparer,
   type AccountDeletionCommitEvent,
   type AccountDeletionDocument,
@@ -9,6 +10,11 @@ import {
 } from '../firebaseAccountDeletion'
 
 describe('Firebase account deletion preparation', () => {
+  it('accepts a capability invitation ID that starts with a URL-safe symbol', () => {
+    const invitationId = `-${'a'.repeat(42)}`
+    expect(accountDeletionFirestorePathSegments(`invitations/${invitationId}`)).toEqual(['invitations', invitationId])
+  })
+
   it('orders shared anonymization before continuity and private cleanup', async () => {
     const port = deletionPort()
 

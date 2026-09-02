@@ -27,6 +27,8 @@ export interface ReceiptBlobStore {
   countUnuploaded?(): Promise<number>
   /** Clears every receipt in this already principal-scoped store. */
   clear?(): Promise<void>
+  /** Releases an open database connection before principal-scoped deletion. */
+  close?(): Promise<void>
 }
 
 export interface ReceiptSuggestion {
@@ -143,6 +145,11 @@ export function createIndexedDbReceiptStore(options: ReceiptStoreOptions & { rea
       return assets.filter(({ durability }) => durability.status !== 'uploaded').length
     },
     async clear() { await requestFrom(getDatabase(), 'readwrite', (store) => store.clear()) },
+    async close() {
+      const current = database
+      database = undefined
+      if (current) (await current).close()
+    },
   }
 }
 

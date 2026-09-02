@@ -17,12 +17,11 @@ service cloud.firestore {
         && validProfileCore(data);
     }
     function activeAccount() {
-      let path = /databases/$(database)/documents/users/$(request.auth.uid);
-      return signedIn() && exists(path) && !('deletionStatus' in get(path).data);
+      return !('deletionStatus' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data);
     }
     function accountDeleting() {
       let path = /databases/$(database)/documents/users/$(request.auth.uid);
-      return signedIn() && exists(path) && get(path).data.get('deletionStatus', '') == 'deleting';
+      return signedIn() && get(path).data.get('deletionStatus', '') == 'deleting';
     }
     function accountDeletingInGroup(groupId) {
       let profile = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
@@ -140,6 +139,12 @@ service cloud.firestore {
         && validDeletedActor(data.updatedBy) && data.updatedAt == request.time
         && data.accountDeletionId == currentAccountDeletionId()
         && data.accountDeletedUid == request.auth.uid;
+    }
+    function validAccountDeletionRecurringActor(groupId, data) {
+      return accountDeletingInGroup(groupId)
+        && data.diff(resource.data).affectedKeys().hasOnly(['createdBy', 'updatedBy'])
+        && validPreservedOrAnonymizedActor(resource.data.createdBy, data.createdBy)
+        && validPreservedOrAnonymizedActor(resource.data.updatedBy, data.updatedBy);
     }
     function validAccountDeletionSettings(groupId, data) {
       return accountDeletingInGroup(groupId)
@@ -1230,7 +1235,7 @@ service cloud.firestore {
     }
 
     function validNewGroup(groupId, data) {
-      return activeAccount() && strictId(groupId)
+      return strictId(groupId)
         && data.keys().hasOnly(['id', 'kind', 'name', 'currency', 'coverImageUrl', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
         && data.keys().hasAll(['id', 'kind', 'name', 'currency', 'memberIds', 'createdByUid', 'createdAt', 'updatedAt'])
         && data.id == groupId && data.kind in ['group', 'friendship'] && validName(data.name)
@@ -1350,7 +1355,7 @@ service cloud.firestore {
         && validUsedInvitation(member.invitationId, groupId, request.auth.uid);
     }
     function validGroupJoin(groupId) {
-      return activeAccount() && groupActive(groupId)
+      return groupActive(groupId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'updatedAt'])
         && !(request.auth.uid in resource.data.memberIds) && request.auth.uid in request.resource.data.memberIds
         && request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1
@@ -1506,12 +1511,12 @@ service cloud.firestore {
           (transferred && data.createdByUid != request.auth.uid && data.createdByUid in data.memberIds
             && data.get('status', 'active') == resource.data.get('status', 'active')
             && data.get('deletedAt', null) == resource.data.get('deletedAt', null)
-            && data.get('deletedBy', null) == resource.data.get('deletedBy', null)
+            && validPreservedOrAnonymizedActor(resource.data.get('deletedBy', null), data.get('deletedBy', null))
             && validPromotedAccountMember(groupId, promotedBefore, promotedAfter, data.createdByUid))
           || (!transferred && resource.data.createdByUid != request.auth.uid
             && data.get('status', 'active') == resource.data.get('status', 'active')
             && data.get('deletedAt', null) == resource.data.get('deletedAt', null)
-            && data.get('deletedBy', null) == resource.data.get('deletedBy', null))
+            && validPreservedOrAnonymizedActor(resource.data.get('deletedBy', null), data.get('deletedBy', null)))
           || (!transferred && resource.data.createdByUid == request.auth.uid && resource.data.memberIds.size() == 1
             && resource.data.get('status', 'active') == 'active'
             && data.status == 'deleted' && data.deletedAt == request.time && validDeletedActor(data.deletedBy))
@@ -1548,16 +1553,17 @@ service cloud.firestore {
       match /groups/{groupId} {
         allow get: if owns(uid);
         allow list: if owns(uid) && bounded(100);
-        allow create: if owns(uid) && (
+        allow create: if owns(uid) && activeAccount() && (
           (validOwnerProjection(groupId, request.resource.data)
             && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data))
           || (validJoinProjection(groupId, request.resource.data, request.resource.data.invitationId)
             && validUsedInvitation(request.resource.data.invitationId, groupId, uid))
         );
-        allow update: if 'accountDeletionId' in request.resource.data
-          ? validAccountDeletionFriendProjection(groupId, uid, request.resource.data)
-          : (validFriendCounterpartProjectionUpdate(groupId, uid, request.resource.data)
+        allow update: if !('accountDeletionId' in request.resource.data) && activeAccount()
+          && (validFriendCounterpartProjectionUpdate(groupId, uid, request.resource.data)
             || validTargetProjectionRemoval(groupId, uid, request.resource.data));
+        allow update: if 'accountDeletionId' in request.resource.data
+          && validAccountDeletionFriendProjection(groupId, uid, request.resource.data);
         allow delete: if accountDeletionOwnsPrivateData(uid);
       }
       match /activity/{activityId} {
@@ -1571,18 +1577,18 @@ service cloud.firestore {
       match /notificationReads/{notificationId} {
         allow get: if owns(uid);
         allow list: if owns(uid) && bounded(100);
-        allow create: if validSparkNotificationReadReceipt(uid, notificationId, request.resource.data);
+        allow create: if activeAccount() && validSparkNotificationReadReceipt(uid, notificationId, request.resource.data);
         allow delete: if accountDeletionOwnsPrivateData(uid); allow update: if false;
       }
       match /settings/{settingId} {
         allow get: if owns(uid);
         allow list: if owns(uid) && bounded(100);
         allow delete: if accountDeletionOwnsPrivateData(uid);
-        allow create: if owns(uid) && (
+        allow create: if owns(uid) && activeAccount() && (
           (settingId == 'notifications' && validSparkNotificationPreferencesCreate(request.resource.data))
           || (settingId == 'sparkNotificationReadCursor' && validSparkNotificationReadCursorCreate(request.resource.data))
         );
-        allow update: if owns(uid) && (
+        allow update: if owns(uid) && activeAccount() && (
           (settingId == 'notifications' && validSparkNotificationPreferencesUpdate(request.resource.data))
           || (settingId == 'sparkNotificationReadCursor' && validSparkNotificationReadCursorUpdate(request.resource.data))
         );
@@ -1606,26 +1612,29 @@ service cloud.firestore {
       allow get: if groupMemberOfGroup(resource.data)
         || accountDeletionGroupRead(groupId);
       allow list, delete: if false;
-      allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId);
-      allow update: if validGroupJoin(groupId) || validGroupMemberRemoval(groupId) || validGroupLifecycleUpdate(groupId);
+      allow create: if activeAccount() && validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId);
+      allow update: if activeAccount()
+        && ('lastLifecycleCommandKind' in request.resource.data
+          ? validGroupLifecycleUpdate(groupId)
+          : ('lastMembershipCommandKind' in request.resource.data
+            ? validGroupMemberRemoval(groupId)
+            : validGroupJoin(groupId)));
       allow update: if 'lastAccountDeletionId' in request.resource.data
         && validAccountDeletionGroup(groupId, request.resource.data);
 
       match /members/{uid} {
         allow get: if groupMember(groupId) || accountDeletionGroupRead(groupId);
         allow list: if (groupMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-        allow create: if owns(uid) && (
+        allow create: if activeAccount() && owns(uid) && (
           (validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data)
             && validOwnerMember(request.resource.data, get(/databases/$(database)/documents/users/$(uid)).data))
           || (validJoinMember(request.resource.data, get(/databases/$(database)/documents/users/$(uid)).data, request.resource.data.invitationId)
             && validUsedInvitation(request.resource.data.invitationId, groupId, uid))
         );
-        allow update: if 'accountDeletionId' in request.resource.data
-          ? (accountDeletingInGroup(groupId)
-            && validDeletedAccountMember(resource.data, request.resource.data, uid))
-          : ('accountDeletionPromotionId' in request.resource.data
-            ? validPromotedAccountMember(groupId, resource.data, request.resource.data, uid)
-            : ((owns(uid) && resource.data.status == 'active'
+        allow update: if !('accountDeletionId' in request.resource.data)
+          && !('accountDeletionPromotionId' in request.resource.data)
+          && activeAccount()
+          && ((owns(uid) && resource.data.status == 'active'
                 && request.resource.data.status == 'active'
                 && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'initials', 'avatarUrl'])
                 && request.resource.data.displayName == getAfter(/databases/$(database)/documents/users/$(uid)).data.displayName
@@ -1633,30 +1642,35 @@ service cloud.firestore {
                 && request.resource.data.avatarUrl == getAfter(/databases/$(database)/documents/users/$(uid)).data.avatarUrl
                 && getAfter(/databases/$(database)/documents/users/$(uid)).data.updatedAt == request.time
                 && validSparkPrivateReplay(getAfter(/databases/$(database)/documents/users/$(uid)).data, 'profile.update'))
-              || validTargetMemberRemoval(groupId, uid, request.resource.data)));
+              || validTargetMemberRemoval(groupId, uid, request.resource.data));
+        allow update: if 'accountDeletionId' in request.resource.data
+          && accountDeletingInGroup(groupId)
+          && validDeletedAccountMember(resource.data, request.resource.data, uid);
+        allow update: if 'accountDeletionPromotionId' in request.resource.data
+          && validPromotedAccountMember(groupId, resource.data, request.resource.data, uid);
         allow delete: if false;
       }
       match /expenses/{expenseId} {
         allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId);
         allow list: if (activeMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-        allow create: if (expenseId.matches('^occ_.*$')
+        allow create: if activeAccount() && (expenseId.matches('^occ_.*$')
             ? validSparkRecurringOccurrenceCreate(groupId, expenseId, request.resource.data)
             : validSparkExpenseCreate(groupId, expenseId, request.resource.data));
-        allow update: if (('current' in request.resource.data
+        allow update: if activeAccount() && (('current' in request.resource.data
               && 'occurrenceEditScope' in request.resource.data.current
               && request.resource.data.current.occurrenceEditScope == 'future')
             ? validSparkFutureExpenseHeadUpdate(groupId, expenseId, request.resource.data)
-            : validSparkExpenseHeadUpdate(groupId, expenseId, request.resource.data))
-          || validAccountDeletionExpense(groupId, request.resource.data);
+              : validSparkExpenseHeadUpdate(groupId, expenseId, request.resource.data));
+        allow update: if validAccountDeletionExpense(groupId, request.resource.data);
         allow delete: if false;
         match /revisions/{revisionId} {
           allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId);
           allow list: if (activeMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-          allow create: if ('expense' in request.resource.data
+          allow create: if activeAccount() && (('expense' in request.resource.data
               && 'occurrenceEditScope' in request.resource.data.expense
               && request.resource.data.expense.occurrenceEditScope == 'future')
             ? validSparkFutureExpenseVersionCreate(groupId, expenseId, revisionId, request.resource.data)
-            : validSparkExpenseVersionCreate(groupId, expenseId, revisionId, request.resource.data);
+            : validSparkExpenseVersionCreate(groupId, expenseId, revisionId, request.resource.data));
           allow update: if validAccountDeletionRevision(groupId, request.resource.data);
           allow delete: if false;
         }
@@ -1664,23 +1678,23 @@ service cloud.firestore {
       match /comments/{commentId} {
         allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId);
         allow list: if (activeMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-        allow create: if validSparkCommentCreate(groupId, commentId, request.resource.data);
-        allow update: if validSparkCommentDelete(groupId, commentId, request.resource.data)
-          || validAccountDeletionComment(groupId, request.resource.data);
+        allow create: if activeAccount() && validSparkCommentCreate(groupId, commentId, request.resource.data);
+        allow update: if activeAccount() && validSparkCommentDelete(groupId, commentId, request.resource.data);
+        allow update: if validAccountDeletionComment(groupId, request.resource.data);
         allow delete: if false;
       }
       match /settlements/{settlementId} {
         allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId);
         allow list: if (activeMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-        allow create: if validSparkSettlementCreate(groupId, settlementId, request.resource.data);
-        allow update: if validSparkSettlementUpdate(groupId, settlementId, request.resource.data)
-          || validAccountDeletionSettlement(groupId, request.resource.data);
+        allow create: if activeAccount() && validSparkSettlementCreate(groupId, settlementId, request.resource.data);
+        allow update: if activeAccount() && validSparkSettlementUpdate(groupId, settlementId, request.resource.data);
+        allow update: if validAccountDeletionSettlement(groupId, request.resource.data);
         allow delete: if false;
       }
       match /activity/{activityId} {
         allow get: if groupMember(groupId) || accountDeletionGroupRead(groupId);
         allow list: if (groupMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-        allow create: if request.resource.data.kind == 'expense.created'
+        allow create: if activeAccount() && (request.resource.data.kind == 'expense.created'
             || request.resource.data.kind == 'expense.updated'
             || request.resource.data.kind == 'expense.deleted'
           ? validSparkExpenseActivityCreate(groupId, activityId, request.resource.data)
@@ -1691,46 +1705,49 @@ service cloud.firestore {
               : ((request.resource.data.kind == 'comment.added' || request.resource.data.kind == 'comment.deleted')
                 ? validSparkCommentActivityCreate(groupId, activityId, request.resource.data)
                 : ((request.resource.data.kind == 'settlement.created' || request.resource.data.kind == 'settlement.voided')
-                  && validSparkSettlementActivityCreate(groupId, activityId, request.resource.data)))));
+                  && validSparkSettlementActivityCreate(groupId, activityId, request.resource.data))))));
         allow update: if validAccountDeletionActivity(groupId, request.resource.data);
         allow delete: if false;
       }
       match /balance/{snapshotId} {
         allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId); allow list, delete: if false;
-        allow update: if snapshotId == 'current' && validSparkBalanceSettingsUpdate(groupId);
-        allow create: if snapshotId == 'current' && validInitialBalance(groupId, request.resource.data)
+        allow update: if activeAccount() && snapshotId == 'current' && validSparkBalanceSettingsUpdate(groupId);
+        allow create: if activeAccount() && snapshotId == 'current' && validInitialBalance(groupId, request.resource.data)
           && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data);
       }
       match /settings/{settingId} {
         allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId); allow list, delete: if false;
-        allow update: if settingId == 'defaults' && ('accountDeletionId' in request.resource.data
-          ? validAccountDeletionSettings(groupId, request.resource.data)
-          : ((request.resource.data.lastCommandKind == 'group.currency-conversion'
+        allow update: if activeAccount() && settingId == 'defaults'
+          && (request.resource.data.lastCommandKind == 'group.currency-conversion'
               ? validSparkCurrencySettingsDocumentUpdate(groupId, request.resource.data)
-              : validSparkSettingsUpdate(groupId, request.resource.data))
-            || validAccountDeletionSettingsActor(groupId, request.resource.data)));
-        allow create: if settingId == 'defaults' && validSettings(groupId, request.resource.data)
+              : validSparkSettingsUpdate(groupId, request.resource.data));
+        allow update: if settingId == 'defaults' && 'accountDeletionId' in request.resource.data
+          && validAccountDeletionSettings(groupId, request.resource.data);
+        allow update: if settingId == 'defaults'
+          && validAccountDeletionSettingsActor(groupId, request.resource.data);
+        allow create: if activeAccount() && settingId == 'defaults' && validSettings(groupId, request.resource.data)
           && validNewGroup(groupId, getAfter(/databases/$(database)/documents/groups/$(groupId)).data);
       }
       match /currencyConversions/{conversionId} {
         allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId);
         allow list: if (activeMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-        allow create: if validSparkCurrencyConversionCreate(groupId, conversionId, request.resource.data);
+        allow create: if activeAccount() && validSparkCurrencyConversionCreate(groupId, conversionId, request.resource.data);
         allow update, delete: if false;
         match /rates/{sourceCurrency} {
           allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId);
           allow list: if (activeMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(6);
-          allow create: if validSparkCurrencyRateCreate(groupId, conversionId, sourceCurrency, request.resource.data);
+          allow create: if activeAccount() && validSparkCurrencyRateCreate(groupId, conversionId, sourceCurrency, request.resource.data);
           allow update, delete: if false;
         }
       }
       match /recurringTemplates/{templateId} {
         allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId);
         allow list: if (activeMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-        allow create: if validSparkRecurringTemplateCreate(groupId, templateId, request.resource.data);
-        allow update: if 'accountDeletionId' in request.resource.data
-          ? validAccountDeletionRecurring(groupId, request.resource.data)
-          : validSparkRecurringTemplateUpdate(groupId, templateId, request.resource.data);
+        allow create: if activeAccount() && validSparkRecurringTemplateCreate(groupId, templateId, request.resource.data);
+        allow update: if activeAccount() && validSparkRecurringTemplateUpdate(groupId, templateId, request.resource.data);
+        allow update: if (('accountDeletionId' in request.resource.data)
+            && validAccountDeletionRecurring(groupId, request.resource.data))
+          || validAccountDeletionRecurringActor(groupId, request.resource.data);
         allow delete: if false;
       }
       match /assets/{assetId} {

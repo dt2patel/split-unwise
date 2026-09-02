@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createDemoRepository } from '../demoRepository'
 import { createMemoryCommandStorage } from '../commandQueue'
 import * as sessionModule from '../session'
@@ -609,6 +609,8 @@ describe('app data session', () => {
 
   it('quiesces reversibly and clears only non-pending local queue and receipt state', async () => {
     const receipts = createMemoryReceiptStore({ id: () => 'clear-local' })
+    const closeReceipts = vi.fn(async () => undefined)
+    receipts.close = closeReceipts
     const receipt = await receipts.put(new Blob(['image'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
     const session = createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts })
     await session.ready
@@ -619,6 +621,7 @@ describe('app data session', () => {
     await session.clearLocalData()
     expect(session.queue.snapshot()).toEqual([])
     await expect(receipts.get(receipt)).resolves.toBeUndefined()
+    expect(closeReceipts).toHaveBeenCalledOnce()
 
     session.resumeWork()
     await expect(session.queue.submit({ kind: 'profile.update', operationId: 'after-resume', displayName: 'Maya P.' }).result()).resolves.toMatchObject({ status: 'saved' })

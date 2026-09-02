@@ -57,6 +57,7 @@ export function createFirebaseAccountDeletionAction<
         ...(user.emailVerified && user.email ? { email: normalizeEmail(user.email) } : {}),
         ...(input.onProgress ? { onProgress: input.onProgress } : {}),
       })
+      await input.beforeAuthDelete?.()
       await dependencies.deleteUser(user)
     } catch (error: unknown) {
       throw accountDeletionError(error)

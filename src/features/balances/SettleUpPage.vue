@@ -70,8 +70,10 @@ const groupId = computed(() => typeof route.params.groupId === 'string' && isStr
 const allCandidateDebts = computed(() => {
   const userId = currentUser.value?.id
   if (!userId || !balanceSnapshot.value) return []
+  const eligibleIds = new Set(store.members.filter(({ accountStatus }) => accountStatus !== 'deleted').map(({ id }) => id))
   return balanceSnapshot.value[selectedPlan.value]
     .filter((debt) => debt.fromParticipantId === userId || debt.toParticipantId === userId)
+    .filter((debt) => eligibleIds.has(debt.fromParticipantId) && eligibleIds.has(debt.toParticipantId))
 })
 const availableCurrencies = computed(() => {
   const currencies = [...new Set(allCandidateDebts.value.map((debt) => debt.money.currency))].sort()

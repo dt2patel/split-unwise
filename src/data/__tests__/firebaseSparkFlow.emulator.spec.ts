@@ -156,6 +156,11 @@ describe('Firebase Spark two-account flow', () => {
 
     await signOut(auth)
     await signInWithEmailAndPassword(auth, friendEmail, password)
+    const remainingRepository = createFirebaseRepository(configuration, friend.user.uid)
+    await expect(remainingRepository.groups.listMembers(created.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: owner.user.uid, accountStatus: 'deleted', displayName: 'Deleted user', canManage: false }),
+      expect.objectContaining({ id: friend.user.uid, displayName: 'Deletion Friend', canManage: true }),
+    ]))
     expect(pick((await getDoc(doc(db, expensePath))).data()!, ['total', 'payments', 'allocations'])).toEqual(preservedExpenseLedger)
     expect((await getDoc(doc(db, expensePath))).data()?.createdBy).toEqual({ id: owner.user.uid, displayName: 'Deleted user' })
     expect(pick((await getDoc(doc(db, settlementPath))).data()!, ['money', 'senderId', 'recipientId', 'basis'])).toEqual(preservedSettlementLedger)

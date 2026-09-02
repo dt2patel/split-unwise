@@ -56,13 +56,25 @@ function projectionStatus(value: unknown, label: string): NonNullable<DecodedGro
 
 export function decodeMember(id: string, value: unknown, isCurrentUser: boolean): Member {
   const data = record(value, `member ${id}`)
+  const accountStatus = deletedMemberStatus(data, `member ${id}`)
   return {
     id, displayName: requiredString(data.displayName, `member ${id}.displayName`), initials: requiredString(data.initials, `member ${id}.initials`),
     ...(data.avatarUrl === undefined || data.avatarUrl === null ? {} : { avatarUrl: requiredString(data.avatarUrl, `member ${id}.avatarUrl`) }),
     ...(data.canManage === undefined ? {} : { canManage: requiredBoolean(data.canManage, `member ${id}.canManage`) }),
     ...(data.role === undefined ? {} : { role: memberRole(data.role, `member ${id}.role`) }),
+    ...(accountStatus ? { accountStatus } : {}),
     isCurrentUser,
   }
+}
+
+function deletedMemberStatus(data: Readonly<Record<string, unknown>>, label: string): Member['accountStatus'] {
+  if (data.accountStatus === undefined) return undefined
+  if (data.accountStatus !== 'deleted') throw new DocumentDecodeError(`${label}.accountStatus`, 'must be deleted')
+  if (data.status !== 'removed' || data.displayName !== 'Deleted user' || data.initials !== 'DU' || data.avatarUrl !== null
+    || data.canManage !== false || data.role !== 'member') {
+    throw new DocumentDecodeError(label, 'deleted account identity is not canonical')
+  }
+  return 'deleted'
 }
 
 function memberRole(value: unknown, label: string): Member['role'] {

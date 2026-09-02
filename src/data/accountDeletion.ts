@@ -142,8 +142,9 @@ export function buildDeletionGroupContinuity(
   const needsPromotion = deletingMember.role === 'owner' || (deletingMember.canManage === true && !otherManagerExists)
   const promotionTarget = needsPromotion ? remaining[0] : undefined
   const deletedMember = buildDeletedMemberDocument(deletingMember, uid, deletionId, committedAt)
+  const anonymizedGroup = anonymizeSharedDocument('group', group, uid) ?? group
   const baseGroup: Record<string, unknown> = {
-    ...group,
+    ...anonymizedGroup,
     memberIds: memberIds.filter((memberId) => memberId !== uid),
     updatedAt: committedAt,
     lastAccountDeletionId: deletionId,
@@ -175,13 +176,14 @@ export function buildDeletionRecurringTemplate(
 ): Readonly<Record<string, unknown>> | undefined {
   assertStrictId(uid, 'account UID')
   assertDeletionId(deletionId)
-  if (current.status !== 'active' || !Array.isArray(current.involvedMemberIds) || !current.involvedMemberIds.includes(uid)) return undefined
+  const actorAnonymized = anonymizeSharedDocument('recurring', current, uid)
+  if (current.status !== 'active' || !Array.isArray(current.involvedMemberIds) || !current.involvedMemberIds.includes(uid)) return actorAnonymized
   if (!Number.isSafeInteger(current.revision) || Number(current.revision) < 1 || Number(current.revision) >= Number.MAX_SAFE_INTEGER) {
     throw new Error('Recurring template revision is invalid.')
   }
-  const actorAnonymized = anonymizeSharedDocument('recurring', current, uid) ?? current
+  const recurrence = actorAnonymized ?? current
   return {
-    ...actorAnonymized,
+    ...recurrence,
     status: 'cancelled',
     revision: Number(current.revision) + 1,
     updatedAt: committedAt,

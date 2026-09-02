@@ -45,7 +45,7 @@ export const useSettlementStore = defineStore('settlements', () => {
   const memberNames = computed(() => new Map(members.value.map((member) => [member.id, member.displayName])))
   const canRecord = computed(() => Boolean(group.value && currentUser.value && balanceSnapshot.value
     && balanceSnapshot.value.groupId === group.value.id
-    && members.value.some(({ id }) => id === currentUser.value?.id)))
+    && members.value.some((member) => member.id === currentUser.value?.id && member.accountStatus !== 'deleted')))
   const pendingSettlements = computed<readonly PendingSettlementProjection[]>(() => {
     queueRevision.value
     const activeGroupId = group.value?.id
@@ -94,6 +94,12 @@ export const useSettlementStore = defineStore('settlements', () => {
     if (!canRecord.value || !group.value || !balanceSnapshot.value || command.groupId !== group.value.id
       || command.expectedBalanceRevision !== balanceSnapshot.value.balanceRevision) {
       error.value = 'Reload current balances before recording this payment.'
+      return false
+    }
+    const sender = members.value.find(({ id }) => id === command.basis.senderId)
+    const recipient = members.value.find(({ id }) => id === command.basis.recipientId)
+    if (!sender || !recipient || sender.accountStatus === 'deleted' || recipient.accountStatus === 'deleted') {
+      error.value = 'Deleted accounts cannot be included in a new payment.'
       return false
     }
     return executeAndRefresh(queue.submit(command), command.groupId)

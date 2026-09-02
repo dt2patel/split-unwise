@@ -220,7 +220,7 @@ export async function createFirebaseAccountDeletionFirestorePort(
     serverTimestamp: () => firestore.serverTimestamp(),
     createDeletionId: () => createDeletionId(),
     async get(path) {
-      const snapshot = await firestore.getDoc(firestore.doc(db, ...pathSegments(path)))
+      const snapshot = await firestore.getDoc(firestore.doc(db, ...accountDeletionFirestorePathSegments(path)))
       return snapshot.exists() ? { id: snapshot.id, path, data: snapshot.data() } : undefined
     },
     async list(request) {
@@ -232,7 +232,7 @@ export async function createFirebaseAccountDeletionFirestorePort(
         firestore.limit(request.limit),
       ]
       const snapshot = await firestore.getDocs(firestore.query(
-        firestore.collection(db, ...pathSegments(request.collectionPath)),
+        firestore.collection(db, ...accountDeletionFirestorePathSegments(request.collectionPath)),
         ...constraints,
       ))
       return snapshot.docs.map((document) => ({ id: document.id, path: `${request.collectionPath}/${document.id}`, data: document.data() }))
@@ -242,7 +242,7 @@ export async function createFirebaseAccountDeletionFirestorePort(
       if (mutations.length > MAX_BATCH_WRITES) throw new Error('Account deletion batch is too large.')
       const batch = firestore.writeBatch(db)
       for (const mutation of mutations) {
-        const reference = firestore.doc(db, ...pathSegments(mutation.path))
+        const reference = firestore.doc(db, ...accountDeletionFirestorePathSegments(mutation.path))
         if (mutation.kind === 'delete') batch.delete(reference)
         else batch.set(reference, mutation.data)
       }
@@ -403,11 +403,12 @@ function assertPageLimit(value: number): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > PAGE_SIZE) throw new Error('Account deletion page limit is invalid.')
 }
 
-function pathSegments(path: string): [string, ...string[]] {
+/** Validates adapter-owned paths while accepting URL-safe capability IDs. */
+export function accountDeletionFirestorePathSegments(path: string): [string, ...string[]] {
   const segments = path.split('/').filter(Boolean)
-  if (segments.join('/') !== path || segments.some((segment) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(segment))) {
-    throw new Error('Account deletion Firestore path is invalid.')
-  }
+  if (segments.join('/') !== path) throw new Error('Account deletion Firestore path separators are invalid.')
+  const invalidIndex = segments.findIndex((segment) => !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(segment))
+  if (invalidIndex >= 0) throw new Error(`Account deletion Firestore path segment ${invalidIndex + 1} is invalid (${segments[invalidIndex]!.length} characters).`)
   return segments as [string, ...string[]]
 }
 

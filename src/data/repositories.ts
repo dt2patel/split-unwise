@@ -16,6 +16,8 @@ export interface Member {
   readonly canManage?: boolean
   /** Membership authority is stored explicitly so owner-only safeguards are not inferred from UI labels. */
   readonly role?: 'owner' | 'member'
+  /** Canonical retained ledger identity; never eligible for a new obligation. */
+  readonly accountStatus?: 'deleted'
 }
 
 export interface ActorSnapshot {

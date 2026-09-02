@@ -19,6 +19,15 @@ describe('Task 7 Firebase boundary decoders', () => {
     expect(() => decodeMember('alex-r', { displayName: 'Alex R.', initials: 'AR', canManage: 'yes' }, false)).toThrow('canManage')
   })
 
+  it('decodes only the canonical deleted member identity', () => {
+    const deleted = {
+      status: 'removed', role: 'member', canManage: false, displayName: 'Deleted user', initials: 'DU', avatarUrl: null, accountStatus: 'deleted',
+    }
+    expect(decodeMember('former-member', deleted, false)).toMatchObject({ id: 'former-member', accountStatus: 'deleted', displayName: 'Deleted user' })
+    expect(() => decodeMember('former-member', { ...deleted, displayName: 'Forged name' }, false)).toThrow('canonical')
+    expect(() => decodeMember('former-member', { ...deleted, canManage: true }, false)).toThrow('canonical')
+  })
+
   it('decodes expense actor snapshots and rejects malformed actor identity', () => {
     const raw = rawExpense()
     expect(decodeExpense('lake-house-weekend', 'groceries', raw)).toMatchObject({

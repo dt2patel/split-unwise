@@ -217,10 +217,10 @@ Expected: FAIL because the adapter is absent.
 ```ts
 const PRIVATE_COLLECTIONS = ['groups', 'activity', 'notifications', 'notificationReads', 'settings', 'jobs', 'exports', 'devices'] as const
 const SHARED_COLLECTIONS = ['expenses', 'comments', 'settlements', 'activity', 'recurringTemplates'] as const
-const MAX_BATCH_WRITES = 400
+const MAX_BATCH_WRITES = 20
 ```
 
-Query every collection with `orderBy(documentId())`, `startAfter`, and `limit(100)`. Commit no more than 400 writes at once. Process history before member continuity, private projections after every group, and `prepared` last. Query invitations separately by `createdByUid == uid` and verified `targetEmail == email`, deduplicate IDs, and delete only matching documents.
+Query every collection with `orderBy(documentId())`, `startAfter`, and `limit(100)`. Commit no more than 20 writes at once so every guarded write stays below Firestore's rules-expression budget. Process history before member continuity, private projections after every group, and `prepared` last. Query invitations separately by `createdByUid == uid` and verified `targetEmail == email`, deduplicate IDs, and delete only matching documents.
 
 - [ ] **Step 4: Run the adapter unit test until green**
 

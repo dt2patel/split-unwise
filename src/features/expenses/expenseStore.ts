@@ -44,7 +44,7 @@ export interface ExpenseValidationResult {
 
 export function validateExpenseInput(input: ExpenseEditorInput, members: readonly Member[]): ExpenseValidationResult {
   const errors: Record<string, string> = {}
-  const activeIds = new Set(members.map(({ id }) => id))
+  const activeIds = new Set(members.filter(isEligibleMember).map(({ id }) => id))
   const groupId = input.groupId.trim()
   const description = input.description.trim()
   const category = input.category.trim()
@@ -165,6 +165,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   let receiptRecognitionRequest = 0
 
   const isDirty = computed(() => JSON.stringify(editor) !== initialFingerprint)
+  const eligibleMembers = computed(() => members.value.filter(isEligibleMember))
   const returnPath = computed(() => {
     if (mode.value === 'edit' && sourceGroupId.value && editor.groupId && sourceGroupId.value !== editor.groupId) {
       return origin.value === 'groups' ? `/tabs/groups/${encodeURIComponent(editor.groupId)}` : `/tabs/${origin.value}`
@@ -208,14 +209,15 @@ export const useExpenseStore = defineStore('expense-editor', () => {
           session.repository.groups.getSettings(options.groupId),
         ])
         if (!group || group.id !== options.groupId) throw new Error('This group is not available.')
-        if (!groupMembers.some(({ id }) => id === loadedCurrentUser.id)) throw new Error('You are not an active member of this group.')
+        if (!groupMembers.some((member) => member.id === loadedCurrentUser.id && isEligibleMember(member))) throw new Error('You are not an active member of this group.')
+        const activeGroupMembers = groupMembers.filter(isEligibleMember)
         loadedMembers = groupMembers
         loadedContextName = group.name
         nextEditor.groupId = group.id
         nextEditor.currency = group.currency
         const defaultSplit = settings.defaultSplit
-        if (!options.expenseId && defaultSplit && defaultSplit.participantIds.some((id) => !groupMembers.some((member) => member.id === id))) throw new Error('The shared default split references an inactive member and must be cleared.')
-        nextEditor.participants = [...(!options.expenseId && defaultSplit ? defaultSplit.participantIds : groupMembers.map(({ id }) => id))]
+        if (!options.expenseId && defaultSplit && defaultSplit.participantIds.some((id) => !activeGroupMembers.some((member) => member.id === id))) throw new Error('The shared default split references an inactive member and must be cleared.')
+        nextEditor.participants = [...(!options.expenseId && defaultSplit ? defaultSplit.participantIds : activeGroupMembers.map(({ id }) => id))]
         nextEditor.payments = [{ participantId: loadedCurrentUser.id, amountText: '' }]
         nextEditor.split = !options.expenseId && defaultSplit ? splitInputFromMethod(defaultSplit, group.currency) : { type: 'equal' }
       } else {
@@ -287,15 +289,16 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         currentUser.value ? Promise.resolve(currentUser.value) : session.repository.app.getCurrentUser(),
       ])
       if (!isCurrentContextSelection(editorRequest, request, group.id)) return false
-      if (!loadedMembers.some(({ id }) => id === user.id)) throw new Error('You are not an active member of this group.')
+      if (!loadedMembers.some((member) => member.id === user.id && isEligibleMember(member))) throw new Error('You are not an active member of this group.')
+      const activeMembers = loadedMembers.filter(isEligibleMember)
       const currencyChanged = editor.currency !== group.currency
       members.value = loadedMembers
       contextName.value = group.name
       editor.groupId = group.id
       editor.currency = group.currency
       const defaultSplit = settings.defaultSplit
-      if (defaultSplit && defaultSplit.participantIds.some((id) => !loadedMembers.some((member) => member.id === id))) throw new Error('The shared default split references an inactive member and must be cleared.')
-      editor.participants = [...(defaultSplit?.participantIds ?? loadedMembers.map(({ id }) => id))]
+      if (defaultSplit && defaultSplit.participantIds.some((id) => !activeMembers.some((member) => member.id === id))) throw new Error('The shared default split references an inactive member and must be cleared.')
+      editor.participants = [...(defaultSplit?.participantIds ?? activeMembers.map(({ id }) => id))]
       editor.payments = [{ participantId: user.id, amountText: '' }]
       editor.split = defaultSplit ? splitInputFromMethod(defaultSplit, group.currency) : { type: 'equal' }
       if (currencyChanged) editor.amountText = ''
@@ -534,7 +537,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   return {
-    editor, members, availableGroups, contextName, mode, origin, expenseId, sourceGroupId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview, receiptDurability, receiptScanState,
+    editor, members, eligibleMembers, availableGroups, contextName, mode, origin, expenseId, sourceGroupId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview, receiptDurability, receiptScanState,
     activeSheet, focusTarget, lastOperationId, saveState, isLoading, hasInitialized, loadError, isDirty, returnPath, canSubmit,
     initialize, selectContext, changeCurrency, changeDate, submit, attachReceipt, removeReceipt, confirmReceipt, openSheet, closeSheet, leaveEditor, currencyOptions,
   }
@@ -582,6 +585,8 @@ function editorInputFromExpense(expense: ExpenseRow): ExpenseEditorInput {
     recurrence: expense.recurrence,
   }
 }
+
+function isEligibleMember(member: Member): boolean { return member.accountStatus !== 'deleted' }
 
 function emptyEditor(): ExpenseEditorInput {
   return {

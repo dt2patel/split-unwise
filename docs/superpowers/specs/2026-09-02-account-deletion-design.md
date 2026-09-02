@@ -74,7 +74,7 @@ Comments authored by the deleted UID are redacted to `Comment removed with delet
 
 ### Group continuity
 
-The deleted UID remains in `memberIds` as a ledger participant, but `accountStatus: 'deleted'` and the account tombstone make it unusable for authorization. This avoids invalidating historical allocations.
+The deleted UID is removed from the group's authorization-bearing `memberIds`, while the anonymized member tombstone and historical allocation IDs remain in the ledger. This immediately revokes group access without invalidating historical allocations.
 
 If the deleted member is the owner or the only manager and another active, non-deleted member exists, the first remaining member in stable `memberIds` order is promoted to `role: 'owner'` and `canManage: true`; the deleted member becomes `role: 'member'` and `canManage: false`. The group's `createdByUid` is transferred to the promoted member so later owner protections remain coherent.
 

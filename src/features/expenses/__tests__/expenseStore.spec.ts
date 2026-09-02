@@ -71,6 +71,17 @@ describe('expense input validation', () => {
     expect(result.errors).toMatchObject({ context: expect.any(String), description: expect.any(String), date: expect.any(String), amount: expect.any(String), category: expect.any(String), participants: expect.any(String), payments: expect.any(String), split: expect.any(String) })
   })
 
+  it('keeps a deleted member available for labels but rejects new obligations to that identity', () => {
+    const deleted: Member = { id: 'former-member', displayName: 'Deleted user', initials: 'DU', isCurrentUser: false, accountStatus: 'deleted' }
+    const result = validateExpenseInput({
+      groupId: 'lake-house-weekend', description: 'New dinner', date: '2026-08-30', currency: 'USD', amountText: '10.00', category: 'Food',
+      participants: ['maya-p', deleted.id], payments: [{ participantId: deleted.id, amountText: '10.00' }], split: { type: 'equal' }, attachmentRefs: [],
+    }, [...members, deleted])
+
+    expect(result.valid).toBe(false)
+    expect(result.errors).toMatchObject({ participants: expect.any(String), payments: expect.any(String), split: expect.any(String) })
+  })
+
   it('explicitly resets money-dependent payer and split inputs when currency changes', async () => {
     const store = useExpenseStore()
     await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })

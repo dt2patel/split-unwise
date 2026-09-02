@@ -1190,7 +1190,12 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async listMembers(groupId) {
         const { db, firestore, userId } = await context()
         const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'members'), firestore.limit(100)))
-        return snapshot.docs.flatMap((document) => document.data().status === 'active' ? [decodeMember(document.id, document.data(), document.id === userId)] : []).sort((left, right) => left.displayName.localeCompare(right.displayName))
+        return snapshot.docs.flatMap((document) => {
+          const data = document.data()
+          return data.status === 'active' || data.accountStatus === 'deleted'
+            ? [decodeMember(document.id, data, document.id === userId)]
+            : []
+        }).sort((left, right) => left.displayName.localeCompare(right.displayName))
       },
       async getBalanceSnapshot(groupId) {
         const readyContext = context()

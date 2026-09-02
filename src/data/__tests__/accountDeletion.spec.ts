@@ -133,6 +133,20 @@ describe('account deletion data contract', () => {
     })
   })
 
+  it('anonymizes an existing group deletion actor during continuity', () => {
+    const group = {
+      id: 'group-a', memberIds: ['owner', 'friend'], createdByUid: 'friend', status: 'deleted', deletedAt: 'before',
+      deletedBy: { id: 'owner', displayName: 'Owner Name' }, updatedAt: 'before',
+    }
+    const members = [
+      { id: 'owner', status: 'active', role: 'member', canManage: false, displayName: 'Owner Name', initials: 'ON', avatarUrl: null },
+      { id: 'friend', status: 'active', role: 'owner', canManage: true, displayName: 'Friend', initials: 'F', avatarUrl: null },
+    ]
+    expect(buildDeletionGroupContinuity(group, members, 'owner', 'account-delete-12345678', 'now').group).toMatchObject({
+      status: 'deleted', deletedAt: 'before', deletedBy: { id: 'owner', displayName: DELETED_ACCOUNT_NAME }, memberIds: ['friend'],
+    })
+  })
+
   it('cancels only active recurrence involving the deleted uid', () => {
     const template = {
       status: 'active', revision: 3, involvedMemberIds: ['friend', 'owner'],
@@ -144,7 +158,21 @@ describe('account deletion data contract', () => {
       updatedBy: { id: 'owner', displayName: DELETED_ACCOUNT_NAME },
       accountDeletionId: 'account-delete-12345678', accountDeletedUid: 'owner',
     })
-    expect(buildDeletionRecurringTemplate({ ...template, involvedMemberIds: ['friend'] }, 'owner', 'account-delete-12345678', 'now')).toBeUndefined()
+    expect(buildDeletionRecurringTemplate({ ...template, involvedMemberIds: ['friend'] }, 'owner', 'account-delete-12345678', 'now')).toEqual({
+      ...template,
+      involvedMemberIds: ['friend'],
+      updatedBy: { id: 'owner', displayName: DELETED_ACCOUNT_NAME },
+    })
+  })
+
+  it('anonymizes an inactive recurrence actor without changing its schedule or revision', () => {
+    const template = {
+      status: 'cancelled', revision: 4, involvedMemberIds: ['friend'],
+      createdBy: { id: 'owner', displayName: 'Owner Name' }, updatedBy: { id: 'friend', displayName: 'Friend' }, nextDate: '2026-10-01',
+    }
+    expect(buildDeletionRecurringTemplate(template, 'owner', 'account-delete-12345678', 'now')).toEqual({
+      ...template, createdBy: { id: 'owner', displayName: DELETED_ACCOUNT_NAME },
+    })
   })
 
   it('clears only a default split involving the deleted uid', () => {

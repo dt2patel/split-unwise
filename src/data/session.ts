@@ -203,6 +203,7 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
       if (unresolvedSummary(deferredQueue.snapshot()).pending > 0) throw new Error('Pending operations cannot be cleared while their result is unknown')
       await deferredQueue.clearLocalRecords()
       await receipts.clear?.()
+      await receipts.close?.()
     },
     freeze() {
       if (!active) return
@@ -401,6 +402,7 @@ function deferredReceiptStore(
     async delete(reference) { await (await resolved()).delete(reference) },
     async countUnuploaded() { return (await resolved()).countUnuploaded?.() ?? 0 },
     async clear() { await (await resolved()).clear?.() },
+    async close() { await (await resolved()).close?.() },
   }
 }
 

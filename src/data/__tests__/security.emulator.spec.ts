@@ -113,6 +113,10 @@ describe('Firestore rules in the emulator', () => {
     const settlementId = String(settlement.settlementId)
     const recurringSource = sparkRecurringSource('d')
     const recurring = sparkRecurringTemplate(recurringSource, '2026-10-01')
+    const cancelledRecurring = {
+      ...sparkRecurringTemplate({ ...sparkRecurringSource('f'), createdBy: ownerActor, updatedBy: friendActor }, '2026-11-01'),
+      id: 'recurring-cancelled-f', status: 'cancelled', involvedMemberIds: ['friend'], createdBy: ownerActor, updatedBy: friendActor,
+    }
     const settings = sparkSettings(2, 'group.default-split', 'default-split-a', 'e'.repeat(48), ownerActor, {
       defaultSplit: { type: 'equal', participantIds: ['active', 'friend'] },
     })
@@ -133,6 +137,7 @@ describe('Firestore rules in the emulator', () => {
       await setDoc(doc(db, `groups/group-a/comments/comment-${'b'.repeat(48)}`), comment)
       await setDoc(doc(db, `groups/group-a/settlements/${settlementId}`), settlement)
       await setDoc(doc(db, `groups/group-a/recurringTemplates/${recurring.id}`), recurring)
+      await setDoc(doc(db, `groups/group-a/recurringTemplates/${cancelledRecurring.id}`), cancelledRecurring)
       await setDoc(doc(db, 'groups/group-a/settings/defaults'), settings)
       await setDoc(doc(db, `invitations/${invitationId}`), {
         schemaVersion: 1, invitationId, tokenHash: invitationId, groupId: 'group-a', groupKind: 'friendship', groupName: 'Shared group',
@@ -148,6 +153,9 @@ describe('Firestore rules in the emulator', () => {
     const ownerProfile = (await getDoc(doc(owner, 'users/active'))).data()!
     await assertSucceeds(setDoc(doc(owner, 'users/active'), deletingProfile(ownerProfile.createdAt, ['group-a'], 'deleting')))
 
+    const blockedToken = 'f'.repeat(48)
+    const blockedComment = sparkComment(blockedToken, String(expense.id), ownerActor)
+    await assertFails(commitSparkComment(owner, `comment-${blockedToken}`, blockedToken, blockedComment, sparkCommentActivity(blockedToken, blockedComment, 'comment.added')))
     await assertFails(updateDoc(doc(owner, `groups/group-a/expenses/${expense.id}`), { total: { currency: 'USD', minorAmount: 1 } }))
     await assertFails(updateDoc(doc(owner, 'groups/group-a/members/friend'), { accountStatus: 'deleted' }))
     await assertFails(deleteDoc(doc(owner, 'users/friend/settings/notifications')))
@@ -178,6 +186,10 @@ describe('Firestore rules in the emulator', () => {
       ...(await getDoc(doc(owner, `groups/group-a/recurringTemplates/${recurring.id}`))).data()!,
       status: 'cancelled', revision: 2, updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Deleted user' },
       createdBy: { id: 'active', displayName: 'Deleted user' }, accountDeletionId: 'account-delete-12345678', accountDeletedUid: 'active',
+    }))
+    await assertSucceeds(setDoc(doc(owner, `groups/group-a/recurringTemplates/${cancelledRecurring.id}`), {
+      ...(await getDoc(doc(owner, `groups/group-a/recurringTemplates/${cancelledRecurring.id}`))).data()!,
+      createdBy: { id: 'active', displayName: 'Deleted user' },
     }))
     await assertSucceeds(setDoc(doc(owner, 'groups/group-a/settings/defaults'), {
       schemaVersion: 1, groupId: 'group-a', revision: 3, simplifyDebtsEnabled: true,
@@ -219,6 +231,9 @@ describe('Firestore rules in the emulator', () => {
     expect((await getDoc(doc(friend, 'groups/group-a/members/active'))).data()).toMatchObject({ status: 'removed', displayName: 'Deleted user', accountStatus: 'deleted' })
     expect((await getDoc(doc(friend, 'users/friend/groups/group-a'))).data()).toMatchObject({ contextLabel: 'Deleted user' })
     expect((await getDoc(doc(friend, `groups/group-a/recurringTemplates/${recurring.id}`))).data()).toMatchObject({ status: 'cancelled' })
+    expect((await getDoc(doc(friend, `groups/group-a/recurringTemplates/${cancelledRecurring.id}`))).data()).toMatchObject({
+      status: 'cancelled', revision: 1, createdBy: { id: 'active', displayName: 'Deleted user' },
+    })
     expect((await getDoc(doc(friend, 'groups/group-a/settings/defaults'))).data()).not.toHaveProperty('defaultSplit')
     await assertFails(getDoc(doc(owner, 'groups/group-a')))
   })

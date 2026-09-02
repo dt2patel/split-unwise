@@ -20,6 +20,7 @@ const groupId = computed(() => typeof route.params.groupId === 'string' && isStr
 const backPath = computed(() => groupId.value ? `/tabs/groups/${encodeURIComponent(groupId.value)}` : '/tabs/groups')
 const canManage = computed(() => snapshot.value?.currentUser.canManage === true)
 const simplifyDebtsEnabled = computed(() => snapshot.value?.settings.simplifyDebtsEnabled !== false)
+const eligibleMembers = computed(() => snapshot.value?.members.filter(({ accountStatus }) => accountStatus !== 'deleted') ?? [])
 watch(groupId, (id) => { void load(id) }, { immediate: true })
 
 async function load(id: string): Promise<void> {
@@ -28,7 +29,8 @@ async function load(id: string): Promise<void> {
 }
 function initialize(loaded: GroupPremiumSnapshot): void {
   const configured = loaded.settings.defaultSplit
-  kind.value = configured?.type ?? 'equal'; selectedIds.value = [...(configured?.participantIds ?? loaded.members.map(({ id }) => id))]
+  const activeMembers = loaded.members.filter(({ accountStatus }) => accountStatus !== 'deleted')
+  kind.value = configured?.type ?? 'equal'; selectedIds.value = [...(configured?.participantIds.filter((id) => activeMembers.some((member) => member.id === id)) ?? activeMembers.map(({ id }) => id))]
   ratios.value = Object.fromEntries(loaded.members.map(({ id }) => [id, configured?.type === 'percentage' ? String(configured.percentages[id] ?? 0) : configured?.type === 'shares' ? String(configured.shares[id] ?? 1) : '1']))
 }
 function setPresentingElement(value: Element | ComponentPublicInstance | null): void {
@@ -36,7 +38,7 @@ function setPresentingElement(value: Element | ComponentPublicInstance | null): 
   presentingElement.value = element instanceof HTMLElement ? element : undefined
 }
 function openMemberRemoval(member: Member): void {
-  if (!canManage.value || member.isCurrentUser || member.role === 'owner') return
+  if (!canManage.value || member.isCurrentUser || member.role === 'owner' || member.accountStatus === 'deleted') return
   removalError.value = ''; removalTarget.value = member
 }
 function closeMemberRemoval(): void {
@@ -97,14 +99,14 @@ function toggle(id: string, checked: boolean): void {
 }
 function seedRatios(next: DefaultKind): void {
   if (next === 'equal') return
-  const included = snapshot.value?.members.map(({ id }) => id).filter((id) => selectedIds.value.includes(id)) ?? []
+  const included = eligibleMembers.value.map(({ id }) => id).filter((id) => selectedIds.value.includes(id))
   if (next === 'shares') { ratios.value = Object.fromEntries(included.map((id) => [id, '1'])); return }
   if (!included.length) { ratios.value = {}; return }
   const base = Math.floor(100 / included.length); const remainder = 100 - base * included.length
   ratios.value = Object.fromEntries(included.map((id, index) => [id, String(base + (index < remainder ? 1 : 0))]))
 }
 function buildDefault(): DefaultSplit {
-  const participantIds = snapshot.value?.members.map(({ id }) => id).filter((id) => selectedIds.value.includes(id)) ?? []
+  const participantIds = eligibleMembers.value.map(({ id }) => id).filter((id) => selectedIds.value.includes(id))
   if (kind.value === 'equal') return { type: 'equal', participantIds }
   const values = Object.fromEntries(participantIds.map((id) => [id, Number(ratios.value[id])]))
   return kind.value === 'percentage' ? { type: 'percentage', participantIds, percentages: values } : { type: 'shares', participantIds, shares: values }
@@ -187,7 +189,7 @@ function isConflict(reason: unknown, failure: string): boolean {
 
           <section class="settings-section" aria-labelledby="members-heading">
             <header class="section-heading">
-              <div><h2 id="members-heading">Manage members</h2><p>{{ snapshot.members.length }} active {{ snapshot.members.length === 1 ? 'person' : 'people' }}</p></div>
+              <div><h2 id="members-heading">Manage members</h2><p>{{ eligibleMembers.length }} active {{ eligibleMembers.length === 1 ? 'person' : 'people' }}</p></div>
               <span class="access-pill">{{ canManage ? 'Manager' : 'View only' }}</span>
             </header>
             <ion-note v-if="!canManage" class="permission-note">Only an active group manager can remove people.</ion-note>
@@ -196,10 +198,10 @@ function isConflict(reason: unknown, failure: string): boolean {
                 <member-avatar slot="start" :member="member" size="compact" />
                 <ion-label class="manage-member-copy">
                   <strong>{{ member.displayName }}</strong>
-                  <p>{{ member.isCurrentUser ? 'You' : member.role === 'owner' ? 'Owner' : member.canManage ? 'Manager' : 'Member' }}</p>
+                  <p>{{ member.accountStatus === 'deleted' ? 'Deleted account · history only' : member.isCurrentUser ? 'You' : member.role === 'owner' ? 'Owner' : member.canManage ? 'Manager' : 'Member' }}</p>
                 </ion-label>
                 <ion-button
-                  v-if="canManage && !member.isCurrentUser && member.role !== 'owner'"
+                  v-if="canManage && !member.isCurrentUser && member.role !== 'owner' && member.accountStatus !== 'deleted'"
                   slot="end" fill="clear" color="danger" size="small"
                   :aria-label="`Remove ${member.displayName} from group`"
                   @click="openMemberRemoval(member)"
@@ -227,7 +229,7 @@ function isConflict(reason: unknown, failure: string): boolean {
             <fieldset class="people-fieldset" :disabled="!canManage || saving">
               <legend>People included</legend>
               <ion-list data-testid="group-settings-list" inset lines="full" class="settings-list member-list">
-                <ion-item v-for="member in snapshot.members" :key="member.id" data-testid="group-member-row" class="settings-row member-row" :disabled="!canManage || saving">
+                <ion-item v-for="member in eligibleMembers" :key="member.id" data-testid="group-member-row" class="settings-row member-row" :disabled="!canManage || saving">
                   <ion-checkbox slot="start" :checked="selectedIds.includes(member.id)" :disabled="!canManage || saving" :aria-label="`Include ${member.displayName}`" @ion-change="toggle(member.id, $event.detail.checked)" />
                   <ion-label>{{ member.displayName }}</ion-label>
                   <label v-if="kind !== 'equal'" slot="end" class="ratio-control">

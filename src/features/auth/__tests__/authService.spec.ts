@@ -54,9 +54,9 @@ describe('Firebase account deletion authentication', () => {
       },
     })
 
-    await action({ password: 'current-password', onProgress: progress })
+    await action({ password: 'current-password', onProgress: progress, async beforeAuthDelete() { events.push('local-cleanup') } })
 
-    expect(events).toEqual(['credential:owner@example.com:16', 'reauthenticate', 'prepare', 'delete-user'])
+    expect(events).toEqual(['credential:owner@example.com:16', 'reauthenticate', 'prepare', 'local-cleanup', 'delete-user'])
   })
 
   it('requires a password without starting deletion and maps invalid credentials', async () => {

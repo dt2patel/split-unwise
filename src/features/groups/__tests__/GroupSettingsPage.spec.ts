@@ -45,6 +45,19 @@ describe('group default settings page', () => {
     expect(wrapper.get('[data-testid="clear-default-button"]').attributes('data-fill')).toBe('clear')
   })
 
+  it('shows a deleted member for history but excludes it from the default split', async () => {
+    const base = createDemoRepository()
+    const deleted = { id: 'former-member', displayName: 'Deleted user', initials: 'DU', isCurrentUser: false, role: 'member' as const, canManage: false, accountStatus: 'deleted' as const }
+    const repository = { ...base, groups: { ...base.groups, async listMembers(groupId: string) { return [...await base.groups.listMembers(groupId), deleted] } } }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter(); await router.push('/tabs/groups/lake-house-weekend/settings'); await router.isReady()
+    const wrapper = mount(GroupSettingsPage, { global: { plugins: [createPinia(), router], stubs } }); await flushPromises()
+
+    expect(wrapper.get('[data-member-id="former-member"]').text()).toContain('history only')
+    expect(wrapper.find('[aria-label="Include Deleted user"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="group-member-row"]')).toHaveLength(5)
+  })
+
   it('uses an iOS card modal to remove an uninvolved member and refreshes the shared member list', async () => {
     const repository = createDemoRepository()
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))

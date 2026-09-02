@@ -21,6 +21,8 @@ export type AuthActionResult = { readonly status: 'complete' } | { readonly stat
 export interface AccountDeletionInput {
   readonly password?: string
   readonly onProgress?: (progress: AccountDeletionProgress) => void
+  /** Runs after Firestore is prepared and before the Auth principal disappears. */
+  readonly beforeAuthDelete?: () => Promise<void>
 }
 
 export interface AuthService {

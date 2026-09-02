@@ -127,6 +127,32 @@ describe('settlement store authority and races', () => {
     store.clear()
     expect(store.canRecord).toBe(false)
   })
+
+  it('keeps a deleted member label but refuses a new payment involving that identity', async () => {
+    const current = { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true }
+    const deleted = { id: 'former-member', displayName: 'Deleted user', initials: 'DU', isCurrentUser: false, accountStatus: 'deleted' as const }
+    const load: LoadBundle = {
+      group: { id: 'deleted-ledger', kind: 'group', name: 'Deleted ledger', currency: 'USD', memberIds: [current.id], syncState: 'fresh' },
+      user: current,
+      members: [current, deleted],
+      snapshot: {
+        groupId: 'deleted-ledger', balanceRevision: 1, simplifyDebtsEnabled: true, pairwise: [],
+        simplified: [{ fromParticipantId: deleted.id, toParticipantId: current.id, money: { currency: 'USD', minorAmount: 500 } }],
+      },
+    }
+    const repository = repositoryFor({ 'deleted-ledger': Promise.resolve(load) })
+    setAppSessionForTesting(createAppSession({ repository, principal, commandStorage: createMemoryCommandStorage() }))
+    const store = useSettlementStore()
+    await store.loadGroup('deleted-ledger')
+
+    await expect(store.recordPayment({
+      kind: 'settlement.record', operationId: 'deleted-payment', groupId: 'deleted-ledger', expectedBalanceRevision: 1,
+      basis: { kind: 'simplified', senderId: deleted.id, recipientId: current.id, currency: 'USD', debtMinor: 500 },
+      money: { currency: 'USD', minorAmount: 500 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+    })).resolves.toBe(false)
+    expect(store.memberNames.get(deleted.id)).toBe('Deleted user')
+    expect(store.error).toContain('Deleted accounts')
+  })
 })
 
 interface LoadBundle {
