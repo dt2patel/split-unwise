@@ -39,7 +39,10 @@ final class NavigationGestureTests: XCTestCase {
             XCTAssertTrue(inviteHeading.waitForExistence(timeout: 15), "Invite did not open on attempt \(attempt).")
 
             cancelledEdgeSwipe(in: app)
-            XCTAssertTrue(inviteHeading.waitForExistence(timeout: 5), "Cancelled swipe \(attempt) left the native outlet blank.")
+            XCTAssertTrue(
+                inviteHeading.waitForExistence(timeout: 5),
+                "Cancelled swipe \(attempt) unexpectedly navigated back or hid the invite page."
+            )
 
             completedEdgeSwipe(in: app)
             XCTAssertTrue(inviteButton.waitForExistence(timeout: 10), "Completed swipe \(attempt) did not restore the group page.")
@@ -48,8 +51,13 @@ final class NavigationGestureTests: XCTestCase {
 
     private func cancelledEdgeSwipe(in app: XCUIApplication) {
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.52))
-        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.13, dy: 0.52))
-        start.press(forDuration: 0.2, thenDragTo: finish, withVelocity: .slow, thenHoldForDuration: 0.2)
+        // XCTest's `.slow` velocity is 250 points per second, while Ionic
+        // completes an edge swipe above 200 points per second. This short tug
+        // clears Ionic's 10-point capture threshold at a sub-threshold velocity,
+        // then releases quickly enough to exercise cancellation while the
+        // interactive transition is still being initialized.
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.52))
+        start.press(forDuration: 0.05, thenDragTo: finish, withVelocity: 150, thenHoldForDuration: 0)
     }
 
     private func completedEdgeSwipe(in app: XCUIApplication) {
