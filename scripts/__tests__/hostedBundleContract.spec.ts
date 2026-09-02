@@ -117,18 +117,26 @@ describe('hosted bundle proof contract', () => {
     const coldReload = functionBody('verifyColdOfflineGroupReload')
     const remoteWrite = functionBody('createReconnectExpenseFromFriend')
 
+    let cursor = 0
     for (const expected of [
       'navigator.serviceWorker.getRegistration()',
       '{ timeout: 30_000 }',
       "Page.addScriptToEvaluateOnNewDocument",
       'await context.setOffline(true)',
+      "await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })",
       "fetch('/__/firebase/init.json', { cache: 'no-store' })",
       "getByText('Offline', { exact: true })",
       'await createReconnectExpenseFromFriend(browser)',
       'await context.setOffline(false)',
       'Page.removeScriptToEvaluateOnNewDocument',
+      "await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })",
+      "if (!(await page.evaluate(() => navigator.onLine)))",
       'reconnectExpenseDescription',
-    ]) expect(coldReload).toContain(expected)
+    ]) {
+      const index = coldReload.indexOf(expected, cursor)
+      expect(index, `cold offline proof must include ${expected} after the preceding action`).toBeGreaterThanOrEqual(cursor)
+      cursor = index + expected.length
+    }
     for (const expected of [
       'await signIn(page, friendEmail)',
       "getByRole('link', { name: 'Add expense', exact: true })",
