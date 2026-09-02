@@ -104,6 +104,7 @@ describe('hosted bundle proof contract', () => {
     expect(browser).toContain('waitForAccountHydration(page)')
     expect(browser).toContain("'German Account deletion card at 320px'")
     expect(browser).toContain("getByTestId('account-deletion-modal')")
+    expect(browser).toContain("getAnimations({ subtree: true })")
   })
 
   it('proves a cold offline reload and then requires unseen server data after reconnecting', () => {

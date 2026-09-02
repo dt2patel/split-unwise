@@ -340,7 +340,12 @@ async function verifyLanguagePreference(page) {
       await page.setViewportSize({ width: 320, height: 844 })
       await assertNoHorizontalOverflow(page, 'German Account at 320px')
       await page.getByTestId('open-account-delete').click()
-      await page.getByTestId('account-deletion-modal').waitFor({ state: 'visible' })
+      const deletionCard = page.getByTestId('account-deletion-modal')
+      await deletionCard.waitFor({ state: 'visible' })
+      await deletionCard.evaluate(async (element) => {
+        const modal = element.closest('ion-modal')
+        await Promise.all((modal?.getAnimations({ subtree: true }) ?? []).map((animation) => animation.finished.catch(() => undefined)))
+      })
       await assertNoHorizontalOverflow(page, 'German Account deletion card at 320px')
       await page.setViewportSize({ width: 390, height: 844 })
     }

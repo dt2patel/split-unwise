@@ -1,5 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { localeController } from '../../../app/i18n'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
@@ -134,6 +136,22 @@ describe('Account page', () => {
     await wrapper.get('[data-testid="account-delete-password"]').setValue('current-password')
     await wrapper.get('[data-testid="account-delete-ack"]').get('input').setValue(true)
     expect(wrapper.get('[data-testid="confirm-account-delete"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('keeps the long German deletion acknowledgement inside the mobile card width', async () => {
+    useSession('firebase')
+    useAuth(['password'])
+    localeController.setPreference('de')
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('[data-testid="open-account-delete"]').trigger('click')
+
+    const card = wrapper.get('[data-testid="account-deletion-modal"]')
+    expect(card.text()).toContain('Ich verstehe, dass dieses Konto nicht wiederhergestellt werden kann.')
+    const source = readFileSync(resolve(process.cwd(), 'src/features/account/AccountPage.vue'), 'utf8')
+    expect(source).toMatch(/\.account-deletion-card\{box-sizing:border-box;[^}]*min-width:0;/)
+    expect(source).toMatch(/\.account-deletion-card ion-checkbox\{box-sizing:border-box;width:100%;min-width:0;/)
+    expect(source).toMatch(/\.account-deletion-card ion-checkbox::part\(label\)\{[^}]*white-space:normal;/)
   })
 
   it('uses Google reauthentication copy without asking for a password', async () => {
