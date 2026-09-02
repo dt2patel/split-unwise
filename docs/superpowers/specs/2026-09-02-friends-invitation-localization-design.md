@@ -31,6 +31,19 @@ Splitwise's current help material routes mobile group membership through the sel
 
 The English catalog is the canonical key set. Other catalogs carry idiomatic translations with the same placeholders.
 
+The Spanish values exercised by hosted proof are binding integration anchors:
+
+```text
+friends.title = Amigos
+friends.add = Añadir amigo
+friends.intro = Consulta lo que debes a cada persona entre los gastos directos y todos los grupos compartidos.
+invite.heading = Invitar a {group}
+invite.prepare = Preparar invitación
+invite.urlAria = URL de invitación preparada
+inviteLanding.invited = Te invitaron a unirte a {group}.
+inviteLanding.join = Unirse al grupo
+```
+
 ### Friends
 
 ```text
