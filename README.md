@@ -8,7 +8,7 @@ Use **Repeat** in Add Expense to create a weekly, fortnightly, monthly, or yearl
 
 - Each visit posts at most 24 due occurrences. The Recurring screen reports when more remain and provides a retry.
 - Occurrence IDs depend only on the series and due date, so concurrent clients converge on one expense instead of duplicating it.
-- Editing **this occurrence** leaves the series unchanged. Editing **future expenses** is allowed only from the current series frontier by its author or a group manager.
+- Editing **this occurrence** leaves the series unchanged. Any active group member may edit **future expenses** from the current series frontier; creator and acting-member attribution remain distinct in the audit trail.
 - Stopping a series prevents future occurrences without deleting its source or previously posted expenses.
 - Firestore rechecks every payer and split participant before posting. If a participant is removed from the group, the series stops posting; existing expenses remain in history.
 

@@ -10,11 +10,11 @@ Date: 2026-09-01 (America/Chicago)
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Unit and component suite | Pass | `pnpm test`: 83 files passed, 7 skipped; 788 tests passed, 54 skipped |
+| Unit and component suite | Pass | `pnpm test`: 89 files passed, 7 skipped; 887 tests passed, 67 skipped |
 | Type safety | Pass | `pnpm typecheck` |
-| Firestore rules | Pass | `pnpm test:firebase`: 22 emulator-backed rules tests, including deterministic recurrence, removed-participant denial, exact-frontier edits, revision-checked cancellation, and the existing expense/comment/settlement/notification boundaries |
-| Spark Auth/group/ledger flows | Pass | `pnpm test:firebase`: 7 emulator-backed flows, including recurrence concurrency/replay and occurrence/future/cancellation semantics |
-| Functions and service behavior | Pass | `pnpm test:firebase`: 18 Functions/service tests; 47 total Firebase emulator checks across rules, Spark flows, and Functions |
+| Firestore rules | Pass | `pnpm test:firebase`: 25 emulator-backed rules tests, including collaborative expense mutation, exact recurrence advancement, removed-participant denial, exact-frontier edits, revision-checked cancellation, and the existing comment/settlement/notification boundaries |
+| Spark Auth/group/ledger flows | Pass | `pnpm test:firebase`: 9 emulator-backed flows, including collaborative expense mutation, recurrence concurrency/replay, and occurrence/future/cancellation semantics |
+| Functions and service behavior | Pass | `pnpm test:firebase`: 27 Functions/service tests; 61 total Firebase checks across rules, Spark flows, and Functions |
 | Disposable hosted proof | Pass | `pnpm test:hosted`: the full production SDK proof passed in 101.6 seconds and the subsequent hosted Chrome journey passed. Firebase intermittently returned retryable `UNAVAILABLE` write-stream responses; the SDK proof used browser-compatible long polling without weakening assertions, while hosted Chrome separately saved an expense through production's default transport. |
 | Production web bundle and artifact policy | Post-commit gate | Run `VITE_BUILD_COMMIT=$(git rev-parse HEAD) pnpm build` from the release commit; the ignored Task 5 report records the exact output. |
 | Reference-rate provider | Prior hosted evidence, not rerun | The prior live ECB-backed USD/EUR response matched the strict contract and allowed the Capacitor origin through CORS. |
@@ -84,10 +84,10 @@ The complete before/after notes are in the [design audit](../.artifacts/design-a
 - Add Expense can create weekly, fortnightly, monthly, or yearly recurrence. On Spark, the source expense and active template are created atomically and replay to the same records.
 - An authorized client catches up when the group detail or Recurring screen opens. A visit materializes at most 24 due occurrences; the Recurring screen reports when more work remains and exposes an explicit retry.
 - Each occurrence ID is derived from the template ID and ISO due date. Firestore advances the template and writes the occurrence/activity atomically, so concurrent clients converge on one ledger entry.
-- An occurrence-only edit leaves the template unchanged. A future-series edit must target the exact current source/occurrence frontier and is authorized for that expense's author or a group manager. Cancellation requires the exact template revision and leaves the source plus every posted occurrence intact.
+- An occurrence-only edit leaves the template unchanged. Any active group member may make a future-series edit from the exact current source/occurrence frontier. Cancellation requires active membership plus the exact template revision and leaves the source plus every posted occurrence intact. Creator attribution stays immutable while each mutation records its actual actor.
 - Rules revalidate all template payers and split participants for every materialization. If an involved participant is removed, later occurrences stop posting; historical expenses remain readable ledger history.
 - Spark has no unattended scheduler. Catch-up happens only after an authorized client opens the relevant screen. True background scheduling requires the Functions scheduler on a billed Firebase project.
-- Unit, emulator, rules, UI, and production tests cover these semantics. The disposable hosted proof exercised a past-due two-user series, concurrent catch-up, cross-user semantic replay, occurrence/future edits, manager cancellation, retained history, no post-cancellation catch-up, and the additional activity-derived notifications. The real hosted Chrome journey also loaded the Add Expense recurrence card modal and recurring-series screen at 390 x 844.
+- Unit, emulator, rules, UI, and production tests cover these semantics. The disposable hosted proof exercised a past-due two-user series, concurrent ordinary-member catch-up, cross-user semantic replay, ordinary-member occurrence/future edits and cancellation, retained history, immutable creator attribution, actual-actor audit records, no post-cancellation catch-up, and the additional activity-derived notifications. The real hosted Chrome journey also loaded the Add Expense recurrence card modal and recurring-series screen at 390 x 844.
 
 ## Hosted release evidence
 

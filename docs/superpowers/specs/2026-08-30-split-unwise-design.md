@@ -133,7 +133,7 @@ All money is stored as integer minor units with an ISO 4217 currency code. Expen
 - A user may read a group only while they are an active member.
 - A user may create expenses only for groups they belong to and only with participants who belong to that group.
 - Allocation totals, payer totals, and the expense total must match exactly in minor units.
-- Only an expense author or group administrator may edit or delete an expense; every change emits an activity event.
+- Any active group member may edit or delete an expense in that group; the original creator remains immutable and every change records the actual actor in the revision and activity history.
 - Storage paths mirror group membership checks and restrict content type and size.
 - Client-computed balances are treated as presentation; server-side validation protects authoritative writes.
 
@@ -183,4 +183,3 @@ Conflicts retain both the local draft and remote revision. The user can reload t
 ## Delivery Boundaries
 
 The Firebase deployment can include the complete product and demoable provider/OCR interfaces. Real bank transfers, PayPal/Venmo settlement confirmation, transactional email, Apple push, and production OCR require provider credentials, legal/commercial approval, paid cloud services, or native signing assets that are not present in the repository. Their adapters and UI remain first-class features; production activation is separately verifiable and must not be claimed from a mock response.
-
