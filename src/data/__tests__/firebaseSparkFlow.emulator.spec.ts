@@ -633,6 +633,31 @@ describe('Firebase Spark two-account flow', () => {
       { kind: 'expense.updated', operationId: editCommand.operationId, expenseId: first.expense.id, revision: 2, subject: { kind: 'expense', id: first.expense.id, label: 'Shared dinner and dessert' } },
       { kind: 'expense.deleted', operationId: deleteCommand.operationId, expenseId: first.expense.id, revision: 3, subject: { kind: 'expense', id: first.expense.id, label: 'Shared dinner and dessert' } },
     ])
+
+    const restoreCommand = { kind: 'expense.restore' as const, operationId: `restore-${suffix}`, groupId: created.groupId, expenseId: first.expense.id, expectedRevision: 3 }
+    const restored = await friendRepository.expenses.restore(restoreCommand)
+    await expect(friendRepository.expenses.restore(restoreCommand)).resolves.toEqual(restored)
+    expect(restored).toMatchObject({ status: 'saved', expense: { id: first.expense.id, revision: 4, updatedBy: { id: friend.user.uid } } })
+    if (restored.status !== 'saved') throw new Error('Expected Spark expense restoration to save')
+    expect(restored.expense.deletedAt).toBeUndefined()
+    await expect(friendRepository.expenses.listForGroup(created.groupId)).resolves.toEqual([
+      expect.objectContaining({ id: first.expense.id, revision: 4 }),
+    ])
+    await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
+      balanceRevision: 4,
+      simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1500 } }],
+    })
+    const restoredRevisions = await friendRepository.expenses.listRevisions(created.groupId, first.expense.id)
+    expect(restoredRevisions).toMatchObject([
+      { revision: 1, action: 'created' },
+      { revision: 2, action: 'updated' },
+      { revision: 3, action: 'deleted' },
+      { revision: 4, action: 'restored', operationId: restoreCommand.operationId },
+    ])
+    expect(restoredRevisions.at(-1)?.expense.deletedAt).toBeUndefined()
+    await expect(friendRepository.activity.listForGroup(created.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'expense.restored', operationId: restoreCommand.operationId, expenseId: first.expense.id, revision: 4 }),
+    ]))
   }, 30_000)
 
   emulatorIt('atomically moves an ordinary expense between two shared contexts while preserving the source audit', async () => {

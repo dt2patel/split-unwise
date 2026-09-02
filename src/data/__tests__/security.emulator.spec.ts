@@ -474,6 +474,24 @@ describe('Firestore rules in the emulator', () => {
     await assertSucceeds(setDoc(doc(friend, `groups/group-a/activity/activity-${deleteToken}`), sparkExpenseActivity(deletedExpense, 'expense.deleted', savedDeleteVersion.createdAt)))
     expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 4, headDeleted: true, current: { description: 'Friend corrected dinner', revision: 4 } })
     expect((await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()?.expense).toMatchObject({ description: 'Friend corrected dinner', revision: 4 })
+
+    const beforeRestore = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}`))).data()!
+    const deletedSnapshot = savedDeleteVersion.expense as Record<string, unknown>
+    const { deletedAt: _deletedAt, ...restorableSnapshot } = deletedSnapshot
+    const restoreToken = '2'.repeat(48)
+    const restoredExpense = {
+      ...restorableSnapshot, lastOperationId: 'restore-operation-2', lastRequestFingerprint: 'c'.repeat(64), lastResourceToken: restoreToken,
+      updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 5,
+    }
+    await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, restoreToken, {
+      ...beforeRestore, lastOperationId: 'restore-operation-2', lastRequestFingerprint: 'c'.repeat(64), lastResourceToken: restoreToken,
+      headRevision: 5, headDeleted: false, current: restoredExpense,
+    }, sparkExpenseVersion(restoredExpense, 'restore-operation-2', 'restored', { id: 'active', displayName: 'Active Member' })))
+    const savedRestoreVersion = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${restoreToken}`))).data()!
+    await assertSucceeds(setDoc(doc(active, `groups/group-a/activity/activity-${restoreToken}`), sparkExpenseActivity(restoredExpense, 'expense.restored', savedRestoreVersion.createdAt)))
+    expect((await getDoc(reference)).data()).toMatchObject({ headRevision: 5, headDeleted: false, current: { description: 'Friend corrected dinner', revision: 5 } })
+    expect((await getDoc(reference)).data()?.current).not.toHaveProperty('deletedAt')
+
     await assertFails(deleteDoc(reference))
     await assertFails(updateDoc(reference, { description: 'Edit after delete' }))
     await assertFails(setDoc(doc(active, 'groups/group-a/activity/activity-ffffffffffffffffffffffffffffffffffffffffffffffff'), { kind: 'expense.created' }))
@@ -1006,14 +1024,14 @@ function sparkExpense(token = 'a', overrides: Record<string, unknown> = {}): Rec
   }
 }
 
-function sparkExpenseVersion(expense: Record<string, unknown>, operationId: string, action: 'updated' | 'deleted', actor: Record<string, unknown>): Record<string, unknown> {
+function sparkExpenseVersion(expense: Record<string, unknown>, operationId: string, action: 'updated' | 'deleted' | 'restored', actor: Record<string, unknown>): Record<string, unknown> {
   return {
     groupId: 'group-a', expenseId: expense.id, revision: expense.revision,
     operationId, action, actor, createdAt: serverTimestamp(), expense,
   }
 }
 
-function sparkExpenseActivity(expense: Record<string, unknown>, kind: 'expense.created' | 'expense.updated' | 'expense.deleted', createdAt: unknown): Record<string, unknown> {
+function sparkExpenseActivity(expense: Record<string, unknown>, kind: 'expense.created' | 'expense.updated' | 'expense.deleted' | 'expense.restored', createdAt: unknown): Record<string, unknown> {
   const actor = kind === 'expense.created' && !expense.recurringTemplateId ? expense.createdBy : expense.updatedBy
   return {
     groupId: 'group-a', operationId: expense.lastOperationId, kind,

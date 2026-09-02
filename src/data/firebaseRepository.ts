@@ -4,7 +4,7 @@ import { assertFirebaseAppMatchesConfiguration, getSplitUnwiseFirebaseApp, getSp
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement, type DecodedGroupProjection } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRestoreCommand, ExpenseRestoreResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { applyCurrencyConversionToExpense, applyCurrencyConversionToSettlement, assertGroupCurrencyConversion, type GroupCurrencyConversion } from '../domain/currencyConversion'
 import { computeBalancePlans } from '../domain/balances'
@@ -351,7 +351,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     return { kind: 'expense.add', operationId: command.operationId, status: 'saved', expense }
   }
 
-  async function executeSparkExpenseMutation(command: ExpenseEditCommand | ExpenseDeleteCommand): Promise<ExpenseEditResult | ExpenseDeleteResult> {
+  async function executeSparkExpenseMutation(command: ExpenseEditCommand | ExpenseDeleteCommand | ExpenseRestoreCommand): Promise<ExpenseEditResult | ExpenseDeleteResult | ExpenseRestoreResult> {
     const { db, firestore, userId } = await context()
     const identity = await createOperationIdentity(userId, command)
     const token = identity.resourceId.slice('operation-'.length)
@@ -424,16 +424,20 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (!savedHead.exists() || !savedVersion.exists()) throw new Error('Saved expense revision is unavailable')
     const saved = await resolveSparkExpenseHead(db, firestore, command.groupId, command.expenseId, savedHead.data())
     const revision = decodeExpenseRevision(command.groupId, command.expenseId, token, savedVersion.data())
-    const expectedAction = command.kind === 'expense.delete' ? 'deleted' : 'updated'
+    const expectedAction = command.kind === 'expense.delete' ? 'deleted' : command.kind === 'expense.restore' ? 'restored' : 'updated'
     if (revision.action !== expectedAction || revision.operationId !== command.operationId) throw new OperationReplayConflictError()
     await persistSparkExpenseActivity(db, firestore, command.groupId, buildSparkExpenseActivityRecord({
       groupId: command.groupId, operationId: command.operationId,
-      kind: command.kind === 'expense.delete' ? 'expense.deleted' : 'expense.updated', actor: revision.actor,
+      kind: command.kind === 'expense.delete' ? 'expense.deleted' : command.kind === 'expense.restore' ? 'expense.restored' : 'expense.updated', actor: revision.actor,
       expenseId: command.expenseId, resourceToken: token, revision: revision.revision,
       label: revision.expense.description, committedAt: savedVersion.data().createdAt,
     }))
     if (command.kind === 'expense.edit') {
       return { kind: 'expense.edit', operationId: command.operationId, status: 'saved', expense: saved }
+    }
+    if (command.kind === 'expense.restore') {
+      if (saved.deletedAt) throw new Error('Restored expense is still deleted')
+      return { kind: 'expense.restore', operationId: command.operationId, status: 'saved', expense: saved }
     }
     if (!saved.deletedAt) throw new Error('Saved expense tombstone is unavailable')
     return {
@@ -1140,7 +1144,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (!functionsRegion) {
       if (command.kind === 'expense.add') return executeSparkExpenseAdd(command)
       if (command.kind === 'expense.edit' && command.draft.groupId !== command.groupId) return executeSparkExpenseMove(command)
-      if (command.kind === 'expense.edit' || command.kind === 'expense.delete') return executeSparkExpenseMutation(command)
+      if (command.kind === 'expense.edit' || command.kind === 'expense.delete' || command.kind === 'expense.restore') return executeSparkExpenseMutation(command)
       if (command.kind === 'comment.add') return executeSparkCommentAdd(command)
       if (command.kind === 'comment.delete') return executeSparkCommentDelete(command)
       if (command.kind === 'settlement.record') return executeSparkSettlementRecord(command)
@@ -1260,6 +1264,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       async add(command) { const result = await execute(command); if (result.kind !== 'expense.add') throw new Error('Unexpected expense result'); return result },
       async edit(command): Promise<ExpenseEditResult> { const result = await execute(command); if (result.kind !== 'expense.edit') throw new Error('Unexpected expense edit result'); return result },
       async delete(command): Promise<ExpenseDeleteResult> { const result = await execute(command); if (result.kind !== 'expense.delete') throw new Error('Unexpected expense delete result'); return result },
+      async restore(command): Promise<ExpenseRestoreResult> { const result = await execute(command); if (result.kind !== 'expense.restore') throw new Error('Unexpected expense restore result'); return result },
       async listRevisions(groupId, expenseId) {
         const { db, firestore } = await context()
         const [root, snapshot] = await Promise.all([
@@ -1490,7 +1495,7 @@ function assertTimelineLimit(limit: number): void {
 function activityFilterConstraints(firestore: FirestoreModule, filter: ActivityFilter): readonly ReturnType<FirestoreModule['where']>[] {
   if (filter === 'all') return []
   const kinds = filter === 'expenses'
-    ? ['expense.created', 'expense.updated', 'expense.deleted']
+    ? ['expense.created', 'expense.updated', 'expense.deleted', 'expense.restored']
     : filter === 'comments'
       ? ['comment.added', 'comment.deleted']
       : ['settlement.created', 'settlement.voided']

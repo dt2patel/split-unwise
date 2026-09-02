@@ -122,6 +122,7 @@ export function activityText(item: ActivityItem): string {
   if (item.kind === 'expense.created') return `${item.actor.displayName} added ${label}`
   if (item.kind === 'expense.updated') return `${item.actor.displayName} updated ${label}`
   if (item.kind === 'expense.deleted') return `${item.actor.displayName} deleted ${label}`
+  if (item.kind === 'expense.restored') return `${item.actor.displayName} restored ${label}`
   if (item.kind === 'comment.added') return `${item.actor.displayName} commented on ${label}`
   if (item.kind === 'comment.deleted') return `${item.actor.displayName} deleted a comment`
   if (item.kind === 'settlement.created') return `${item.actor.displayName} recorded ${label}`
@@ -164,6 +165,10 @@ function savedExpenseActivities(operation: Extract<CommandOperation, { status: '
     const label = expenseLabel(base, envelope.expenseId)
     return [activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label }, actor, operation.result.tombstone.deletedAt, operation.status, envelope.expenseId, operation.result.tombstone.revision)]
   }
+  if (envelope.kind === 'expense.restore' && 'expense' in operation.result) {
+    const expense = operation.result.expense
+    return [activity(envelope.operationId, envelope.groupId, 'expense.restored', { kind: 'expense', id: expense.id, label: expense.description }, actor, expense.updatedAt, operation.status, expense.id, expense.revision)]
+  }
   return []
 }
 
@@ -188,6 +193,9 @@ function pendingActivities(operation: Extract<CommandOperation, { status: 'faile
   }
   if (envelope.kind === 'expense.delete') {
     return [activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label: expenseLabel(base, envelope.expenseId) }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)]
+  }
+  if (envelope.kind === 'expense.restore') {
+    return [activity(envelope.operationId, envelope.groupId, 'expense.restored', { kind: 'expense', id: envelope.expenseId, label: expenseLabel(base, envelope.expenseId) }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)]
   }
   if (envelope.kind === 'comment.add') {
     return [activity(envelope.operationId, envelope.groupId, 'comment.added', { kind: 'comment', id: envelope.operationId, label: envelope.body.trim() }, actor, submittedAt, syncState, envelope.expenseId, undefined, envelope.operationId)]

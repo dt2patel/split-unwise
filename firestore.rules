@@ -574,6 +574,32 @@ service cloud.firestore {
         && validSparkExpenseRecurrenceRevision(groupId, expenseId, data, version.expense)
         && (data.headDeleted ? version.expense.deletedAt == request.time : !('deletedAt' in version.expense));
     }
+    function validSparkExpenseRestoreHeadUpdate(groupId, expenseId, data) {
+      let version = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)/revisions/$(data.lastResourceToken)).data;
+      let nextRevision = sparkHeadRevision(resource.data) + 1;
+      return sparkHeadDeleted(resource.data) && 'current' in resource.data
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'headRevision', 'headDeleted', 'current'
+        ])
+        && data.current == version.expense && data.headRevision == nextRevision && data.headDeleted == false
+        && data.lastOperationId is string && data.lastOperationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+        && data.lastRequestFingerprint is string && data.lastRequestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
+        && data.lastOperationId != resource.data.lastOperationId && data.lastResourceToken != resource.data.lastResourceToken
+        && activeMember(groupId)
+        && version.keys().hasOnly(['groupId', 'expenseId', 'revision', 'operationId', 'action', 'actor', 'createdAt', 'expense'])
+        && version.groupId == groupId && version.expenseId == expenseId
+        && version.revision == nextRevision && version.operationId == data.lastOperationId && version.action == 'restored'
+        && version.createdAt == request.time && validSparkCurrentActor(groupId, version.actor)
+        && version.expense.diff(resource.data.current).affectedKeys().hasOnly([
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy', 'revision', 'deletedAt'
+        ])
+        && version.expense.lastOperationId == data.lastOperationId
+        && version.expense.lastRequestFingerprint == data.lastRequestFingerprint
+        && version.expense.lastResourceToken == data.lastResourceToken
+        && version.expense.updatedAt == request.time && version.expense.updatedBy == version.actor
+        && version.expense.revision == nextRevision && !('deletedAt' in version.expense);
+    }
     function validSparkExpenseVersionCreate(groupId, expenseId, revisionId, data) {
       let before = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)).data;
       let after = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)).data;
@@ -590,6 +616,27 @@ service cloud.firestore {
         && data.expense.revision == after.headRevision
         && data.expense.updatedAt == request.time && data.expense.updatedBy == data.actor
         && (after.headDeleted ? data.expense.deletedAt == request.time : !('deletedAt' in data.expense));
+    }
+    function validSparkExpenseRestoreVersionCreate(groupId, expenseId, revisionId, data) {
+      let before = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)).data;
+      let after = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(expenseId)).data;
+      return sparkHeadDeleted(before) && after.headDeleted == false && 'current' in before
+        && after.headRevision == sparkHeadRevision(before) + 1
+        && revisionId == after.lastResourceToken && revisionId.matches('^[a-f0-9]{48}$')
+        && data.keys().hasOnly(['groupId', 'expenseId', 'revision', 'operationId', 'action', 'actor', 'createdAt', 'expense'])
+        && data.groupId == groupId && data.expenseId == expenseId
+        && data.revision == after.headRevision && data.operationId == after.lastOperationId && data.action == 'restored'
+        && data.createdAt == request.time && validSparkCurrentActor(groupId, data.actor)
+        && data.expense == after.current
+        && data.expense.diff(before.current).affectedKeys().hasOnly([
+          'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken', 'updatedAt', 'updatedBy', 'revision', 'deletedAt'
+        ])
+        && data.expense.lastOperationId == after.lastOperationId
+        && data.expense.lastRequestFingerprint == after.lastRequestFingerprint
+        && data.expense.lastResourceToken == after.lastResourceToken
+        && data.expense.revision == after.headRevision
+        && data.expense.updatedAt == request.time && data.expense.updatedBy == data.actor
+        && !('deletedAt' in data.expense);
     }
     function validSparkFutureExpenseHeadUpdate(groupId, expenseId, data) {
       let nextRevision = sparkHeadRevision(resource.data) + 1;
@@ -640,7 +687,7 @@ service cloud.firestore {
         && data.resourceToken is string && data.resourceToken.matches('^[a-f0-9]{48}$')
         && activityId == 'activity-' + data.resourceToken
         && data.operationId is string && data.operationId.matches('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
-        && (data.kind == 'expense.created' || data.kind == 'expense.updated' || data.kind == 'expense.deleted')
+        && (data.kind == 'expense.created' || data.kind == 'expense.updated' || data.kind == 'expense.deleted' || data.kind == 'expense.restored')
         && data.subject.keys().hasOnly(['kind', 'id', 'label'])
         && data.subject.kind == 'expense' && data.subject.id == data.expenseId && validName(data.subject.label)
         && validSparkActorShape(data.actor) && data.revision is int && data.revision > 0
@@ -658,7 +705,7 @@ service cloud.firestore {
     function validSparkRevisedExpenseActivity(groupId, data) {
       let version = get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(data.expenseId)/revisions/$(data.resourceToken)).data;
       return version.createdAt == data.createdAt && version.operationId == data.operationId
-        && version.action == (data.kind == 'expense.deleted' ? 'deleted' : 'updated')
+        && version.action == (data.kind == 'expense.deleted' ? 'deleted' : (data.kind == 'expense.restored' ? 'restored' : 'updated'))
         && version.actor == data.actor && version.revision == data.revision
         && version.expense.lastResourceToken == data.resourceToken
         && version.expense.lastOperationId == data.operationId
@@ -671,7 +718,7 @@ service cloud.firestore {
         ? validSparkRecurringExpenseActivityCreate(groupId, activityId, data)
         : (validSparkExpenseActivityShape(groupId, activityId, data)
           && ((data.kind == 'expense.created' && validSparkCreatedExpenseActivity(groupId, data))
-            || ((data.kind == 'expense.updated' || data.kind == 'expense.deleted')
+            || ((data.kind == 'expense.updated' || data.kind == 'expense.deleted' || data.kind == 'expense.restored')
               && validSparkRevisedExpenseActivity(groupId, data))));
     }
 
@@ -1656,21 +1703,25 @@ service cloud.firestore {
         allow create: if activeAccount() && (expenseId.matches('^occ_.*$')
             ? validSparkRecurringOccurrenceCreate(groupId, expenseId, request.resource.data)
             : validSparkExpenseCreate(groupId, expenseId, request.resource.data));
-        allow update: if activeAccount() && (('current' in request.resource.data
-              && 'occurrenceEditScope' in request.resource.data.current
-              && request.resource.data.current.occurrenceEditScope == 'future')
-            ? validSparkFutureExpenseHeadUpdate(groupId, expenseId, request.resource.data)
-              : validSparkExpenseHeadUpdate(groupId, expenseId, request.resource.data));
+        allow update: if activeAccount() && (sparkHeadDeleted(resource.data)
+          ? validSparkExpenseRestoreHeadUpdate(groupId, expenseId, request.resource.data)
+          : (('current' in request.resource.data
+                && 'occurrenceEditScope' in request.resource.data.current
+                && request.resource.data.current.occurrenceEditScope == 'future')
+              ? validSparkFutureExpenseHeadUpdate(groupId, expenseId, request.resource.data)
+                : validSparkExpenseHeadUpdate(groupId, expenseId, request.resource.data)));
         allow update: if validAccountDeletionExpense(groupId, request.resource.data);
         allow delete: if false;
         match /revisions/{revisionId} {
           allow get: if activeMember(groupId) || accountDeletionGroupRead(groupId);
           allow list: if (activeMember(groupId) || accountDeletionGroupRead(groupId)) && bounded(100);
-          allow create: if activeAccount() && (('expense' in request.resource.data
-              && 'occurrenceEditScope' in request.resource.data.expense
-              && request.resource.data.expense.occurrenceEditScope == 'future')
-            ? validSparkFutureExpenseVersionCreate(groupId, expenseId, revisionId, request.resource.data)
-            : validSparkExpenseVersionCreate(groupId, expenseId, revisionId, request.resource.data));
+          allow create: if activeAccount() && (request.resource.data.action == 'restored'
+            ? validSparkExpenseRestoreVersionCreate(groupId, expenseId, revisionId, request.resource.data)
+            : (('expense' in request.resource.data
+                && 'occurrenceEditScope' in request.resource.data.expense
+                && request.resource.data.expense.occurrenceEditScope == 'future')
+              ? validSparkFutureExpenseVersionCreate(groupId, expenseId, revisionId, request.resource.data)
+              : validSparkExpenseVersionCreate(groupId, expenseId, revisionId, request.resource.data)));
           allow update: if validAccountDeletionRevision(groupId, request.resource.data);
           allow delete: if false;
         }
@@ -1697,6 +1748,7 @@ service cloud.firestore {
         allow create: if activeAccount() && (request.resource.data.kind == 'expense.created'
             || request.resource.data.kind == 'expense.updated'
             || request.resource.data.kind == 'expense.deleted'
+            || request.resource.data.kind == 'expense.restored'
           ? validSparkExpenseActivityCreate(groupId, activityId, request.resource.data)
           : ((request.resource.data.kind == 'group.event' || request.resource.data.kind == 'membership.changed')
             ? validSparkSettingsActivityCreate(groupId, activityId, request.resource.data)

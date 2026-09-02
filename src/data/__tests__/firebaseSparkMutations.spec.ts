@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as sparkMutations from '../firebaseSparkMutations'
 import { buildFirebaseProfile, buildSparkExpenseRecord, buildSparkInvitation, normalizeSparkGroup } from '../firebaseSparkMutations'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, ExpenseRestoreCommand, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, SettlementRecordCommand, SettlementVoidCommand } from '../repositories'
 import type { OperationIdentity } from '../operationIdentity'
 
 const fill = (bytes: Uint8Array) => bytes.fill(11)
@@ -407,6 +407,25 @@ describe('Firebase Spark mutations', () => {
       groupId: 'group-a', operationId: 'delete-expense', kind: 'expense.deleted',
       subject: { kind: 'expense', id: current.id, label: 'Updated dinner' },
       actor: creator, expenseId: current.id, resourceToken: 'f'.repeat(48), revision: 3, createdAt: deletedAt,
+    })
+
+    const restoreCommand: ExpenseRestoreCommand = { kind: 'expense.restore', operationId: 'restore-expense', groupId: 'group-a', expenseId: String(current.id), expectedRevision: 3 }
+    const restoreIdentity: OperationIdentity = { userId: 'owner', operationId: restoreCommand.operationId, kind: restoreCommand.kind, groupId: 'group-a', requestFingerprint: '1'.repeat(64), resourceId: `operation-${'2'.repeat(48)}` }
+    const restoredAt = { kind: 'restored-at', toDate: () => new Date('2026-09-04T10:00:00.000Z') }
+    const restored = buildMutation(restoreCommand, removed.headDocument, removed.revisionDocument.expense, { actor: creator, canManage: false }, restoreIdentity, restoredAt)
+
+    expect(restored.headDocument).toMatchObject({
+      headRevision: 4, headDeleted: false,
+      lastOperationId: 'restore-expense', lastRequestFingerprint: '1'.repeat(64), lastResourceToken: '2'.repeat(48),
+      current: { description: 'Updated dinner', revision: 4, updatedAt: restoredAt, updatedBy: creator },
+    })
+    expect((restored.headDocument.current as Record<string, unknown>).deletedAt).toBeUndefined()
+    expect(restored.revisionDocument).toMatchObject({ revision: 4, operationId: 'restore-expense', action: 'restored', actor: creator, createdAt: restoredAt })
+    expect(restored.revisionDocument.expense.deletedAt).toBeUndefined()
+    expect(restored.activityDocument).toEqual({
+      groupId: 'group-a', operationId: 'restore-expense', kind: 'expense.restored',
+      subject: { kind: 'expense', id: current.id, label: 'Updated dinner' },
+      actor: creator, expenseId: current.id, resourceToken: '2'.repeat(48), revision: 4, createdAt: restoredAt,
     })
   })
 
@@ -820,7 +839,7 @@ const groupMembers: readonly Member[] = [
 ]
 
 type SparkMutationBuilder = (
-  command: ExpenseEditCommand | ExpenseDeleteCommand,
+  command: ExpenseEditCommand | ExpenseDeleteCommand | ExpenseRestoreCommand,
   head: Readonly<Record<string, unknown>>,
   current: Readonly<Record<string, unknown>>,
   authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },

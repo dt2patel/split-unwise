@@ -75,6 +75,27 @@ describe('global Activity page', () => {
     await vi.waitFor(() => expect(wrapper.text()).toContain('Maya P. restored Lake House Weekend'))
   })
 
+  it('restores the latest deleted expense from a native card modal', async () => {
+    const repository = createDemoRepository()
+    const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing expense fixture')
+    await repository.expenses.delete({
+      kind: 'expense.delete', operationId: 'delete-expense-for-restore', groupId: groceries.groupId,
+      expenseId: groceries.id, expectedRevision: groceries.revision,
+    })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountActivity()
+    expect(wrapper.text()).toContain('Maya P. deleted Groceries')
+    await wrapper.get('[data-action="restore-expense"]').trigger('click')
+    expect(wrapper.get('[data-testid="restore-expense-modal"]').text()).toContain('Restore Groceries?')
+    expect(wrapper.get('[data-testid="restore-expense-modal"]').text()).toContain('balances and history')
+    await wrapper.get('[data-testid="confirm-expense-restore"]').trigger('click')
+
+    await vi.waitFor(async () => expect((await repository.expenses.getById(groceries.groupId, groceries.id))?.deletedAt).toBeUndefined())
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Maya P. restored Groceries'))
+  })
+
   it('orders timestamp ties by descending ID', async () => {
     const repository = createDemoRepository({ now: () => '2026-08-31T21:00:00.000Z' })
     const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
@@ -318,6 +339,44 @@ describe('Activity durable projection', () => {
     expect(store.items.filter(({ operationId }) => operationId.startsWith('pending-activity-move'))).toHaveLength(2)
     expect(activityDestination(store.items.find(({ operationId }) => operationId === 'pending-activity-move.move-target')!, 'activity')).toBeUndefined()
     release()
+  })
+
+  it('projects a pending expense restoration as one stable expense-linked account event', async () => {
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const repository = createDemoRepository()
+    const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture')
+    const deleted = await repository.expenses.delete({
+      kind: 'expense.delete', operationId: 'delete-before-pending-restore', groupId: groceries.groupId,
+      expenseId: groceries.id, expectedRevision: groceries.revision,
+    })
+    if (deleted.status !== 'saved') throw new Error('Expected fixture deletion to save')
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey, storage: createMemoryCommandStorage(),
+      handlers: { 'expense.restore': async (command) => {
+        if (command.kind !== 'expense.restore') throw new Error('Wrong command')
+        await blocked
+        return repository.expenses.restore(command)
+      } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const handle = queue.submit({
+      kind: 'expense.restore', operationId: 'pending-activity-restore', groupId: groceries.groupId,
+      expenseId: groceries.id, expectedRevision: deleted.tombstone.revision,
+    })
+
+    const store = useActivityStore()
+    await store.load()
+
+    const projected = store.items.filter(({ operationId }) => operationId === 'pending-activity-restore')
+    expect(projected).toEqual([
+      expect.objectContaining({ groupId: groceries.groupId, kind: 'expense.restored', expenseId: groceries.id, revision: 3, syncState: 'pending' }),
+    ])
+    expect(activityDestination(projected[0]!, 'activity')).toBe('/tabs/activity/expenses/groceries?groupId=lake-house-weekend')
+
+    release()
+    await expect(handle.result()).resolves.toMatchObject({ status: 'saved', expense: { id: groceries.id, revision: 3 } })
   })
 
   it('suppresses conflicted expense audit projections', async () => {

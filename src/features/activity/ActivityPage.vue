@@ -16,6 +16,7 @@ const restoreTarget = ref<ActivityItem>()
 const restoring = ref(false)
 const restoreError = ref('')
 const feedback = ref('')
+const restoreKind = computed<'group' | 'expense'>(() => restoreTarget.value?.kind === 'expense.deleted' ? 'expense' : 'group')
 
 const filters: readonly { value: ActivityFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -32,9 +33,15 @@ function setPresentingElement(value: Element | ComponentPublicInstance | null): 
   presentingElement.value = element instanceof HTMLElement ? element : undefined
 }
 function isRestorable(item: ActivityItem): boolean {
-  if (item.kind !== 'group.deleted' || item.syncState !== 'fresh') return false
-  const latest = allItems.value.find((candidate) => candidate.groupId === item.groupId && (candidate.kind === 'group.deleted' || candidate.kind === 'group.restored'))
-  return latest?.operationId === item.operationId && latest.kind === 'group.deleted'
+  if (item.syncState !== 'fresh') return false
+  if (item.kind === 'group.deleted') {
+    const latest = allItems.value.find((candidate) => candidate.groupId === item.groupId && (candidate.kind === 'group.deleted' || candidate.kind === 'group.restored'))
+    return latest?.operationId === item.operationId && latest.kind === 'group.deleted'
+  }
+  if (item.kind !== 'expense.deleted' || !item.expenseId || !item.revision) return false
+  const latest = allItems.value.find((candidate) => candidate.groupId === item.groupId && candidate.expenseId === item.expenseId
+    && (candidate.kind === 'expense.deleted' || candidate.kind === 'expense.restored'))
+  return latest?.operationId === item.operationId && latest.kind === 'expense.deleted'
 }
 function openRestore(item: ActivityItem): void {
   if (!isRestorable(item)) return
@@ -44,19 +51,20 @@ function closeRestore(): void {
   if (restoring.value) return
   restoreTarget.value = undefined; restoreError.value = ''
 }
-async function restoreGroup(): Promise<void> {
+async function restoreItem(): Promise<void> {
   const target = restoreTarget.value
   if (!target || restoring.value || !isRestorable(target)) return
   restoring.value = true; restoreError.value = ''
   try {
-    const result = await getAppSession().queue.submit({
-      kind: 'group.restore', operationId: createClientOperationId('group-restore'), groupId: target.groupId,
-    }).result()
+    const command = target.kind === 'expense.deleted'
+      ? { kind: 'expense.restore' as const, operationId: createClientOperationId('expense-restore'), groupId: target.groupId, expenseId: target.expenseId!, expectedRevision: target.revision! }
+      : { kind: 'group.restore' as const, operationId: createClientOperationId('group-restore'), groupId: target.groupId }
+    const result = await getAppSession().queue.submit(command).result()
     if (result.status !== 'saved') throw new Error(result.reason)
-    const label = target.subject.label ?? 'Group'
+    const label = target.subject.label ?? (target.kind === 'expense.deleted' ? 'Expense' : 'Group')
     await store.load('all')
     restoreTarget.value = undefined
-    feedback.value = `${label} was restored for everyone.`
+    feedback.value = target.kind === 'expense.deleted' ? `${label} was restored.` : `${label} was restored for everyone.`
     await nextTick()
   } catch (reason) { restoreError.value = reason instanceof Error ? reason.message : String(reason) } finally { restoring.value = false }
 }
@@ -101,15 +109,15 @@ function formatDate(value: string): string {
         <p v-if="!status && items.length === 0" class="activity-page__status">No activity matches this filter.</p>
         <ol v-else-if="!status" class="activity-list" aria-label="Account activity">
           <li v-for="item in items" :key="item.id" :data-activity-id="item.id" :data-sync-state="item.syncState">
-            <router-link v-if="activityDestination(item, 'activity')" :to="activityDestination(item, 'activity')!" class="activity-list__body">
+            <button v-if="isRestorable(item)" type="button" class="activity-list__body activity-list__restore" :data-action="item.kind === 'expense.deleted' ? 'restore-expense' : 'restore-group'" @click="openRestore(item)">
+              <span class="activity-list__copy"><strong>{{ activityText(item) }}</strong><time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time></span>
+              <span class="activity-list__restore-action"><ion-icon :icon="arrowUndoOutline" aria-hidden="true" />Restore</span>
+            </button>
+            <router-link v-else-if="activityDestination(item, 'activity')" :to="activityDestination(item, 'activity')!" class="activity-list__body">
               <strong>{{ activityText(item) }}</strong>
               <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
               <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ item.syncState }}</span>
             </router-link>
-            <button v-else-if="isRestorable(item)" type="button" class="activity-list__body activity-list__restore" data-action="restore-group" @click="openRestore(item)">
-              <span class="activity-list__copy"><strong>{{ activityText(item) }}</strong><time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time></span>
-              <span class="activity-list__restore-action"><ion-icon :icon="arrowUndoOutline" aria-hidden="true" />Restore</span>
-            </button>
             <div v-else class="activity-list__body">
               <strong>{{ activityText(item) }}</strong>
               <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
@@ -128,17 +136,18 @@ function formatDate(value: string): string {
       <ion-header translucent>
         <ion-toolbar>
           <ion-buttons slot="start"><ion-button :disabled="restoring" @click="closeRestore">Cancel</ion-button></ion-buttons>
-          <ion-title>Restore group</ion-title>
+          <ion-title>Restore {{ restoreKind }}</ion-title>
         </ion-toolbar>
       </ion-header>
       <ion-content>
-        <main v-if="restoreTarget" class="restore-card" data-testid="restore-group-modal">
+        <main v-if="restoreTarget" class="restore-card" :data-testid="restoreKind === 'expense' ? 'restore-expense-modal' : 'restore-group-modal'">
           <span class="restore-card__mark" aria-hidden="true"><ion-icon :icon="arrowUndoOutline" /></span>
           <h2>Restore {{ restoreTarget.subject.label ?? 'this group' }}?</h2>
-          <p>This restores the group for everyone, including all expenses and payments.</p>
-          <div class="restore-card__note"><strong>Everything comes back together</strong><p>Members, recurring expenses, comments, and payment history return exactly as they were.</p></div>
+          <p v-if="restoreKind === 'group'">This restores the group for everyone, including all expenses and payments.</p>
+          <p v-else>This returns the deleted expense to the shared ledger with its balances and history intact.</p>
+          <div class="restore-card__note"><strong>{{ restoreKind === 'group' ? 'Everything comes back together' : 'No history is rewritten' }}</strong><p>{{ restoreKind === 'group' ? 'Members, recurring expenses, comments, and payment history return exactly as they were.' : 'The original expense, comments, and every prior revision stay in the permanent activity record.' }}</p></div>
           <p v-if="restoreError" class="restore-card__error" role="alert">{{ restoreError }}</p>
-          <ion-button data-testid="confirm-group-restore" expand="block" shape="round" :disabled="restoring" @click="restoreGroup">{{ restoring ? 'Restoring group…' : 'Restore group' }}</ion-button>
+          <ion-button :data-testid="restoreKind === 'expense' ? 'confirm-expense-restore' : 'confirm-group-restore'" expand="block" shape="round" :disabled="restoring" @click="restoreItem">{{ restoring ? `Restoring ${restoreKind}…` : `Restore ${restoreKind}` }}</ion-button>
         </main>
       </ion-content>
     </ion-modal>

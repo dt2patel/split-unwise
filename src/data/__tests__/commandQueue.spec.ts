@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { CommandConflictError, CommandFailedError, CommandQueue, createBrowserCommandStorage, createMemoryCommandStorage, type CommandOperation, type CommandQueueOptions, type CommandStorage } from '../commandQueue'
 import { OperationReplayConflictError } from '../operationIdentity'
-import type { CommandEnvelope, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseEditResult, ExpenseRow, RecurrenceMaterializeCommand, RecurringExpense } from '../repositories'
+import type { CommandEnvelope, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseEditResult, ExpenseRestoreCommand, ExpenseRestoreResult, ExpenseRow, RecurrenceMaterializeCommand, RecurringExpense } from '../repositories'
 
 const addExpense = (operationId: string): ExpenseAddCommand => ({
   kind: 'expense.add',
@@ -42,6 +42,10 @@ const deleteExpense = (operationId: string, expenseId = 'demo-expense-006', grou
   kind: 'expense.delete', operationId, groupId, expenseId, expectedRevision: 1,
 })
 
+const restoreExpense = (operationId: string, expenseId = 'demo-expense-006', groupId = 'lake-house-weekend'): ExpenseRestoreCommand => ({
+  kind: 'expense.restore', operationId, groupId, expenseId, expectedRevision: 2,
+})
+
 const expenseRow = (groupId = 'lake-house-weekend', id = 'demo-expense-006'): ExpenseRow => ({
   ...savedExpense('row-source').expense,
   groupId,
@@ -50,6 +54,10 @@ const expenseRow = (groupId = 'lake-house-weekend', id = 'demo-expense-006'): Ex
 
 const savedEdit = (command: ExpenseEditCommand, row = { ...expenseRow(command.groupId, command.expenseId), revision: command.expectedRevision + 1 }): ExpenseEditResult => ({
   kind: 'expense.edit', operationId: command.operationId, status: 'saved', expense: row,
+})
+
+const savedRestore = (command: ExpenseRestoreCommand, row = { ...expenseRow(command.groupId, command.expenseId), revision: command.expectedRevision + 1 }): ExpenseRestoreResult => ({
+  kind: 'expense.restore', operationId: command.operationId, status: 'saved', expense: row,
 })
 
 const DEMO_UID = 'maya-p'
@@ -536,6 +544,13 @@ describe('CommandQueue', () => {
         tombstone: { id: deletion.expenseId, groupId: deletion.groupId, revision: deletion.expectedRevision, deletedAt: '2026-08-30T13:00:00.000Z' },
       },
     }
+    const restoration = restoreExpense('persisted-bad-restore')
+    const invalidRestore = {
+      originPrincipalKey: principalKey, submittedAt: '2026-08-31T20:00:00.000Z',
+      status: 'fresh',
+      envelope: restoration,
+      result: savedRestore(restoration, { ...expenseRow(restoration.groupId, restoration.expenseId), revision: restoration.expectedRevision, deletedAt: '2026-08-30T13:00:00.000Z' }),
+    }
     const defaultSplit: CommandEnvelope = {
       kind: 'group.default-split', operationId: 'persisted-bad-default-split', groupId: 'lake-house-weekend',
       expectedRevision: 1,
@@ -547,7 +562,7 @@ describe('CommandQueue', () => {
       envelope: defaultSplit,
       result: { kind: 'group.default-split', operationId: defaultSplit.operationId, status: 'saved', resourceId: 'another-group' },
     }
-    const invalid = [invalidAdd, invalidEdit, invalidDelete, invalidDefaultSplit]
+    const invalid = [invalidAdd, invalidEdit, invalidDelete, invalidRestore, invalidDefaultSplit]
     const quarantined: unknown[] = []
     const storage = {
       load: () => ({ version: 6, principalKey, operations: [valid, ...invalid] }),
@@ -834,6 +849,23 @@ describe('CommandQueue', () => {
     expect(queue.get(command.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation' } })
   })
 
+  it.each([
+    ['the unchanged revision', { ...expenseRow(), revision: 2 }],
+    ['a skipped revision', { ...expenseRow(), revision: 4 }],
+    ['a deletion marker', { ...expenseRow(), revision: 3, deletedAt: '2026-08-30T13:00:00.000Z' }],
+    ['a different group', { ...expenseRow('another-group'), revision: 3 }],
+    ['a different expense', { ...expenseRow('lake-house-weekend', 'another-expense'), revision: 3 }],
+  ] as const)('rejects a saved restore result with %s', async (_label, resultExpense) => {
+    const command = restoreExpense('bad-restore-transition')
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.restore': async () => savedRestore(command, resultExpense) },
+    })
+
+    await expect(queue.submit(command).result()).rejects.toMatchObject({ code: 'validation' })
+    expect(queue.get(command.operationId)).toMatchObject({ status: 'failed', error: { code: 'validation' } })
+  })
+
   it('binds a saved default-split result to the command group', async () => {
     const command: CommandEnvelope = {
       kind: 'group.default-split', operationId: 'wrong-default-split-group', groupId: 'lake-house-weekend',
@@ -1048,12 +1080,14 @@ describe('CommandQueue', () => {
     ['edit with an incomplete remote', editExpense('bad-edit-remote'), { id: 'demo-expense-006', groupId: 'lake-house-weekend' }],
     ['edit with a cross-group remote', editExpense('cross-group-edit-remote'), expenseRow('another-group', 'demo-expense-006')],
     ['delete with a different-expense remote', deleteExpense('wrong-delete-remote'), expenseRow('lake-house-weekend', 'another-expense')],
+    ['restore with a different-expense remote', restoreExpense('wrong-restore-remote'), expenseRow('lake-house-weekend', 'another-expense')],
   ] as const)('does not expose a malformed conflict remote for %s', async (_label, command, remote) => {
     const queue = createBoundQueue({
       storage: createMemoryCommandStorage(),
       handlers: {
         'expense.edit': async () => { throw new CommandConflictError('remote changed', { remote }) },
         'expense.delete': async () => { throw new CommandConflictError('remote changed', { remote }) },
+        'expense.restore': async () => { throw new CommandConflictError('remote changed', { remote }) },
       },
     })
 
@@ -1067,6 +1101,7 @@ describe('CommandQueue', () => {
   it.each([
     ['edit', editExpense('valid-edit-remote')],
     ['delete', deleteExpense('valid-delete-remote')],
+    ['restore', restoreExpense('valid-restore-remote')],
   ] as const)('keeps a complete identity-matched %s conflict remote', async (_label, command) => {
     const remote = expenseRow(command.groupId, command.expenseId)
     const queue = createBoundQueue({
@@ -1074,6 +1109,7 @@ describe('CommandQueue', () => {
       handlers: {
         'expense.edit': async () => { throw new CommandConflictError('remote changed', { remote }) },
         'expense.delete': async () => { throw new CommandConflictError('remote changed', { remote }) },
+        'expense.restore': async () => { throw new CommandConflictError('remote changed', { remote }) },
       },
     })
 

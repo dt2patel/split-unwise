@@ -168,7 +168,7 @@ export function decodeExpenseRevision(groupId: string, expenseId: string, id: st
   if (requiredString(data.expenseId, `expense revision ${id}.expenseId`) !== expenseId) throw new DocumentDecodeError(`expense revision ${id}`, 'expenseId does not match its parent')
   const revision = positiveInteger(data.revision, `expense revision ${id}.revision`)
   const action = data.action
-  if (action !== 'created' && action !== 'updated' && action !== 'deleted') throw new DocumentDecodeError(`expense revision ${id}.action`, 'must be created, updated, or deleted')
+  if (action !== 'created' && action !== 'updated' && action !== 'deleted' && action !== 'restored') throw new DocumentDecodeError(`expense revision ${id}.action`, 'must be created, updated, deleted, or restored')
   const expense = decodeExpense(groupId, expenseId, data.expense)
   if (expense.revision !== revision) throw new DocumentDecodeError(`expense revision ${id}`, 'snapshot revision does not match revision')
   if (action === 'created' && revision !== 1) throw new DocumentDecodeError(`expense revision ${id}`, 'created revision must be revision 1')
@@ -315,7 +315,7 @@ function actorSnapshot(value: unknown, path: string): ActorSnapshot {
 }
 
 function activityKind(value: unknown, path: string): ActivityKind {
-  const kinds: readonly ActivityKind[] = ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'group.event', 'group.deleted', 'group.restored', 'membership.changed', 'settlement.created', 'settlement.voided']
+  const kinds: readonly ActivityKind[] = ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'expense.restored', 'group.event', 'group.deleted', 'group.restored', 'membership.changed', 'settlement.created', 'settlement.voided']
   if (typeof value !== 'string' || !kinds.includes(value as ActivityKind)) throw new DocumentDecodeError(path, 'activity type is invalid')
   return value as ActivityKind
 }

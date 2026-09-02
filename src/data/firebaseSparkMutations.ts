@@ -9,7 +9,7 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRestoreCommand, ExpenseRow, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
@@ -169,7 +169,7 @@ export function buildSparkExpenseRecord(command: ExpenseAddCommand, actor: Actor
 
 /** Advances the small mutable head pointer and creates one immutable full expense version. */
 export function buildSparkExpenseMutationRecord(
-  command: ExpenseEditCommand | ExpenseDeleteCommand,
+  command: ExpenseEditCommand | ExpenseDeleteCommand | ExpenseRestoreCommand,
   head: Readonly<Record<string, unknown>>,
   current: Readonly<Record<string, unknown>>,
   authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
@@ -177,15 +177,16 @@ export function buildSparkExpenseMutationRecord(
   committedAt: unknown,
 ): SparkExpenseMutationRecord {
   const parsed = parseExecuteCommandRequest({ schemaVersion: 1, command }).command
-  if (parsed.kind !== 'expense.edit' && parsed.kind !== 'expense.delete') throw new Error('Spark expense mutation command is invalid.')
+  if (parsed.kind !== 'expense.edit' && parsed.kind !== 'expense.delete' && parsed.kind !== 'expense.restore') throw new Error('Spark expense mutation command is invalid.')
   const token = assertSparkOperationIdentity(parsed, authorization.actor, identity)
   const snapshot = decodeExpense(parsed.groupId, parsed.expenseId, current)
   const rootSnapshot = decodeExpense(parsed.groupId, parsed.expenseId, head)
   const headRevision = Number.isSafeInteger(head.headRevision) ? Number(head.headRevision) : rootSnapshot.revision
   const headDeleted = head.headDeleted === true
   if (snapshot.revision !== headRevision) throw new Error('Expense changed remotely. Reload it before trying again.')
-  if (headDeleted) throw new Error('Expense was already deleted.')
-  if (snapshot.deletedAt) throw new Error('Expense was already deleted.')
+  if (parsed.kind === 'expense.restore') {
+    if (!headDeleted || !snapshot.deletedAt) throw new Error('Expense is not deleted.')
+  } else if (headDeleted || snapshot.deletedAt) throw new Error('Expense was already deleted.')
   if (snapshot.revision !== parsed.expectedRevision) throw new Error('Expense changed remotely. Reload it before trying again.')
   const creator = actorFromRecord(head.createdBy, 'createdBy')
   if (head.id !== parsed.expenseId || head.groupId !== parsed.groupId || current.id !== parsed.expenseId || current.groupId !== parsed.groupId) throw new Error('Spark expense document identity is invalid.')
@@ -194,21 +195,32 @@ export function buildSparkExpenseMutationRecord(
   const creationToken = strictHex(head.resourceToken, 48, 'resource token')
   const normalized = parsed.kind === 'expense.edit' ? normalizeSparkExpenseDraft(parsed.draft, identity.resourceId, snapshot.recurringTemplateId) : undefined
   const revision = snapshot.revision + 1
-  const expense: Record<string, unknown> = parsed.kind === 'expense.edit'
-    ? {
+  let expense: Record<string, unknown>
+  if (parsed.kind === 'expense.edit') {
+    expense = {
         id: parsed.expenseId, groupId: parsed.groupId, operationId: creationOperationId, requestFingerprint: creationFingerprint, resourceToken: creationToken,
         lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
         ...normalized, createdAt: head.createdAt, createdBy: creator, updatedAt: committedAt, updatedBy: normalizedActor(authorization.actor), revision,
       }
-    : {
+  } else if (parsed.kind === 'expense.delete') {
+    expense = {
         ...current, lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
         updatedAt: committedAt, updatedBy: normalizedActor(authorization.actor), revision, deletedAt: committedAt,
       }
+  } else {
+    const { deletedAt: _deletedAt, ...restored } = current
+    expense = {
+      ...restored, lastOperationId: parsed.operationId, lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: token,
+      updatedAt: committedAt, updatedBy: normalizedActor(authorization.actor), revision,
+    }
+  }
   const actor = normalizedActor(authorization.actor)
+  const activityKind = parsed.kind === 'expense.delete' ? 'expense.deleted' : parsed.kind === 'expense.restore' ? 'expense.restored' : 'expense.updated'
+  const revisionAction = parsed.kind === 'expense.delete' ? 'deleted' : parsed.kind === 'expense.restore' ? 'restored' : 'updated'
   const activity = buildSparkExpenseActivityRecord({
     groupId: parsed.groupId,
     operationId: parsed.operationId,
-    kind: parsed.kind === 'expense.delete' ? 'expense.deleted' : 'expense.updated',
+    kind: activityKind,
     actor,
     expenseId: parsed.expenseId,
     resourceToken: token,
@@ -230,7 +242,7 @@ export function buildSparkExpenseMutationRecord(
     revisionId: token,
     revisionDocument: {
       groupId: parsed.groupId, expenseId: parsed.expenseId, revision, operationId: parsed.operationId,
-      action: parsed.kind === 'expense.delete' ? 'deleted' : 'updated', actor, createdAt: committedAt, expense,
+      action: revisionAction, actor, createdAt: committedAt, expense,
     },
     ...activity,
   }
@@ -240,7 +252,7 @@ export function buildSparkExpenseMutationRecord(
 export function buildSparkExpenseActivityRecord(input: {
   readonly groupId: string
   readonly operationId: string
-  readonly kind: 'expense.created' | 'expense.updated' | 'expense.deleted'
+  readonly kind: 'expense.created' | 'expense.updated' | 'expense.deleted' | 'expense.restored'
   readonly actor: ActorSnapshot
   readonly expenseId: string
   readonly resourceToken: string

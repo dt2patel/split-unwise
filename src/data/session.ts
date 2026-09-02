@@ -124,6 +124,7 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
       'expense.add',
       'expense.delete',
       'expense.edit',
+      'expense.restore',
       'group.currency-conversion',
       'group.default-split',
       'group.delete',
@@ -447,6 +448,7 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       add: (command) => call(() => source.expenses.add(command)),
       edit: (command) => call(() => source.expenses.edit(command)),
       delete: (command) => call(() => source.expenses.delete(command)),
+      restore: (command) => call(() => source.expenses.restore(command)),
       listRevisions: (groupId, expenseId) => call(() => source.expenses.listRevisions(groupId, expenseId)),
     },
     comments: {

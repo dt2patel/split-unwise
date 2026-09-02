@@ -581,6 +581,7 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   expect(collaborativeEdit).toMatchObject({
     status: 'saved', expense: { revision: 2, createdBy: { id: friendUid }, updatedBy: { id: ownerUid } },
   })
+  const collaborativeBalanceBeforeDelete = await ownerNotificationRepository.groups.getBalanceSnapshot(ledgerGroupId)
   const collaborativeDeleteCommand = {
     kind: 'expense.delete' as const, operationId: `live-collaborative-delete-${suffix}`, groupId: ledgerGroupId,
     expenseId: collaborativeSource.expense.id, expectedRevision: 2,
@@ -598,6 +599,32 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
     expect.objectContaining({ revision: 2, action: 'updated', actor: { id: ownerUid, displayName: 'Live Renamed Owner' } }),
     expect.objectContaining({ revision: 3, action: 'deleted', actor: { id: ownerUid, displayName: 'Live Renamed Owner' } }),
   ])
+  const collaborativeRestoreCommand = {
+    kind: 'expense.restore' as const, operationId: `live-collaborative-restore-${suffix}`, groupId: ledgerGroupId,
+    expenseId: collaborativeSource.expense.id, expectedRevision: 3,
+  }
+  const collaborativeRestore = await ownerNotificationRepository.expenses.restore(collaborativeRestoreCommand)
+  await expect(ownerNotificationRepository.expenses.restore(collaborativeRestoreCommand)).resolves.toEqual(collaborativeRestore)
+  expect(collaborativeRestore).toMatchObject({
+    status: 'saved', expense: { id: collaborativeSource.expense.id, groupId: ledgerGroupId, revision: 4, createdBy: { id: friendUid }, updatedBy: { id: ownerUid } },
+  })
+  if (collaborativeRestore.status !== 'saved') throw new Error('Expected collaborative hosted expense restoration to save')
+  expect(collaborativeRestore.expense.deletedAt).toBeUndefined()
+  await expect(ownerNotificationRepository.expenses.listForGroup(ledgerGroupId)).resolves.toContainEqual(expect.objectContaining({
+    id: collaborativeSource.expense.id, revision: 4, description: collaborativeEditCommand.draft.description,
+  }))
+  const collaborativeBalanceAfterRestore = await ownerNotificationRepository.groups.getBalanceSnapshot(ledgerGroupId)
+  expect(collaborativeBalanceAfterRestore.pairwise).toEqual(collaborativeBalanceBeforeDelete.pairwise)
+  expect(collaborativeBalanceAfterRestore.simplified).toEqual(collaborativeBalanceBeforeDelete.simplified)
+  await expect(ownerNotificationRepository.expenses.listRevisions(ledgerGroupId, collaborativeSource.expense.id)).resolves.toEqual([
+    expect.objectContaining({ revision: 1, action: 'created', actor: { id: friendUid, displayName: 'Live Proof Friend' } }),
+    expect.objectContaining({ revision: 2, action: 'updated', actor: { id: ownerUid, displayName: 'Live Renamed Owner' } }),
+    expect.objectContaining({ revision: 3, action: 'deleted', actor: { id: ownerUid, displayName: 'Live Renamed Owner' } }),
+    expect.objectContaining({ revision: 4, action: 'restored', actor: { id: ownerUid, displayName: 'Live Renamed Owner' }, operationId: collaborativeRestoreCommand.operationId }),
+  ])
+  await expect(ownerNotificationRepository.activity.listForGroup(ledgerGroupId)).resolves.toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'expense.restored', operationId: collaborativeRestoreCommand.operationId, expenseId: collaborativeSource.expense.id, revision: 4 }),
+  ]))
 
   const lifecycleExpenses = await ownerNotificationRepository.expenses.listForGroup(ledgerGroupId)
   const lifecycleSettlements = await ownerNotificationRepository.settlements.listForGroup(ledgerGroupId)

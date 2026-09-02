@@ -246,7 +246,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
     expect(first.items.map(({ id }) => id)).toEqual(['activity_a'])
     const query = firebase.queries.at(-1)?.constraints ?? []
     expect(query).toEqual(expect.arrayContaining([
-      { type: 'where', field: 'kind', operator: 'in', value: ['expense.created', 'expense.updated', 'expense.deleted'] },
+      { type: 'where', field: 'kind', operator: 'in', value: ['expense.created', 'expense.updated', 'expense.deleted', 'expense.restored'] },
       { type: 'orderBy', field: 'createdAt', direction: 'desc' },
       { type: 'orderBy', field: '__name__', direction: 'desc' },
       { type: 'limit', value: 2 },

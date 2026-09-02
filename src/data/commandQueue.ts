@@ -499,6 +499,7 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
     case 'expense.add': return isExpenseDraft(value)
     case 'expense.edit': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision) && isExpenseDraft(value.draft)
     case 'expense.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision)
+    case 'expense.restore': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision)
     case 'comment.add': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.body) && isStringArray(value.attachmentRefs)
     case 'comment.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.commentId)
     case 'notification.read': return isNonEmptyString(value.notificationId)
@@ -547,6 +548,8 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
         && value.expense.deletedAt === undefined && Boolean(value.expense.reimbursement) === Boolean(envelope.draft.reimbursement)
     }
     case 'expense.delete': return isTombstone(value.tombstone, envelope)
+    case 'expense.restore': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId
+      && value.expense.id === envelope.expenseId && value.expense.revision === envelope.expectedRevision + 1 && value.expense.deletedAt === undefined
     case 'comment.add': return isSavedComment(value, envelope, false)
     case 'comment.delete': return isSavedComment(value, envelope, true)
     case 'notification.read': return isSavedNotificationRead(value, envelope)
@@ -743,7 +746,7 @@ function isNotificationItem(value: unknown): value is import('./repositories').N
 }
 
 function isActorSnapshot(value: unknown): value is import('./repositories').ActorSnapshot { return isRecord(value) && isNonEmptyString(value.id) && isNonEmptyString(value.displayName) }
-function isActivityKind(value: unknown): boolean { return typeof value === 'string' && ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'group.event', 'group.deleted', 'group.restored', 'membership.changed', 'settlement.created', 'settlement.voided'].includes(value) }
+function isActivityKind(value: unknown): boolean { return typeof value === 'string' && ['comment.added', 'comment.deleted', 'expense.created', 'expense.updated', 'expense.deleted', 'expense.restored', 'group.event', 'group.deleted', 'group.restored', 'membership.changed', 'settlement.created', 'settlement.voided'].includes(value) }
 function isActivitySubject(value: unknown): boolean { return isRecord(value) && ['comment', 'expense', 'group', 'membership', 'settlement'].includes(String(value.kind)) && isNonEmptyString(value.id) && (value.label === undefined || isNonEmptyString(value.label)) }
 function isTimelineCursor(value: unknown): value is import('./repositories').TimelineCursor { return isRecord(value) && isIsoTimestamp(value.createdAt) && isNonEmptyString(value.id) }
 function sameTimelineCursor(left: import('./repositories').TimelineCursor, right: import('./repositories').TimelineCursor): boolean { return left.createdAt === right.createdAt && left.id === right.id }
@@ -837,8 +840,8 @@ function conflictDetails(error: unknown, envelope: CommandEnvelope): unknown {
 
 function isConflictForEnvelope(value: unknown, envelope: CommandEnvelope): boolean {
   if (!isJsonValue(value)) return false
-  if (!isRecord(value)) return envelope.kind !== 'expense.edit' && envelope.kind !== 'expense.delete'
-  if (envelope.kind === 'expense.edit' || envelope.kind === 'expense.delete') {
+  if (!isRecord(value)) return envelope.kind !== 'expense.edit' && envelope.kind !== 'expense.delete' && envelope.kind !== 'expense.restore'
+  if (envelope.kind === 'expense.edit' || envelope.kind === 'expense.delete' || envelope.kind === 'expense.restore') {
     if (!Object.prototype.hasOwnProperty.call(value, 'remote')) return true
     return isExpenseRow(value.remote) && value.remote.groupId === envelope.groupId && value.remote.id === envelope.expenseId
   }

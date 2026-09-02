@@ -21,6 +21,7 @@ const ownerEmail = `live-owner-${suffix}@example.com`
 const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
 const unverifiedEmail = `live-unverified-${suffix}@example.com`
+const deletionEmail = `live-delete-${suffix}@example.com`
 const groupId = `grp-live-${suffix}`
 const friendshipGroupId = `grp-live-friendship-${suffix}`
 const groupPath = `/tabs/groups/${groupId}`
@@ -31,7 +32,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, native group-creation card modal with built-in covers, authenticated mobile group, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, native group-creation card modal with built-in covers, authenticated mobile group, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -169,6 +170,7 @@ async function verifyAuthenticatedMobileJourney() {
     await verifyMemberRemoval(browser)
     await verifyGroupLifecycle(browser)
     await verifyInvitationVerificationGate(browser, unverifiedInvitationUrl)
+    await verifyAccountDeletion(browser)
   } finally {
     await browser.close()
     await rm(receiptFixtureDirectory, { recursive: true, force: true })
@@ -394,8 +396,35 @@ async function verifyReimbursementWorkflow(page) {
   const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
   if (overflow > 1) throw new Error(`Hosted reimbursement detail overflowed the 390px mobile viewport by ${overflow}px.`)
 
+  await detail.locator('[data-action="delete-expense"]').click()
+  const deleteAlert = page.locator('ion-alert').filter({ hasText: `Delete ${description}?` })
+  await deleteAlert.waitFor({ state: 'visible' })
+  await deleteAlert.getByRole('button', { name: 'Delete', exact: true }).click()
+  await detail.getByTestId('deleted-state').waitFor({ state: 'visible', timeout: 120_000 })
+  await detail.getByTestId('delete-state').getByText('Deleted.', { exact: true }).waitFor({ state: 'visible' })
+
+  await page.goto(new URL('/tabs/activity', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor({ state: 'visible' })
+  const deletedExpenseRow = page.locator('[data-activity-id]', { hasText: `deleted ${description}` }).first()
+  await deletedExpenseRow.waitFor({ state: 'visible', timeout: 120_000 })
+  await deletedExpenseRow.locator('[data-action="restore-expense"]').click()
+  const restoreModal = page.locator('ion-modal.show-modal')
+  await restoreModal.waitFor({ state: 'visible' })
+  await restoreModal.getByRole('heading', { name: `Restore ${description}?`, exact: true }).waitFor({ state: 'visible' })
+  if (!(await restoreModal.evaluate((modal) => modal.classList.contains('modal-card') && Boolean(modal.presentingElement)))) {
+    throw new Error('Hosted expense restoration did not use an Ionic presenting-element iOS card modal.')
+  }
+  const restoreOverflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (restoreOverflow > 1) throw new Error(`Hosted expense restore card overflowed the 390px mobile viewport by ${restoreOverflow}px.`)
+  await restoreModal.getByRole('button', { name: 'Restore expense', exact: true }).click()
+  await restoreModal.waitFor({ state: 'hidden', timeout: 120_000 })
+  await page.getByText(`${description} was restored.`, { exact: true }).waitFor({ state: 'visible' })
+  await page.getByText(`Live Renamed Owner restored ${description}`, { exact: true }).waitFor({ state: 'visible' })
+
   await page.goto(deepUrl, { waitUntil: 'domcontentloaded' })
-  await page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)').getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+  const groupAfterRestore = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+  await groupAfterRestore.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+  await groupAfterRestore.locator('.expense-row[data-sync-state="fresh"]', { hasText: description }).getByText(description, { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
 }
 
 async function verifyCurrencyConversion(page) {
@@ -728,6 +757,45 @@ async function verifyInvitationVerificationGate(browser, invitationUrl) {
     await recovery.getByRole('button', { name: 'I’ve verified my email', exact: true }).waitFor({ state: 'visible' })
     if (!(await recovery.textContent())?.includes(unverifiedEmail)) throw new Error('Hosted verification recovery did not identify the invited account.')
     assertPageClean()
+  } finally {
+    await context.close()
+  }
+}
+
+async function verifyAccountDeletion(browser) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
+  try {
+    const page = await context.newPage()
+    const assertPageClean = monitorBrowserErrors(page, 'account deletion journey')
+    const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
+    if (!navigation?.ok()) throw new Error(`Hosted account-deletion navigation failed with ${navigation?.status() ?? 'no response'}.`)
+    await signIn(page, deletionEmail)
+    await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
+    await page.goto(new URL('/tabs/account', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('heading', { name: 'Account', exact: true }).waitFor({ state: 'visible' })
+    await page.getByTestId('open-account-delete').click()
+
+    const cardModal = page.locator('ion-modal.show-modal')
+    await cardModal.waitFor({ state: 'visible' })
+    await cardModal.getByRole('heading', { name: 'Delete your account?', exact: true }).waitFor({ state: 'visible' })
+    const hasPresentingElement = await cardModal.evaluate((modal) => Boolean(modal.presentingElement))
+    if (!hasPresentingElement) throw new Error('Hosted account deletion did not use an Ionic presenting-element card modal.')
+    await cardModal.getByTestId('account-delete-password').locator('input').fill(password)
+    await cardModal.getByTestId('account-delete-ack').click()
+    await cardModal.getByTestId('confirm-account-delete').click()
+
+    await page.waitForURL(/\/auth(?:[?#].*)?$/, { timeout: 120_000 })
+    await page.locator('#auth-email').waitFor({ state: 'visible' })
+    assertPageClean()
+    await page.locator('#auth-email').fill(deletionEmail)
+    await page.locator('#auth-password').fill(password)
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+    const rejectedSignIn = page.locator('.auth-error[role="alert"]')
+    await rejectedSignIn.waitFor({ state: 'visible' })
+    if (!/email|password|credential|user/i.test((await rejectedSignIn.textContent()) ?? '')) {
+      throw new Error('Hosted deleted-account sign-in failed without an authentication-specific recovery message.')
+    }
+    if (!/\/auth(?:[?#].*)?$/.test(page.url())) throw new Error('Hosted deleted account was unexpectedly able to leave the sign-in page.')
   } finally {
     await context.close()
   }

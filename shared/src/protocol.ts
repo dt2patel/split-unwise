@@ -55,6 +55,7 @@ export const commandEnvelopeSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('expense.add'), ...base, ...expenseDraft }),
   z.strictObject({ kind: z.literal('expense.edit'), ...base, groupId: id, expenseId: id, expectedRevision: z.number().int().positive(), draft: z.strictObject(expenseDraft) }),
   z.strictObject({ kind: z.literal('expense.delete'), ...base, groupId: id, expenseId: id, expectedRevision: z.number().int().positive() }),
+  z.strictObject({ kind: z.literal('expense.restore'), ...base, groupId: id, expenseId: id, expectedRevision: z.number().int().positive() }),
   z.strictObject({ kind: z.literal('comment.add'), ...base, groupId: id, expenseId: id, body: z.string().trim().min(1).max(5000), attachmentRefs: z.array(id).max(20) }),
   z.strictObject({ kind: z.literal('comment.delete'), ...base, groupId: id, expenseId: id, commentId: id }),
   z.strictObject({ kind: z.literal('notification.read'), ...base, notificationId: id }),

@@ -33,6 +33,7 @@ import type {
   ExpenseDeleteResult,
   ExpenseDraft,
   ExpenseEditResult,
+  ExpenseRestoreResult,
   ExpenseRevision,
   ExpenseRow,
   GroupBalanceSnapshot,
@@ -333,6 +334,23 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         revisions.push(revision)
         balanceRevision += 1
         return { kind: command.kind, operationId: command.operationId, status: 'saved', tombstone: { id: retained.id, groupId: retained.groupId, revision: retained.revision, deletedAt } }
+      }
+      case 'expense.restore': {
+        const previous = findExpense(command.groupId, command.expenseId)
+        if (!previous.deletedAt) throw new Error(`Demo expense is not deleted: ${command.expenseId}`)
+        assertExpenseMutationPermission(previous)
+        if (command.expectedRevision !== previous.revision) throw new CommandConflictError('The expense changed remotely.', { local: clone(command), remote: cloneExpense(previous) })
+        const restoredAt = checkedNow(now)
+        const actor = actorSnapshot(currentUser)
+        const { deletedAt: _deletedAt, ...retained } = previous
+        const restored: ExpenseRow = { ...retained, revision: previous.revision + 1, updatedAt: restoredAt, updatedBy: actor }
+        const event = expenseActivity(command.operationId, restored, 'expense.restored', actor, restoredAt)
+        const revision = expenseRevision(command.operationId, restored, 'restored', actor, restoredAt)
+        expenses[expenses.indexOf(previous)] = restored
+        activity.push(event)
+        revisions.push(revision)
+        balanceRevision += 1
+        return { kind: command.kind, operationId: command.operationId, status: 'saved', expense: cloneExpense(restored) }
       }
       case 'comment.add': {
         assertLakeHouseGroup(command.groupId)
@@ -722,6 +740,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       async add(command): Promise<ExpenseAddResult> { const result = await execute(command); if (result.kind !== 'expense.add') throw new Error('Unexpected expense result'); return result },
       async edit(command): Promise<ExpenseEditResult> { const result = await execute(command); if (result.kind !== 'expense.edit') throw new Error('Unexpected expense edit result'); return result },
       async delete(command): Promise<ExpenseDeleteResult> { const result = await execute(command); if (result.kind !== 'expense.delete') throw new Error('Unexpected expense delete result'); return result },
+      async restore(command): Promise<ExpenseRestoreResult> { const result = await execute(command); if (result.kind !== 'expense.restore') throw new Error('Unexpected expense restore result'); return result },
       async listRevisions(groupId, expenseId) {
         assertLakeHouseGroup(groupId)
         return revisions.filter((revision) => revision.groupId === groupId && revision.expenseId === expenseId).sort(oldestRevisionFirst).map(clone)
@@ -1075,7 +1094,7 @@ function sameActor(left: ActorSnapshot, right: ActorSnapshot): boolean { return 
 function sameMoney(left: SettlementRecord['money'], right: SettlementRecord['money']): boolean { return left.currency === right.currency && left.minorAmount === right.minorAmount }
 function isDemoOperationId(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) }
 function isCommandKind(value: unknown): value is CommandEnvelope['kind'] {
-  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'group.currency-conversion', 'group.default-split', 'group.delete', 'group.member-remove', 'group.restore', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
+  return typeof value === 'string' && ['comment.add', 'comment.delete', 'expense.add', 'expense.delete', 'expense.edit', 'expense.restore', 'group.currency-conversion', 'group.default-split', 'group.delete', 'group.member-remove', 'group.restore', 'group.simplify-debts', 'notification.preferences', 'notification.read', 'notification.read-all', 'profile.update', 'recurrence.cancel', 'recurrence.materialize', 'settlement.record', 'settlement.void'].includes(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }

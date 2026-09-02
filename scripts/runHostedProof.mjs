@@ -17,6 +17,7 @@ const ownerEmail = `live-owner-${suffix}@example.com`
 const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
 const unverifiedEmail = `live-unverified-${suffix}@example.com`
+const deletionEmail = `live-delete-${suffix}@example.com`
 const keepLiveProof = process.env.KEEP_LIVE_PROOF === '1'
 const runIosGestureProof = process.env.RUN_IOS_GESTURE_PROOF === '1'
 if (keepLiveProof && !process.env.LIVE_PROOF_PASSWORD) throw new Error('KEEP_LIVE_PROOF requires an explicit LIVE_PROOF_PASSWORD so retained fixtures remain usable.')
@@ -125,8 +126,18 @@ function registerBrowserProofResources(output) {
   return registered
 }
 
+async function assertAuthUserDeleted(email) {
+  try {
+    await findUser(projectId, email)
+    throw new Error(`Hosted account deletion left the disposable Auth user active for ${email}.`)
+  } catch (error) {
+    if (/No users found/i.test(String(error))) return
+    throw error
+  }
+}
+
 async function assertFixturesAvailable() {
-  for (const email of [ownerEmail, friendEmail, thirdEmail, unverifiedEmail]) {
+  for (const email of [ownerEmail, friendEmail, thirdEmail, unverifiedEmail, deletionEmail]) {
     try {
       await findUser(projectId, email)
       throw new Error(`Hosted proof fixture collision for ${email}. Choose a new LIVE_PROOF_SUFFIX.`)
@@ -161,7 +172,7 @@ try {
   await assertFixturesAvailable()
   throwIfTerminated()
 
-  for (const email of [ownerEmail, friendEmail, thirdEmail, unverifiedEmail]) {
+  for (const email of [ownerEmail, friendEmail, thirdEmail, unverifiedEmail, deletionEmail]) {
     const fixture = await identityRequest(configuration.apiKey, 'accounts:signUp', { email, password, returnSecureToken: false })
     createdAuthUids.add(fixture.localId)
     if (email === ownerEmail) ownerFixtureUid = fixture.localId
@@ -274,6 +285,7 @@ try {
     if (registerBrowserProofResources(browserProofResult.stdout) !== 1) {
       throw new Error('Hosted browser proof did not register exactly one UI-created group for cleanup.')
     }
+    await assertAuthUserDeleted(deletionEmail)
   } catch (error) {
     testFailure = error
   }

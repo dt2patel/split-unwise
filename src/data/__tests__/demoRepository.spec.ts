@@ -177,6 +177,44 @@ describe('demo repository', () => {
     ]))
   })
 
+  it('restores a deleted expense as a new immutable revision and reinstates its balances', async () => {
+    const repository = createDemoRepository()
+    const previous = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!previous) throw new Error('Expected shared expense fixture')
+    const balanceBeforeDelete = await repository.groups.getBalanceSnapshot(previous.groupId)
+
+    const deleted = await repository.expenses.delete({
+      kind: 'expense.delete', operationId: 'delete-groceries-for-restore', groupId: previous.groupId,
+      expenseId: previous.id, expectedRevision: previous.revision,
+    })
+    if (deleted.status !== 'saved') throw new Error('Expected expense deletion to save')
+    await expect(repository.expenses.listForGroup(previous.groupId)).resolves.not.toContainEqual(expect.objectContaining({ id: previous.id }))
+
+    const command = {
+      kind: 'expense.restore' as const, operationId: 'restore-groceries', groupId: previous.groupId,
+      expenseId: previous.id, expectedRevision: deleted.tombstone.revision,
+    }
+    const restored = await repository.expenses.restore(command)
+    await expect(repository.expenses.restore(command)).resolves.toEqual(restored)
+    expect(restored).toMatchObject({
+      kind: 'expense.restore', status: 'saved',
+      expense: { id: previous.id, groupId: previous.groupId, revision: deleted.tombstone.revision + 1 },
+    })
+    if (restored.status !== 'saved') throw new Error('Expected expense restoration to save')
+    expect(restored.expense.deletedAt).toBeUndefined()
+    const listed = await repository.expenses.listForGroup(previous.groupId)
+    expect(listed.find(({ id }) => id === previous.id)).toBeDefined()
+    expect(listed.find(({ id }) => id === previous.id)?.deletedAt).toBeUndefined()
+    await expect(repository.groups.getBalanceSnapshot(previous.groupId)).resolves.toEqual({ ...balanceBeforeDelete, balanceRevision: balanceBeforeDelete.balanceRevision + 2 })
+    await expect(repository.expenses.listRevisions(previous.groupId, previous.id)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'deleted', revision: deleted.tombstone.revision }),
+      expect.objectContaining({ action: 'restored', revision: restored.expense.revision, operationId: command.operationId }),
+    ]))
+    await expect(repository.activity.listForGroup(previous.groupId)).resolves.toContainEqual(
+      expect.objectContaining({ kind: 'expense.restored', expenseId: previous.id, revision: restored.expense.revision }),
+    )
+  })
+
   it('persists reimbursements and reverses their pairwise balance direction', async () => {
     const repository = createDemoRepository()
     const result = await repository.expenses.add({

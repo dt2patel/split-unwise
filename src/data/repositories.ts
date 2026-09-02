@@ -94,6 +94,7 @@ export type ActivityKind =
   | 'expense.created'
   | 'expense.updated'
   | 'expense.deleted'
+  | 'expense.restored'
   | 'group.event'
   | 'group.deleted'
   | 'group.restored'
@@ -130,7 +131,7 @@ export interface ExpenseRevision {
   readonly expenseId: string
   readonly revision: number
   readonly operationId: string
-  readonly action: 'created' | 'updated' | 'deleted'
+  readonly action: 'created' | 'updated' | 'deleted' | 'restored'
   readonly actor: ActorSnapshot
   readonly createdAt: string
   readonly expense: ExpenseRow
@@ -251,6 +252,7 @@ export interface OperationRequest { readonly operationId: string }
 export interface ExpenseAddCommand extends ExpenseDraft, OperationRequest { readonly kind: 'expense.add' }
 export interface ExpenseEditCommand extends OperationRequest { readonly kind: 'expense.edit'; readonly groupId: string; readonly expenseId: string; readonly expectedRevision: number; readonly draft: ExpenseDraft }
 export interface ExpenseDeleteCommand extends OperationRequest { readonly kind: 'expense.delete'; readonly groupId: string; readonly expenseId: string; readonly expectedRevision: number }
+export interface ExpenseRestoreCommand extends OperationRequest { readonly kind: 'expense.restore'; readonly groupId: string; readonly expenseId: string; readonly expectedRevision: number }
 export interface CommentAddCommand extends OperationRequest { readonly kind: 'comment.add'; readonly groupId: string; readonly expenseId: string; readonly body: string; readonly attachmentRefs: readonly string[] }
 export interface CommentDeleteCommand extends OperationRequest { readonly kind: 'comment.delete'; readonly groupId: string; readonly expenseId: string; readonly commentId: string }
 export interface NotificationReadCommand extends OperationRequest { readonly kind: 'notification.read'; readonly notificationId: string }
@@ -320,13 +322,14 @@ export interface RecurrenceCancelCommand extends OperationRequest {
 }
 export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
 
-export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | GroupCurrencyConversionCommand | GroupDefaultSplitCommand | GroupDeleteCommand | GroupMemberRemoveCommand | GroupRestoreCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
+export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | ExpenseRestoreCommand | GroupCurrencyConversionCommand | GroupDefaultSplitCommand | GroupDeleteCommand | GroupMemberRemoveCommand | GroupRestoreCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
 export type CommandKind = CommandEnvelope['kind']
 
 export interface SavedExpenseAddResult { readonly kind: 'expense.add'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
 export interface SavedExpenseEditResult { readonly kind: 'expense.edit'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
 export interface ExpenseTombstone { readonly id: string; readonly groupId: string; readonly revision: number; readonly deletedAt: string }
 export interface SavedExpenseDeleteResult { readonly kind: 'expense.delete'; readonly operationId: string; readonly status: 'saved'; readonly tombstone: ExpenseTombstone }
+export interface SavedExpenseRestoreResult { readonly kind: 'expense.restore'; readonly operationId: string; readonly status: 'saved'; readonly expense: ExpenseRow }
 export interface SavedCommentAddResult { readonly kind: 'comment.add'; readonly operationId: string; readonly status: 'saved'; readonly comment: ExpenseComment; readonly activity: ActivityItem }
 export interface SavedCommentDeleteResult { readonly kind: 'comment.delete'; readonly operationId: string; readonly status: 'saved'; readonly comment: ExpenseComment; readonly activity: ActivityItem }
 export interface SavedNotificationReadResult { readonly kind: 'notification.read'; readonly operationId: string; readonly status: 'saved'; readonly notification: NotificationItem }
@@ -336,12 +339,13 @@ export interface SavedSettlementRecordResult { readonly kind: 'settlement.record
 export interface SavedSettlementVoidResult { readonly kind: 'settlement.void'; readonly operationId: string; readonly status: 'saved'; readonly settlement: SettlementRecord; readonly balanceSnapshot: GroupBalanceSnapshot; readonly activity: ActivityItem }
 export interface SavedRecurrenceMaterializeResult { readonly kind: 'recurrence.materialize'; readonly operationId: string; readonly status: 'saved'; readonly template: RecurringExpense; readonly occurrence: ExpenseRow }
 export interface SavedRecurrenceCancelResult { readonly kind: 'recurrence.cancel'; readonly operationId: string; readonly status: 'saved'; readonly template: RecurringExpense }
-export interface SavedCommandResult<K extends Exclude<CommandKind, 'expense.add' | 'expense.delete' | 'expense.edit'>> { readonly kind: K; readonly operationId: string; readonly status: 'saved'; readonly resourceId: string }
+export interface SavedCommandResult<K extends Exclude<CommandKind, 'expense.add' | 'expense.delete' | 'expense.edit' | 'expense.restore'>> { readonly kind: K; readonly operationId: string; readonly status: 'saved'; readonly resourceId: string }
 export interface NotSupportedCommandResult<K extends CommandKind = CommandKind> { readonly kind: K; readonly operationId: string; readonly status: 'not-supported'; readonly reason: string }
 
 export type ExpenseAddResult = SavedExpenseAddResult | NotSupportedCommandResult<'expense.add'>
 export type ExpenseEditResult = SavedExpenseEditResult | NotSupportedCommandResult<'expense.edit'>
 export type ExpenseDeleteResult = SavedExpenseDeleteResult | NotSupportedCommandResult<'expense.delete'>
+export type ExpenseRestoreResult = SavedExpenseRestoreResult | NotSupportedCommandResult<'expense.restore'>
 export type CommentAddResult = SavedCommentAddResult | NotSupportedCommandResult<'comment.add'>
 export type CommentDeleteResult = SavedCommentDeleteResult | NotSupportedCommandResult<'comment.delete'>
 export type NotificationReadResult = SavedNotificationReadResult | NotSupportedCommandResult<'notification.read'>
@@ -351,7 +355,7 @@ export type SettlementRecordResult = SavedSettlementRecordResult | NotSupportedC
 export type SettlementVoidResult = SavedSettlementVoidResult | NotSupportedCommandResult<'settlement.void'>
 export type RecurrenceMaterializeResult = SavedRecurrenceMaterializeResult | NotSupportedCommandResult<'recurrence.materialize'>
 export type RecurrenceCancelResult = SavedRecurrenceCancelResult | NotSupportedCommandResult<'recurrence.cancel'>
-export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.currency-conversion'> | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.delete'> | SavedCommandResult<'group.member-remove'> | SavedCommandResult<'group.restore'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.currency-conversion' | 'group.default-split' | 'group.delete' | 'group.member-remove' | 'group.restore' | 'group.simplify-debts' | 'profile.update'>
+export type CommandResult = ExpenseAddResult | ExpenseDeleteResult | ExpenseEditResult | ExpenseRestoreResult | CommentAddResult | CommentDeleteResult | NotificationReadResult | NotificationReadAllResult | NotificationPreferencesResult | RecurrenceCancelResult | RecurrenceMaterializeResult | SettlementRecordResult | SettlementVoidResult | SavedCommandResult<'group.currency-conversion'> | SavedCommandResult<'group.default-split'> | SavedCommandResult<'group.delete'> | SavedCommandResult<'group.member-remove'> | SavedCommandResult<'group.restore'> | SavedCommandResult<'group.simplify-debts'> | SavedCommandResult<'profile.update'> | NotSupportedCommandResult<'group.currency-conversion' | 'group.default-split' | 'group.delete' | 'group.member-remove' | 'group.restore' | 'group.simplify-debts' | 'profile.update'>
 
 export interface AppRepository {
   readonly mode: 'demo' | 'firebase'
@@ -389,6 +393,7 @@ export interface ExpenseRepository {
   add(command: ExpenseAddCommand): Promise<ExpenseAddResult>
   edit(command: ExpenseEditCommand): Promise<ExpenseEditResult>
   delete(command: ExpenseDeleteCommand): Promise<ExpenseDeleteResult>
+  restore(command: ExpenseRestoreCommand): Promise<ExpenseRestoreResult>
   listRevisions(groupId: string, expenseId: string): Promise<readonly ExpenseRevision[]>
 }
 export interface CommentRepository {
