@@ -213,6 +213,9 @@ try {
           '-derivedDataPath', 'ios/DerivedData',
           '-resultBundlePath', resultBundlePath,
           'CODE_SIGNING_ALLOWED=NO',
+          '-test-timeouts-enabled', 'YES',
+          '-default-test-execution-time-allowance', '180',
+          '-maximum-test-execution-time-allowance', '240',
           'test-without-building',
           '-only-testing:AppUITests/NavigationGestureTests/testCancelledAndCompletedEdgeSwipesKeepAVisiblePage',
         ], { stdio: ['ignore', 'pipe', 'pipe'], env: releaseBuildEnvironment })

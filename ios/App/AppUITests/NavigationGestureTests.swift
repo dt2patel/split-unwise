@@ -17,10 +17,17 @@ final class NavigationGestureTests: XCTestCase {
 
         let homeHeading = app.staticTexts["Home"]
         XCTAssertTrue(homeHeading.waitForExistence(timeout: 60), "The native app did not reach Home.")
+        let balanceHeading = app.staticTexts["Balances with friends"]
+        XCTAssertTrue(balanceHeading.waitForExistence(timeout: 30), "The native Home balances did not finish loading.")
 
         let groupName = "Lake House Weekend"
-        let groupLink = app.staticTexts[groupName].firstMatch
+        app.swipeUp()
+        let groupLink = app.links.matching(NSPredicate(format: "label BEGINSWITH %@", groupName)).firstMatch
         XCTAssertTrue(groupLink.waitForExistence(timeout: 30), "The gesture-test group was not visible.")
+        if !groupLink.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(groupLink.isHittable, "The gesture-test group did not become tappable after scrolling Home.")
         groupLink.tap()
 
         let inviteButton = app.staticTexts["Invite"].firstMatch

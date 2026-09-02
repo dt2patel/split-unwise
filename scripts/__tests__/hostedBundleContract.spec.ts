@@ -87,6 +87,8 @@ describe('hosted bundle proof contract', () => {
     expect(runner).toContain('live-unverified-')
     expect(runner).toContain("process.env.RUN_IOS_GESTURE_PROOF === '1'")
     expect(runner).toContain("VITE_NATIVE_UI_TEST_DEMO: 'true'")
+    expect(runner).toContain("'-test-timeouts-enabled', 'YES'")
+    expect(runner).toContain("'-maximum-test-execution-time-allowance', '240'")
     expect(runner).toContain("'test-without-building'")
     expect(browser).toContain('verifyInvitationAcceptance')
     expect(browser).toContain('invitation-verification-required')
