@@ -213,11 +213,21 @@ async function verifyColdOfflineGroupReload(browser, context, page, expenseDescr
   }
 
   const cdp = await context.newCDPSession(page)
+  const { identifier: offlineStartupScript } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: "Object.defineProperty(Navigator.prototype, 'onLine', { configurable: true, get: () => false })",
+  })
   let reconnectExpenseDescription
   try {
-    await setBrowserOffline(context, cdp, true)
+    await context.setOffline(true)
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })
     if (await page.evaluate(() => navigator.onLine)) throw new Error('Hosted browser did not enter offline mode.')
+    const networkProbe = await page.evaluate(async () => {
+      try {
+        await fetch('/__/firebase/init.json', { cache: 'no-store' })
+        return 'resolved'
+      } catch { return 'rejected' }
+    })
+    if (networkProbe !== 'rejected') throw new Error('Hosted browser resolved a network-only Firebase request while offline.')
     await page.locator('.app-status').getByText('Offline', { exact: true }).waitFor({ state: 'visible' })
     const offlineGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
     await offlineGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
@@ -226,11 +236,14 @@ async function verifyColdOfflineGroupReload(browser, context, page, expenseDescr
     await assertNoHorizontalOverflow(page, 'cold offline group at 390px')
     reconnectExpenseDescription = await createReconnectExpenseFromFriend(browser)
   } finally {
-    try { await setBrowserOffline(context, cdp, false) } finally { await cdp.detach() }
+    try { await context.setOffline(false) } finally {
+      try { await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: offlineStartupScript }) } finally { await cdp.detach() }
+    }
   }
 
   if (!reconnectExpenseDescription) throw new Error('Hosted reconnect proof did not create its remote expense.')
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })
+  if (!(await page.evaluate(() => navigator.onLine))) throw new Error('Hosted browser remained offline after network recovery.')
   const reconnectedGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
   await reconnectedGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
   await reconnectedGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: expenseDescription }).waitFor({ state: 'visible', timeout: 120_000 })
@@ -268,22 +281,6 @@ async function createReconnectExpenseFromFriend(browser) {
   } finally {
     await context.close()
   }
-}
-
-async function setBrowserOffline(context, cdp, offline) {
-  await context.setOffline(offline)
-  await cdp.send('Network.overrideNetworkState', {
-    offline,
-    latency: 0,
-    downloadThroughput: -1,
-    uploadThroughput: -1,
-  })
-  const navigatorState = await cdp.send('Runtime.evaluate', {
-    expression: `new Promise(requestAnimationFrame).then(() => navigator.onLine === ${String(!offline)})`,
-    awaitPromise: true,
-    returnByValue: true,
-  })
-  if (navigatorState.result.value !== true) throw new Error(`Chrome did not expose the expected ${offline ? 'offline' : 'online'} navigator state.`)
 }
 
 async function verifyPaymentHandleProfile(page) {

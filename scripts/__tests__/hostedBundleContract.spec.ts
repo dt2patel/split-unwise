@@ -120,10 +120,13 @@ describe('hosted bundle proof contract', () => {
     for (const expected of [
       'navigator.serviceWorker.getRegistration()',
       '{ timeout: 30_000 }',
-      'await setBrowserOffline(context, cdp, true)',
+      "Page.addScriptToEvaluateOnNewDocument",
+      'await context.setOffline(true)',
+      "fetch('/__/firebase/init.json', { cache: 'no-store' })",
       "getByText('Offline', { exact: true })",
       'await createReconnectExpenseFromFriend(browser)',
-      'await setBrowserOffline(context, cdp, false)',
+      'await context.setOffline(false)',
+      'Page.removeScriptToEvaluateOnNewDocument',
       'reconnectExpenseDescription',
     ]) expect(coldReload).toContain(expected)
     for (const expected of [
