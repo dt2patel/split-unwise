@@ -134,7 +134,7 @@ git commit -m "Localize invitation journeys"
 
 **Files:**
 - Modify: `scripts/runHostedBrowserProof.mjs`
-- Modify: `src/app/__tests__/hostedProofContract.spec.ts`
+- Modify: `scripts/__tests__/hostedBundleContract.spec.ts`
 
 **Interfaces:**
 - Consumes: Spanish Friends/Invite/landing copy from Tasks 1 and 2 and the existing hosted fixture accounts/group.
@@ -146,7 +146,7 @@ Extend the executable contract fixture so removing any of these behaviors makes 
 
 - [ ] **Step 2: Run the contract test and witness RED**
 
-Run: `pnpm vitest run src/app/__tests__/hostedProofContract.spec.ts`
+Run: `pnpm vitest run scripts/__tests__/hostedBundleContract.spec.ts`
 
 Expected: FAIL because the hosted script has no localized Friends or invitation checks.
 
@@ -158,14 +158,14 @@ For existing-account acceptance, sign in first, preserve the captured token in s
 
 - [ ] **Step 4: Run contract and nearby tests until GREEN**
 
-Run: `pnpm vitest run src/app/__tests__/hostedProofContract.spec.ts src/features/invitations/__tests__/InvitationLandingPage.spec.ts src/features/friends/__tests__/FriendsPage.spec.ts`
+Run: `pnpm vitest run scripts/__tests__/hostedBundleContract.spec.ts src/features/invitations/__tests__/InvitationLandingPage.spec.ts src/features/friends/__tests__/FriendsPage.spec.ts`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit hosted proof coverage**
 
 ```bash
-git add scripts/runHostedBrowserProof.mjs src/app/__tests__/hostedProofContract.spec.ts
+git add scripts/runHostedBrowserProof.mjs scripts/__tests__/hostedBundleContract.spec.ts
 git commit -m "Test hosted localized invitations"
 ```
 
