@@ -228,9 +228,9 @@ async function verifyLanguagePreference(page) {
   await page.getByRole('heading', { name: 'Idioma de la app', exact: true }).waitFor({ state: 'visible' })
   if (await page.locator('html').getAttribute('lang') !== 'es') throw new Error('Hosted Spanish preference did not update the document language.')
   await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
-  await page.locator('ion-tab-button[tab="home"]').getByText('Inicio', { exact: true }).waitFor({ state: 'visible' })
+  await page.locator('ion-tab-bar').getByText('Inicio', { exact: true }).waitFor({ state: 'visible' })
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await page.locator('ion-tab-button[tab="account"]').getByText('Cuenta', { exact: true }).waitFor({ state: 'visible' })
+  await page.locator('ion-tab-bar').getByText('Cuenta', { exact: true }).waitFor({ state: 'visible' })
 
   await page.goto(languageUrl, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Idioma de la app', exact: true }).waitFor({ state: 'visible' })
