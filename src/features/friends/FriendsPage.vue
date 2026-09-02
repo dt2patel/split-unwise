@@ -17,6 +17,7 @@ import type { AccountFriendBalance, FriendBalanceBreakdown, SignedCurrencyPositi
 import { useAccountBalanceStore } from '../home/accountBalanceStore'
 import { compareFirestoreStrings } from '../../data/timeline'
 import type { Group } from '../../data/repositories'
+import { useI18n } from '../../app/i18n'
 
 interface UnavailableFriendContext {
   readonly contextId: string
@@ -29,10 +30,19 @@ interface FriendListItem extends AccountFriendBalance { readonly unavailableCont
 
 const store = useGroupStore()
 const balanceStore = useAccountBalanceStore()
+const { t } = useI18n()
 const { groups, currentUser, error, isLoading } = storeToRefs(store)
 const { projection, isLoading: balancesLoading, notice: balanceNotice } = storeToRefs(balanceStore)
 const session = getAppSession()
 const router = useRouter()
+const groupError = computed(() => {
+  if (!error.value) return undefined
+  if (error.value.kind === 'remote') return error.value.message
+  return t(error.value.code === 'money-overflow' ? 'groups.error.moneyOverflow' : 'groups.error.load')
+})
+const balanceNoticeCopy = computed(() => balanceNotice.value === 'partial'
+  ? t('home.balancePartial')
+  : balanceNotice.value === 'unavailable' ? t('home.balanceUnavailable') : undefined)
 const friends = computed<readonly FriendListItem[]>(() => {
   const result: FriendListItem[] = projection.value.friends.map((friend) => ({ ...friend }))
   const represented = new Set(result.flatMap((friend) => [friend.directContextId, ...friend.breakdowns.map(({ contextId }) => contextId)].filter((id): id is string => Boolean(id))))
@@ -161,10 +171,10 @@ async function shareInvitation(): Promise<void> {
         </section>
         <p v-if="notice" class="friends-page__notice" role="status" aria-live="polite">{{ notice }}</p>
         <p v-if="isLoading" role="status">Loading friends…</p>
-        <p v-else-if="error" role="alert">{{ error }}</p>
+        <p v-else-if="groupError" role="alert">{{ groupError }}</p>
         <section v-else aria-labelledby="friend-list-title">
           <div class="section-title"><h2 id="friend-list-title">Your friends</h2><span>{{ friends.length }}</span></div>
-          <p v-if="balanceNotice" class="friends-page__balance-notice" role="status">{{ balanceNotice }}</p>
+          <p v-if="balanceNoticeCopy" class="friends-page__balance-notice" role="status">{{ balanceNoticeCopy }}</p>
           <div v-if="balancesLoading && friends.length === 0" class="friend-skeletons" aria-hidden="true"><ion-skeleton-text animated /><ion-skeleton-text animated /><ion-skeleton-text animated /></div>
           <p v-else-if="friends.length === 0" class="empty-friends">No shared balances yet. Add a friend or join a group to get started.</p>
           <ion-list v-else class="friend-list" lines="none">

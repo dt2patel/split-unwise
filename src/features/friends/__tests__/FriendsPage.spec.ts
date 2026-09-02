@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -22,6 +23,7 @@ const stubs = {
 }
 
 beforeEach(() => {
+  localeController.setPreference('en')
   setActivePinia(createPinia())
   const demo = createDemoRepository()
   setAppSessionForTesting(createAppSession({
@@ -41,6 +43,85 @@ beforeEach(() => {
 })
 
 describe('Friends page', () => {
+  it('translates an application-owned group-list failure while preserving a remote failure', async () => {
+    localeController.setPreference('es')
+    const demo = createDemoRepository()
+    setAppSessionForTesting(createAppSession({
+      repository: { ...demo, groups: { ...demo.groups, async list() { throw undefined } } },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+    const router = createAppRouter()
+    await router.push('/tabs/home/friends')
+    await router.isReady()
+    const wrapper = mount(FriendsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('No se pudo cargar el grupo.')
+
+    const remote = createDemoRepository()
+    setActivePinia(createPinia())
+    setAppSessionForTesting(createAppSession({
+      repository: { ...remote, groups: { ...remote.groups, async list() { throw new Error('Shared plans are temporarily unavailable.') } } },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+    const remoteRouter = createAppRouter()
+    await remoteRouter.push('/tabs/home/friends')
+    await remoteRouter.isReady()
+    const remoteWrapper = mount(FriendsPage, { global: { plugins: [createPinia(), remoteRouter], stubs } })
+    await flushPromises()
+
+    expect(remoteWrapper.get('[role="alert"]').text()).toBe('Shared plans are temporarily unavailable.')
+  })
+
+  it('translates partial and unavailable balance notices without changing friend names', async () => {
+    localeController.setPreference('es')
+    const secondFriendship: Group = { ...friendship, id: 'friend-ravi', name: 'Ravi Patel' }
+    const demo = createDemoRepository()
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...demo,
+        groups: {
+          ...demo.groups,
+          async list() { return [friendship, secondFriendship] },
+          async listMembers(groupId) { if (groupId === secondFriendship.id) throw new Error('offline'); return [await demo.app.getCurrentUser()] },
+          async getBalanceSnapshot(groupId): Promise<GroupBalanceSnapshot> { return { groupId, balanceRevision: 1, simplifyDebtsEnabled: false, pairwise: [], simplified: [] } },
+        },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+    const partialRouter = createAppRouter()
+    await partialRouter.push('/tabs/home/friends')
+    await partialRouter.isReady()
+    const partial = mount(FriendsPage, { global: { plugins: [createPinia(), partialRouter], stubs } })
+    await flushPromises()
+
+    expect(partial.get('.friends-page__balance-notice').text()).toBe('Algunos saldos no están disponibles temporalmente.')
+    expect(partial.text()).toContain('Jordan Lee')
+
+    const unavailableDemo = createDemoRepository()
+    setActivePinia(createPinia())
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...unavailableDemo,
+        groups: {
+          ...unavailableDemo.groups,
+          async list() { return [friendship] },
+          async listMembers() { throw new Error('offline') },
+          async getBalanceSnapshot() { throw new Error('offline') },
+        },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+    const unavailableRouter = createAppRouter()
+    await unavailableRouter.push('/tabs/home/friends')
+    await unavailableRouter.isReady()
+    const unavailable = mount(FriendsPage, { global: { plugins: [createPinia(), unavailableRouter], stubs } })
+    await flushPromises()
+
+    expect(unavailable.get('.friends-page__balance-notice').text()).toBe('Saldo no disponible')
+    expect(unavailable.text()).toContain('Jordan Lee')
+  })
+
   it('shows pending two-person contexts and a mobile add-friend form', async () => {
     const router = createAppRouter()
     await router.push('/tabs/home/friends')
