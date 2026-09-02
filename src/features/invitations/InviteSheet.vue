@@ -11,101 +11,114 @@ import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { getActiveRuntimeConfiguration } from '../../data/firebase'
 import { createSparkInvitation, revokeSparkInvitation } from '../../data/firebaseSparkMutations'
+import { useI18n } from '../../app/i18n'
+import { ApplicationError, displayMessageFor, displayMessageText, type ApplicationMessage, type DisplayMessage } from '../../app/displayMessages'
 
 const route = useRoute()
 const session = getAppSession()
+const { locale, t } = useI18n()
 const groupId = computed(() => String(route.params.groupId ?? ''))
 const email = ref('')
 const groupName = ref('Group')
 const canManage = ref(false)
 const invitation = ref<PreparedInvitation>()
-const status = ref('')
-const error = ref('')
+const status = ref<ApplicationMessage>()
+const error = ref<DisplayMessage>()
 const busy = ref(false)
 const revoked = ref(false)
+const statusCopy = computed(() => displayMessageText(status.value, t))
+const errorCopy = computed(() => displayMessageText(error.value, t))
+const expiryCopy = computed(() => invitation.value
+  ? new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(invitation.value.expiresAt))
+  : '')
 
 onMounted(async () => {
   try {
-    if (!isStrictId(groupId.value)) throw new Error('This group is not available.')
+    if (!isStrictId(groupId.value)) throw new ApplicationError('groups.error.unavailable')
     const [group, members, current] = await Promise.all([session.repository.groups.getById(groupId.value), session.repository.groups.listMembers(groupId.value), session.repository.app.getCurrentUser()])
-    if (!group) throw new Error('This group is not available.')
+    if (!group) throw new ApplicationError('groups.error.unavailable')
     groupName.value = group.name
     canManage.value = members.find(({ id }) => id === current.id)?.canManage === true
-  } catch (reason) { error.value = message(reason) }
+  } catch (reason) { error.value = displayMessageFor(reason, 'groups.error.load') }
 })
 
 async function create(): Promise<void> {
-  busy.value = true; error.value = ''; status.value = ''; invitation.value = undefined
+  busy.value = true; error.value = undefined; status.value = undefined; invitation.value = undefined
   try {
-    if (!canManage.value) throw new Error('Only a group manager can create an invitation.')
+    if (!canManage.value) throw new ApplicationError('invite.error.managerOnly')
     const configuredOrigin = String(import.meta.env.VITE_CANONICAL_ORIGIN ?? 'https://split-unwise-aditya.web.app')
     if (session.repository.mode === 'firebase') {
       const runtime = getActiveRuntimeConfiguration()
-      if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for invitations.')
+      if (runtime.kind !== 'firebase') throw new ApplicationError('invite.error.firebaseNotReady')
       if (runtime.functionsRegion) {
         const result = await callSplitUnwiseFunction('invitationCreate', { schemaVersion: 1, operationId: createClientOperationId('invite'), groupId: groupId.value, origin: configuredOrigin, ...(email.value.trim() ? { targetEmail: email.value } : {}) }, { replayProtected: true })
         invitation.value = decodePreparedInvitation(result)
       } else {
         invitation.value = await createSparkInvitation(runtime.firebase, { groupId: groupId.value, canonicalOrigin: configuredOrigin, ...(email.value.trim() ? { targetEmail: email.value } : {}) })
       }
-      status.value = 'Private seven-day invitation ready.'
+      status.value = { kind: 'application', key: 'invite.status.privateReady' }
     } else {
       invitation.value = await prepareDemoInvitation({ groupId: groupId.value, canonicalOrigin: configuredOrigin, ...(email.value.trim() ? { targetEmail: email.value } : {}) })
-      status.value = 'Local preview ready. It is not a cross-device production invitation.'
+      status.value = { kind: 'application', key: 'invite.status.demoReady' }
     }
     revoked.value = false
-  } catch (reason) { error.value = message(reason) } finally { busy.value = false }
+  } catch (reason) { error.value = displayMessageFor(reason, 'invite.error.prepareFailed') } finally { busy.value = false }
 }
 async function share(): Promise<void> {
   if (!invitation.value) return
   const result = await sharePreparedInvitation(invitation.value.link)
-  status.value = result.status === 'shared' ? 'Share sheet completed.' : result.status === 'copied' ? 'Invitation copied.' : result.status === 'cancelled' ? 'Sharing cancelled.' : 'Select and copy the invitation below.'
+  const key = {
+    shared: 'invite.status.shared',
+    copied: 'invite.status.copied',
+    cancelled: 'invite.status.cancelled',
+    manual: 'invite.status.manual',
+  } as const
+  status.value = { kind: 'application', key: key[result.status] }
 }
 async function revoke(): Promise<void> {
   if (!invitation.value || (invitation.value.capability !== 'firebase-server' && invitation.value.capability !== 'firebase-client')) return
-  busy.value = true; error.value = ''
+  busy.value = true; error.value = undefined
   try {
     const runtime = getActiveRuntimeConfiguration()
-    if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for invitations.')
+    if (runtime.kind !== 'firebase') throw new ApplicationError('invite.error.firebaseNotReady')
     if (invitation.value.capability === 'firebase-server') await callSplitUnwiseFunction('invitationRevoke', { schemaVersion: 1, operationId: createClientOperationId('invite-revoke'), invitationId: invitation.value.invitationId }, { replayProtected: true })
     else await revokeSparkInvitation(runtime.firebase, invitation.value.invitationId)
-    revoked.value = true; status.value = 'Invitation revoked.'
-  } catch (reason) { error.value = message(reason) } finally { busy.value = false }
+    revoked.value = true; status.value = { kind: 'application', key: 'invite.status.revoked' }
+  } catch (reason) { error.value = displayMessageFor(reason, 'invite.error.revokeFailed') } finally { busy.value = false }
 }
 function decodePreparedInvitation(value: unknown): PreparedInvitation {
-  if (!isRecord(value) || typeof value.invitationId !== 'string' || typeof value.groupId !== 'string' || typeof value.link !== 'string' || typeof value.expiresAt !== 'string') throw new Error('Invitation service returned an invalid response.')
+  if (!isRecord(value) || typeof value.invitationId !== 'string' || typeof value.groupId !== 'string' || typeof value.link !== 'string' || typeof value.expiresAt !== 'string') throw new ApplicationError('invite.error.invalidResponse')
   return { invitationId: value.invitationId, groupId: value.groupId, link: value.link, expiresAt: value.expiresAt, capability: 'firebase-server', ...(typeof value.targetEmail === 'string' ? { targetEmail: value.targetEmail } : {}) }
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
-function message(reason: unknown): string { return reason instanceof Error ? reason.message : 'The invitation could not be prepared.' }
 </script>
 
 <template>
   <ion-page>
-    <ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="`/tabs/groups/${groupId}`" text="Group" /></ion-buttons><ion-title>Invite people</ion-title></ion-toolbar></ion-header>
+    <ion-header translucent><ion-toolbar><ion-buttons slot="start"><ion-back-button :default-href="`/tabs/groups/${groupId}`" :text="t('invite.backGroup')" /></ion-buttons><ion-title>{{ t('invite.title') }}</ion-title></ion-toolbar></ion-header>
     <ion-content :fullscreen="true">
       <main class="invite-page">
         <div class="invite-icon"><ion-icon :icon="shareOutline" aria-hidden="true" /></div>
-        <h1>Invite to {{ groupName }}</h1>
-        <p>Create a private, seven-day link. Split Unwise never sends it automatically.</p>
+        <h1>{{ t('invite.heading', { group: groupName }) }}</h1>
+        <p>{{ t('invite.intro') }}</p>
 
         <section class="invite-card">
-          <label for="invite-email"><span>Target email <small>Optional</small></span><input id="invite-email" v-model="email" type="email" inputmode="email" autocomplete="email" placeholder="friend@example.com"></label>
-          <ion-button expand="block" shape="round" :disabled="busy || !canManage" @click="create">{{ busy ? 'Preparing…' : 'Prepare invitation' }}</ion-button>
-          <p v-if="!canManage" class="capability"><ion-icon :icon="lockClosedOutline" /> Only a group manager can invite members.</p>
-          <p v-else-if="session.repository.mode === 'firebase'" class="capability"><ion-icon :icon="lockClosedOutline" /> Links are private, single-use, and expire after seven days.</p>
-          <p v-else class="capability"><ion-icon :icon="checkmarkCircleOutline" /> Demo mode creates a local preview only.</p>
+          <label for="invite-email"><span>{{ t('invite.targetEmail') }} <small>{{ t('invite.optional') }}</small></span><input id="invite-email" v-model="email" type="email" inputmode="email" autocomplete="email" :placeholder="t('invite.emailPlaceholder')"></label>
+          <ion-button expand="block" shape="round" :disabled="busy || !canManage" @click="create">{{ busy ? t('invite.preparing') : t('invite.prepare') }}</ion-button>
+          <p v-if="!canManage" class="capability"><ion-icon :icon="lockClosedOutline" /> {{ t('invite.managerOnly') }}</p>
+          <p v-else-if="session.repository.mode === 'firebase'" class="capability"><ion-icon :icon="lockClosedOutline" /> {{ t('invite.privateCapability') }}</p>
+          <p v-else class="capability"><ion-icon :icon="checkmarkCircleOutline" /> {{ t('invite.demoCapability') }}</p>
         </section>
 
         <section v-if="invitation" class="prepared-card" aria-labelledby="prepared-heading">
-          <h2 id="prepared-heading">Invitation ready</h2>
-          <p>Expires {{ new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(invitation.expiresAt)) }}</p>
-          <textarea readonly :value="invitation.link" aria-label="Prepared invitation URL" @focus="($event.target as HTMLTextAreaElement).select()" />
-          <ion-button expand="block" shape="round" :disabled="revoked" @click="share"><ion-icon slot="start" :icon="copyOutline" /> {{ revoked ? 'Invitation revoked' : 'Share invitation' }}</ion-button>
-          <ion-button v-if="(invitation.capability === 'firebase-server' || invitation.capability === 'firebase-client') && !revoked" expand="block" fill="clear" color="danger" :disabled="busy" @click="revoke">Revoke invitation</ion-button>
+          <h2 id="prepared-heading">{{ t('invite.ready') }}</h2>
+          <p>{{ t('invite.expires', { date: expiryCopy }) }}</p>
+          <textarea readonly :value="invitation.link" :aria-label="t('invite.urlAria')" @focus="($event.target as HTMLTextAreaElement).select()" />
+          <ion-button expand="block" shape="round" :disabled="revoked" @click="share"><ion-icon slot="start" :icon="copyOutline" /> {{ revoked ? t('invite.revoked') : t('invite.share') }}</ion-button>
+          <ion-button v-if="(invitation.capability === 'firebase-server' || invitation.capability === 'firebase-client') && !revoked" expand="block" fill="clear" color="danger" :disabled="busy" @click="revoke">{{ t('invite.revoke') }}</ion-button>
         </section>
-        <p v-if="error" class="invite-error" role="alert">{{ error }}</p>
-        <p v-if="status" class="invite-status" role="status" aria-live="polite">{{ status }}</p>
+        <p v-if="errorCopy" class="invite-error" role="alert">{{ errorCopy }}</p>
+        <p v-if="statusCopy" class="invite-status" role="status" aria-live="polite">{{ statusCopy }}</p>
       </main>
     </ion-content>
   </ion-page>

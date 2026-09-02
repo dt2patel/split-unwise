@@ -10,18 +10,53 @@ import { callSplitUnwiseFunction } from '../../data/firebaseCallables'
 import { storeReturnPath } from '../auth/returnPath'
 import { getActiveRuntimeConfiguration } from '../../data/firebase'
 import { acceptSparkInvitation, inspectSparkInvitation } from '../../data/firebaseSparkMutations'
+import { useI18n } from '../../app/i18n'
+import { displayMessageText, type ApplicationMessage } from '../../app/displayMessages'
+
+type InvalidReason = 'missing' | 'account-not-ready' | 'consumed' | 'accept-failed' | 'different-email' | 'invalid'
+type LandingState =
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'preview' }
+  | { readonly kind: 'sign-in' }
+  | { readonly kind: 'verification'; readonly email?: string }
+  | { readonly kind: 'ready'; readonly groupId: string; readonly groupName: string }
+  | { readonly kind: 'accepted'; readonly groupId: string; readonly reason: 'already-member'; readonly groupName: string }
+  | { readonly kind: 'accepted'; readonly groupId: string; readonly reason: 'joined' }
+  | { readonly kind: 'invalid'; readonly reason: InvalidReason }
 
 const route = useRoute()
 const router = useRouter()
 const invitationId = computed(() => String(route.params.invitationId ?? pathnameInvitationId()))
 const authService = getAuthService()
-const state = ref<'loading' | 'preview' | 'sign-in' | 'verification' | 'ready' | 'accepted' | 'invalid'>('loading')
-const message = ref('')
-const groupId = ref('')
+const { t } = useI18n()
+const state = ref<LandingState>({ kind: 'loading' })
 const accepting = ref(false)
 const verifying = ref(false)
-const verificationEmail = ref('')
-const actionStatus = ref('')
+const actionStatus = ref<ApplicationMessage>()
+const actionStatusCopy = computed(() => displayMessageText(actionStatus.value, t))
+const groupId = computed(() => state.value.kind === 'ready' || state.value.kind === 'accepted' ? state.value.groupId : '')
+const message = computed(() => {
+  const current = state.value
+  if (current.kind === 'preview') return t('inviteLanding.demoPreview')
+  if (current.kind === 'sign-in') return t('inviteLanding.signInPrompt')
+  if (current.kind === 'verification') return t('inviteLanding.verifyToAccept', { email: current.email ?? t('inviteLanding.accountEmail') })
+  if (current.kind === 'ready') return t('inviteLanding.invited', { group: current.groupName })
+  if (current.kind === 'accepted') return current.reason === 'already-member'
+    ? t('inviteLanding.alreadyMember', { group: current.groupName })
+    : t('inviteLanding.joined')
+  if (current.kind === 'invalid') {
+    const key = {
+      missing: 'inviteLanding.missing',
+      'account-not-ready': 'inviteLanding.accountNotReady',
+      consumed: 'inviteLanding.consumed',
+      'accept-failed': 'inviteLanding.acceptFailed',
+      'different-email': 'inviteLanding.differentEmail',
+      invalid: 'inviteLanding.invalid',
+    } as const
+    return t(key[current.reason])
+  }
+  return ''
+})
 
 onMounted(async () => {
   if (typeof location !== 'undefined' && location.hash) captureInvitationFragment(invitationId.value, location, history)
@@ -29,14 +64,14 @@ onMounted(async () => {
 })
 
 async function inspectInvitation(): Promise<void> {
-  state.value = 'loading'; actionStatus.value = ''
+  state.value = { kind: 'loading' }; actionStatus.value = undefined
   try {
     const secret = peekTransientInvitationSecret(invitationId.value)
-    if (!secret) { state.value = 'invalid'; message.value = 'This invitation link is missing or has already been opened.'; return }
+    if (!secret) { state.value = { kind: 'invalid', reason: 'missing' }; return }
     const auth = authService.getState()
-    if (auth.status !== 'signed-in') { state.value = 'sign-in'; message.value = 'Sign in to inspect and accept this private invitation.'; return }
+    if (auth.status !== 'signed-in') { state.value = { kind: 'sign-in' }; return }
     const session = peekActiveAppSession()
-    if (!session) { state.value = 'invalid'; message.value = 'Your signed-in account is not ready.'; return }
+    if (!session) { state.value = { kind: 'invalid', reason: 'account-not-ready' }; return }
     if (session.repository.mode === 'firebase') {
       const runtime = getActiveRuntimeConfiguration()
       if (runtime.kind !== 'firebase') throw new Error('Firebase is not ready for invitations.')
@@ -44,18 +79,18 @@ async function inspectInvitation(): Promise<void> {
       const preview = runtime.functionsRegion
         ? decodePreview(await callSplitUnwiseFunction('invitationInspect', { schemaVersion: 1, invitationId: serviceInvitationId, token: secret }))
         : await inspectSparkInvitation(runtime.firebase, serviceInvitationId, secret)
-      groupId.value = preview.groupId
-      state.value = preview.alreadyMember ? 'accepted' : 'ready'
-      message.value = preview.alreadyMember ? `You already belong to ${preview.groupName}.` : `You’re invited to join ${preview.groupName}.`
+      state.value = preview.alreadyMember
+        ? { kind: 'accepted', groupId: preview.groupId, reason: 'already-member', groupName: preview.groupName }
+        : { kind: 'ready', groupId: preview.groupId, groupName: preview.groupName }
       return
     }
-    state.value = 'preview'; message.value = 'Demo invitation preview. Acceptance stays on this device and is not a production membership change.'
+    state.value = { kind: 'preview' }
   } catch (reason) { handleInspectionFailure(reason) }
 }
 
 async function accept(): Promise<void> {
   const secret = peekTransientInvitationSecret(invitationId.value)
-  if (!secret) { state.value = 'invalid'; message.value = 'This invitation has already been consumed.'; return }
+  if (!secret) { state.value = { kind: 'invalid', reason: 'consumed' }; return }
   accepting.value = true
   try {
     const runtime = getActiveRuntimeConfiguration()
@@ -65,48 +100,47 @@ async function accept(): Promise<void> {
       ? decodeAccept(await callSplitUnwiseFunction('invitationAccept', { schemaVersion: 1, invitationId: serviceInvitationId, token: secret }, { replayProtected: true }))
       : await acceptSparkInvitation(runtime.firebase, serviceInvitationId, secret)
     consumeTransientInvitationSecret(invitationId.value)
-    state.value = 'accepted'; groupId.value = result.groupId; message.value = 'You joined the group.'
+    state.value = { kind: 'accepted', groupId: result.groupId, reason: 'joined' }
     await router.replace(`/tabs/groups/${encodeURIComponent(result.groupId)}`)
-  } catch { state.value = 'invalid'; message.value = 'This invitation could not be accepted.' } finally { accepting.value = false }
+  } catch { state.value = { kind: 'invalid', reason: 'accept-failed' } } finally { accepting.value = false }
 }
 async function signIn(): Promise<void> { storeReturnPath(`/invite/${encodeURIComponent(invitationId.value)}`); await router.push('/auth') }
 async function sendVerification(): Promise<void> {
   if (verifying.value) return
-  verifying.value = true; actionStatus.value = ''
+  verifying.value = true; actionStatus.value = undefined
   try {
     await authService.sendVerification()
-    actionStatus.value = 'Verification email sent. Open it, then return here and check again.'
-  } catch (reason) { actionStatus.value = safeFailure(reason, 'The verification email could not be sent.') } finally { verifying.value = false }
+    actionStatus.value = { kind: 'application', key: 'inviteLanding.verificationSent' }
+  } catch { actionStatus.value = { kind: 'application', key: 'inviteLanding.verificationSendFailed' } } finally { verifying.value = false }
 }
 async function recheckVerification(): Promise<void> {
   if (verifying.value) return
-  verifying.value = true; actionStatus.value = ''
+  verifying.value = true; actionStatus.value = undefined
   try {
     const identity = await authService.refreshIdentity()
-    verificationEmail.value = identity?.email ?? verificationEmail.value
-    if (!identity?.emailVerified) { actionStatus.value = 'That email is not verified yet. Open the verification email, then check again.'; return }
+    if (identity?.email && state.value.kind === 'verification') state.value = { kind: 'verification', email: identity.email }
+    if (!identity?.emailVerified) { actionStatus.value = { kind: 'application', key: 'inviteLanding.notVerified' }; return }
     await inspectInvitation()
-  } catch (reason) { actionStatus.value = safeFailure(reason, 'Email verification could not be checked.') } finally { verifying.value = false }
+  } catch { actionStatus.value = { kind: 'application', key: 'inviteLanding.verificationCheckFailed' } } finally { verifying.value = false }
 }
 function handleInspectionFailure(reason: unknown): void {
-  const failure = safeFailure(reason, '')
   const auth = authService.getState()
-  if (/verified email/i.test(failure) && auth.status === 'signed-in' && !auth.identity.emailVerified) {
-    verificationEmail.value = auth.identity.email ?? 'your account email'
-    state.value = 'verification'
-    message.value = `Verify ${verificationEmail.value} to accept this invitation.`
+  const failure = classifyInspectionFailure(reason, auth.status === 'signed-in' && !auth.identity.emailVerified)
+  if (failure === 'verification-required' && auth.status === 'signed-in') {
+    state.value = { kind: 'verification', ...(auth.identity.email ? { email: auth.identity.email } : {}) }
     return
   }
-  state.value = 'invalid'
-  message.value = /verified email/i.test(failure)
-    ? 'This invitation was sent to a different verified email. Sign in with the invited account and open the link again.'
-    : 'This invitation link is invalid, expired, or no longer available.'
+  state.value = { kind: 'invalid', reason: failure === 'different-email' ? 'different-email' : 'invalid' }
 }
 function decodePreview(value: unknown): { groupId: string; groupName: string; alreadyMember: boolean } { if (!isRecord(value) || typeof value.groupId !== 'string' || typeof value.groupName !== 'string' || typeof value.alreadyMember !== 'boolean') throw new Error('Invalid invitation preview'); return { groupId: value.groupId, groupName: value.groupName, alreadyMember: value.alreadyMember } }
 function decodeAccept(value: unknown): { groupId: string } { if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error('Invalid invitation acceptance'); return { groupId: value.groupId } }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function pathnameInvitationId(): string { return typeof location === 'undefined' ? '' : /^\/invite\/([^/]+)$/.exec(location.pathname)?.[1] ?? '' }
-function safeFailure(reason: unknown, fallback: string): string { return reason instanceof Error && reason.message ? reason.message : fallback }
+function classifyInspectionFailure(reason: unknown, needsVerification: boolean): 'verification-required' | 'different-email' | 'invalid' {
+  const isVerifiedEmailFailure = reason instanceof Error && /verified email/i.test(reason.message)
+  if (!isVerifiedEmailFailure) return 'invalid'
+  return needsVerification ? 'verification-required' : 'different-email'
+}
 </script>
 
 <template>
@@ -114,25 +148,25 @@ function safeFailure(reason: unknown, fallback: string): string { return reason 
     <ion-content :fullscreen="true">
       <main class="landing">
         <div class="landing-icon"><ion-icon :icon="peopleOutline" /></div>
-        <p class="kicker">SPLIT UNWISE INVITATION</p>
-        <h1>Join a shared group</h1>
-        <div v-if="state === 'loading'" role="status"><ion-spinner /><p>Checking invitation…</p></div>
+        <p class="kicker">{{ t('inviteLanding.kicker') }}</p>
+        <h1>{{ t('inviteLanding.title') }}</h1>
+        <div v-if="state.kind === 'loading'" role="status"><ion-spinner /><p>{{ t('inviteLanding.checking') }}</p></div>
         <template v-else>
-          <section v-if="state === 'verification'" data-testid="invitation-verification-required" class="verification-card">
+          <section v-if="state.kind === 'verification'" data-testid="invitation-verification-required" class="verification-card">
             <ion-icon :icon="mailUnreadOutline" aria-hidden="true" />
-            <strong>Email verification required</strong>
+            <strong>{{ t('inviteLanding.verificationRequired') }}</strong>
             <p>{{ message }}</p>
-            <ion-button data-testid="send-invitation-verification" expand="block" shape="round" :disabled="verifying" @click="sendVerification">Resend verification email</ion-button>
-            <ion-button data-testid="recheck-invitation-verification" expand="block" fill="outline" shape="round" :disabled="verifying" @click="recheckVerification"><ion-icon slot="start" :icon="refreshOutline" aria-hidden="true" /> {{ verifying ? 'Checking…' : 'I’ve verified my email' }}</ion-button>
-            <p v-if="actionStatus" role="status" aria-live="polite" class="verification-status">{{ actionStatus }}</p>
+            <ion-button data-testid="send-invitation-verification" expand="block" shape="round" :disabled="verifying" @click="sendVerification">{{ t('inviteLanding.resendVerification') }}</ion-button>
+            <ion-button data-testid="recheck-invitation-verification" expand="block" fill="outline" shape="round" :disabled="verifying" @click="recheckVerification"><ion-icon slot="start" :icon="refreshOutline" aria-hidden="true" /> {{ verifying ? t('inviteLanding.checkingShort') : t('inviteLanding.verifiedAction') }}</ion-button>
+            <p v-if="actionStatusCopy" role="status" aria-live="polite" class="verification-status">{{ actionStatusCopy }}</p>
           </section>
           <p v-else>{{ message }}</p>
-          <p class="privacy"><ion-icon :icon="shieldCheckmarkOutline" /> The private token was removed from this browser’s address.</p>
-          <ion-button v-if="state === 'sign-in'" expand="block" shape="round" @click="signIn">Sign in to continue</ion-button>
-          <ion-button v-else-if="state === 'ready'" expand="block" shape="round" :disabled="accepting" @click="accept">{{ accepting ? 'Joining…' : 'Join group' }}</ion-button>
-          <ion-button v-else-if="state === 'accepted' && groupId" :router-link="`/tabs/groups/${groupId}`" expand="block" shape="round">Open group</ion-button>
-          <ion-button v-else-if="state === 'preview'" router-link="/tabs/groups" expand="block" shape="round">Open demo groups</ion-button>
-          <ion-button v-else router-link="/tabs/home" expand="block" fill="outline" shape="round">Go home</ion-button>
+          <p class="privacy"><ion-icon :icon="shieldCheckmarkOutline" /> {{ t('inviteLanding.privacy') }}</p>
+          <ion-button v-if="state.kind === 'sign-in'" expand="block" shape="round" @click="signIn">{{ t('inviteLanding.signIn') }}</ion-button>
+          <ion-button v-else-if="state.kind === 'ready'" expand="block" shape="round" :disabled="accepting" @click="accept">{{ accepting ? t('inviteLanding.joining') : t('inviteLanding.join') }}</ion-button>
+          <ion-button v-else-if="state.kind === 'accepted' && groupId" :router-link="`/tabs/groups/${groupId}`" expand="block" shape="round">{{ t('inviteLanding.openGroup') }}</ion-button>
+          <ion-button v-else-if="state.kind === 'preview'" router-link="/tabs/groups" expand="block" shape="round">{{ t('inviteLanding.openDemo') }}</ion-button>
+          <ion-button v-else router-link="/tabs/home" expand="block" fill="outline" shape="round">{{ t('inviteLanding.goHome') }}</ion-button>
         </template>
       </main>
     </ion-content>

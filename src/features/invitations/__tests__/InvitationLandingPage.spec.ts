@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { localeController } from '../../../app/i18n'
 import InvitationLandingPage from '../InvitationLandingPage.vue'
 import { captureInvitationFragment, consumeTransientInvitationSecret } from '../invitations'
 
@@ -41,6 +42,7 @@ const stubs = {
 
 describe('invitation landing page', () => {
   beforeEach(() => {
+    localeController.setPreference('es')
     mocks.inspect.mockReset()
     mocks.accept.mockReset()
     mocks.sendVerification.mockReset()
@@ -57,29 +59,61 @@ describe('invitation landing page', () => {
   it('turns an unverified targeted invitation into a recoverable verification flow', async () => {
     const wrapper = await mountInvitation()
 
-    await vi.waitFor(() => expect(wrapper.text()).not.toContain('Checking invitation'))
-    expect(wrapper.get('[data-testid="invitation-verification-required"]').text()).toContain('Verify shreyakothari898@gmail.com')
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="invitation-verification-required"]').exists()).toBe(true))
+    expect(wrapper.get('[data-testid="invitation-verification-required"]').text()).toContain('Verifica shreyakothari898@gmail.com para aceptar esta invitación.')
     await wrapper.get('[data-testid="send-invitation-verification"]').trigger('click')
     await flushPromises()
 
     expect(mocks.sendVerification).toHaveBeenCalledOnce()
-    expect(wrapper.get('[role="status"]').text()).toContain('Verification email sent')
+    expect(wrapper.get('[role="status"]').text()).toBe('Correo de verificación enviado. Ábrelo, vuelve aquí y comprueba de nuevo.')
   })
 
   it('rechecks Firebase identity and resumes the same invitation after verification', async () => {
     mocks.refreshIdentity.mockResolvedValue({ ...mocks.authState.identity, emailVerified: true })
     mocks.inspect.mockRejectedValueOnce(new Error('Sign in with the verified email named by this invitation.')).mockResolvedValueOnce({
-      groupId: 'group-trips', groupName: 'Trips', alreadyMember: false,
+      groupId: 'group-trips', groupName: 'Viaje Ñandú', alreadyMember: false,
     })
     const wrapper = await mountInvitation()
 
-    await vi.waitFor(() => expect(wrapper.text()).not.toContain('Checking invitation'))
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="invitation-verification-required"]').exists()).toBe(true))
     await wrapper.get('[data-testid="recheck-invitation-verification"]').trigger('click')
-    await vi.waitFor(() => expect(wrapper.text()).toContain('You’re invited to join Trips.'))
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Te invitaron a unirte a Viaje Ñandú.'))
 
     expect(mocks.refreshIdentity).toHaveBeenCalledOnce()
     expect(mocks.inspect).toHaveBeenCalledTimes(2)
-    expect(wrapper.get('button').text()).toContain('Join group')
+    expect(wrapper.get('button').text()).toContain('Unirse al grupo')
+  })
+
+  it('retranslates a retained verification failure without sending again or exposing its diagnostic', async () => {
+    mocks.sendVerification.mockRejectedValueOnce(new Error('sensitive verification delivery detail'))
+    const wrapper = await mountInvitation()
+
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="invitation-verification-required"]').exists()).toBe(true))
+    await wrapper.get('[data-testid="send-invitation-verification"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="status"]').text()).toBe('No se pudo enviar el correo de verificación.')
+    expect(wrapper.text()).not.toContain('sensitive verification delivery detail')
+    expect(mocks.sendVerification).toHaveBeenCalledOnce()
+
+    localeController.setPreference('de')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Die Bestätigungs-E-Mail konnte nicht gesendet werden.')
+    expect(mocks.sendVerification).toHaveBeenCalledOnce()
+  })
+
+  it('shows only the localized generic failure when ordinary invitation acceptance fails', async () => {
+    mocks.inspect.mockResolvedValueOnce({ groupId: 'group-trips', groupName: 'Viaje Ñandú', alreadyMember: false })
+    mocks.accept.mockRejectedValueOnce(new Error('sensitive internal acceptance detail'))
+    const wrapper = await mountInvitation()
+
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Te invitaron a unirte a Viaje Ñandú.'))
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No se pudo aceptar esta invitación.')
+    expect(wrapper.text()).not.toContain('sensitive internal acceptance detail')
   })
 })
 
