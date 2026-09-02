@@ -89,12 +89,12 @@ describe('account deletion data contract', () => {
     expect(anonymizeSharedDocument('comment', { ...authored, author: { id: 'friend', displayName: 'Friend' } }, 'owner')).toBeUndefined()
   })
 
-  it('marks the member anonymous and incapable without removing its ledger id', () => {
+  it('marks the member anonymous and removed while retaining its tombstone document', () => {
     expect(buildDeletedMemberDocument({
       status: 'active', role: 'owner', canManage: true, displayName: 'Owner Name', initials: 'ON',
       avatarUrl: 'https://example.com/owner.png', joinedAt: 'joined',
     }, 'owner', 'account-delete-12345678', 'now')).toEqual({
-      status: 'active', role: 'member', canManage: false, displayName: DELETED_ACCOUNT_NAME,
+      status: 'removed', role: 'member', canManage: false, displayName: DELETED_ACCOUNT_NAME,
       initials: DELETED_ACCOUNT_INITIALS, avatarUrl: null, joinedAt: 'joined', accountStatus: 'deleted',
       accountDeletionId: 'account-delete-12345678', accountDeletedAt: 'now',
     })
@@ -110,11 +110,11 @@ describe('account deletion data contract', () => {
 
     expect(buildDeletionGroupContinuity(group, members, 'owner', 'account-delete-12345678', 'now')).toEqual({
       group: {
-        ...group, createdByUid: 'friend', updatedAt: 'now',
+        ...group, memberIds: ['friend', 'manager'], createdByUid: 'friend', updatedAt: 'now',
         lastAccountDeletionId: 'account-delete-12345678', lastDeletedAccountUid: 'owner',
       },
       deletedMember: {
-        status: 'active', role: 'member', canManage: false, displayName: DELETED_ACCOUNT_NAME,
+        status: 'removed', role: 'member', canManage: false, displayName: DELETED_ACCOUNT_NAME,
         initials: DELETED_ACCOUNT_INITIALS, avatarUrl: null, accountStatus: 'deleted',
         joinedAt: 'joined', accountDeletionId: 'account-delete-12345678', accountDeletedAt: 'now',
       },
@@ -129,7 +129,7 @@ describe('account deletion data contract', () => {
     const group = { id: 'group-a', memberIds: ['owner'], createdByUid: 'owner', name: 'Solo', updatedAt: 'before' }
     const owner = { id: 'owner', status: 'active', role: 'owner', canManage: true, displayName: 'Owner Name', initials: 'ON', avatarUrl: null, joinedAt: 'joined' }
     expect(buildDeletionGroupContinuity(group, [owner], 'owner', 'account-delete-12345678', 'now').group).toMatchObject({
-      status: 'deleted', deletedAt: 'now', deletedBy: { id: 'owner', displayName: DELETED_ACCOUNT_NAME }, memberIds: ['owner'],
+      status: 'deleted', deletedAt: 'now', deletedBy: { id: 'owner', displayName: DELETED_ACCOUNT_NAME }, memberIds: [],
     })
   })
 

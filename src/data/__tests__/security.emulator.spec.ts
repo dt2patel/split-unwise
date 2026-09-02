@@ -62,6 +62,166 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(updateDoc(doc(owner, 'users/new-owner'), { createdAt: serverTimestamp() }))
   })
 
+  emulatorIt('moves only the current account through a retryable deletion tombstone and then denies shared access', async () => {
+    const owner = environment.authenticatedContext('delete-owner', { email: 'delete-owner@example.com', email_verified: true }).firestore()
+    const attacker = environment.authenticatedContext('delete-attacker', { email: 'attacker@example.com', email_verified: true }).firestore()
+    const profileReference = doc(owner, 'users/delete-owner')
+    await assertSucceeds(setDoc(profileReference, profile('Delete Owner', 'DO')))
+    await assertSucceeds(setDoc(doc(attacker, 'users/delete-attacker'), profile('Delete Attacker', 'DA')))
+    await assertSucceeds(commitGroupBundle(owner, 'group-delete-account', 'delete-owner', 'Delete Owner', 'DO'))
+    const createdAt = (await getDoc(profileReference)).data()!.createdAt
+
+    await assertSucceeds(setDoc(profileReference, deletingProfile(createdAt, ['group-delete-account'], 'deleting')))
+    await assertSucceeds(getDoc(doc(owner, 'groups/group-delete-account')))
+    await assertFails(commitSparkProfileUpdate(owner, 'delete-owner', 'group-delete-account', 'Usable Again', 'UA'))
+    await assertFails(setDoc(doc(attacker, 'users/delete-owner'), deletingProfile(createdAt, ['group-delete-account'], 'deleting')))
+
+    const cleanup = writeBatch(owner)
+    cleanup.set(doc(owner, 'groups/group-delete-account'), {
+      ...(await getDoc(doc(owner, 'groups/group-delete-account'))).data()!, memberIds: [], status: 'deleted',
+      deletedAt: serverTimestamp(), deletedBy: { id: 'delete-owner', displayName: 'Deleted user' }, updatedAt: serverTimestamp(),
+      lastAccountDeletionId: 'account-delete-12345678', lastDeletedAccountUid: 'delete-owner',
+    })
+    cleanup.set(doc(owner, 'groups/group-delete-account/members/delete-owner'), {
+      ...(await getDoc(doc(owner, 'groups/group-delete-account/members/delete-owner'))).data()!, status: 'removed', role: 'member', canManage: false,
+      displayName: 'Deleted user', initials: 'DU', avatarUrl: null, accountStatus: 'deleted',
+      accountDeletionId: 'account-delete-12345678', accountDeletedAt: serverTimestamp(),
+    })
+    await assertSucceeds(cleanup.commit())
+    await assertSucceeds(deleteDoc(doc(owner, 'users/delete-owner/groups/group-delete-account')))
+
+    const deleting = (await getDoc(profileReference)).data()!
+    await assertSucceeds(setDoc(profileReference, deletingProfile(createdAt, ['group-delete-account'], 'prepared', deleting.deletionRequestedAt)))
+    await assertFails(getDoc(doc(owner, 'groups/group-delete-account')))
+
+    const prepared = (await getDoc(profileReference)).data()!
+    await assertSucceeds(setDoc(profileReference, deletingProfile(createdAt, ['group-delete-account'], 'deleting', prepared.deletionRequestedAt)))
+    await assertFails(getDoc(doc(owner, 'groups/group-delete-account')))
+  })
+
+  emulatorIt('anonymizes only the deleting account while preserving the shared ledger and removing private data', async () => {
+    const ownerActor = { id: 'active', displayName: 'Active Member' }
+    const friendActor = { id: 'friend', displayName: 'Friend' }
+    const expense = sparkExpense('a')
+    const revision = sparkExpenseVersion(expense, 'expense-revision-a', 'updated', ownerActor)
+    const activity = sparkExpenseActivity(expense, 'expense.created', Timestamp.fromDate(new Date('2026-09-01T12:00:00.000Z')))
+    const comment = sparkComment('b'.repeat(48), String(expense.id), ownerActor)
+    const settlement = {
+      ...sparkSettlement('c'.repeat(48), ownerActor), revision: 2,
+      void: { operationId: 'settlement-void-c', reason: 'Duplicate', actor: ownerActor, createdAt: Timestamp.fromDate(new Date('2026-09-01T13:00:00.000Z')), revision: 2 },
+    }
+    const recurringSource = sparkRecurringSource('d')
+    const recurring = sparkRecurringTemplate(recurringSource, '2026-10-01')
+    const settings = sparkSettings(2, 'group.default-split', 'default-split-a', 'e'.repeat(48), ownerActor, {
+      defaultSplit: { type: 'equal', participantIds: ['active', 'friend'] },
+    })
+    const invitationId = 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'
+
+    await environment.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore()
+      await setDoc(doc(db, 'users/active'), { displayName: 'Active Member', initials: 'AM', avatarUrl: null, createdAt: Timestamp.fromMillis(1), updatedAt: Timestamp.fromMillis(1) })
+      await setDoc(doc(db, 'users/friend'), { displayName: 'Friend', initials: 'F', avatarUrl: null, createdAt: Timestamp.fromMillis(1), updatedAt: Timestamp.fromMillis(1) })
+      await setDoc(doc(db, 'groups/group-a'), { ...group('group-a', 'active', ['active', 'friend'], 'friendship'), createdAt: Timestamp.fromMillis(1), updatedAt: Timestamp.fromMillis(1) })
+      await setDoc(doc(db, 'groups/group-a/members/active'), { status: 'active', role: 'owner', canManage: true, displayName: 'Active Member', initials: 'AM', avatarUrl: null, joinedAt: Timestamp.fromMillis(1) })
+      await setDoc(doc(db, 'groups/group-a/members/friend'), { status: 'active', role: 'member', canManage: false, displayName: 'Friend', initials: 'F', avatarUrl: null, joinedAt: Timestamp.fromMillis(1) })
+      await setDoc(doc(db, 'users/active/groups/group-a'), { groupId: 'group-a', status: 'active', contextLabel: 'Friend', joinedAt: Timestamp.fromMillis(1), updatedAt: Timestamp.fromMillis(1) })
+      await setDoc(doc(db, 'users/friend/groups/group-a'), { groupId: 'group-a', status: 'active', contextLabel: 'Active Member', joinedAt: Timestamp.fromMillis(1), updatedAt: Timestamp.fromMillis(1) })
+      await setDoc(doc(db, `groups/group-a/expenses/${expense.id}`), expense)
+      await setDoc(doc(db, `groups/group-a/expenses/${expense.id}/revisions/revision-a`), revision)
+      await setDoc(doc(db, `groups/group-a/activity/activity-${'a'.repeat(48)}`), activity)
+      await setDoc(doc(db, `groups/group-a/comments/comment-${'b'.repeat(48)}`), comment)
+      await setDoc(doc(db, `groups/group-a/settlements/${settlement.settlementId}`), settlement)
+      await setDoc(doc(db, `groups/group-a/recurringTemplates/${recurring.id}`), recurring)
+      await setDoc(doc(db, 'groups/group-a/settings/defaults'), settings)
+      await setDoc(doc(db, `invitations/${invitationId}`), {
+        schemaVersion: 1, invitationId, tokenHash: invitationId, groupId: 'group-a', groupKind: 'friendship', groupName: 'Shared group',
+        status: 'active', createdByUid: 'active', createdByName: 'Active Member', targetEmail: 'friend@example.com',
+        createdAt: Timestamp.fromMillis(1), updatedAt: Timestamp.fromMillis(1), expiresAt: Timestamp.fromMillis(Date.now() + 86_400_000),
+      })
+      await setDoc(doc(db, 'users/active/settings/notifications'), { emailEnabled: true, pushEnabled: true })
+      await setDoc(doc(db, 'users/friend/settings/notifications'), { emailEnabled: true, pushEnabled: true })
+    })
+
+    const owner = environment.authenticatedContext('active', { email: 'active@example.com', email_verified: true }).firestore()
+    const friend = environment.authenticatedContext('friend', { email: 'friend@example.com', email_verified: true }).firestore()
+    const ownerProfile = (await getDoc(doc(owner, 'users/active'))).data()!
+    await assertSucceeds(setDoc(doc(owner, 'users/active'), deletingProfile(ownerProfile.createdAt, ['group-a'], 'deleting')))
+
+    await assertFails(updateDoc(doc(owner, `groups/group-a/expenses/${expense.id}`), { total: { currency: 'USD', minorAmount: 1 } }))
+    await assertFails(updateDoc(doc(owner, 'groups/group-a/members/friend'), { accountStatus: 'deleted' }))
+    await assertFails(deleteDoc(doc(owner, 'users/friend/settings/notifications')))
+
+    await assertSucceeds(setDoc(doc(owner, `groups/group-a/expenses/${expense.id}`), {
+      ...(await getDoc(doc(owner, `groups/group-a/expenses/${expense.id}`))).data()!,
+      createdBy: { id: 'active', displayName: 'Deleted user' }, updatedBy: { id: 'active', displayName: 'Deleted user' },
+    }))
+    const savedRevision = (await getDoc(doc(owner, `groups/group-a/expenses/${expense.id}/revisions/revision-a`))).data()!
+    await assertSucceeds(setDoc(doc(owner, `groups/group-a/expenses/${expense.id}/revisions/revision-a`), {
+      ...savedRevision,
+      actor: { id: 'active', displayName: 'Deleted user' },
+      expense: { ...(savedRevision.expense as Record<string, unknown>), createdBy: { id: 'active', displayName: 'Deleted user' }, updatedBy: { id: 'active', displayName: 'Deleted user' } },
+    }))
+    await assertSucceeds(setDoc(doc(owner, `groups/group-a/activity/activity-${'a'.repeat(48)}`), {
+      ...(await getDoc(doc(owner, `groups/group-a/activity/activity-${'a'.repeat(48)}`))).data()!, actor: { id: 'active', displayName: 'Deleted user' },
+    }))
+    await assertSucceeds(setDoc(doc(owner, `groups/group-a/comments/comment-${'b'.repeat(48)}`), {
+      ...(await getDoc(doc(owner, `groups/group-a/comments/comment-${'b'.repeat(48)}`))).data()!,
+      author: { id: 'active', displayName: 'Deleted user' }, body: 'Comment removed with deleted account', attachmentRefs: [],
+    }))
+    await assertSucceeds(setDoc(doc(owner, `groups/group-a/settlements/${settlement.settlementId}`), {
+      ...(await getDoc(doc(owner, `groups/group-a/settlements/${settlement.settlementId}`))).data()!,
+      createdBy: { id: 'active', displayName: 'Deleted user' },
+      void: { ...settlement.void, actor: { id: 'active', displayName: 'Deleted user' } },
+    }))
+    await assertSucceeds(setDoc(doc(owner, `groups/group-a/recurringTemplates/${recurring.id}`), {
+      ...(await getDoc(doc(owner, `groups/group-a/recurringTemplates/${recurring.id}`))).data()!,
+      status: 'cancelled', revision: 2, updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Deleted user' },
+      createdBy: { id: 'active', displayName: 'Deleted user' }, accountDeletionId: 'account-delete-12345678', accountDeletedUid: 'active',
+    }))
+    await assertSucceeds(setDoc(doc(owner, 'groups/group-a/settings/defaults'), {
+      schemaVersion: 1, groupId: 'group-a', revision: 3, simplifyDebtsEnabled: true,
+      lastCommandKind: settings.lastCommandKind, lastOperationId: settings.lastOperationId,
+      lastRequestFingerprint: settings.lastRequestFingerprint, lastResourceToken: settings.lastResourceToken,
+      updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Deleted user' },
+      accountDeletionId: 'account-delete-12345678', accountDeletedUid: 'active',
+    }))
+
+    const continuity = writeBatch(owner)
+    continuity.set(doc(owner, 'groups/group-a'), {
+      ...(await getDoc(doc(owner, 'groups/group-a'))).data()!, memberIds: ['friend'], createdByUid: 'friend', updatedAt: serverTimestamp(),
+      lastAccountDeletionId: 'account-delete-12345678', lastDeletedAccountUid: 'active',
+    })
+    continuity.set(doc(owner, 'groups/group-a/members/active'), {
+      ...(await getDoc(doc(owner, 'groups/group-a/members/active'))).data()!, status: 'removed', role: 'member', canManage: false,
+      displayName: 'Deleted user', initials: 'DU', avatarUrl: null, accountStatus: 'deleted',
+      accountDeletionId: 'account-delete-12345678', accountDeletedAt: serverTimestamp(),
+    })
+    continuity.set(doc(owner, 'groups/group-a/members/friend'), {
+      ...(await getDoc(doc(owner, 'groups/group-a/members/friend'))).data()!, role: 'owner', canManage: true,
+      accountDeletionPromotionId: 'account-delete-12345678', accountDeletionPromotedAt: serverTimestamp(),
+    })
+    continuity.set(doc(owner, 'users/friend/groups/group-a'), {
+      ...(await getDoc(doc(friend, 'users/friend/groups/group-a'))).data()!, contextLabel: 'Deleted user', updatedAt: serverTimestamp(),
+      accountDeletionId: 'account-delete-12345678', accountDeletedUid: 'active',
+    })
+    await assertSucceeds(continuity.commit())
+
+    await assertSucceeds(deleteDoc(doc(owner, 'users/active/groups/group-a')))
+    await assertSucceeds(deleteDoc(doc(owner, 'users/active/settings/notifications')))
+    await assertSucceeds(deleteDoc(doc(owner, `invitations/${invitationId}`)))
+    const deleting = (await getDoc(doc(owner, 'users/active'))).data()!
+    await assertSucceeds(setDoc(doc(owner, 'users/active'), deletingProfile(deleting.createdAt, ['group-a'], 'prepared', deleting.deletionRequestedAt)))
+
+    const savedExpense = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}`))).data()!
+    expect(savedExpense.total).toEqual({ currency: 'USD', minorAmount: 1000 })
+    expect(savedExpense.createdBy).toEqual({ id: 'active', displayName: 'Deleted user' })
+    expect((await getDoc(doc(friend, 'groups/group-a/members/active'))).data()).toMatchObject({ status: 'removed', displayName: 'Deleted user', accountStatus: 'deleted' })
+    expect((await getDoc(doc(friend, 'users/friend/groups/group-a'))).data()).toMatchObject({ contextLabel: 'Deleted user' })
+    expect((await getDoc(doc(friend, `groups/group-a/recurringTemplates/${recurring.id}`))).data()).toMatchObject({ status: 'cancelled' })
+    expect((await getDoc(doc(friend, 'groups/group-a/settings/defaults'))).data()).not.toHaveProperty('defaultSplit')
+    await assertFails(getDoc(doc(owner, 'groups/group-a')))
+  })
+
   emulatorIt('versions notification preferences privately and denies cross-account access', async () => {
     const owner = environment.authenticatedContext('active').firestore()
     const outsider = environment.authenticatedContext('outsider').firestore()
@@ -725,6 +885,13 @@ describe('Firestore rules in the emulator', () => {
 
 function profile(displayName: string, initials: string): Record<string, unknown> {
   return { displayName, initials, avatarUrl: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
+}
+
+function deletingProfile(createdAt: unknown, deletionGroupIds: readonly string[], deletionStatus: 'deleting' | 'prepared', deletionRequestedAt: unknown = serverTimestamp()): Record<string, unknown> {
+  return {
+    displayName: 'Deleted user', initials: 'DU', avatarUrl: null, createdAt, updatedAt: serverTimestamp(),
+    deletionRequestedAt, deletionStatus, deletionId: 'account-delete-12345678', deletionGroupIds,
+  }
 }
 
 function commitSparkProfileUpdate(source: unknown, uid: string, groupId: string, displayName: string, initials: string, counterpartUid?: string): Promise<void> {

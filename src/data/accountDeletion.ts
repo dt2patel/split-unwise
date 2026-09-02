@@ -107,7 +107,7 @@ export function buildDeletedMemberDocument(
   const { id: _id, ...member } = current
   return {
     ...member,
-    status: 'active',
+    status: 'removed',
     role: 'member',
     canManage: false,
     displayName: DELETED_ACCOUNT_NAME,
@@ -144,6 +144,7 @@ export function buildDeletionGroupContinuity(
   const deletedMember = buildDeletedMemberDocument(deletingMember, uid, deletionId, committedAt)
   const baseGroup: Record<string, unknown> = {
     ...group,
+    memberIds: memberIds.filter((memberId) => memberId !== uid),
     updatedAt: committedAt,
     lastAccountDeletionId: deletionId,
     lastDeletedAccountUid: uid,
