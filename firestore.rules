@@ -1334,7 +1334,7 @@ service cloud.firestore {
     }
     function validAccountDeletionInvitation(data) {
       return accountDeleting() && (
-        data.createdByUid == request.auth.uid
+        data.get('createdByUid', '') == request.auth.uid
         || ('targetEmail' in data && data.targetEmail != null
           && request.auth.token.email_verified == true && request.auth.token.email == data.targetEmail)
       );
@@ -1607,9 +1607,9 @@ service cloud.firestore {
         || accountDeletionGroupRead(groupId);
       allow list, delete: if false;
       allow create: if validNewGroup(groupId, request.resource.data) && ownerBundleExists(groupId);
+      allow update: if validGroupJoin(groupId) || validGroupMemberRemoval(groupId) || validGroupLifecycleUpdate(groupId);
       allow update: if 'lastAccountDeletionId' in request.resource.data
-        ? validAccountDeletionGroup(groupId, request.resource.data)
-        : (validGroupJoin(groupId) || validGroupMemberRemoval(groupId) || validGroupLifecycleUpdate(groupId));
+        && validAccountDeletionGroup(groupId, request.resource.data);
 
       match /members/{uid} {
         allow get: if groupMember(groupId) || accountDeletionGroupRead(groupId);

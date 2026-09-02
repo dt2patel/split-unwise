@@ -7,6 +7,7 @@ import { getSplitUnwiseFirebaseApp, resetFirebaseBootstrapForTesting } from '../
 import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkGroup, createSparkInvitation, inspectSparkInvitation, synchronizeFirebaseProfile } from '../firebaseSparkMutations'
 import type { FirebaseConfiguration } from '../firebase'
 import { createFirebaseRepository } from '../firebaseRepository'
+import { prepareFirebaseAccountDeletion } from '../firebaseAccountDeletion'
 
 const emulatorEnabled = Boolean(process.env.FIRESTORE_EMULATOR_HOST && process.env.FIREBASE_AUTH_EMULATOR_HOST)
 const emulatorIt = emulatorEnabled ? it : it.skip
@@ -68,6 +69,108 @@ describe('Firebase Spark two-account flow', () => {
     ]))
     expect((await getDoc(doc(getFirestore(app), `groups/${created.groupId}`))).exists()).toBe(true)
   }, 30_000)
+
+  emulatorIt('prepares a shared account deletion without changing the remaining member ledger', async () => {
+    const auth = getAuth(app)
+    const db = getFirestore(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `deletion-owner-${suffix}@example.com`
+    const friendEmail = `deletion-friend-${suffix}@example.com`
+    const extraEmail = `deletion-extra-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Deletion Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `deletion-${suffix}`, name: 'Deletion Ledger', currency: 'USD' })
+    const invitation = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    const token = new URL(invitation.link).hash.slice('#token='.length)
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Deletion Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, invitation.invitationId, token)
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+    const ownerRepository = createFirebaseRepository(configuration, owner.user.uid)
+    await ownerRepository.groups.setDefaultSplit({
+      kind: 'group.default-split', operationId: `deletion-default-${suffix}`, groupId: created.groupId, expectedRevision: 1,
+      defaultSplit: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] },
+    })
+    await ownerRepository.notifications.updatePreferences({
+      kind: 'notification.preferences', operationId: `deletion-preferences-${suffix}`,
+      preferences: { emailEnabled: false, pushEnabled: true },
+    })
+    const expense = await ownerRepository.expenses.add({
+      kind: 'expense.add', operationId: `deletion-expense-${suffix}`, groupId: created.groupId,
+      description: 'Recurring deletion dinner', date: '2026-09-01',
+      total: { currency: 'USD', minorAmount: 2400 },
+      payments: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2400 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1200 } },
+        { participantId: friend.user.uid, money: { currency: 'USD', minorAmount: 1200 } },
+      ],
+      category: 'Food', splitMethod: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+      recurrence: { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' },
+    })
+    if (expense.status !== 'saved' || !expense.expense.recurringTemplateId) throw new Error('Expected deletion source expense to save')
+    const comment = await ownerRepository.comments.add({
+      kind: 'comment.add', operationId: `deletion-comment-${suffix}`, groupId: created.groupId,
+      expenseId: expense.expense.id, body: 'Owner private comment', attachmentRefs: [],
+    })
+    if (comment.status !== 'saved') throw new Error('Expected deletion comment to save')
+    const settlement = await ownerRepository.settlements.record({
+      kind: 'settlement.record', operationId: `deletion-settlement-${suffix}`, groupId: created.groupId, expectedBalanceRevision: 1,
+      basis: { kind: 'simplified', senderId: friend.user.uid, recipientId: owner.user.uid, currency: 'USD', debtMinor: 1200 },
+      money: { currency: 'USD', minorAmount: 400 }, method: 'cash', occurredOn: '2026-09-01', outsidePaymentConfirmed: true,
+    })
+    if (settlement.status !== 'saved') throw new Error('Expected deletion settlement to save')
+    const activeInvitation = await createSparkInvitation(configuration, {
+      groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app', targetEmail: extraEmail,
+    })
+
+    const expensePath = `groups/${created.groupId}/expenses/${expense.expense.id}`
+    const settlementPath = `groups/${created.groupId}/settlements/${settlement.settlement.settlementId}`
+    const balancePath = `groups/${created.groupId}/balance/current`
+    const [beforeExpense, beforeSettlement, beforeBalance] = await Promise.all([
+      getDoc(doc(db, expensePath)), getDoc(doc(db, settlementPath)), getDoc(doc(db, balancePath)),
+    ])
+    const preservedExpenseLedger = pick(beforeExpense.data()!, ['total', 'payments', 'allocations'])
+    const preservedSettlementLedger = pick(beforeSettlement.data()!, ['money', 'senderId', 'recipientId', 'basis'])
+    const preservedBalance = beforeBalance.data()
+
+    const prepared = await prepareFirebaseAccountDeletion(configuration, { uid: owner.user.uid }, app)
+    expect(prepared).toMatchObject({ phase: 'prepared', groupsProcessed: 1 })
+    expect((await getDoc(doc(db, `users/${owner.user.uid}`))).data()).toMatchObject({
+      displayName: 'Deleted user', initials: 'DU', avatarUrl: null, deletionStatus: 'prepared', deletionId: prepared.deletionId,
+    })
+    await expect(getDoc(doc(db, `groups/${created.groupId}`))).rejects.toBeDefined()
+    await expect(prepareFirebaseAccountDeletion(configuration, { uid: owner.user.uid }, app)).resolves.toEqual({
+      deletionId: prepared.deletionId, phase: 'prepared', groupsProcessed: 0,
+      sharedDocumentsChanged: 0, privateDocumentsDeleted: 0, invitationsDeleted: 0,
+    })
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    expect(pick((await getDoc(doc(db, expensePath))).data()!, ['total', 'payments', 'allocations'])).toEqual(preservedExpenseLedger)
+    expect((await getDoc(doc(db, expensePath))).data()?.createdBy).toEqual({ id: owner.user.uid, displayName: 'Deleted user' })
+    expect(pick((await getDoc(doc(db, settlementPath))).data()!, ['money', 'senderId', 'recipientId', 'basis'])).toEqual(preservedSettlementLedger)
+    expect((await getDoc(doc(db, balancePath))).data()).toEqual(preservedBalance)
+    expect((await getDoc(doc(db, `groups/${created.groupId}/members/${owner.user.uid}`))).data()).toMatchObject({
+      status: 'removed', displayName: 'Deleted user', initials: 'DU', accountStatus: 'deleted',
+    })
+    expect((await getDoc(doc(db, `groups/${created.groupId}/recurringTemplates/${expense.expense.recurringTemplateId}`))).data()).toMatchObject({ status: 'cancelled' })
+    expect((await getDoc(doc(db, `groups/${created.groupId}/settings/defaults`))).data()).not.toHaveProperty('defaultSplit')
+    expect((await getDoc(doc(db, `groups/${created.groupId}/comments/${comment.comment.commentId}`))).data()).toMatchObject({
+      author: { id: owner.user.uid, displayName: 'Deleted user' }, body: 'Comment removed with deleted account', attachmentRefs: [],
+    })
+    expect((await getDoc(doc(db, `invitations/${activeInvitation.invitationId}`))).exists()).toBe(false)
+    expect((await getDoc(doc(db, `users/${friend.user.uid}/groups/${created.groupId}`))).data()).toMatchObject({ contextLabel: 'Deletion Ledger' })
+  }, 45_000)
 
   emulatorIt('persists replay-safe Pro defaults and member-controlled debt simplification for both accounts', async () => {
     const auth = getAuth(app)
@@ -1002,3 +1105,7 @@ describe('Firebase Spark two-account flow', () => {
     await expect(friendRepository.settlements.listForGroup(created.groupId)).resolves.toEqual(beforeSettlements)
   }, 45_000)
 })
+
+function pick(source: Readonly<Record<string, unknown>>, fields: readonly string[]): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(fields.map((field) => [field, source[field]]))
+}

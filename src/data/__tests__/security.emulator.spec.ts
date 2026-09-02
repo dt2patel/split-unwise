@@ -106,10 +106,11 @@ describe('Firestore rules in the emulator', () => {
     const revision = sparkExpenseVersion(expense, 'expense-revision-a', 'updated', ownerActor)
     const activity = sparkExpenseActivity(expense, 'expense.created', Timestamp.fromDate(new Date('2026-09-01T12:00:00.000Z')))
     const comment = sparkComment('b'.repeat(48), String(expense.id), ownerActor)
-    const settlement = {
+    const settlement: Record<string, unknown> = {
       ...sparkSettlement('c'.repeat(48), ownerActor), revision: 2,
       void: { operationId: 'settlement-void-c', reason: 'Duplicate', actor: ownerActor, createdAt: Timestamp.fromDate(new Date('2026-09-01T13:00:00.000Z')), revision: 2 },
     }
+    const settlementId = String(settlement.settlementId)
     const recurringSource = sparkRecurringSource('d')
     const recurring = sparkRecurringTemplate(recurringSource, '2026-10-01')
     const settings = sparkSettings(2, 'group.default-split', 'default-split-a', 'e'.repeat(48), ownerActor, {
@@ -130,7 +131,7 @@ describe('Firestore rules in the emulator', () => {
       await setDoc(doc(db, `groups/group-a/expenses/${expense.id}/revisions/revision-a`), revision)
       await setDoc(doc(db, `groups/group-a/activity/activity-${'a'.repeat(48)}`), activity)
       await setDoc(doc(db, `groups/group-a/comments/comment-${'b'.repeat(48)}`), comment)
-      await setDoc(doc(db, `groups/group-a/settlements/${settlement.settlementId}`), settlement)
+      await setDoc(doc(db, `groups/group-a/settlements/${settlementId}`), settlement)
       await setDoc(doc(db, `groups/group-a/recurringTemplates/${recurring.id}`), recurring)
       await setDoc(doc(db, 'groups/group-a/settings/defaults'), settings)
       await setDoc(doc(db, `invitations/${invitationId}`), {
@@ -168,10 +169,10 @@ describe('Firestore rules in the emulator', () => {
       ...(await getDoc(doc(owner, `groups/group-a/comments/comment-${'b'.repeat(48)}`))).data()!,
       author: { id: 'active', displayName: 'Deleted user' }, body: 'Comment removed with deleted account', attachmentRefs: [],
     }))
-    await assertSucceeds(setDoc(doc(owner, `groups/group-a/settlements/${settlement.settlementId}`), {
-      ...(await getDoc(doc(owner, `groups/group-a/settlements/${settlement.settlementId}`))).data()!,
+    await assertSucceeds(setDoc(doc(owner, `groups/group-a/settlements/${settlementId}`), {
+      ...(await getDoc(doc(owner, `groups/group-a/settlements/${settlementId}`))).data()!,
       createdBy: { id: 'active', displayName: 'Deleted user' },
-      void: { ...settlement.void, actor: { id: 'active', displayName: 'Deleted user' } },
+      void: { ...(settlement.void as Record<string, unknown>), actor: { id: 'active', displayName: 'Deleted user' } },
     }))
     await assertSucceeds(setDoc(doc(owner, `groups/group-a/recurringTemplates/${recurring.id}`), {
       ...(await getDoc(doc(owner, `groups/group-a/recurringTemplates/${recurring.id}`))).data()!,
