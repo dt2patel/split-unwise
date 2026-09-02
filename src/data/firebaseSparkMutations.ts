@@ -188,7 +188,6 @@ export function buildSparkExpenseMutationRecord(
   if (snapshot.deletedAt) throw new Error('Expense was already deleted.')
   if (snapshot.revision !== parsed.expectedRevision) throw new Error('Expense changed remotely. Reload it before trying again.')
   const creator = actorFromRecord(head.createdBy, 'createdBy')
-  if (creator.id !== authorization.actor.id && !authorization.canManage) throw new Error('Only the expense author or an active group manager can change it.')
   if (head.id !== parsed.expenseId || head.groupId !== parsed.groupId || current.id !== parsed.expenseId || current.groupId !== parsed.groupId) throw new Error('Spark expense document identity is invalid.')
   const creationOperationId = strictInternalString(head.operationId, 'operationId')
   const creationFingerprint = strictHex(head.requestFingerprint, 64, 'request fingerprint')

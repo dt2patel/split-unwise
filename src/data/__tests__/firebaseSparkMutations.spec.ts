@@ -390,7 +390,7 @@ describe('Firebase Spark mutations', () => {
     })
   })
 
-  it('rejects stale or unauthorized Spark mutations before constructing an audit record', () => {
+  it('rejects stale mutations while allowing another active member to construct an attributed audit record', () => {
     const add: ExpenseAddCommand = {
       kind: 'expense.add', operationId: 'create-owned', groupId: 'group-a', description: 'Owned expense', date: '2026-09-01',
       total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'owner', money: { currency: 'USD', minorAmount: 1000 } }],
@@ -404,7 +404,11 @@ describe('Firebase Spark mutations', () => {
     const buildMutation = (sparkMutations as unknown as { buildSparkExpenseMutationRecord: SparkMutationBuilder }).buildSparkExpenseMutationRecord
 
     expect(() => buildMutation(stale, current, current, { actor: creator, canManage: false }, { userId: 'owner', operationId: stale.operationId, kind: stale.kind, groupId: 'group-a', requestFingerprint: '3'.repeat(64), resourceId: `operation-${'4'.repeat(48)}` }, 'deleted')).toThrow(/changed remotely/i)
-    expect(() => buildMutation(friendCommand, current, current, { actor: { id: 'friend', displayName: 'Friend Account' }, canManage: false }, { userId: 'friend', operationId: friendCommand.operationId, kind: friendCommand.kind, groupId: 'group-a', requestFingerprint: '5'.repeat(64), resourceId: `operation-${'6'.repeat(48)}` }, 'deleted')).toThrow(/author|manager/i)
+    const collaborator = buildMutation(friendCommand, current, current, { actor: { id: 'friend', displayName: 'Friend Account' }, canManage: false }, { userId: 'friend', operationId: friendCommand.operationId, kind: friendCommand.kind, groupId: 'group-a', requestFingerprint: '5'.repeat(64), resourceId: `operation-${'6'.repeat(48)}` }, 'deleted')
+    expect(collaborator.revisionDocument).toMatchObject({
+      action: 'deleted', actor: { id: 'friend', displayName: 'Friend Account' },
+      expense: { createdBy: creator, updatedBy: { id: 'friend', displayName: 'Friend Account' } },
+    })
     expect(() => buildMutation({ ...friendCommand, operationId: 'manager-delete' }, current, current, { actor: { id: 'manager', displayName: 'Manager Account' }, canManage: true }, { userId: 'manager', operationId: 'manager-delete', kind: friendCommand.kind, groupId: 'group-a', requestFingerprint: '7'.repeat(64), resourceId: `operation-${'8'.repeat(48)}` }, 'deleted')).not.toThrow()
   })
 

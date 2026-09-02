@@ -431,7 +431,7 @@ describe('Firebase Spark two-account flow', () => {
     })
 
     const editCommand = {
-      kind: 'expense.edit' as const, operationId: `edit-${suffix}`, groupId: created.groupId, expenseId: first.expense.id, expectedRevision: 1,
+      kind: 'expense.edit' as const, operationId: `friend-edit-${suffix}`, groupId: created.groupId, expenseId: first.expense.id, expectedRevision: 1,
       draft: {
         groupId: created.groupId, description: 'Shared dinner and dessert', date: '2026-09-01',
         total: { currency: 'USD' as const, minorAmount: 3000 },
@@ -443,15 +443,21 @@ describe('Firebase Spark two-account flow', () => {
         category: 'Food', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
       },
     }
-    await expect(friendRepository.expenses.edit({ ...editCommand, operationId: `friend-edit-${suffix}` })).rejects.toThrow(/author|manager/i)
+    const edited = await friendRepository.expenses.edit(editCommand)
+    const editReplay = await friendRepository.expenses.edit(editCommand)
+    expect(edited).toMatchObject({
+      status: 'saved',
+      expense: {
+        id: first.expense.id, description: 'Shared dinner and dessert', revision: 2,
+        createdBy: { id: owner.user.uid, displayName: 'Ledger Owner' },
+        updatedBy: { id: friend.user.uid, displayName: 'Ledger Friend' },
+      },
+    })
+    expect(edited.status === 'saved' ? edited.expense : undefined).not.toHaveProperty('reimbursement')
+    expect(editReplay).toEqual(edited)
 
     await signOut(auth)
     await signInWithEmailAndPassword(auth, ownerEmail, password)
-    const edited = await ownerRepository.expenses.edit(editCommand)
-    const editReplay = await ownerRepository.expenses.edit(editCommand)
-    expect(edited).toMatchObject({ status: 'saved', expense: { id: first.expense.id, description: 'Shared dinner and dessert', revision: 2 } })
-    expect(edited.status === 'saved' ? edited.expense : undefined).not.toHaveProperty('reimbursement')
-    expect(editReplay).toEqual(edited)
     await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
       balanceRevision: 2,
       simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 1500 } }],
@@ -496,21 +502,22 @@ describe('Firebase Spark two-account flow', () => {
       expect.objectContaining({ commentId: addedComment.comment.commentId, deletedAt: expect.any(String) }),
     ])
 
-    await signOut(auth)
-    await signInWithEmailAndPassword(auth, ownerEmail, password)
-
     const deleteCommand = { kind: 'expense.delete' as const, operationId: `delete-${suffix}`, groupId: created.groupId, expenseId: first.expense.id, expectedRevision: 2 }
-    const removed = await ownerRepository.expenses.delete(deleteCommand)
-    const deleteReplay = await ownerRepository.expenses.delete(deleteCommand)
+    const removed = await friendRepository.expenses.delete(deleteCommand)
+    const deleteReplay = await friendRepository.expenses.delete(deleteCommand)
     expect(removed).toMatchObject({ status: 'saved', tombstone: { id: first.expense.id, groupId: created.groupId, revision: 3 } })
     expect(deleteReplay).toEqual(removed)
-    await expect(ownerRepository.expenses.listForGroup(created.groupId)).resolves.toEqual([])
-    await expect(ownerRepository.expenses.getById(created.groupId, first.expense.id)).resolves.toMatchObject({ revision: 3, deletedAt: expect.any(String) })
-    await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({ balanceRevision: 3, pairwise: [], simplified: [] })
-    await expect(ownerRepository.expenses.listRevisions(created.groupId, first.expense.id)).resolves.toMatchObject([
-      { revision: 1, action: 'created' }, { revision: 2, action: 'updated' }, { revision: 3, action: 'deleted' },
+    await expect(friendRepository.expenses.listForGroup(created.groupId)).resolves.toEqual([])
+    await expect(friendRepository.expenses.getById(created.groupId, first.expense.id)).resolves.toMatchObject({
+      revision: 3, deletedAt: expect.any(String), createdBy: { id: owner.user.uid }, updatedBy: { id: friend.user.uid },
+    })
+    await expect(friendRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({ balanceRevision: 3, pairwise: [], simplified: [] })
+    await expect(friendRepository.expenses.listRevisions(created.groupId, first.expense.id)).resolves.toMatchObject([
+      { revision: 1, action: 'created', actor: { id: owner.user.uid } },
+      { revision: 2, action: 'updated', actor: { id: friend.user.uid } },
+      { revision: 3, action: 'deleted', actor: { id: friend.user.uid } },
     ])
-    const expenseActivity = (await ownerRepository.activity.listForGroup(created.groupId))
+    const expenseActivity = (await friendRepository.activity.listForGroup(created.groupId))
       .filter(({ kind }) => kind === 'expense.created' || kind === 'expense.updated' || kind === 'expense.deleted')
       .map(({ kind, operationId: activityOperationId, expenseId, revision, subject }) => ({ kind, operationId: activityOperationId, expenseId, revision, subject }))
     expect(expenseActivity).toEqual([
