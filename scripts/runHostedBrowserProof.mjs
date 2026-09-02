@@ -34,7 +34,7 @@ const intentionalHorizontalScrollHosts = new Set()
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, persisted eight-locale language selection, opt-in payment-handle persistence and real PayPal/Venmo handoffs, native group-creation card modal with built-in covers, authenticated mobile group, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, persisted eight-locale language selection, opt-in payment-handle persistence and real PayPal/Venmo handoffs, native group-creation card modal with built-in covers, authenticated mobile group, cold offline deep-route reload with cached expense data and online recovery, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -151,6 +151,7 @@ async function verifyAuthenticatedMobileJourney() {
     await persistedExpense.getByText(browserExpenseDescription, { exact: true }).waitFor({ state: 'visible' })
     const restoredOfflineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
     if (await restoredOfflineReadyDismiss.isVisible()) await restoredOfflineReadyDismiss.click()
+    await verifyColdOfflineGroupReload(context, page, browserExpenseDescription)
     await verifyExpenseMove(page, persistedExpense, browserExpenseDescription)
     await verifyReimbursementWorkflow(page)
     await verifySwipeBackGesture(context, page)
@@ -180,6 +181,60 @@ async function verifyAuthenticatedMobileJourney() {
     await browser.close()
     await rm(receiptFixtureDirectory, { recursive: true, force: true })
   }
+}
+
+async function verifyColdOfflineGroupReload(context, page, expenseDescription) {
+  const install = await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready
+    const cacheNames = await caches.keys()
+    return {
+      active: Boolean(registration.active),
+      controlled: Boolean(navigator.serviceWorker.controller),
+      cacheNames,
+    }
+  })
+  if (!install.active || !install.controlled || install.cacheNames.length === 0) {
+    throw new Error(`Hosted offline installation was not ready before the cold reload: ${JSON.stringify(install)}`)
+  }
+
+  const cdp = await context.newCDPSession(page)
+  await setBrowserOffline(context, cdp, true)
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })
+    if (await page.evaluate(() => navigator.onLine)) throw new Error('Hosted browser did not enter offline mode.')
+    await page.locator('.app-status').getByText('Offline', { exact: true }).waitFor({ state: 'visible' })
+    const offlineGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+    await offlineGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
+    await offlineGroup.locator('.expense-row', { hasText: expenseDescription }).waitFor({ state: 'visible', timeout: 120_000 })
+    if (await page.getByText('Split Unwise couldn\u2019t open', { exact: true }).isVisible()) throw new Error('Hosted cold offline reload reached the startup fallback.')
+    await assertNoHorizontalOverflow(page, 'cold offline group at 390px')
+  } finally {
+    await setBrowserOffline(context, cdp, false)
+    await cdp.detach()
+  }
+
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })
+  const reconnectedGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+  await reconnectedGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
+  await reconnectedGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: expenseDescription }).waitFor({ state: 'visible', timeout: 120_000 })
+}
+
+async function setBrowserOffline(context, cdp, offline) {
+  await Promise.all([
+    context.setOffline(offline),
+    cdp.send('Network.overrideNetworkState', {
+      offline,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    }),
+  ])
+  const navigatorState = await cdp.send('Runtime.evaluate', {
+    expression: `new Promise(requestAnimationFrame).then(() => navigator.onLine === ${String(!offline)})`,
+    awaitPromise: true,
+    returnByValue: true,
+  })
+  if (navigatorState.result.value !== true) throw new Error(`Chrome did not expose the expected ${offline ? 'offline' : 'online'} navigator state.`)
 }
 
 async function verifyPaymentHandleProfile(page) {
@@ -318,10 +373,29 @@ async function assertNoHorizontalOverflow(page, label) {
     if (!visible) return undefined
     const scrollElement = await ionContent.getScrollElement()
     const testId = ionContent.closest('[data-testid]')?.getAttribute('data-testid')
+    const hostRect = scrollElement.getBoundingClientRect()
+    const offenders = [...scrollElement.querySelectorAll('*')].map((element) => {
+      const elementRect = element.getBoundingClientRect()
+      const overflow = Math.max(
+        element.scrollWidth - element.clientWidth,
+        elementRect.right - hostRect.right,
+        hostRect.left - elementRect.left,
+      )
+      if (overflow <= 1) return undefined
+      return {
+        element: element.tagName.toLowerCase(),
+        className: typeof element.className === 'string' ? element.className.slice(0, 120) : '',
+        testId: element.getAttribute('data-testid') ?? undefined,
+        overflow: Math.round(overflow),
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      }
+    }).filter(Boolean).sort((left, right) => right.overflow - left.overflow).slice(0, 8)
     return {
       id: testId ? `testid:${testId}` : `ion-content:${index}`,
       scrollWidth: scrollElement.scrollWidth,
       clientWidth: scrollElement.clientWidth,
+      offenders,
     }
   })))).filter(Boolean)
   const overflowingHosts = scrollHosts.filter((host) => host.scrollWidth > host.clientWidth + 1 && !intentionalHorizontalScrollHosts.has(host.id))

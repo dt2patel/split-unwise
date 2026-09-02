@@ -1,5 +1,6 @@
 import type { FirebaseApp, FirebaseOptions } from 'firebase/app'
 import type { Auth } from 'firebase/auth'
+import type { Firestore } from 'firebase/firestore'
 import type { FirebaseConfiguration } from './firebase'
 
 export const SPLIT_UNWISE_FIREBASE_APP_NAME = 'split-unwise'
@@ -7,6 +8,7 @@ export const SPLIT_UNWISE_FIREBASE_APP_NAME = 'split-unwise'
 let activeConfiguration: FirebaseConfiguration | undefined
 let appPromise: Promise<FirebaseApp> | undefined
 let authPromise: Promise<Auth> | undefined
+let firestorePromise: Promise<Firestore> | undefined
 let appCheckSiteKey: string | undefined
 let appCheckPromise: Promise<void> | undefined
 
@@ -33,6 +35,16 @@ export function getSplitUnwiseFirebaseAuth(configuration: FirebaseConfiguration)
   ]).then(([app, firebase, { Capacitor }]) => Capacitor.isNativePlatform()
     ? firebase.initializeAuth(app, { persistence: firebase.browserLocalPersistence })
     : firebase.getAuth(app))
+}
+
+/** Enables the SDK's durable multi-tab cache before any repository obtains Firestore. */
+export function getSplitUnwiseFirebaseFirestore(configuration: FirebaseConfiguration): Promise<Firestore> {
+  return firestorePromise ??= Promise.all([
+    getSplitUnwiseFirebaseApp(configuration),
+    import('firebase/firestore'),
+  ]).then(([app, firestore]) => firestore.initializeFirestore(app, {
+    localCache: firestore.persistentLocalCache({ tabManager: firestore.persistentMultipleTabManager() }),
+  }))
 }
 
 /** App Check is initialized on the same named app before any protected callable is used. */
@@ -79,6 +91,7 @@ export function resetFirebaseBootstrapForTesting(): void {
   activeConfiguration = undefined
   appPromise = undefined
   authPromise = undefined
+  firestorePromise = undefined
   appCheckSiteKey = undefined
   appCheckPromise = undefined
 }

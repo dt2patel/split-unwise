@@ -8,6 +8,14 @@ const core: PublicEnvironment = {
   VITE_FIREBASE_APP_ID: '1:123456789:web:abcdef123456',
 }
 
+const hostedInit = {
+  apiKey: 'AIzaSyExampleKey',
+  authDomain: 'split-unwise-aditya.firebaseapp.com',
+  projectId: 'split-unwise-aditya',
+  appId: '1:906824460273:web:ac56072d30a1dd5e72c650',
+  messagingSenderId: '906824460273',
+}
+
 describe('runtime configuration', () => {
   it('labels a zero-variable runtime as demo', () => {
     expect(readRuntimeConfiguration({})).toMatchObject({ kind: 'demo', label: 'Demo mode', capabilities: { auth: 'demo', apple: 'unavailable' } })
@@ -79,5 +87,54 @@ describe('runtime configuration', () => {
     await expect(resolveRuntimeConfiguration(core, { nativeUiTestDemo: false })).resolves.toMatchObject({
       kind: 'firebase', firebase: { projectId: 'split-unwise' },
     })
+  })
+
+  it('reuses a validated same-host Firebase configuration only for a cold offline start', async () => {
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+    }
+    const hostedLocation = { hostname: 'split-unwise-aditya.web.app', protocol: 'https:' }
+
+    await expect(resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: hostedLocation,
+      online: true,
+      storage,
+      fetch: async () => new Response(JSON.stringify(hostedInit), { status: 200, headers: { 'content-type': 'application/json' } }),
+    })).resolves.toMatchObject({ kind: 'firebase', firebase: { projectId: 'split-unwise-aditya' } })
+    expect(values.size).toBe(1)
+
+    await expect(resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: hostedLocation,
+      online: false,
+      storage,
+      fetch: async () => { throw new TypeError('Failed to fetch') },
+    })).resolves.toMatchObject({
+      kind: 'firebase', firebase: { projectId: 'split-unwise-aditya' },
+      capabilities: { auth: 'available', firestore: 'available', functions: 'unavailable', storage: 'unavailable' },
+    })
+
+    await expect(resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: hostedLocation,
+      online: true,
+      storage,
+      fetch: async () => { throw new TypeError('Failed to fetch') },
+    })).resolves.toMatchObject({ kind: 'error', fields: ['/__/firebase/init.json'] })
+
+    await expect(resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: { hostname: 'another-split-unwise.web.app', protocol: 'https:' },
+      online: false,
+      storage,
+      fetch: async () => { throw new TypeError('Failed to fetch') },
+    })).resolves.toMatchObject({ kind: 'error', fields: ['/__/firebase/init.json'] })
   })
 })

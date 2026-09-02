@@ -6,7 +6,7 @@ import { appPrincipalKey, type AppPrincipal, type AppPrincipalSource } from './p
 import type { AppRepository } from './repositories'
 import { createConfigurationErrorAuthService, createDemoAuthService, type AuthService } from '../features/auth/authService'
 import { createFirebaseAuthService } from '../features/auth/firebaseAuthService'
-import { initializeSplitUnwiseAppCheck } from './firebaseBootstrap'
+import { getSplitUnwiseFirebaseFirestore, initializeSplitUnwiseAppCheck } from './firebaseBootstrap'
 
 export interface AppRepositorySessionRuntime {
   readonly configuration: RuntimeConfiguration
@@ -35,6 +35,7 @@ export async function createRepositorySessionRuntime(environment?: PublicEnviron
     }
   }
   if (runtime.kind === 'firebase') {
+    await getSplitUnwiseFirebaseFirestore(runtime.firebase)
     await initializeSplitUnwiseAppCheck(runtime.firebase, runtime.appCheckSiteKey)
     const [principals, auth] = await Promise.all([
       connectFirebasePrincipalSource(runtime.firebase, runtime.functionsRegion),

@@ -39,6 +39,11 @@ export type PublicEnvironment = Partial<Record<
 
 export interface RuntimeResolutionOptions {
   readonly nativeUiTestDemo?: boolean
+  readonly nativePlatform?: boolean
+  readonly location?: Pick<Location, 'hostname' | 'protocol'>
+  readonly online?: boolean
+  readonly storage?: Pick<Storage, 'getItem' | 'setItem'>
+  readonly fetch?: typeof fetch
 }
 
 let activeRuntimeConfiguration: RuntimeConfiguration | undefined
@@ -96,32 +101,47 @@ export function readRuntimeConfiguration(environment?: PublicEnvironment): Runti
 /** Resolves Firebase Hosting's same-origin auto-init payload without embedding public project configuration in source. */
 export async function resolveRuntimeConfiguration(
   environment?: PublicEnvironment,
-  options: RuntimeResolutionOptions = { nativeUiTestDemo: import.meta.env.VITE_NATIVE_UI_TEST_DEMO === 'true' },
+  options: RuntimeResolutionOptions = {},
 ): Promise<RuntimeConfiguration> {
-  if (options.nativeUiTestDemo) {
+  if (options.nativeUiTestDemo ?? import.meta.env.VITE_NATIVE_UI_TEST_DEMO === 'true') {
     const demo = demoConfiguration()
     activeRuntimeConfiguration = demo
     return demo
   }
   const configured = readRuntimeConfiguration(environment)
-  const nativePlatform = environment === undefined && configured.kind === 'demo' ? await runningNatively() : false
+  const nativePlatform = environment === undefined && configured.kind === 'demo'
+    ? options.nativePlatform ?? await runningNatively()
+    : false
+  const locationValue = options.location ?? browserLocation()
   const initUrl = environment === undefined && configured.kind === 'demo'
-    ? firebaseHostingInitUrl(typeof location === 'undefined' ? undefined : location, nativePlatform)
+    ? firebaseHostingInitUrl(locationValue, nativePlatform)
     : undefined
   if (environment !== undefined || configured.kind !== 'demo' || !initUrl) {
     activeRuntimeConfiguration = configured
     return configured
   }
+  const source = firebaseHostingConfigurationSource(initUrl, locationValue)
+  const storage = options.storage ?? browserStorage()
+  const fetchConfiguration = options.fetch ?? globalThis.fetch
   try {
-    const response = await fetch(initUrl, { cache: 'no-store', credentials: initUrl.startsWith('/') ? 'same-origin' : 'omit' })
+    if (!fetchConfiguration) throw new Error('fetch is unavailable')
+    const response = await fetchConfiguration(initUrl, { cache: 'no-store', credentials: initUrl.startsWith('/') ? 'same-origin' : 'omit' })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const value: unknown = await response.json()
     if (!isRecord(value)) throw new Error('invalid JSON object')
     const discovered = readFirebaseHostingConfiguration(value, !nativePlatform)
     if (discovered.kind !== 'firebase') throw new Error(discovered.kind === 'error' ? discovered.message : 'Firebase Hosting returned an empty configuration')
+    if (!source || !matchesHostingProject(discovered.firebase.projectId, source)) throw new Error('Firebase Hosting returned configuration for a different project')
+    cacheHostingConfiguration(storage, source, discovered.firebase)
     activeRuntimeConfiguration = discovered
     return discovered
   } catch (reason) {
+    const online = options.online ?? browserOnline()
+    const cached = online === false && source ? readCachedHostingConfiguration(storage, source, !nativePlatform) : undefined
+    if (cached) {
+      activeRuntimeConfiguration = cached
+      return cached
+    }
     const detail = reason instanceof Error ? reason.message : 'unknown error'
     const failed: RuntimeConfiguration = { kind: 'error', fields: ['/__/firebase/init.json'], message: `Firebase Hosting configuration could not be loaded: ${detail}` }
     activeRuntimeConfiguration = failed
@@ -203,6 +223,74 @@ function stringField(value: Record<string, unknown>, field: string): string {
 function optionalStringField(value: Record<string, unknown>, field: string): string | undefined {
   const candidate = value[field]
   return typeof candidate === 'string' ? candidate : undefined
+}
+
+const HOSTING_CONFIGURATION_CACHE_PREFIX = 'split-unwise:firebase-hosting-config:v1:'
+
+function firebaseHostingConfigurationSource(
+  initUrl: string,
+  locationValue: Pick<Location, 'hostname' | 'protocol'> | undefined,
+): string | undefined {
+  try {
+    if (/^https:\/\//.test(initUrl)) return new URL(initUrl).href
+    if (!locationValue) return undefined
+    return new URL(initUrl, `${locationValue.protocol}//${locationValue.hostname}`).href
+  } catch { return undefined }
+}
+
+function matchesHostingProject(projectId: string, source: string): boolean {
+  try {
+    const hostname = new URL(source).hostname
+    const match = hostname.match(/^([a-z][a-z0-9-]{4,29})\.(?:firebaseapp\.com|web\.app)$/)
+    return match?.[1] === projectId
+  } catch { return false }
+}
+
+function cacheHostingConfiguration(
+  storage: Pick<Storage, 'setItem'> | undefined,
+  source: string,
+  firebase: FirebaseConfiguration,
+): void {
+  if (!storage) return
+  const configuration = {
+    apiKey: firebase.apiKey,
+    authDomain: firebase.authDomain,
+    projectId: firebase.projectId,
+    appId: firebase.appId,
+    ...(firebase.messagingSenderId ? { messagingSenderId: firebase.messagingSenderId } : {}),
+  }
+  try {
+    storage.setItem(`${HOSTING_CONFIGURATION_CACHE_PREFIX}${encodeURIComponent(source)}`, JSON.stringify({ schemaVersion: 1, source, configuration }))
+  } catch { /* private browsing and storage quotas must not break online startup */ }
+}
+
+function readCachedHostingConfiguration(
+  storage: Pick<Storage, 'getItem'> | undefined,
+  source: string,
+  googleEnabled: boolean,
+): Extract<RuntimeConfiguration, { kind: 'firebase' }> | undefined {
+  if (!storage) return undefined
+  try {
+    const raw = storage.getItem(`${HOSTING_CONFIGURATION_CACHE_PREFIX}${encodeURIComponent(source)}`)
+    if (!raw) return undefined
+    const cached: unknown = JSON.parse(raw)
+    if (!isRecord(cached) || cached.schemaVersion !== 1 || cached.source !== source || !isRecord(cached.configuration)) return undefined
+    const discovered = readFirebaseHostingConfiguration(cached.configuration, googleEnabled)
+    if (discovered.kind !== 'firebase' || !matchesHostingProject(discovered.firebase.projectId, source)) return undefined
+    return discovered
+  } catch { return undefined }
+}
+
+function browserLocation(): Pick<Location, 'hostname' | 'protocol'> | undefined {
+  return typeof location === 'undefined' ? undefined : location
+}
+
+function browserOnline(): boolean {
+  return typeof navigator === 'undefined' || typeof navigator.onLine !== 'boolean' ? true : navigator.onLine
+}
+
+function browserStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {
+  try { return typeof localStorage === 'undefined' ? undefined : localStorage } catch { return undefined }
 }
 
 export function resetActiveRuntimeConfigurationForTesting(): void {
