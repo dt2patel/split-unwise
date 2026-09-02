@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   LOCALE_STORAGE_KEY,
+  MESSAGE_CATALOGS,
   SUPPORTED_LOCALES,
   createLocaleController,
   readLocalePreference,
   resolveSupportedLocale,
 } from '../i18n'
+
+function placeholders(template: string): readonly string[] {
+  return [...template.matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/g)].map((match) => match[1]!).sort()
+}
 
 describe('locale controller', () => {
   it('matches an exact regional locale before falling back to a supported base language', () => {
@@ -58,6 +63,20 @@ describe('locale controller', () => {
     controller.setPreference('system')
     expect(controller.locale.value).toBe('it')
     expect(stored.get(LOCALE_STORAGE_KEY)).toBe('system')
+  })
+
+  it('keeps every locale on the exact English key set and placeholder multiset', () => {
+    const englishKeys = Object.keys(MESSAGE_CATALOGS.en).sort()
+
+    for (const locale of SUPPORTED_LOCALES) {
+      expect(Object.keys(MESSAGE_CATALOGS[locale]).sort(), `${locale} message keys`).toEqual(englishKeys)
+      for (const key of englishKeys) {
+        expect(
+          placeholders(MESSAGE_CATALOGS[locale][key as keyof typeof MESSAGE_CATALOGS.en]),
+          `${locale} placeholders for ${key}`,
+        ).toEqual(placeholders(MESSAGE_CATALOGS.en[key as keyof typeof MESSAGE_CATALOGS.en]))
+      }
+    }
   })
 
   it.each([

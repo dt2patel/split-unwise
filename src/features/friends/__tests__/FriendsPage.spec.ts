@@ -14,9 +14,11 @@ import { SafeRemoteDisplayError } from '../../../app/displayMessages'
 const firebaseMocks = vi.hoisted(() => ({
   createSparkFriendship: vi.fn(),
   getActiveRuntimeConfiguration: vi.fn(() => ({ kind: 'firebase', firebase: {} })),
+  sharePreparedInvitation: vi.fn(),
 }))
 vi.mock('../../../data/firebaseSparkMutations', () => ({ createSparkFriendship: firebaseMocks.createSparkFriendship }))
 vi.mock('../../../data/firebase', () => ({ getActiveRuntimeConfiguration: firebaseMocks.getActiveRuntimeConfiguration }))
+vi.mock('../../invitations/shareInvitation', () => ({ sharePreparedInvitation: firebaseMocks.sharePreparedInvitation }))
 
 const friendship: Group = { id: 'friend-jordan', kind: 'friendship', name: 'Jordan Lee', currency: 'USD', memberIds: ['maya-p'], syncState: 'fresh' }
 const stubs = {
@@ -33,6 +35,7 @@ const stubs = {
 beforeEach(() => {
   localeController.setPreference('en')
   firebaseMocks.createSparkFriendship.mockReset()
+  firebaseMocks.sharePreparedInvitation.mockReset()
   setActivePinia(createPinia())
   const demo = createDemoRepository()
   setAppSessionForTesting(createAppSession({
@@ -178,7 +181,7 @@ describe('Friends page', () => {
 
   it('retranslates invitation-ready feedback without creating again or changing the target email', async () => {
     localeController.setPreference('es')
-    firebaseMocks.createSparkFriendship.mockResolvedValueOnce({
+    firebaseMocks.createSparkFriendship.mockImplementationOnce(async (_configuration, input: { readonly email: string }) => ({
       status: 'ready',
       groupId: 'friend-maya',
       invitation: {
@@ -187,9 +190,9 @@ describe('Friends page', () => {
         link: 'https://split-unwise-aditya.web.app/invite/invite-maya#token=secret',
         expiresAt: '2026-09-09T12:00:00.000Z',
         capability: 'firebase-client',
-        targetEmail: 'Maya+Friend@Example.com',
+        targetEmail: input.email.toLowerCase(),
       },
-    })
+    }))
     const source = createDemoRepository()
     setAppSessionForTesting(createAppSession({ repository: { ...source, mode: 'firebase' as const }, commandStorage: createMemoryCommandStorage() }))
     const router = createAppRouter()
@@ -203,6 +206,8 @@ describe('Friends page', () => {
     await flushPromises()
 
     expect(wrapper.get('[role="status"]').text()).toBe('Invitación privada lista para Maya+Friend@Example.com.')
+    expect(wrapper.get('.invitation-ready').text()).toContain('Maya+Friend@Example.com')
+    expect(wrapper.get('.invitation-ready').text()).not.toContain('maya+friend@example.com')
     expect(firebaseMocks.createSparkFriendship).toHaveBeenCalledOnce()
 
     localeController.setPreference('de')
@@ -210,6 +215,57 @@ describe('Friends page', () => {
 
     expect(wrapper.get('[role="status"]').text()).toBe('Private Einladung für Maya+Friend@Example.com ist bereit.')
     expect(firebaseMocks.createSparkFriendship).toHaveBeenCalledOnce()
+  })
+
+  it('retains every semantic share result and retranslates it without sharing again', async () => {
+    localeController.setPreference('es')
+    firebaseMocks.createSparkFriendship.mockResolvedValueOnce({
+      status: 'ready',
+      groupId: 'friend-ravi',
+      invitation: {
+        invitationId: 'invite-ravi',
+        groupId: 'friend-ravi',
+        link: 'https://split-unwise-aditya.web.app/invite/invite-ravi#token=secret',
+        expiresAt: '2026-09-09T12:00:00.000Z',
+        capability: 'firebase-client',
+        targetEmail: 'ravi@example.com',
+      },
+    })
+    firebaseMocks.sharePreparedInvitation
+      .mockResolvedValueOnce({ status: 'shared' })
+      .mockResolvedValueOnce({ status: 'copied' })
+      .mockResolvedValueOnce({ status: 'cancelled' })
+      .mockResolvedValueOnce({ status: 'manual', url: 'https://split-unwise-aditya.web.app/invite/invite-ravi#token=secret' })
+    const source = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository: { ...source, mode: 'firebase' as const }, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+    const wrapper = mount(FriendsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+
+    await wrapper.get('[aria-label="Añadir amigo"]').trigger('click')
+    await wrapper.get('input[autocomplete="name"]').setValue('Ravi Patel')
+    await wrapper.get('input[type="email"]').setValue('ravi@example.com')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const share = wrapper.get('.invitation-ready button')
+
+    for (const expected of [
+      'Hoja para compartir completada.',
+      'Invitación copiada.',
+      'Compartir cancelado.',
+      'Selecciona y copia la invitación a continuación.',
+    ]) {
+      await share.trigger('click')
+      await flushPromises()
+      expect(wrapper.get('[role="status"]').text()).toBe(expected)
+    }
+    expect(firebaseMocks.sharePreparedInvitation).toHaveBeenCalledTimes(4)
+
+    localeController.setPreference('de')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Wähle die Einladung unten aus und kopiere sie.')
+    expect(firebaseMocks.sharePreparedInvitation).toHaveBeenCalledTimes(4)
   })
 
   it('includes friends from shared groups and expands their per-group balance', async () => {

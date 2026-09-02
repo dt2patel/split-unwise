@@ -81,6 +81,7 @@ const currency = ref('USD')
 const creating = ref(false)
 const createError = ref<DisplayMessage>()
 const invitation = ref<PreparedInvitation>()
+const invitationDisplayEmail = ref('')
 const notice = ref<ApplicationMessage>()
 const createErrorCopy = computed(() => displayMessageText(createError.value, t))
 const noticeCopy = computed(() => displayMessageText(notice.value, t))
@@ -113,14 +114,15 @@ function initialsFor(displayName: string): string { return displayName.trim().sp
 
 async function createFriend(): Promise<void> {
   const name = displayName.value.trim()
+  const submittedEmail = email.value
   try {
     if (!name) throw new ApplicationError('friends.error.enterName')
-    if (!email.value.trim()) throw new ApplicationError('friends.error.enterEmail')
+    if (!submittedEmail.trim()) throw new ApplicationError('friends.error.enterEmail')
     creating.value = true; createError.value = undefined; notice.value = undefined
     const runtime = getActiveRuntimeConfiguration()
     if (session.repository.mode !== 'firebase' || runtime.kind !== 'firebase') throw new ApplicationError('friends.error.firebaseNotReady')
     const result = await createSparkFriendship(runtime.firebase, {
-      operationId: createClientOperationId('friend'), displayName: name, email: email.value, currency: currency.value,
+      operationId: createClientOperationId('friend'), displayName: name, email: submittedEmail, currency: currency.value,
       canonicalOrigin: String(import.meta.env.VITE_CANONICAL_ORIGIN ?? 'https://split-unwise-aditya.web.app'),
     })
     if (result.status === 'invitation-required') {
@@ -129,7 +131,8 @@ async function createFriend(): Promise<void> {
       return
     }
     invitation.value = result.invitation
-    notice.value = { kind: 'application', key: 'friends.status.readyFor', values: { email: result.invitation.targetEmail ?? email.value } }
+    invitationDisplayEmail.value = submittedEmail
+    notice.value = { kind: 'application', key: 'friends.status.readyFor', values: { email: submittedEmail } }
     showingCreate.value = false
     await store.loadOverview()
     if (currentUser.value) await balanceStore.load(groups.value, currentUser.value.id, { force: true })
@@ -140,7 +143,14 @@ async function createFriend(): Promise<void> {
 
 async function shareInvitation(): Promise<void> {
   if (!invitation.value) return
-  await sharePreparedInvitation(invitation.value.link)
+  const result = await sharePreparedInvitation(invitation.value.link)
+  const key = {
+    shared: 'invite.status.shared',
+    copied: 'invite.status.copied',
+    cancelled: 'invite.status.cancelled',
+    manual: 'invite.status.manual',
+  } as const
+  notice.value = { kind: 'application', key: key[result.status] }
 }
 </script>
 
@@ -169,7 +179,7 @@ async function shareInvitation(): Promise<void> {
         </form>
 
         <section v-if="invitation" class="invitation-ready" aria-labelledby="friend-invitation-title">
-          <div><h2 id="friend-invitation-title">{{ t('friends.invitationReady') }}</h2><p>{{ t('friends.sendPrivateLink', { email: invitation.targetEmail ?? email }) }}</p></div>
+          <div><h2 id="friend-invitation-title">{{ t('friends.invitationReady') }}</h2><p>{{ t('friends.sendPrivateLink', { email: invitationDisplayEmail }) }}</p></div>
           <ion-button shape="round" @click="shareInvitation"><ion-icon slot="start" :icon="copyOutline" />{{ t('friends.shareLink') }}</ion-button>
         </section>
         <p v-if="noticeCopy" class="friends-page__notice" role="status" aria-live="polite">{{ noticeCopy }}</p>
