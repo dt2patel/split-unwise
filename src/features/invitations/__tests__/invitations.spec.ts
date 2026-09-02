@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { captureInvitationFragment, canonicalHttpsOrigin, consumeTransientInvitationSecret, generateInvitationSecret, invitationStatus, prepareDemoInvitation } from '../invitations'
+import { captureInvitationFragment, canonicalHttpsOrigin, consumeTransientInvitationSecret, generateInvitationSecret, invitationStatus, peekTransientInvitationSecret, prepareDemoInvitation } from '../invitations'
 import { sharePreparedInvitation } from '../shareInvitation'
 
 const fill = (bytes: Uint8Array) => bytes.fill(7)
@@ -13,13 +13,51 @@ describe('invitations', () => {
     expect(() => canonicalHttpsOrigin('http://split-unwise.web.app')).toThrow('HTTPS')
   })
 
-  it('strips fragments immediately and consumes the token from memory once', () => {
+  it('strips fragments immediately and consumes the per-tab token once', () => {
     const secret = generateInvitationSecret(fill)
     const replaceState = vi.fn()
     expect(captureInvitationFragment('invite-1', { hash: `#token=${secret}`, pathname: '/invite/invite-1', search: '' } as Location, { replaceState } as never)).toBe(true)
     expect(replaceState).toHaveBeenCalledWith(null, '', '/invite/invite-1')
     expect(consumeTransientInvitationSecret('invite-1')).toBe(secret)
     expect(consumeTransientInvitationSecret('invite-1')).toBeUndefined()
+  })
+
+  it('resumes a private invitation from per-tab storage after a full app reload', async () => {
+    const invitationId = 'reload-invite'
+    const secret = generateInvitationSecret(fill)
+    const replaceState = vi.fn()
+    sessionStorage.clear()
+
+    expect(captureInvitationFragment(invitationId, {
+      hash: `#token=${secret}`, pathname: `/invite/${invitationId}`, search: '',
+    } as Location, { replaceState } as never)).toBe(true)
+    expect(replaceState).toHaveBeenCalledWith(null, '', `/invite/${invitationId}`)
+    expect(sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`)).toBe(secret)
+
+    vi.resetModules()
+    const reloadedInvitations = await import('../invitations')
+    expect(reloadedInvitations.peekTransientInvitationSecret(invitationId)).toBe(secret)
+    expect(reloadedInvitations.consumeTransientInvitationSecret(invitationId)).toBe(secret)
+    expect(sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`)).toBeNull()
+
+    consumeTransientInvitationSecret(invitationId)
+  })
+
+  it('clears a stale capability when a malformed link reuses the shared Spark route', () => {
+    const invitationId = 'join'
+    const validSecret = generateInvitationSecret(fill)
+    sessionStorage.clear()
+
+    expect(captureInvitationFragment(invitationId, {
+      hash: `#token=${validSecret}`, pathname: `/invite/${invitationId}`, search: '',
+    } as Location, { replaceState: vi.fn() } as unknown as History)).toBe(true)
+    expect(peekTransientInvitationSecret(invitationId)).toBe(validSecret)
+
+    expect(captureInvitationFragment(invitationId, {
+      hash: '#token=malformed', pathname: `/invite/${invitationId}`, search: '',
+    } as Location, { replaceState: vi.fn() } as unknown as History)).toBe(false)
+    expect(peekTransientInvitationSecret(invitationId)).toBeUndefined()
+    expect(sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`)).toBeNull()
   })
 
   it('distinguishes expiry, revocation, use, and verified targeted email mismatch', () => {

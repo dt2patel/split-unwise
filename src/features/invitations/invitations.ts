@@ -20,6 +20,7 @@ export interface InvitationRecord {
   readonly targetEmail?: string
 }
 
+const INVITATION_SECRET_STORAGE_PREFIX = 'split-unwise:invitation-secret:v1:'
 const transientSecrets = new Map<string, string>()
 
 export async function prepareDemoInvitation(input: { readonly groupId: string; readonly canonicalOrigin: string; readonly targetEmail?: string; readonly now?: Date; readonly random?: (bytes: Uint8Array) => void }): Promise<PreparedInvitation> {
@@ -30,7 +31,7 @@ export async function prepareDemoInvitation(input: { readonly groupId: string; r
   if (!Number.isFinite(now.getTime())) throw new Error('Invitation time is invalid')
   const secret = generateInvitationSecret(input.random)
   const invitationId = randomId(input.random)
-  transientSecrets.set(invitationId, secret)
+  storeTransientInvitationSecret(invitationId, secret)
   return {
     invitationId, groupId,
     link: `${origin}/invite/${encodeURIComponent(invitationId)}#token=${secret}`,
@@ -56,26 +57,45 @@ export async function hashInvitationSecret(secret: string): Promise<string> {
   return base64Url(new Uint8Array(digest))
 }
 
-/** Moves a fragment secret into memory and strips it from browser history immediately. */
+/** Moves a fragment secret into per-tab state and strips it from browser history immediately. */
 export function captureInvitationFragment(invitationId: string, location: Pick<Location, 'hash' | 'pathname' | 'search'>, history: Pick<History, 'replaceState'>): boolean {
   const id = strictId(invitationId, 'invitation')
   const params = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : location.hash)
   const secret = params.get('token') ?? ''
   history.replaceState(null, '', `${location.pathname}${location.search}`)
-  if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) return false
-  transientSecrets.set(id, secret)
+  if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) {
+    transientSecrets.delete(id)
+    removeStoredInvitationSecret(id)
+    return false
+  }
+  storeTransientInvitationSecret(id, secret)
   return true
 }
 
 export function consumeTransientInvitationSecret(invitationId: string): string | undefined {
   const id = strictId(invitationId, 'invitation')
-  const value = transientSecrets.get(id)
+  const value = peekTransientInvitationSecret(id)
   transientSecrets.delete(id)
+  removeStoredInvitationSecret(id)
   return value
 }
 
 export function peekTransientInvitationSecret(invitationId: string): string | undefined {
-  return transientSecrets.get(strictId(invitationId, 'invitation'))
+  const id = strictId(invitationId, 'invitation')
+  const inMemory = transientSecrets.get(id)
+  if (inMemory) return inMemory
+  const storage = browserSessionStorage()
+  if (!storage) return undefined
+  try {
+    const stored = storage.getItem(invitationSecretStorageKey(id))
+    if (!stored) return undefined
+    if (!/^[A-Za-z0-9_-]{43}$/.test(stored)) {
+      storage.removeItem(invitationSecretStorageKey(id))
+      return undefined
+    }
+    transientSecrets.set(id, stored)
+    return stored
+  } catch { return undefined }
 }
 
 export function invitationStatus(record: InvitationRecord, identity: { readonly email?: string; readonly emailVerified: boolean }, now = new Date()): InvitationStatus {
@@ -119,4 +139,22 @@ function normalizeEmail(value: string): string {
   const email = value.trim().toLowerCase()
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Invitation email is invalid')
   return email
+}
+
+function storeTransientInvitationSecret(invitationId: string, secret: string): void {
+  transientSecrets.set(invitationId, secret)
+  const storage = browserSessionStorage()
+  if (!storage) return
+  try { storage.setItem(invitationSecretStorageKey(invitationId), secret) } catch { /* in-memory state still supports the current app process */ }
+}
+
+function removeStoredInvitationSecret(invitationId: string): void {
+  const storage = browserSessionStorage()
+  if (!storage) return
+  try { storage.removeItem(invitationSecretStorageKey(invitationId)) } catch { /* the in-memory copy was still removed */ }
+}
+
+function invitationSecretStorageKey(invitationId: string): string { return `${INVITATION_SECRET_STORAGE_PREFIX}${invitationId}` }
+function browserSessionStorage(): Storage | undefined {
+  try { return typeof sessionStorage === 'undefined' ? undefined : sessionStorage } catch { return undefined }
 }
