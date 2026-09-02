@@ -7,6 +7,7 @@ import { createDemoRepository } from '../../../data/demoRepository'
 import { setAppSessionForTesting, type AppDataSession, type UnresolvedWorkSummary } from '../../../data/session'
 import { createAppSession } from '../../../data/session'
 import { setAuthService, type AccountDeletionInput, type AuthService } from '../../auth/authService'
+import { createFirebaseAccountDeletionAction } from '../../auth/firebaseAuthService'
 import AccountPage from '../AccountPage.vue'
 
 const localData = vi.hoisted(() => ({ clear: vi.fn() }))
@@ -162,10 +163,19 @@ describe('Account page', () => {
     expect(wrapper.text()).toContain('Wait for in-flight changes before deleting your account')
   })
 
-  it('clears the password and unlocks swipe after reauthentication fails', async () => {
+  it('clears the password, unlocks swipe, and retranslates the actual wrong-password deletion error', async () => {
     const session = useSession('firebase')
-    const { deleteAccount } = useAuth(['password'])
-    deleteAccount.mockRejectedValueOnce(new Error('The password is incorrect.'))
+    const user = { uid: 'maya-p', email: 'maya@example.com', emailVerified: true, providerData: [{ providerId: 'password' }] }
+    const deleteAccount = createFirebaseAccountDeletionAction({
+      currentUser: () => user,
+      passwordCredential: () => ({ kind: 'password' }),
+      async reauthenticateWithCredential() { throw Object.assign(new Error('raw Firebase error'), { code: 'auth/invalid-credential' }) },
+      googleProvider: () => ({ kind: 'google' }),
+      async reauthenticateWithPopup() {},
+      async prepare() {},
+      async deleteUser() {},
+    })
+    setTestAuth(['password'], deleteAccount)
     const wrapper = mountPage()
     await flushPromises()
     await wrapper.get('[data-testid="open-account-delete"]').trigger('click')
@@ -178,6 +188,11 @@ describe('Account page', () => {
     expect(wrapper.text()).toContain('The password is incorrect.')
     expect(session.resumeWork).toHaveBeenCalledOnce()
     expect(await (wrapper.getComponent({ name: 'IonModal' }).props('canDismiss') as () => Promise<boolean>)()).toBe(true)
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('La contraseña es incorrecta.')
   })
 
   it('locks dismissal and clears the exact principal before Auth deletion completes', async () => {
@@ -232,6 +247,11 @@ function useSession(mode: 'demo' | 'firebase', unresolved: UnresolvedWorkSummary
 
 function useAuth(providerIds: readonly string[]) {
   const deleteAccount = vi.fn<(input: AccountDeletionInput) => Promise<void>>().mockResolvedValue(undefined)
+  setTestAuth(providerIds, deleteAccount)
+  return { deleteAccount }
+}
+
+function setTestAuth(providerIds: readonly string[], deleteAccount: AuthService['deleteAccount']): void {
   const service = {
     mode: 'firebase',
     capabilities: { auth: 'available', firestore: 'available', storage: 'unavailable', functions: 'unavailable', appCheck: 'unavailable', push: 'unavailable', google: 'available', apple: 'unavailable' },
@@ -243,7 +263,6 @@ function useAuth(providerIds: readonly string[]) {
     deleteAccount,
   }
   setAuthService(service as unknown as AuthService)
-  return { deleteAccount }
 }
 
 function mountPage() {

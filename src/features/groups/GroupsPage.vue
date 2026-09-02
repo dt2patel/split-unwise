@@ -15,14 +15,13 @@ import { createSparkGroup } from '../../data/firebaseSparkMutations'
 import { groupContexts } from '../../domain/expenseContexts'
 import type { CurrencyCode } from '../../domain/money'
 import { GROUP_COVER_CHOICES, groupCoverChoice, type GroupCoverId } from './groupCovers'
+import { ApplicationError, displayMessageFor, displayMessageText, type DisplayMessage } from '../../app/displayMessages'
 
 const store = useGroupStore()
 const { t } = useI18n()
 const { groups, error, isLoading } = storeToRefs(store)
 const groupError = computed(() => {
-  if (!error.value) return undefined
-  if (error.value.kind === 'remote') return error.value.message
-  return t(error.value.code === 'money-overflow' ? 'groups.error.moneyOverflow' : 'groups.error.load')
+  return displayMessageText(error.value, t)
 })
 const visibleGroups = computed(() => groupContexts(groups.value))
 const session = getAppSession()
@@ -36,7 +35,8 @@ const preferredCurrencies = ref<readonly CurrencyCode[]>(['USD'])
 const currencyQuery = ref('')
 const choosingCurrency = ref(false)
 const coverId = ref<GroupCoverId>('trip')
-const createError = ref('')
+const createError = ref<DisplayMessage>()
+const createErrorCopy = computed(() => displayMessageText(createError.value, t))
 const creating = ref(false)
 const dismissingCommittedCreate = ref(false)
 const presentingElement = shallowRef<HTMLElement>()
@@ -91,7 +91,7 @@ function resetCreateDraft(): void {
   currencyQuery.value = ''
   choosingCurrency.value = false
   coverId.value = 'trip'
-  createError.value = ''
+  createError.value = undefined
 }
 function selectCover(id: GroupCoverId): void { coverId.value = id }
 function selectCurrency(code: CurrencyCode): void {
@@ -116,20 +116,20 @@ async function dismissCreateBeforeNavigation(): Promise<void> {
 
 async function createGroup(): Promise<void> {
   const name = groupName.value.trim()
-  if (!name) { createError.value = t('groups.error.enterName'); return }
-  creating.value = true; createError.value = ''
+  if (!name) { createError.value = { kind: 'application', key: 'groups.error.enterName' }; return }
+  creating.value = true; createError.value = undefined
   try {
     const runtime = getActiveRuntimeConfiguration()
-    if (runtime.kind !== 'firebase') throw new Error(t('groups.error.firebaseNotReady'))
+    if (runtime.kind !== 'firebase') throw new ApplicationError('groups.error.firebaseNotReady')
     const operationId = createClientOperationId('group')
     const value = runtime.functionsRegion
       ? await callSplitUnwiseFunction('createGroup', { schemaVersion: 1, operationId, kind: 'group', name, currency: currency.value, coverImageUrl: selectedCover.value.imageUrl }, { replayProtected: true })
       : await createSparkGroup(runtime.firebase, { operationId, name, currency: currency.value, coverImageUrl: selectedCover.value.imageUrl })
-    if (!isRecord(value) || typeof value.groupId !== 'string') throw new Error(t('groups.error.invalidResponse'))
+    if (!isRecord(value) || typeof value.groupId !== 'string') throw new ApplicationError('groups.error.invalidResponse')
     await dismissCreateBeforeNavigation()
     await store.loadOverview()
     await router.push(`/tabs/groups/${encodeURIComponent(value.groupId)}`)
-  } catch (reason) { createError.value = reason instanceof Error ? reason.message : t('groups.error.createFailed') } finally { creating.value = false }
+  } catch (reason) { createError.value = displayMessageFor(reason, 'groups.error.createFailed') } finally { creating.value = false }
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function peopleCount(count: number): string { return t(count === 1 ? 'groups.person.one' : 'groups.person.other', { count }) }
@@ -248,7 +248,7 @@ function coverDescription(id: GroupCoverId): string {
             </section>
           </section>
 
-          <p v-if="createError" role="alert" class="create-error">{{ createError }}</p>
+          <p v-if="createErrorCopy" role="alert" class="create-error">{{ createErrorCopy }}</p>
           <p class="create-footnote">{{ t('groups.footnote') }}</p>
         </main>
       </ion-content>

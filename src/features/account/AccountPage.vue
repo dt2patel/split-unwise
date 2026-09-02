@@ -2,37 +2,33 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, type ComponentPublicInstance } from 'vue'
 import { IonAlert, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonIcon, IonInput, IonModal, IonPage, IonSpinner, IonTitle, IonToolbar } from '@ionic/vue'
 import { archiveOutline, cardOutline, chevronForward, cloudOfflineOutline, colorPaletteOutline, documentAttachOutline, languageOutline, logOutOutline, notificationsOutline, personCircleOutline, trashOutline } from 'ionicons/icons'
-import { useI18n, type MessageKey } from '../../app/i18n'
+import { useI18n } from '../../app/i18n'
 import { getAppSession, type UnresolvedWorkSummary } from '../../data/session'
 import { createBrowserPrincipalLocalDataPort } from '../../data/localData'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { peekAuthService } from '../auth/authService'
 import type { Member, NotificationPreferences } from '../../data/repositories'
 import type { AccountDeletionProgress, AccountDeletionProgressStage } from '../../data/firebaseAccountDeletion'
+import { ApplicationError, displayMessageFor, displayMessageText, type ApplicationMessage, type DisplayMessage } from '../../app/displayMessages'
 
 const session = getAppSession()
 const auth = peekAuthService()
 const { t } = useI18n()
-type CatalogMessage = { readonly key: MessageKey; readonly values?: Readonly<Record<string, string | number>> }
-type PageMessage = CatalogMessage | { readonly kind: 'remote'; readonly message: string }
-class CatalogError extends Error {
-  constructor(readonly messageKey: MessageKey, readonly values?: Readonly<Record<string, string | number>>) { super(messageKey) }
-}
 const member = ref<Member>()
 const displayName = ref('')
 const paypalHandle = ref('')
 const venmoHandle = ref('')
 const profileReady = ref(false)
 const notificationPreferences = ref<NotificationPreferences>({ emailEnabled: true, pushEnabled: true })
-const status = ref<CatalogMessage>()
-const error = ref<PageMessage>()
+const status = ref<ApplicationMessage>()
+const error = ref<DisplayMessage>()
 const signOutDecision = ref(false)
 const clearDecision = ref(false)
 const deletionOpen = ref(false)
 const deletingAccount = ref(false)
 const deletionAcknowledged = ref(false)
 const deletionPassword = ref('')
-const deletionError = ref<PageMessage>()
+const deletionError = ref<DisplayMessage>()
 const deletionProgress = ref<AccountDeletionProgress>()
 const unresolved = ref<UnresolvedWorkSummary>({ pending: 0, failed: 0, conflicted: 0, total: 0 })
 const trigger = ref<HTMLElement>()
@@ -86,7 +82,7 @@ async function saveProfile(): Promise<void> {
   error.value = undefined; status.value = undefined
   try {
     const name = displayName.value.trim()
-    if (!name) throw new CatalogError('account.error.enterName')
+    if (!name) throw new ApplicationError('account.error.enterName')
     const paypal = normalizePaymentHandle(paypalHandle.value, 'PayPal')
     const venmo = normalizePaymentHandle(venmoHandle.value, 'Venmo')
     const paymentHandles = { ...(paypal ? { paypal } : {}), ...(venmo ? { venmo } : {}) }
@@ -97,14 +93,14 @@ async function saveProfile(): Promise<void> {
     paypalHandle.value = paypal ?? ''
     venmoHandle.value = venmo ?? ''
     if (member.value) member.value = { ...member.value, displayName: name, initials: initials.value, paymentHandles }
-    status.value = { key: 'account.status.profileSaved' }
+    status.value = { kind: 'application', key: 'account.status.profileSaved' }
   } catch (reason) { error.value = message(reason) }
 }
 
 function normalizePaymentHandle(value: string, label: string): string | undefined {
   const token = value.trim().replace(/^@/, '')
   if (!token) return undefined
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(token)) throw new CatalogError('account.error.handle', { label })
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(token)) throw new ApplicationError('account.error.handle', { label })
   return token
 }
 
@@ -112,7 +108,7 @@ async function saveNotifications(): Promise<void> {
   error.value = undefined; status.value = undefined
   try {
     await session.queue.submit({ kind: 'notification.preferences', operationId: createClientOperationId('notification-preferences'), preferences: { ...notificationPreferences.value } }).result()
-    status.value = { key: 'account.status.notificationsSaved' }
+    status.value = { kind: 'application', key: 'account.status.notificationsSaved' }
   } catch (reason) { error.value = message(reason) }
 }
 
@@ -128,7 +124,7 @@ async function finishSignOut(choice: 'cancel' | 'keep' | 'discard'): Promise<voi
   if (choice === 'cancel') { session.resumeWork(); await restoreFocus(); return }
   try {
     if (choice === 'discard') unresolved.value = await session.discardTerminalWork()
-    if (!auth) throw new CatalogError('account.error.authNotInitialized')
+    if (!auth) throw new ApplicationError('account.error.authNotInitialized')
     await auth.signOut()
   } catch (reason) {
     session.resumeWork()
@@ -142,13 +138,13 @@ async function clearLocalData(): Promise<void> {
   clearDecision.value = false
   error.value = undefined; status.value = undefined
   const summary = session.quiesce()
-  if (summary.pending > 0) { session.resumeWork(); error.value = { key: 'account.error.waitClear' }; await restoreFocus(); return }
+  if (summary.pending > 0) { session.resumeWork(); error.value = { kind: 'application', key: 'account.error.waitClear' }; await restoreFocus(); return }
   try {
     const principal = await session.principal
     await session.clearLocalData()
     await createBrowserPrincipalLocalDataPort().clear(principal)
     session.resumeWork()
-    status.value = { key: 'account.status.cleared' }
+    status.value = { kind: 'application', key: 'account.status.cleared' }
   } catch (reason) { session.resumeWork(); error.value = message(reason) }
   await restoreFocus()
 }
@@ -183,7 +179,7 @@ async function deleteAccount(): Promise<void> {
   unresolved.value = summary
   if (summary.pending > 0) {
     session.resumeWork()
-    deletionError.value = { key: 'account.error.waitDelete' }
+    deletionError.value = { kind: 'application', key: 'account.error.waitDelete' }
     return
   }
   const principal = await session.principal
@@ -206,15 +202,8 @@ async function deleteAccount(): Promise<void> {
   }
 }
 async function restoreFocus(): Promise<void> { await nextTick(); trigger.value?.focus() }
-function message(reason: unknown): PageMessage {
-  if (reason instanceof CatalogError) return { key: reason.messageKey, values: reason.values }
-  if (reason instanceof Error) return { kind: 'remote', message: reason.message }
-  return { key: 'account.error.actionFailed' }
-}
-function translateMessage(message: PageMessage | undefined): string | undefined {
-  if (!message) return undefined
-  return 'kind' in message ? message.message : t(message.key, message.values)
-}
+function message(reason: unknown): DisplayMessage { return displayMessageFor(reason, 'account.error.actionFailed') }
+function translateMessage(message: DisplayMessage | undefined): string | undefined { return displayMessageText(message, t) }
 function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
   if (stage === 'starting') return t('account.progress.starting')
   if (stage === 'shared-data') return t('account.progress.shared')

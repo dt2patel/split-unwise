@@ -152,7 +152,7 @@ describe('pending journal projection', () => {
 
     await expect(store.discardFailedOperation('discard-storage-failure')).resolves.toBe(false)
 
-    expect(store.error).toEqual({ kind: 'remote', message: 'Command storage is unavailable' })
+    expect(store.error).toEqual({ kind: 'application', key: 'groups.error.load' })
     expect(queue.get('discard-storage-failure')).toMatchObject({ status: 'failed' })
     expect(store.journalExpenses.some(({ clientOperationId }) => clientOperationId === 'discard-storage-failure')).toBe(true)
   })

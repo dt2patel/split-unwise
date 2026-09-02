@@ -1,5 +1,9 @@
 import type { CurrencyTotals, ExpenseRow, GroupCharts } from './repositories'
 
+export class AggregateOverflowError extends Error {
+  constructor(message: string) { super(message); this.name = 'AggregateOverflowError' }
+}
+
 export function buildCurrencyTotals(rows: readonly ExpenseRow[], currentUserId: string): readonly CurrencyTotals[] {
   const amounts = new Map<string, { totalPaid: bigint; currentUserPaid: bigint; currentUserShare: bigint }>()
   for (const row of rows) {
@@ -38,14 +42,14 @@ function sum(rows: readonly ExpenseRow[], key: (row: ExpenseRow) => string, sort
 }
 
 function checkedAdd(total: bigint, next: number): bigint {
-  if (!Number.isSafeInteger(next)) throw new Error('Aggregate input must be a safe integer')
+  if (!Number.isSafeInteger(next)) throw new AggregateOverflowError('Aggregate input must be a safe integer')
   const result = total + BigInt(next)
   const maximum = BigInt(Number.MAX_SAFE_INTEGER)
-  if (result < -maximum || result > maximum) throw new Error('Aggregate exceeds safe integer range')
+  if (result < -maximum || result > maximum) throw new AggregateOverflowError('Aggregate exceeds safe integer range')
   return result
 }
 function toSafe(value: bigint): number {
   const maximum = BigInt(Number.MAX_SAFE_INTEGER)
-  if (value < -maximum || value > maximum) throw new Error('Aggregate exceeds safe integer range')
+  if (value < -maximum || value > maximum) throw new AggregateOverflowError('Aggregate exceeds safe integer range')
   return Number(value)
 }

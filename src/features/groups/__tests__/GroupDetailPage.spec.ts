@@ -5,6 +5,7 @@ import { createPinia } from 'pinia'
 import type { Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { repeatOutline } from 'ionicons/icons'
+import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -69,6 +70,7 @@ const ionicStubs = {
 }
 
 beforeEach(() => {
+  localeController.setPreference('en')
   ionicLifecycle.willEnter.length = 0
   setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
 })
@@ -92,6 +94,17 @@ async function mountRoute(path: string): Promise<VueWrapper> {
 }
 
 describe('Lake House group journal', () => {
+  it('reactively localizes the actual missing-group application error', async () => {
+    const wrapper = await mountRoute('/tabs/groups/missing-group')
+
+    expect(wrapper.get('.group-detail__status').text()).toBe('The group could not be loaded.')
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.group-detail__status').text()).toBe('No se pudo cargar el grupo.')
+  })
+
   it('uses friendship language and removes the invite action after the second person joins', async () => {
     const repository = createDemoRepository()
     const friendship = { ...lakeHouseGroup, id: 'friend-jordan', kind: 'friendship' as const, name: 'Jordan Lee', memberIds: ['maya-p', 'jordan-k'] }

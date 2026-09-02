@@ -6,6 +6,7 @@ import { prepareFirebaseAccountDeletion, type AccountDeletionPreparationInput } 
 import { sanitizeInternalReturnPath, storeReturnPath } from './returnPath'
 import { sanitizeAuthIdentity, type AccountDeletionInput, type AuthActionResult, type AuthIdentity, type AuthService, type AuthState } from './authService'
 import { synchronizeFirebaseProfile } from '../../data/firebaseSparkMutations'
+import { ApplicationError, isSafeRemoteDisplayError } from '../../app/displayMessages'
 
 interface FirebaseAccountDeletionUser {
   readonly uid: string
@@ -31,7 +32,7 @@ export interface FirebaseAccountDeletionDependencies<
 export function accountDeletionProvider(identity: Pick<AuthIdentity, 'providerIds'>): 'password' | 'google' {
   if (identity.providerIds.includes('password')) return 'password'
   if (identity.providerIds.includes('google.com')) return 'google'
-  throw new Error('Account deletion is not supported for this sign-in provider.')
+  throw new ApplicationError('account.error.unsupportedDeletionProvider')
 }
 
 export function createFirebaseAccountDeletionAction<
@@ -41,12 +42,12 @@ export function createFirebaseAccountDeletionAction<
 >(dependencies: FirebaseAccountDeletionDependencies<TUser, TPasswordCredential, TGoogleProvider>): (input: AccountDeletionInput) => Promise<void> {
   return async (input) => {
     const user = dependencies.currentUser()
-    if (!user) throw new Error('Sign in before deleting your account.')
+    if (!user) throw new ApplicationError('account.error.signInBeforeDelete')
     const providerIds = user.providerData.flatMap(({ providerId }) => typeof providerId === 'string' && providerId ? [providerId] : [])
     const provider = accountDeletionProvider({ providerIds })
     try {
       if (provider === 'password') {
-        if (!user.email || !input.password) throw new Error('Enter your current password.')
+        if (!user.email || !input.password) throw new ApplicationError('account.error.currentPasswordRequired')
         const credential = dependencies.passwordCredential(user.email, input.password)
         await dependencies.reauthenticateWithCredential(user, credential)
       } else {
@@ -184,10 +185,11 @@ function prefersRedirect(): boolean {
 function firebaseErrorCode(error: unknown): string | undefined { return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : undefined }
 function accountDeletionError(error: unknown): Error {
   const code = firebaseErrorCode(error)
-  if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') return new Error('The password is incorrect.')
-  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return new Error('Google reauthentication was cancelled.')
-  if (code === 'auth/requires-recent-login') return new Error('Reauthenticate and try deleting the account again.')
-  return error instanceof Error ? error : new Error('Account deletion could not be completed.')
+  if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') return new ApplicationError('account.error.wrongPassword')
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return new ApplicationError('account.error.googleReauthCancelled')
+  if (code === 'auth/requires-recent-login') return new ApplicationError('account.error.recentLoginRequired')
+  if (error instanceof ApplicationError || isSafeRemoteDisplayError(error)) return error
+  return new ApplicationError('account.error.actionFailed')
 }
 function safeAuthMessage(error: unknown): string {
   const code = firebaseErrorCode(error)

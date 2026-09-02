@@ -20,7 +20,7 @@ describe('Firebase account deletion authentication', () => {
     expect(accountDeletionProvider({ providerIds: ['password'] })).toBe('password')
     expect(accountDeletionProvider({ providerIds: ['google.com'] })).toBe('google')
     expect(accountDeletionProvider({ providerIds: ['google.com', 'password'] })).toBe('password')
-    expect(() => accountDeletionProvider({ providerIds: ['apple.com'] })).toThrow('not supported')
+    expect(() => accountDeletionProvider({ providerIds: ['apple.com'] })).toThrow('account.error.unsupportedDeletionProvider')
   })
 
   it('reauthenticates before preparing Firestore and deleting the Auth user', async () => {
@@ -75,8 +75,41 @@ describe('Firebase account deletion authentication', () => {
       async deleteUser() {},
     })
 
-    await expect(action({})).rejects.toThrow('Enter your current password')
-    await expect(action({ password: 'wrong-password' })).rejects.toThrow('The password is incorrect')
+    await expect(action({})).rejects.toMatchObject({ messageKey: 'account.error.currentPasswordRequired' })
+    await expect(action({ password: 'wrong-password' })).rejects.toMatchObject({ messageKey: 'account.error.wrongPassword' })
     expect(prepared).toBe(false)
+  })
+
+  it.each([
+    ['auth/popup-closed-by-user', ['google.com'], 'account.error.googleReauthCancelled'],
+    ['auth/requires-recent-login', ['password'], 'account.error.recentLoginRequired'],
+  ] as const)('maps %s to its semantic application message', async (code, providerIds, messageKey) => {
+    const user = { uid: 'owner', email: 'owner@example.com', emailVerified: false, providerData: providerIds.map((providerId) => ({ providerId })) }
+    const rejection = Object.assign(new Error('raw Firebase error'), { code })
+    const action = createFirebaseAccountDeletionAction({
+      currentUser: () => user,
+      passwordCredential: () => ({ kind: 'credential' }),
+      async reauthenticateWithCredential() { throw rejection },
+      googleProvider: () => ({ kind: 'google' }),
+      async reauthenticateWithPopup() { throw rejection },
+      async prepare() {},
+      async deleteUser() {},
+    })
+
+    await expect(action({ password: 'current-password' })).rejects.toMatchObject({ messageKey })
+  })
+
+  it('carries the signed-out deletion state as a semantic application message', async () => {
+    const action = createFirebaseAccountDeletionAction({
+      currentUser: () => null,
+      passwordCredential: () => ({ kind: 'credential' }),
+      async reauthenticateWithCredential() {},
+      googleProvider: () => ({ kind: 'google' }),
+      async reauthenticateWithPopup() {},
+      async prepare() {},
+      async deleteUser() {},
+    })
+
+    await expect(action({})).rejects.toMatchObject({ messageKey: 'account.error.signInBeforeDelete' })
   })
 })

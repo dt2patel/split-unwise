@@ -6,7 +6,7 @@ import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
-import type { ActivityItem } from '../../../data/repositories'
+import type { ActivityItem, ActivityQuery } from '../../../data/repositories'
 import ActivityPage from '../ActivityPage.vue'
 import { activityDestination, activityText, newestActivityFirst, projectActivityTimeline, useActivityStore } from '../activityStore'
 
@@ -35,7 +35,7 @@ beforeEach(() => {
 describe('global Activity page', () => {
   it('reactively localizes the application fallback when activity loading fails', async () => {
     const source = createDemoRepository()
-    const repository = { ...source, activity: { ...source.activity, async listForAccount() { throw undefined } } }
+    const repository = { ...source, activity: { ...source.activity, async listForAccount() { throw new Error('Firestore activity listing unavailable') } } }
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
     const wrapper = await mountActivity()
     await vi.waitFor(() => expect(wrapper.get('.activity-page__status').text()).toBe('Activity could not be loaded.'))
@@ -156,7 +156,49 @@ describe('global Activity page', () => {
     const described = { ...missingLabel, subject: { ...missingLabel.subject, label: 'Cena de Ana' } }
 
     expect(activityText(missingLabel, localeController.t)).toBe('Maya P. eliminó Gasto')
+    expect(activityText(missingLabel)).toBe('Maya P. deleted expense')
     expect(activityText(described, localeController.t)).toBe('Maya P. eliminó Cena de Ana')
+  })
+
+  it('uses the expense fallback in an unlabeled expense restore modal and retained feedback', async () => {
+    const source = createDemoRepository()
+    const groceries = await source.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing expense fixture')
+    await source.expenses.delete({
+      kind: 'expense.delete', operationId: 'delete-unlabeled-expense', groupId: groceries.groupId,
+      expenseId: groceries.id, expectedRevision: groceries.revision,
+    })
+    const repository = withoutSubjectLabel(source, 'delete-unlabeled-expense')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+
+    await wrapper.get('[data-action="restore-expense"]').trigger('click')
+    expect(wrapper.get('[data-testid="restore-expense-modal"] h2').text()).toBe('Restore Expense?')
+    await wrapper.get('[data-testid="confirm-expense-restore"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.get('.activity-page__feedback').text()).toBe('Expense was restored.'))
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.activity-page__feedback').text()).toBe('Gasto se restauró.')
+  })
+
+  it('uses the singular group fallback for unlabeled group activity and retained feedback', async () => {
+    const source = createDemoRepository()
+    await source.commands.execute({ kind: 'group.delete', operationId: 'delete-unlabeled-group', groupId: 'lake-house-weekend' })
+    const repository = withoutSubjectLabel(source, 'delete-unlabeled-group')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+
+    expect(wrapper.text()).toContain('Maya P. deleted this group')
+    await wrapper.get('[data-action="restore-group"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-group-restore"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.get('.activity-page__feedback').text()).toBe('this group was restored for everyone.'))
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.activity-page__feedback').text()).toBe('este grupo se restauró para todos.')
   })
 
   it('restores the latest deleted expense from a native card modal', async () => {
@@ -225,6 +267,24 @@ describe('global Activity page', () => {
     expect(activityDestination(event, 'activity')).toBe('/tabs/groups/lake-house-weekend/settlements/settlement-record-a')
   })
 })
+
+function withoutSubjectLabel<T extends ReturnType<typeof createDemoRepository>>(repository: T, operationId: string): T {
+  return {
+    ...repository,
+    activity: {
+      ...repository.activity,
+      async listForAccount(query: ActivityQuery) {
+        const page = await repository.activity.listForAccount(query)
+        return {
+          ...page,
+          items: page.items.map((item) => item.operationId === operationId
+            ? { ...item, subject: { ...item.subject, label: undefined } }
+            : item),
+        }
+      },
+    },
+  }
+}
 
 describe('Activity durable projection', () => {
   it('uses the persisted queue submission timestamp for pending and failed activity', async () => {

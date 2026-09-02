@@ -29,6 +29,7 @@ import { activityDestination, activityText } from '../activity/activityStore'
 import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
 import { useI18n } from '../../app/i18n'
+import { displayMessageText } from '../../app/displayMessages'
 
 type GroupView = 'expenses' | 'activity'
 
@@ -43,9 +44,7 @@ const groupId = computed(() => String(route.params.groupId ?? ''))
 const isFriendship = computed(() => activeGroup.value?.kind === 'friendship')
 const canInvite = computed(() => !isFriendship.value || members.value.length < 2)
 const groupError = computed(() => {
-  if (!error.value) return undefined
-  if (error.value.kind === 'remote') return error.value.message
-  return t(error.value.code === 'money-overflow' ? 'groups.error.moneyOverflow' : 'groups.error.load')
+  return displayMessageText(error.value, t)
 })
 const monthLabel = computed(() => {
   const date = journalExpenses.value[0]?.date

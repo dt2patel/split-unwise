@@ -7,6 +7,8 @@ import type { ActivityItem, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEdit
 import type { Money } from '../../domain/model'
 import { projectActivityTimeline } from '../activity/activityStore'
 import { compareFirestoreStrings } from '../../data/timeline'
+import { AggregateOverflowError } from '../../data/aggregates'
+import { ApplicationError, displayMessageFor, type DisplayMessage } from '../../app/displayMessages'
 
 export interface UserExpensePosition {
   readonly money: Money
@@ -21,9 +23,7 @@ export interface JournalExpenseRow extends ExpenseRow {
   readonly conflictIntent?: 'delete' | 'edit'
 }
 
-export type GroupStoreError =
-  | { readonly kind: 'application'; readonly code: 'load' | 'money-overflow' }
-  | { readonly kind: 'remote'; readonly message: string }
+export type GroupStoreError = DisplayMessage
 
 export const useGroupStore = defineStore('groups', () => {
   const session = getAppSession()
@@ -107,8 +107,8 @@ export const useGroupStore = defineStore('groups', () => {
       void journalRequest.catch(() => undefined)
       const group = await groupRequest
       if (request !== latestGroupRequest) return
-      if (!group) throw new Error('This group is not available.')
-      if (group.id !== groupId) throw new Error('The loaded group did not match the requested group.')
+      if (!group) throw new ApplicationError('groups.error.load')
+      if (group.id !== groupId) throw new ApplicationError('groups.error.load')
       activeGroup.value = group
       const [user, loadedMembers, loadedExpenses] = await journalRequest
       if (request !== latestGroupRequest) return
@@ -675,7 +675,6 @@ function deleteIntentId(operationId: string, remoteRevision: number): string {
 function cloneExpense(expense: ExpenseRow): ExpenseRow { return JSON.parse(JSON.stringify(expense)) as ExpenseRow }
 
 function messageFor(reason: unknown): GroupStoreError {
-  if (!(reason instanceof Error)) return { kind: 'application', code: 'load' }
-  if (reason.message === 'Aggregate exceeds safe integer range') return { kind: 'application', code: 'money-overflow' }
-  return { kind: 'remote', message: reason.message }
+  if (reason instanceof AggregateOverflowError) return { kind: 'application', key: 'groups.error.moneyOverflow' }
+  return displayMessageFor(reason, 'groups.error.load')
 }

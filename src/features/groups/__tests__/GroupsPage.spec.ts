@@ -7,6 +7,7 @@ import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import GroupsPage from '../GroupsPage.vue'
+import { SafeRemoteDisplayError } from '../../../app/displayMessages'
 
 const firebaseMocks = vi.hoisted(() => ({
   createSparkGroup: vi.fn(async () => ({ groupId: 'grp-hosted-cover' })),
@@ -43,7 +44,7 @@ const stubs = {
 
 beforeEach(() => {
   localeController.setPreference('en')
-  firebaseMocks.createSparkGroup.mockClear()
+  firebaseMocks.createSparkGroup.mockReset().mockResolvedValue({ groupId: 'grp-hosted-cover' })
   const repository = { ...createDemoRepository(), mode: 'firebase' as const }
   setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
 })
@@ -52,7 +53,7 @@ afterEach(() => vi.restoreAllMocks())
 describe('mobile group creation', () => {
   it('reactively localizes the application fallback when group loading fails', async () => {
     const source = createDemoRepository()
-    const repository = { ...source, mode: 'firebase' as const, groups: { ...source.groups, async list() { throw undefined } } }
+    const repository = { ...source, mode: 'firebase' as const, groups: { ...source.groups, async list() { throw new Error('Firestore group listing unavailable') } } }
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
     const router = createAppRouter()
     const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), router], stubs } })
@@ -62,6 +63,39 @@ describe('mobile group creation', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.get('[role="alert"]').text()).toBe('No se pudo cargar el grupo.')
+  })
+
+  it('keeps only explicitly safe remote group-load text verbatim', async () => {
+    const source = createDemoRepository()
+    const safeRemoteError = new SafeRemoteDisplayError('Group access is paused for scheduled maintenance.')
+    const repository = { ...source, mode: 'firebase' as const, groups: { ...source.groups, async list() { throw safeRemoteError } } }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await vi.waitFor(() => expect(wrapper.get('[role="alert"]').text()).toBe(safeRemoteError.message))
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[role="alert"]').text()).toBe(safeRemoteError.message)
+  })
+
+  it('retains a semantic group-creation failure that retranslates after locale changes', async () => {
+    firebaseMocks.createSparkGroup.mockRejectedValueOnce(new Error('Firebase: permission denied.'))
+    const router = createAppRouter()
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="Create group"]').trigger('click')
+    await wrapper.get('[aria-label="Group name"]').setValue('Blocked create')
+    await wrapper.get('[data-testid="create-group-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.create-error').text()).toBe('The group could not be created.')
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.create-error').text()).toBe('No se pudo crear el grupo.')
   })
 
   it('reactively localizes the group journal and native create card while preserving group data', async () => {

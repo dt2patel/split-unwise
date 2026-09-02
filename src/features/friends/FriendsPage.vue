@@ -18,6 +18,7 @@ import { useAccountBalanceStore } from '../home/accountBalanceStore'
 import { compareFirestoreStrings } from '../../data/timeline'
 import type { Group } from '../../data/repositories'
 import { useI18n } from '../../app/i18n'
+import { displayMessageText } from '../../app/displayMessages'
 
 interface UnavailableFriendContext {
   readonly contextId: string
@@ -36,9 +37,7 @@ const { projection, isLoading: balancesLoading, notice: balanceNotice } = storeT
 const session = getAppSession()
 const router = useRouter()
 const groupError = computed(() => {
-  if (!error.value) return undefined
-  if (error.value.kind === 'remote') return error.value.message
-  return t(error.value.code === 'money-overflow' ? 'groups.error.moneyOverflow' : 'groups.error.load')
+  return displayMessageText(error.value, t)
 })
 const balanceNoticeCopy = computed(() => balanceNotice.value === 'partial'
   ? t('home.balancePartial')

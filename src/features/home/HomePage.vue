@@ -28,6 +28,7 @@ import { friendshipContexts, groupContexts } from '../../domain/expenseContexts'
 import { compareFirestoreStrings } from '../../data/timeline'
 import { useGroupStore } from '../groups/groupStore'
 import { useAccountBalanceStore } from './accountBalanceStore'
+import { displayMessageText } from '../../app/displayMessages'
 
 const groupStore = useGroupStore()
 const balanceStore = useAccountBalanceStore()
@@ -35,9 +36,7 @@ const { t } = useI18n()
 const { groups, currentUser, error, isLoading } = storeToRefs(groupStore)
 const { projection, isLoading: balancesLoading, notice: balanceNotice } = storeToRefs(balanceStore)
 const groupError = computed(() => {
-  if (!error.value) return undefined
-  if (error.value.kind === 'remote') return error.value.message
-  return t(error.value.code === 'money-overflow' ? 'groups.error.moneyOverflow' : 'groups.error.load')
+  return displayMessageText(error.value, t)
 })
 const balanceNoticeCopy = computed(() => balanceNotice.value === 'partial'
   ? t('home.balancePartial')

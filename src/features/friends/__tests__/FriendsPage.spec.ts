@@ -9,6 +9,7 @@ import { createDemoRepository } from '../../../data/demoRepository'
 import type { Group, GroupBalanceSnapshot } from '../../../data/repositories'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import FriendsPage from '../FriendsPage.vue'
+import { SafeRemoteDisplayError } from '../../../app/displayMessages'
 
 const friendship: Group = { id: 'friend-jordan', kind: 'friendship', name: 'Jordan Lee', currency: 'USD', memberIds: ['maya-p'], syncState: 'fresh' }
 const stubs = {
@@ -47,7 +48,7 @@ describe('Friends page', () => {
     localeController.setPreference('es')
     const demo = createDemoRepository()
     setAppSessionForTesting(createAppSession({
-      repository: { ...demo, groups: { ...demo.groups, async list() { throw undefined } } },
+      repository: { ...demo, groups: { ...demo.groups, async list() { throw new Error('Firestore group listing unavailable') } } },
       commandStorage: createMemoryCommandStorage(),
     }))
     const router = createAppRouter()
@@ -61,7 +62,7 @@ describe('Friends page', () => {
     const remote = createDemoRepository()
     setActivePinia(createPinia())
     setAppSessionForTesting(createAppSession({
-      repository: { ...remote, groups: { ...remote.groups, async list() { throw new Error('Shared plans are temporarily unavailable.') } } },
+      repository: { ...remote, groups: { ...remote.groups, async list() { throw new SafeRemoteDisplayError('Shared plans are temporarily unavailable.') } } },
       commandStorage: createMemoryCommandStorage(),
     }))
     const remoteRouter = createAppRouter()

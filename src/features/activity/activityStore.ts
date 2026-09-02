@@ -6,10 +6,9 @@ import type { CommandOperation } from '../../data/commandQueue'
 import { isStrictId } from '../../data/identifiers'
 import { compareTimelineDescending } from '../../data/timeline'
 import { deriveMoveTargetOperationId } from '@split-unwise/shared'
+import { displayMessageFor, type DisplayMessage } from '../../app/displayMessages'
 
-export type ActivityStoreError =
-  | { readonly kind: 'application'; readonly code: 'load' | 'load-more' }
-  | { readonly kind: 'remote'; readonly message: string }
+export type ActivityStoreError = DisplayMessage
 
 export const useActivityStore = defineStore('activity', () => {
   const session = getAppSession()
@@ -97,8 +96,8 @@ function sameCursor(left: TimelineCursor | undefined, right: TimelineCursor): bo
   return left?.createdAt === right.createdAt && left.id === right.id
 }
 
-function activityErrorFor(reason: unknown, code: Extract<ActivityStoreError, { readonly kind: 'application' }>['code']): ActivityStoreError {
-  return reason instanceof Error ? { kind: 'remote', message: reason.message } : { kind: 'application', code }
+function activityErrorFor(reason: unknown, code: 'load' | 'load-more'): ActivityStoreError {
+  return displayMessageFor(reason, code === 'load-more' ? 'activity.error.loadMore' : 'activity.error.load')
 }
 
 export function projectActivityTimeline(
@@ -135,11 +134,14 @@ type ActivityTextKey =
   | 'activity.event.recorded'
   | 'activity.event.voided'
   | 'activity.event.membership'
+  | 'activity.defaultGroup'
   | 'activity.defaultExpense'
 type ActivityTextTranslator = (key: ActivityTextKey, values: Readonly<Record<string, string>>) => string
 
 export function activityText(item: ActivityItem, translate?: ActivityTextTranslator): string {
-  const label = item.subject.label ?? (translate && item.subject.kind === 'expense' ? translate('activity.defaultExpense', {}) : item.subject.id)
+  const label = item.subject.label ?? (item.subject.kind === 'expense'
+    ? translate?.('activity.defaultExpense', {}) ?? 'expense'
+    : item.subject.kind === 'group' ? translate?.('activity.defaultGroup', {}) ?? 'group' : item.subject.id)
   if (translate) {
     const values = { actor: item.actor.displayName, label }
     if (item.kind === 'expense.created') return translate('activity.event.added', values)
