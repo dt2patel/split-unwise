@@ -7,6 +7,10 @@ import { isStrictId } from '../../data/identifiers'
 import { compareTimelineDescending } from '../../data/timeline'
 import { deriveMoveTargetOperationId } from '@split-unwise/shared'
 
+export type ActivityStoreError =
+  | { readonly kind: 'application'; readonly code: 'load' | 'load-more' }
+  | { readonly kind: 'remote'; readonly message: string }
+
 export const useActivityStore = defineStore('activity', () => {
   const session = getAppSession()
   const canonical = ref<readonly ActivityItem[]>([])
@@ -14,7 +18,7 @@ export const useActivityStore = defineStore('activity', () => {
   const isLoading = ref(false)
   const isFiltering = ref(false)
   const isLoadingMore = ref(false)
-  const error = ref('')
+  const error = ref<ActivityStoreError>()
   const nextCursor = ref<TimelineCursor>()
   const currentUser = ref<Member>()
   const queueRevision = ref(0)
@@ -37,7 +41,7 @@ export const useActivityStore = defineStore('activity', () => {
     const blocking = canonical.value.length === 0
     isLoading.value = blocking
     isFiltering.value = !blocking
-    error.value = ''
+    error.value = undefined
     try {
       await session.ready
       const [page, user] = await Promise.all([
@@ -49,7 +53,7 @@ export const useActivityStore = defineStore('activity', () => {
       nextCursor.value = page.nextCursor
       currentUser.value = user
     } catch (reason) {
-      if (active === request) error.value = reason instanceof Error ? reason.message : 'Activity could not be loaded.'
+      if (active === request) error.value = activityErrorFor(reason, 'load')
     } finally {
       if (active === request) {
         isLoading.value = false
@@ -65,7 +69,7 @@ export const useActivityStore = defineStore('activity', () => {
     const activePage = ++pageRequest
     const selectedFilter = filter.value
     isLoadingMore.value = true
-    error.value = ''
+    error.value = undefined
     try {
       const page = await session.repository.activity.listForAccount({ filter: selectedFilter, limit: 100, cursor })
       if (activeRoot !== request || activePage !== pageRequest || filter.value !== selectedFilter || !sameCursor(nextCursor.value, cursor)) return
@@ -74,7 +78,7 @@ export const useActivityStore = defineStore('activity', () => {
       canonical.value = [...byId.values()].sort(newestActivityFirst)
       nextCursor.value = page.nextCursor
     } catch (reason) {
-      if (activeRoot === request && activePage === pageRequest) error.value = reason instanceof Error ? reason.message : 'More activity could not be loaded.'
+      if (activeRoot === request && activePage === pageRequest) error.value = activityErrorFor(reason, 'load-more')
     } finally {
       if (activeRoot === request && activePage === pageRequest) isLoadingMore.value = false
     }
@@ -91,6 +95,10 @@ export const useActivityStore = defineStore('activity', () => {
 
 function sameCursor(left: TimelineCursor | undefined, right: TimelineCursor): boolean {
   return left?.createdAt === right.createdAt && left.id === right.id
+}
+
+function activityErrorFor(reason: unknown, code: Extract<ActivityStoreError, { readonly kind: 'application' }>['code']): ActivityStoreError {
+  return reason instanceof Error ? { kind: 'remote', message: reason.message } : { kind: 'application', code }
 }
 
 export function projectActivityTimeline(
@@ -127,10 +135,11 @@ type ActivityTextKey =
   | 'activity.event.recorded'
   | 'activity.event.voided'
   | 'activity.event.membership'
+  | 'activity.defaultExpense'
 type ActivityTextTranslator = (key: ActivityTextKey, values: Readonly<Record<string, string>>) => string
 
 export function activityText(item: ActivityItem, translate?: ActivityTextTranslator): string {
-  const label = item.subject.label ?? item.subject.id
+  const label = item.subject.label ?? (translate && item.subject.kind === 'expense' ? translate('activity.defaultExpense', {}) : item.subject.id)
   if (translate) {
     const values = { actor: item.actor.displayName, label }
     if (item.kind === 'expense.created') return translate('activity.event.added', values)
@@ -248,8 +257,8 @@ function activity(
   return { id: `pending:${operationId}`, groupId, operationId, kind, subject, actor, createdAt, syncState, ...(expenseId ? { expenseId } : {}), ...(revision ? { revision } : {}), ...(commentId ? { commentId } : {}) }
 }
 
-function expenseLabel(base: readonly ActivityItem[], expenseId: string): string {
-  return base.find((item) => item.expenseId === expenseId && item.subject.kind === 'expense')?.subject.label ?? 'expense'
+function expenseLabel(base: readonly ActivityItem[], expenseId: string): string | undefined {
+  return base.find((item) => item.expenseId === expenseId && item.subject.kind === 'expense')?.subject.label
 }
 function matchesFilter(item: ActivityItem, filter: ActivityFilter): boolean {
   return filter === 'all' || (filter === 'expenses' && item.kind.startsWith('expense.')) || (filter === 'comments' && item.kind.startsWith('comment.')) || (filter === 'payments' && item.kind.startsWith('settlement.'))

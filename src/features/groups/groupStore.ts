@@ -21,6 +21,10 @@ export interface JournalExpenseRow extends ExpenseRow {
   readonly conflictIntent?: 'delete' | 'edit'
 }
 
+export type GroupStoreError =
+  | { readonly kind: 'application'; readonly code: 'load' | 'money-overflow' }
+  | { readonly kind: 'remote'; readonly message: string }
+
 export const useGroupStore = defineStore('groups', () => {
   const session = getAppSession()
   const { repository, queue } = session
@@ -32,7 +36,7 @@ export const useGroupStore = defineStore('groups', () => {
   const activity = ref<readonly ActivityItem[]>([])
   const isLoading = ref(false)
   const isActivityLoading = ref(false)
-  const error = ref<string>()
+  const error = ref<GroupStoreError>()
   const queueRevision = ref(0)
   const acknowledgedOperationIds = new Set<string>()
   const tombstoneWatermarks = new Map<string, Map<string, number>>()
@@ -670,8 +674,8 @@ function deleteIntentId(operationId: string, remoteRevision: number): string {
 
 function cloneExpense(expense: ExpenseRow): ExpenseRow { return JSON.parse(JSON.stringify(expense)) as ExpenseRow }
 
-function messageFor(reason: unknown): string {
-  if (!(reason instanceof Error)) return 'The group could not be loaded.'
-  if (reason.message === 'Aggregate exceeds safe integer range') return 'Money addition exceeds safe integer range.'
-  return reason.message
+function messageFor(reason: unknown): GroupStoreError {
+  if (!(reason instanceof Error)) return { kind: 'application', code: 'load' }
+  if (reason.message === 'Aggregate exceeds safe integer range') return { kind: 'application', code: 'money-overflow' }
+  return { kind: 'remote', message: reason.message }
 }

@@ -28,18 +28,25 @@ import { useGroupStore } from './groupStore'
 import { activityDestination, activityText } from '../activity/activityStore'
 import { getAppSession } from '../../data'
 import { isStrictId } from '../../data/identifiers'
+import { useI18n } from '../../app/i18n'
 
 type GroupView = 'expenses' | 'activity'
 
 const route = useRoute()
 const store = useGroupStore()
 const session = getAppSession()
+const { t } = useI18n()
 const { activeGroup, currentUserNets, error, isActivityLoading, isLoading, journalExpenses, members, recentActivity } = storeToRefs(store)
 const selectedView = ref<GroupView>('expenses')
 const isCollapsed = ref(false)
 const groupId = computed(() => String(route.params.groupId ?? ''))
 const isFriendship = computed(() => activeGroup.value?.kind === 'friendship')
 const canInvite = computed(() => !isFriendship.value || members.value.length < 2)
+const groupError = computed(() => {
+  if (!error.value) return undefined
+  if (error.value.kind === 'remote') return error.value.message
+  return t(error.value.code === 'money-overflow' ? 'groups.error.moneyOverflow' : 'groups.error.load')
+})
 const monthLabel = computed(() => {
   const date = journalExpenses.value[0]?.date
   if (!date) return ''
@@ -227,7 +234,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
           </transition>
         </section>
       </main>
-      <p v-else class="group-detail__status" role="alert">{{ error ?? 'These shared expenses are not available.' }}</p>
+      <p v-else class="group-detail__status" role="alert">{{ groupError ?? 'These shared expenses are not available.' }}</p>
 
       <app-fab
         v-if="activeGroup"

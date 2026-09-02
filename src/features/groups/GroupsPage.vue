@@ -19,6 +19,11 @@ import { GROUP_COVER_CHOICES, groupCoverChoice, type GroupCoverId } from './grou
 const store = useGroupStore()
 const { t } = useI18n()
 const { groups, error, isLoading } = storeToRefs(store)
+const groupError = computed(() => {
+  if (!error.value) return undefined
+  if (error.value.kind === 'remote') return error.value.message
+  return t(error.value.code === 'money-overflow' ? 'groups.error.moneyOverflow' : 'groups.error.load')
+})
 const visibleGroups = computed(() => groupContexts(groups.value))
 const session = getAppSession()
 const router = useRouter()
@@ -156,7 +161,7 @@ function coverDescription(id: GroupCoverId): string {
         <p>{{ t('groups.intro') }}</p>
 
         <p v-if="isLoading" role="status">{{ t('groups.loading') }}</p>
-        <p v-else-if="error" role="alert">{{ error }}</p>
+        <p v-else-if="groupError" role="alert">{{ groupError }}</p>
         <div v-else class="groups-page__list">
           <router-link
             v-for="group in visibleGroups"

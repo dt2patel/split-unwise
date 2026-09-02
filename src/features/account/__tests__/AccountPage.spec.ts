@@ -80,6 +80,21 @@ describe('Account page', () => {
     expect(wrapper.get('[role="status"]').text()).toContain('Profile saved')
   })
 
+  it('retranslates saved profile feedback when the language preference changes', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.get('[data-action="save-profile"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.get('[role="status"]').text()).toBe('Profile saved.'))
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Perfil guardado.')
+  })
+
   it('keeps profile editing disabled until the account snapshot finishes hydrating', async () => {
     const session = useSession('demo')
     let release!: () => void

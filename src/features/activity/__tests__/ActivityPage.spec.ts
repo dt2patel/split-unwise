@@ -8,7 +8,7 @@ import { createDemoRepository } from '../../../data/demoRepository'
 import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
 import type { ActivityItem } from '../../../data/repositories'
 import ActivityPage from '../ActivityPage.vue'
-import { activityDestination, newestActivityFirst, useActivityStore } from '../activityStore'
+import { activityDestination, activityText, newestActivityFirst, projectActivityTimeline, useActivityStore } from '../activityStore'
 
 const principalKey = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: 'maya-p' })
 const ionicStubs = {
@@ -33,6 +33,19 @@ beforeEach(() => {
 })
 
 describe('global Activity page', () => {
+  it('reactively localizes the application fallback when activity loading fails', async () => {
+    const source = createDemoRepository()
+    const repository = { ...source, activity: { ...source.activity, async listForAccount() { throw undefined } } }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+    await vi.waitFor(() => expect(wrapper.get('.activity-page__status').text()).toBe('Activity could not be loaded.'))
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.activity-page__status').text()).toBe('No se pudo cargar la actividad.')
+  })
+
   it('reactively localizes a pending activity sync state', async () => {
     const source = createDemoRepository()
     const pending: ActivityItem = {
@@ -113,6 +126,37 @@ describe('global Activity page', () => {
 
     await vi.waitFor(async () => expect(await repository.groups.list()).toHaveLength(1))
     await vi.waitFor(() => expect(wrapper.text()).toContain('Maya P. restored Lake House Weekend'))
+  })
+
+  it('retranslates restore feedback when the language preference changes', async () => {
+    const repository = createDemoRepository()
+    await repository.commands.execute({ kind: 'group.delete', operationId: 'delete-for-feedback', groupId: 'lake-house-weekend' })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+
+    await wrapper.get('[data-action="restore-group"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-group-restore"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.get('.activity-page__feedback').text()).toBe('Lake House Weekend was restored for everyone.'))
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.activity-page__feedback').text()).toBe('Lake House Weekend se restauró para todos.')
+  })
+
+  it('localizes a missing projected expense label without changing a user description', () => {
+    localeController.setPreference('es')
+    const operation = {
+      originPrincipalKey: principalKey,
+      submittedAt: '2026-09-02T18:00:00.000Z',
+      status: 'pending',
+      envelope: { kind: 'expense.delete', operationId: 'delete-missing-label', groupId: 'lake-house-weekend', expenseId: 'missing-expense', expectedRevision: 1 },
+    } as const
+    const [missingLabel] = projectActivityTimeline([], [operation], { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true })
+    const described = { ...missingLabel, subject: { ...missingLabel.subject, label: 'Cena de Ana' } }
+
+    expect(activityText(missingLabel, localeController.t)).toBe('Maya P. eliminó Gasto')
+    expect(activityText(described, localeController.t)).toBe('Maya P. eliminó Cena de Ana')
   })
 
   it('restores the latest deleted expense from a native card modal', async () => {

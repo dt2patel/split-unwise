@@ -44,6 +44,35 @@ beforeEach(() => {
 })
 
 describe('Home account balances', () => {
+  it('reactively localizes a partial balance-load notice', async () => {
+    setActivePinia(createPinia())
+    const demo = createDemoRepository()
+    const [available] = await demo.groups.list()
+    if (!available) throw new Error('Missing demo group')
+    const unavailable = { ...available, id: 'unavailable-balance-context', name: 'Unavailable balance context' }
+    setAppSessionForTesting(createAppSession({
+      repository: {
+        ...demo,
+        groups: {
+          ...demo.groups,
+          async list() { return [available, unavailable] },
+          async listMembers(groupId) { if (groupId === unavailable.id) throw new Error('transport unavailable'); return demo.groups.listMembers(groupId) },
+        },
+      },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+    const router = createAppRouter()
+    await router.push('/tabs/home')
+    await router.isReady()
+    const wrapper = mount(HomePage, { global: { plugins: [createPinia(), router], stubs } })
+    await vi.waitFor(() => expect(wrapper.get('.balance-notice').text()).toBe('Some balances are temporarily unavailable.'))
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.balance-notice').text()).toBe('Algunos saldos no están disponibles temporalmente.')
+  })
+
   it('reactively localizes balance, friend, and recent-group copy without changing shared data', async () => {
     const router = createAppRouter()
     await router.push('/tabs/home')

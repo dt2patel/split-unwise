@@ -50,6 +50,20 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('mobile group creation', () => {
+  it('reactively localizes the application fallback when group loading fails', async () => {
+    const source = createDemoRepository()
+    const repository = { ...source, mode: 'firebase' as const, groups: { ...source.groups, async list() { throw undefined } } }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), router], stubs } })
+    await vi.waitFor(() => expect(wrapper.get('[role="alert"]').text()).toBe('The group could not be loaded.'))
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('No se pudo cargar el grupo.')
+  })
+
   it('reactively localizes the group journal and native create card while preserving group data', async () => {
     const router = createAppRouter()
     const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), router], stubs } })

@@ -34,6 +34,14 @@ const balanceStore = useAccountBalanceStore()
 const { t } = useI18n()
 const { groups, currentUser, error, isLoading } = storeToRefs(groupStore)
 const { projection, isLoading: balancesLoading, notice: balanceNotice } = storeToRefs(balanceStore)
+const groupError = computed(() => {
+  if (!error.value) return undefined
+  if (error.value.kind === 'remote') return error.value.message
+  return t(error.value.code === 'money-overflow' ? 'groups.error.moneyOverflow' : 'groups.error.load')
+})
+const balanceNoticeCopy = computed(() => balanceNotice.value === 'partial'
+  ? t('home.balancePartial')
+  : balanceNotice.value === 'unavailable' ? t('home.balanceUnavailable') : undefined)
 const recentGroups = computed(() => groupContexts(groups.value))
 const directFriendCount = computed(() => friendshipContexts(groups.value).length)
 const balanceByGroup = computed(() => new Map(projection.value.groups.map((balance) => [balance.groupId, balance])))
@@ -108,7 +116,7 @@ function absolute(position: SignedCurrencyPosition): SignedCurrencyPosition { re
         <p class="browse-page__intro">{{ t('home.intro') }}</p>
 
         <p v-if="isLoading" role="status">{{ t('home.loadingGroups') }}</p>
-        <p v-else-if="error" role="alert">{{ error }}</p>
+        <p v-else-if="groupError" role="alert">{{ groupError }}</p>
         <template v-else>
           <ion-card v-if="projection.currencies.length" class="balance-card" data-testid="account-summary" :aria-label="t('home.accountBalance')">
             <ion-card-content>
@@ -132,7 +140,7 @@ function absolute(position: SignedCurrencyPosition): SignedCurrencyPosition { re
           <ion-card v-else class="balance-card balance-card--settled" data-testid="account-summary" :aria-label="t('home.accountBalance')">
             <ion-card-content><p>{{ t('home.overallBalance') }}</p><h2>{{ t('home.allSettled') }}</h2><span>{{ t('home.addGroupFriend') }}</span></ion-card-content>
           </ion-card>
-          <p v-if="balanceNotice" class="balance-notice" role="status">{{ balanceNotice }}</p>
+          <p v-if="balanceNoticeCopy" class="balance-notice" role="status">{{ balanceNoticeCopy }}</p>
 
           <section class="friends-card" aria-labelledby="friends-title">
             <div class="section-heading">

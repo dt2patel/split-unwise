@@ -28,6 +28,8 @@ const groupPath = `/tabs/groups/${groupId}`
 const deepUrl = new URL(groupPath, hostedOrigin).href
 const friendshipDeepUrl = new URL(`/tabs/groups/${friendshipGroupId}`, hostedOrigin).href
 const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
+// Intentional horizontal scrollers must be listed here by their test ID or generated ion-content index.
+const intentionalHorizontalScrollHosts = new Set()
 
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
@@ -186,12 +188,7 @@ async function verifyPaymentHandleProfile(page) {
   const paypal = page.getByTestId('paypal-handle')
   const venmo = page.getByTestId('venmo-handle')
   await paypal.waitFor({ state: 'visible' })
-  await page.waitForFunction(() => {
-    const name = document.querySelector('#account-name')
-    const save = document.querySelector('[data-action="save-profile"]')
-    return name instanceof HTMLInputElement && name.value.length > 0
-      && save instanceof HTMLButtonElement && !save.disabled
-  }, undefined, { timeout: 120_000 })
+  await waitForAccountHydration(page)
   await paypal.fill('@hosted.owner.paypal')
   await venmo.fill('@hosted-owner-venmo')
   await page.locator('[data-action="save-profile"]').click()
@@ -238,8 +235,12 @@ async function verifyLanguagePreference(page) {
     await page.getByTestId('open-account-delete').getByText(expectation.deleteAccount, { exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
     await assertNoHorizontalOverflow(page, `${locale} Account at 390px`)
     if (locale === 'de') {
+      await waitForAccountHydration(page)
       await page.setViewportSize({ width: 320, height: 844 })
       await assertNoHorizontalOverflow(page, 'German Account at 320px')
+      await page.getByTestId('open-account-delete').click()
+      await page.getByTestId('account-deletion-modal').waitFor({ state: 'visible' })
+      await assertNoHorizontalOverflow(page, 'German Account deletion card at 320px')
       await page.setViewportSize({ width: 390, height: 844 })
     }
 
@@ -278,8 +279,36 @@ async function verifyLanguagePreference(page) {
 }
 
 async function assertNoHorizontalOverflow(page, label) {
-  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
-  if (overflow > 1) throw new Error(`Hosted ${label} overflowed the mobile viewport by ${overflow}px.`)
+  const documentOverflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  const scrollHosts = (await page.locator('ion-content').evaluateAll(async (contents) => Promise.all(contents.map(async (ionContent, index) => {
+    const ionPage = ionContent.closest('.ion-page')
+    const modal = ionContent.closest('ion-modal')
+    const rect = ionContent.getBoundingClientRect()
+    const style = getComputedStyle(ionContent)
+    const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
+      && !ionPage?.classList.contains('ion-page-hidden') && (!modal || modal.classList.contains('show-modal'))
+    if (!visible) return undefined
+    const scrollElement = await ionContent.getScrollElement()
+    const testId = ionContent.closest('[data-testid]')?.getAttribute('data-testid')
+    return {
+      id: testId ? `testid:${testId}` : `ion-content:${index}`,
+      scrollWidth: scrollElement.scrollWidth,
+      clientWidth: scrollElement.clientWidth,
+    }
+  })))).filter(Boolean)
+  const overflowingHosts = scrollHosts.filter((host) => host.scrollWidth > host.clientWidth + 1 && !intentionalHorizontalScrollHosts.has(host.id))
+  if (documentOverflow > 1 || overflowingHosts.length > 0) {
+    throw new Error(`Hosted ${label} overflowed its mobile scroll host: document=${documentOverflow}px; ion-content=${JSON.stringify(scrollHosts)}.`)
+  }
+}
+
+async function waitForAccountHydration(page) {
+  await page.waitForFunction(() => {
+    const name = document.querySelector('#account-name')
+    const save = document.querySelector('[data-action="save-profile"]')
+    return name instanceof HTMLInputElement && name.value.length > 0
+      && save instanceof HTMLButtonElement && !save.disabled
+  }, undefined, { timeout: 120_000 })
 }
 
 async function verifyPaymentProviderHandoffs(page) {

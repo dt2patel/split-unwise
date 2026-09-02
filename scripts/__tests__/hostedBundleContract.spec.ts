@@ -94,4 +94,15 @@ describe('hosted bundle proof contract', () => {
     expect(browser).toContain('verifyInvitationAcceptance')
     expect(browser).toContain('invitation-verification-required')
   })
+
+  it('measures each visible Ionic scroll host and the hydrated 320px deletion card for overflow', () => {
+    const browser = readFileSync(resolve(process.cwd(), 'scripts/runHostedBrowserProof.mjs'), 'utf8')
+
+    expect(browser).toContain('getScrollElement()')
+    expect(browser).toContain('intentionalHorizontalScrollHosts')
+    expect(browser).toContain('scrollWidth: scrollElement.scrollWidth')
+    expect(browser).toContain('waitForAccountHydration(page)')
+    expect(browser).toContain("'German Account deletion card at 320px'")
+    expect(browser).toContain("getByTestId('account-deletion-modal')")
+  })
 })

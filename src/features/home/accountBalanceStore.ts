@@ -12,12 +12,14 @@ export type AccountBalanceCoverage =
   | { readonly status: 'idle'; readonly loadedContextIds: readonly []; readonly failedContextIds: readonly [] }
   | { readonly status: 'loading' | 'complete' | 'partial' | 'error'; readonly loadedContextIds: readonly string[]; readonly failedContextIds: readonly string[] }
 
+export type AccountBalanceNotice = 'partial' | 'unavailable'
+
 export const useAccountBalanceStore = defineStore('account-balances', () => {
   const session = getAppSession()
   const projection = ref<AccountBalanceProjection>(emptyProjection())
   const coverage = ref<AccountBalanceCoverage>(emptyCoverage())
   const isLoading = ref(false)
-  const notice = ref<string>()
+  const notice = ref<AccountBalanceNotice>()
   let requestNumber = 0
   let loadedSignature: string | undefined
   let visibleSignature: string | undefined
@@ -87,10 +89,10 @@ export const useAccountBalanceStore = defineStore('account-balances', () => {
         loadedSignature = signature
       } else if (loadedContextIds.length > 0) {
         coverage.value = { status: 'partial', loadedContextIds, failedContextIds }
-        notice.value = 'Some balances are temporarily unavailable.'
+        notice.value = 'partial'
       } else {
         coverage.value = { status: 'error', loadedContextIds, failedContextIds }
-        notice.value = 'Balances are temporarily unavailable.'
+        notice.value = 'unavailable'
       }
     })().finally(() => {
       if (request === requestNumber) isLoading.value = false

@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref, shallowRef, type ComponentPublicIns
 import { storeToRefs } from 'pinia'
 import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonLabel, IonModal, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToolbar } from '@ionic/vue'
 import { arrowUndoOutline } from 'ionicons/icons'
-import { useI18n } from '../../app/i18n'
+import { useI18n, type MessageKey } from '../../app/i18n'
 import { activityDestination, activityText, useActivityStore } from './activityStore'
 import NotificationCenter from '../notifications/NotificationCenter.vue'
 import type { ActivityFilter, ActivityItem } from '../../data/repositories'
@@ -12,13 +12,18 @@ import { getAppSession } from '../../data'
 
 const store = useActivityStore()
 const { locale, t } = useI18n()
+type CatalogMessage = { readonly key: MessageKey; readonly values?: Readonly<Record<string, string | number>> }
+type RestoreFeedback = { readonly key: 'activity.restored' | 'activity.restoredForEveryone'; readonly label?: string; readonly fallbackKey: 'activity.defaultExpense' | 'groups.title' }
+type PageMessage = CatalogMessage | { readonly kind: 'remote'; readonly message: string }
 const { allItems, error, filter, isFiltering, isLoading, isLoadingMore, items, nextCursor } = storeToRefs(store)
 const presentingElement = shallowRef<HTMLElement>()
 const restoreTarget = ref<ActivityItem>()
 const restoring = ref(false)
-const restoreError = ref('')
-const feedback = ref('')
+const restoreError = ref<PageMessage>()
+const feedback = ref<RestoreFeedback>()
 const restoreKind = computed<'group' | 'expense'>(() => restoreTarget.value?.kind === 'expense.deleted' ? 'expense' : 'group')
+const restoreErrorCopy = computed(() => translateMessage(restoreError.value))
+const feedbackCopy = computed(() => feedback.value ? t(feedback.value.key, { label: feedback.value.label ?? t(feedback.value.fallbackKey) }) : undefined)
 
 const filters = computed<readonly { value: ActivityFilter; label: string }[]>(() => [
   { value: 'all', label: t('activity.filter.all') },
@@ -26,7 +31,12 @@ const filters = computed<readonly { value: ActivityFilter; label: string }[]>(()
   { value: 'comments', label: t('activity.filter.comments') },
   { value: 'payments', label: t('activity.filter.payments') },
 ])
-const status = computed(() => isLoading.value || isFiltering.value ? t('activity.loading') : error.value)
+const activityError = computed(() => {
+  if (!error.value) return undefined
+  if (error.value.kind === 'remote') return error.value.message
+  return t(error.value.code === 'load-more' ? 'activity.error.loadMore' : 'activity.error.load')
+})
+const status = computed(() => isLoading.value || isFiltering.value ? t('activity.loading') : activityError.value)
 
 onMounted(() => { void store.load() })
 
@@ -47,28 +57,31 @@ function isRestorable(item: ActivityItem): boolean {
 }
 function openRestore(item: ActivityItem): void {
   if (!isRestorable(item)) return
-  restoreError.value = ''; feedback.value = ''; restoreTarget.value = item
+  restoreError.value = undefined; feedback.value = undefined; restoreTarget.value = item
 }
 function closeRestore(): void {
   if (restoring.value) return
-  restoreTarget.value = undefined; restoreError.value = ''
+  restoreTarget.value = undefined; restoreError.value = undefined
 }
 async function restoreItem(): Promise<void> {
   const target = restoreTarget.value
   if (!target || restoring.value || !isRestorable(target)) return
-  restoring.value = true; restoreError.value = ''
+  restoring.value = true; restoreError.value = undefined
   try {
     const command = target.kind === 'expense.deleted'
       ? { kind: 'expense.restore' as const, operationId: createClientOperationId('expense-restore'), groupId: target.groupId, expenseId: target.expenseId!, expectedRevision: target.revision! }
       : { kind: 'group.restore' as const, operationId: createClientOperationId('group-restore'), groupId: target.groupId }
     const result = await getAppSession().queue.submit(command).result()
     if (result.status !== 'saved') throw new Error(result.reason)
-    const label = target.subject.label ?? (target.kind === 'expense.deleted' ? t('activity.defaultExpense') : t('groups.title'))
     await store.load('all')
     restoreTarget.value = undefined
-    feedback.value = target.kind === 'expense.deleted' ? t('activity.restored', { label }) : t('activity.restoredForEveryone', { label })
+    feedback.value = {
+      key: target.kind === 'expense.deleted' ? 'activity.restored' : 'activity.restoredForEveryone',
+      label: target.subject.label,
+      fallbackKey: target.kind === 'expense.deleted' ? 'activity.defaultExpense' : 'groups.title',
+    }
     await nextTick()
-  } catch (reason) { restoreError.value = reason instanceof Error ? reason.message : String(reason) } finally { restoring.value = false }
+  } catch (reason) { restoreError.value = reason instanceof Error ? { kind: 'remote', message: reason.message } : { key: 'activity.error.restore' } } finally { restoring.value = false }
 }
 async function canDismissRestore(): Promise<boolean> { return !restoring.value }
 
@@ -86,6 +99,10 @@ function syncStateLabel(value: ActivityItem['syncState']): string {
   if (value === 'stale') return t('activity.sync.stale')
   if (value === 'failed') return t('activity.sync.failed')
   return t('activity.sync.conflicted')
+}
+function translateMessage(message: PageMessage | undefined): string | undefined {
+  if (!message) return undefined
+  return 'kind' in message ? message.message : t(message.key, message.values)
 }
 </script>
 
@@ -113,8 +130,8 @@ function syncStateLabel(value: ActivityItem['syncState']): string {
           </ion-segment-button>
         </ion-segment>
 
-        <p v-if="status" class="activity-page__status" :role="error ? 'alert' : 'status'">{{ status }}</p>
-        <p v-if="feedback" class="activity-page__feedback" role="status" aria-live="polite">{{ feedback }}</p>
+        <p v-if="status" class="activity-page__status" :role="activityError ? 'alert' : 'status'">{{ status }}</p>
+        <p v-if="feedbackCopy" class="activity-page__feedback" role="status" aria-live="polite">{{ feedbackCopy }}</p>
         <p v-if="!status && items.length === 0" class="activity-page__status">{{ t('activity.empty') }}</p>
         <ol v-else-if="!status" class="activity-list" :aria-label="t('activity.accountAria')">
           <li v-for="item in items" :key="item.id" :data-activity-id="item.id" :data-sync-state="item.syncState">
@@ -155,7 +172,7 @@ function syncStateLabel(value: ActivityItem['syncState']): string {
           <p v-if="restoreKind === 'group'">{{ t('activity.restoreGroupDescription') }}</p>
           <p v-else>{{ t('activity.restoreExpenseDescription') }}</p>
           <div class="restore-card__note"><strong>{{ t(restoreKind === 'group' ? 'activity.restoreGroupNoteTitle' : 'activity.restoreExpenseNoteTitle') }}</strong><p>{{ t(restoreKind === 'group' ? 'activity.restoreGroupNote' : 'activity.restoreExpenseNote') }}</p></div>
-          <p v-if="restoreError" class="restore-card__error" role="alert">{{ restoreError }}</p>
+          <p v-if="restoreErrorCopy" class="restore-card__error" role="alert">{{ restoreErrorCopy }}</p>
           <ion-button :data-testid="restoreKind === 'expense' ? 'confirm-expense-restore' : 'confirm-group-restore'" expand="block" shape="round" :disabled="restoring" @click="restoreItem">{{ restoring ? t(restoreKind === 'group' ? 'activity.restoringGroup' : 'activity.restoringExpense') : t(restoreKind === 'group' ? 'activity.restoreGroup' : 'activity.restoreExpense') }}</ion-button>
         </main>
       </ion-content>

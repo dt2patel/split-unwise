@@ -56,7 +56,7 @@ describe('account balance store', () => {
 
     expect(store.projection.groups.map(({ groupId }) => groupId)).toEqual(['first'])
     expect(store.coverage).toEqual({ status: 'partial', loadedContextIds: ['first'], failedContextIds: ['second'] })
-    expect(store.notice).toBe('Some balances are temporarily unavailable.')
+    expect(store.notice).toBe('partial')
   })
 
   it('does not let an older principal/context request overwrite a newer result', async () => {
