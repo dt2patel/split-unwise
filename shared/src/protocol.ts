@@ -79,6 +79,24 @@ export function parseExecuteCommandRequest(value: unknown): ExecuteCommandReques
   return executeCommandRequestSchema.parse(value)
 }
 
+/** Gives the target half of an expense move its own replay/activity identity. */
+export function deriveMoveTargetOperationId(sourceOperationId: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(sourceOperationId)) throw new Error('Source move operation ID is invalid.')
+  const suffix = '.move-target'
+  if (sourceOperationId.length + suffix.length <= 128) return `${sourceOperationId}${suffix}`
+  const boundedSuffix = `${suffix}-${fnv1a64(sourceOperationId)}`
+  return `${sourceOperationId.slice(0, 128 - boundedSuffix.length)}${boundedSuffix}`
+}
+
+function fnv1a64(value: string): string {
+  let hash = 0xcbf29ce484222325n
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index))
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n)
+  }
+  return hash.toString(16).padStart(16, '0')
+}
+
 export function canonicalize(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`

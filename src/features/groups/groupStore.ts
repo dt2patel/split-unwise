@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { getAppSession } from '../../data'
 import { buildCurrencyTotals } from '../../data/aggregates'
 import type { CommandFailure, CommandHandle, CommandOperation } from '../../data/commandQueue'
-import type { ActivityItem, ExpenseDeleteCommand, ExpenseEditCommand, ExpenseRow, Group, Member } from '../../data'
+import type { ActivityItem, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, ExpenseRow, Group, Member } from '../../data'
 import type { Money } from '../../domain/model'
 import { projectActivityTimeline } from '../activity/activityStore'
 import { compareFirestoreStrings } from '../../data/timeline'
@@ -290,8 +290,32 @@ export const useGroupStore = defineStore('groups', () => {
     for (const operation of queue.snapshot()) {
       if (operation.status !== 'fresh' && operation.status !== 'stale') continue
       const envelope = operation.envelope
-      if ((envelope.kind !== 'expense.add' && envelope.kind !== 'expense.edit' && envelope.kind !== 'expense.delete') || envelope.groupId !== groupId) continue
+      if (!isExpenseOperationRelevant(envelope, groupId)) continue
       if (operation.result.status !== 'saved') continue
+      if (envelope.kind === 'expense.edit' && isExpenseMove(envelope)) {
+        if (!('expense' in operation.result)) continue
+        const saved = operation.result.expense
+        let sourceExpense = envelope.groupId === groupId ? byId.get(envelope.expenseId) : undefined
+        let targetExpense = saved.groupId === groupId ? byId.get(saved.id) : undefined
+        if (!isConfirmedMoveSource(sourceExpense, envelope)) {
+          try {
+            sourceExpense = await repository.expenses.getById(envelope.groupId, envelope.expenseId)
+          } catch {
+            continue
+          }
+        }
+        if (!isConfirmedMoveTarget(targetExpense, saved)) {
+          try {
+            targetExpense = await repository.expenses.getById(saved.groupId, saved.id)
+          } catch {
+            continue
+          }
+        }
+        if (!isConfirmedMoveSource(sourceExpense, envelope) || !isConfirmedMoveTarget(targetExpense, saved)) continue
+        rememberTombstoneRevision(envelope.groupId, envelope.expenseId, sourceExpense.revision, tombstoneWatermarks)
+        await acknowledge(envelope.operationId)
+        continue
+      }
       if ('expense' in operation.result) {
         const saved = operation.result.expense
         if (isRevisionRetired(groupId, saved.id, saved.revision, tombstoneWatermarks)) {
@@ -392,9 +416,29 @@ function projectJournal(
   for (const operation of operations) {
     if (acknowledgedOperationIds.has(operation.envelope.operationId)) continue
     const envelope = operation.envelope
-    if ((envelope.kind !== 'expense.add' && envelope.kind !== 'expense.edit' && envelope.kind !== 'expense.delete') || envelope.groupId !== groupId) continue
+    if (!isExpenseOperationRelevant(envelope, groupId)) continue
     if (operation.status !== 'fresh' && operation.status !== 'stale') continue
     if (operation.result.status !== 'saved') continue
+    if (envelope.kind === 'expense.edit' && isExpenseMove(envelope)) {
+      if (groupId === envelope.groupId) {
+        considerConfirmed(confirmed, envelope.expenseId, {
+          revision: envelope.expectedRevision + 1,
+          deleted: true,
+          sourcePriority: 3,
+          tieBreaker: envelope.operationId,
+        })
+      } else if ('expense' in operation.result) {
+        const saved = operation.result.expense
+        considerConfirmed(confirmed, saved.id, {
+          revision: saved.revision,
+          deleted: Boolean(saved.deletedAt),
+          ...(saved.deletedAt ? {} : { row: saved }),
+          sourcePriority: 1,
+          tieBreaker: envelope.operationId,
+        })
+      }
+      continue
+    }
     if ('expense' in operation.result) {
       const saved = operation.result.expense
       considerConfirmed(confirmed, saved.id, {
@@ -421,7 +465,7 @@ function projectJournal(
   for (const operation of operations) {
     if (acknowledgedOperationIds.has(operation.envelope.operationId)) continue
     const envelope = operation.envelope
-    if ((envelope.kind !== 'expense.add' && envelope.kind !== 'expense.edit' && envelope.kind !== 'expense.delete') || envelope.groupId !== groupId) continue
+    if (!isExpenseOperationRelevant(envelope, groupId)) continue
     if (operation.status === 'fresh' || operation.status === 'stale') continue
 
     if (envelope.kind === 'expense.delete') {
@@ -443,8 +487,31 @@ function projectJournal(
       continue
     }
 
+    if (envelope.kind === 'expense.edit' && isExpenseMove(envelope)) {
+      if (groupId === envelope.groupId) {
+        if (operation.status === 'pending') {
+          projected.delete(envelope.expenseId)
+          continue
+        }
+        const existing = projected.get(envelope.expenseId)
+        const remote = operation.status === 'conflicted' ? highestExpense(existing, conflictRemote(operation.conflict)) : undefined
+        const source = existing ?? remote
+        if (!source) continue
+        projected.set(envelope.expenseId, {
+          ...source,
+          syncState: operation.status,
+          clientOperationId: envelope.operationId,
+          retryable: operation.status === 'failed' && isRetryable(operation.error),
+          ...(remote ? { conflictRemote: remote } : {}),
+          ...(operation.status === 'conflicted' ? { conflictIntent: 'edit' as const } : {}),
+        })
+        continue
+      }
+      if (operation.status !== 'pending') continue
+    }
+
     const draft = envelope.kind === 'expense.edit' ? envelope.draft : envelope
-    const existing = envelope.kind === 'expense.edit' ? projected.get(envelope.expenseId) : undefined
+    const existing = envelope.kind === 'expense.edit' && !isExpenseMove(envelope) ? projected.get(envelope.expenseId) : undefined
     const remotePayload = operation.status === 'conflicted' ? conflictRemote(operation.conflict) : undefined
     const remote = operation.status === 'conflicted' ? highestExpense(existing, remotePayload) : undefined
     const row: JournalExpenseRow = {
@@ -523,9 +590,40 @@ function rememberTombstone(
   watermarks: Map<string, Map<string, number>>,
 ): void {
   if (operation.status !== 'fresh' && operation.status !== 'stale') return
-  if (operation.result.status !== 'saved' || !('tombstone' in operation.result)) return
+  if (operation.result.status !== 'saved') return
+  if (operation.envelope.kind === 'expense.edit' && isExpenseMove(operation.envelope) && 'expense' in operation.result) {
+    rememberTombstoneRevision(operation.envelope.groupId, operation.envelope.expenseId, operation.envelope.expectedRevision + 1, watermarks)
+    return
+  }
+  if (!('tombstone' in operation.result)) return
   const tombstone = operation.result.tombstone
   rememberTombstoneRevision(tombstone.groupId, tombstone.id, tombstone.revision, watermarks)
+}
+
+function isExpenseMove(envelope: ExpenseEditCommand): boolean {
+  return envelope.draft.groupId !== envelope.groupId
+}
+
+function isExpenseOperationRelevant(
+  envelope: CommandOperation['envelope'],
+  groupId: string,
+): envelope is ExpenseAddCommand | ExpenseEditCommand | ExpenseDeleteCommand {
+  if (envelope.kind !== 'expense.add' && envelope.kind !== 'expense.edit' && envelope.kind !== 'expense.delete') return false
+  return envelope.groupId === groupId || (envelope.kind === 'expense.edit' && isExpenseMove(envelope) && envelope.draft.groupId === groupId)
+}
+
+function isConfirmedMoveSource(expense: ExpenseRow | undefined, command: ExpenseEditCommand): expense is ExpenseRow {
+  return expense?.id === command.expenseId
+    && expense.groupId === command.groupId
+    && expense.deletedAt !== undefined
+    && expense.revision >= command.expectedRevision + 1
+}
+
+function isConfirmedMoveTarget(expense: ExpenseRow | undefined, saved: ExpenseRow): expense is ExpenseRow {
+  return expense?.id === saved.id
+    && expense.groupId === saved.groupId
+    && expense.deletedAt === undefined
+    && expense.revision >= saved.revision
 }
 
 function rememberTombstoneRevision(

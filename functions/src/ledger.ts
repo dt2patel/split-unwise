@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Firestore, Transaction, DocumentReference, DocumentData, QueryDocumentSnapshot } from 'firebase-admin/firestore'
-import { assertSplitMatchesAllocations, canonicalize, computeLedgerBalancePlans, parseExecuteCommandRequest, validateLedgerExpense, type ExecuteCommandRequest, type SharedCommandEnvelope } from '@split-unwise/shared'
+import { assertSplitMatchesAllocations, canonicalize, computeLedgerBalancePlans, deriveMoveTargetOperationId, parseExecuteCommandRequest, validateLedgerExpense, type ExecuteCommandRequest, type SharedCommandEnvelope } from '@split-unwise/shared'
 
 export type CallableResult = Record<string, unknown>
 
@@ -279,6 +279,7 @@ function recordReferencesMember(data: DocumentData, memberId: string): boolean {
 async function executeExpenseCommand(context: GroupContext, actor: Actor): Promise<CallableResult> {
   const { db, transaction, uid, command, groupId, membership, isoNow } = context
   if (command.kind !== 'expense.add' && command.kind !== 'expense.edit' && command.kind !== 'expense.delete') throw new LedgerError('invalid-argument', 'Expense command is invalid.')
+  if (command.kind === 'expense.edit' && command.draft.groupId !== groupId) return executeExpenseMove(context, actor, command)
   const expenseId = command.kind === 'expense.add' ? deterministicId('exp', command.operationId) : command.expenseId
   const expenseRef = db.doc(`groups/${groupId}/expenses/${expenseId}`)
   const existingSnapshot = command.kind === 'expense.add' ? undefined : await transaction.get(expenseRef)
@@ -332,6 +333,99 @@ async function executeExpenseCommand(context: GroupContext, actor: Actor): Promi
 
   if (command.kind === 'expense.delete') return { kind: command.kind, operationId: command.operationId, status: 'saved', tombstone: { id: expenseId, groupId, revision, deletedAt: isoNow } }
   return { kind: command.kind, operationId: command.operationId, status: 'saved', expense }
+}
+
+async function executeExpenseMove(
+  context: GroupContext,
+  actor: Actor,
+  command: Extract<SharedCommandEnvelope, { kind: 'expense.edit' }>,
+): Promise<CallableResult> {
+  const { db, transaction, uid, groupId: sourceGroupId, isoNow } = context
+  const targetGroupId = command.draft.groupId
+  const targetOperationId = deriveMoveTargetOperationId(command.operationId)
+  const sourceExpenseRef = db.doc(`groups/${sourceGroupId}/expenses/${command.expenseId}`)
+  const targetExpenseId = deterministicId('exp', targetOperationId)
+  const targetExpenseRef = db.doc(`groups/${targetGroupId}/expenses/${targetExpenseId}`)
+  const targetGroupRef = db.doc(`groups/${targetGroupId}`)
+  const targetMembershipRef = db.doc(`groups/${targetGroupId}/members/${uid}`)
+  const [sourceSnapshot, targetSnapshot, targetGroupSnapshot, targetMembershipSnapshot] = await Promise.all([
+    transaction.get(sourceExpenseRef),
+    transaction.get(targetExpenseRef),
+    transaction.get(targetGroupRef),
+    transaction.get(targetMembershipRef),
+  ])
+  if (!targetGroupSnapshot.exists) throw new LedgerError('not-found', 'The target group was not found.')
+  if (targetMembershipSnapshot.data()?.status !== 'active') throw new LedgerError('permission-denied', 'Active target group membership is required.')
+  const targetGroup = targetGroupSnapshot.data()!
+  if (targetGroup.status === 'deleted') throw new LedgerError('failed-precondition', 'Restore the target group before moving an expense into it.')
+  if (!Array.isArray(targetGroup.memberIds) || !targetGroup.memberIds.includes(uid)) throw new LedgerError('failed-precondition', 'Target group membership changed remotely.')
+  if (!sourceSnapshot.exists) throw new LedgerError('not-found', 'Expense was not found.')
+  const source = sourceSnapshot.data()!
+  const sourceRevision = positiveRevision(source.revision)
+  if (sourceRevision !== command.expectedRevision) throw new LedgerError('failed-precondition', 'Expense changed remotely.')
+  if (source.deletedAt) throw new LedgerError('failed-precondition', 'Deleted expenses cannot be moved.')
+  if (source.recurringTemplateId || source.recurrence) throw new LedgerError('failed-precondition', 'Stop the recurring series before moving this expense.')
+  if (command.draft.recurrence || command.draft.occurrenceEditScope) throw new LedgerError('failed-precondition', 'Move the expense first, then create a recurring series in the target group.')
+  if (targetSnapshot.exists) throw new LedgerError('already-exists', 'The deterministic target expense already exists.')
+  try {
+    validateLedgerExpense({ id: targetExpenseId, total: command.draft.total, payments: command.draft.payments, allocations: command.draft.allocations, ...(command.draft.reimbursement ? { reimbursement: true } : {}) })
+    assertSplitMatchesAllocations(command.draft.total, command.draft.splitMethod, command.draft.allocations)
+  } catch (error) { throw new LedgerError('invalid-argument', message(error)) }
+  await assertMembersActive(db, transaction, targetGroupId, [...command.draft.payments, ...command.draft.allocations].map(({ participantId }) => participantId))
+  await assertPromotedAssets(db, transaction, targetGroupId, command.draft.attachmentRefs)
+
+  const sourceBalanceRef = db.doc(`groups/${sourceGroupId}/balance/current`)
+  const targetBalanceRef = db.doc(`groups/${targetGroupId}/balance/current`)
+  const [sourceBalanceSnapshot, targetBalanceSnapshot] = await Promise.all([
+    transaction.get(sourceBalanceRef),
+    transaction.get(targetBalanceRef),
+  ])
+  const sourceBalance = sourceBalanceSnapshot.data() ?? {}
+  const targetBalance = targetBalanceSnapshot.data() ?? {}
+  const sourceBalanceRevision = sourceBalanceSnapshot.exists && Number.isSafeInteger(sourceBalance.balanceRevision) ? Number(sourceBalance.balanceRevision) + 1 : 1
+  const targetBalanceRevision = targetBalanceSnapshot.exists && Number.isSafeInteger(targetBalance.balanceRevision) ? Number(targetBalance.balanceRevision) + 1 : 1
+  const sourceTombstone = { ...source, revision: sourceRevision + 1, updatedAt: isoNow, updatedBy: actor, deletedAt: isoNow }
+  const targetExpense: DocumentData = {
+    id: targetExpenseId,
+    groupId: targetGroupId,
+    description: command.draft.description,
+    date: command.draft.date,
+    total: command.draft.total,
+    payments: command.draft.payments,
+    allocations: command.draft.allocations,
+    category: command.draft.category,
+    splitMethod: command.draft.splitMethod,
+    attachmentRefs: command.draft.attachmentRefs,
+    ...(command.draft.notes ? { notes: command.draft.notes } : {}),
+    ...(command.draft.reimbursement ? { reimbursement: true } : {}),
+    createdAt: isoNow,
+    createdBy: actor,
+    updatedAt: isoNow,
+    updatedBy: actor,
+    revision: 1,
+  }
+  const [nextSourceBalance, nextTargetBalance] = await Promise.all([
+    calculateBalanceWithMutation(db, transaction, sourceGroupId, { type: 'expense.delete', id: command.expenseId, document: sourceTombstone }, sourceBalanceRevision, sourceBalance.simplifyDebtsEnabled !== false),
+    calculateBalanceWithMutation(db, transaction, targetGroupId, { type: 'expense.add', id: targetExpenseId, document: targetExpense }, targetBalanceRevision, targetBalance.simplifyDebtsEnabled !== false),
+  ])
+  const sourceActivity = expenseActivity(sourceGroupId, command.expenseId, command.operationId, 'expense.deleted', sourceRevision + 1, actor, isoNow, String(source.description ?? 'Expense'))
+  const targetActivity = expenseActivity(targetGroupId, targetExpenseId, targetOperationId, 'expense.created', 1, actor, isoNow, command.draft.description)
+
+  transaction.set(sourceExpenseRef, sourceTombstone)
+  transaction.create(sourceExpenseRef.collection('revisions').doc(String(sourceRevision + 1).padStart(10, '0')), {
+    groupId: sourceGroupId, expenseId: command.expenseId, revision: sourceRevision + 1, operationId: command.operationId,
+    action: 'deleted', actor, createdAt: isoNow, expense: sourceTombstone,
+  })
+  transaction.create(db.doc(`groups/${sourceGroupId}/activity/${sourceActivity.id}`), sourceActivity)
+  transaction.set(sourceBalanceRef, nextSourceBalance)
+  transaction.create(targetExpenseRef, targetExpense)
+  transaction.create(targetExpenseRef.collection('revisions').doc('0000000001'), {
+    groupId: targetGroupId, expenseId: targetExpenseId, revision: 1, operationId: targetOperationId,
+    action: 'created', actor, createdAt: isoNow, expense: targetExpense,
+  })
+  transaction.create(db.doc(`groups/${targetGroupId}/activity/${targetActivity.id}`), targetActivity)
+  transaction.set(targetBalanceRef, nextTargetBalance)
+  return { kind: command.kind, operationId: command.operationId, status: 'saved', expense: targetExpense }
 }
 
 async function executeCommentCommand(context: GroupContext, actor: Actor): Promise<CallableResult> {

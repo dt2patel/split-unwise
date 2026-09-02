@@ -90,6 +90,34 @@ describe('CommandQueue', () => {
     await expect(dropped.submit({ ...addExpense('dropped-reimbursement'), reimbursement: true }).result()).rejects.toMatchObject({ code: 'validation' })
   })
 
+  it('accepts a cross-context edit only when its saved expense is newly created in the target context', async () => {
+    const command: ExpenseEditCommand = {
+      ...editExpense('move-expense'),
+      draft: expenseDraft('target-group'),
+    }
+    const moved: ExpenseRow = {
+      ...expenseRow('target-group', 'expense-move-target'),
+      revision: 1,
+    }
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.edit': async () => savedEdit(command, moved) },
+    })
+
+    await expect(queue.submit(command).result()).resolves.toMatchObject({
+      status: 'saved', expense: { id: 'expense-move-target', groupId: 'target-group', revision: 1 },
+    })
+
+    const invalid = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.edit': async (submitted) => {
+        if (submitted.kind !== 'expense.edit') throw new Error('Unexpected command')
+        return savedEdit(submitted, { ...moved, groupId: submitted.groupId, revision: submitted.expectedRevision + 1 })
+      } },
+    })
+    await expect(invalid.submit({ ...command, operationId: 'move-expense-invalid-result' }).result()).rejects.toMatchObject({ code: 'validation' })
+  })
+
   it('rejects recurrence commands with a template ID outside the strict document-ID grammar', async () => {
     const queue = createBoundQueue({ storage: createMemoryCommandStorage(), handlers: {} })
     const command: RecurrenceMaterializeCommand = {

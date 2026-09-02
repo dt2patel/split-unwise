@@ -4,11 +4,12 @@ import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQ
 import { createDemoRepository } from '../../../data/demoRepository'
 import { appPrincipalKey, createAppSession, setAppSessionForTesting } from '../../../data/session'
 import type { CommandOperation } from '../../../data/commandQueue'
-import type { ExpenseAddCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow } from '../../../data/repositories'
+import type { AppRepository, ExpenseAddCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRow } from '../../../data/repositories'
 import { useGroupStore } from '../groupStore'
 
 const ORIGIN_UID = 'maya-p'
 const PRINCIPAL_KEY = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: ORIGIN_UID })
+const TARGET_GROUP_ID = 'road-trip-weekend'
 
 const command = (operationId: string): ExpenseAddCommand => ({
   kind: 'expense.add', operationId, groupId: 'lake-house-weekend', description: 'Ice', date: '2026-08-30', total: { currency: 'USD', minorAmount: 400 },
@@ -477,7 +478,167 @@ describe('pending journal projection', () => {
     await expect(store.discardFailedOperation('validation-failure')).resolves.toBe(true)
     expect(store.journalExpenses.some(({ clientOperationId }) => clientOperationId === 'validation-failure')).toBe(false)
   })
+
+  it('projects a pending move out of its source and into its target context', async () => {
+    const baseRepository = createDemoRepository()
+    const groceries = await baseRepository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture expense')
+    const repository = await repositoryWithTargetGroup(baseRepository)
+    const move = moveCommand('pending-context-move', groceries)
+    const pending = {
+      originPrincipalKey: PRINCIPAL_KEY,
+      submittedAt: '2026-09-01T20:00:00.000Z',
+      status: 'pending',
+      envelope: move,
+    } as CommandOperation
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith([pending]), handlers: {} })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const store = useGroupStore()
+
+    await store.loadGroup(groceries.groupId)
+    expect(store.journalExpenses.some(({ id }) => id === groceries.id)).toBe(false)
+
+    await store.loadGroup(TARGET_GROUP_ID)
+    expect(store.journalExpenses).toEqual([
+      expect.objectContaining({ groupId: TARGET_GROUP_ID, description: 'Moved groceries', syncState: 'pending', clientOperationId: move.operationId }),
+    ])
+  })
+
+  it('keeps a failed move on its source without leaking a draft into the target', async () => {
+    const baseRepository = createDemoRepository()
+    const groceries = await baseRepository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture expense')
+    const repository = await repositoryWithTargetGroup(baseRepository)
+    const move = moveCommand('failed-context-move', groceries)
+    const failed = {
+      originPrincipalKey: PRINCIPAL_KEY,
+      submittedAt: '2026-09-01T20:00:00.000Z',
+      status: 'failed',
+      envelope: move,
+      error: { code: 'network', message: 'offline', retryable: true },
+    } as CommandOperation
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith([failed]), handlers: {} })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const store = useGroupStore()
+
+    await store.loadGroup(groceries.groupId)
+    expect(store.journalExpenses.find(({ id }) => id === groceries.id)).toMatchObject({
+      description: groceries.description,
+      syncState: 'failed',
+      clientOperationId: move.operationId,
+      retryable: true,
+    })
+
+    await store.loadGroup(TARGET_GROUP_ID)
+    expect(store.journalExpenses).toEqual([])
+  })
+
+  it('keeps a saved move projected until both authoritative halves are confirmed', async () => {
+    const baseRepository = createDemoRepository()
+    const groceries = await baseRepository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture expense')
+    const move = moveCommand('saved-context-move', groceries)
+    const moved = movedExpense(groceries)
+    const saved = {
+      originPrincipalKey: PRINCIPAL_KEY,
+      submittedAt: '2026-09-01T20:00:00.000Z',
+      status: 'fresh',
+      envelope: move,
+      result: { kind: 'expense.edit', operationId: move.operationId, status: 'saved', expense: moved },
+    } as CommandOperation
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith([saved]), handlers: {} })
+    const repository = await repositoryWithTargetGroup(baseRepository)
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const store = useGroupStore()
+
+    await store.loadGroup(groceries.groupId)
+    expect(store.journalExpenses.some(({ id }) => id === groceries.id)).toBe(false)
+    expect(queue.get(move.operationId)).toMatchObject({ status: 'fresh' })
+
+    await store.loadGroup(TARGET_GROUP_ID)
+    expect(store.journalExpenses).toEqual([expect.objectContaining({ id: moved.id, groupId: TARGET_GROUP_ID, syncState: 'fresh' })])
+    expect(queue.get(move.operationId)).toMatchObject({ status: 'fresh' })
+  })
+
+  it('acknowledges a saved move only after source tombstone and target creation are authoritative', async () => {
+    const baseRepository = createDemoRepository()
+    const groceries = await baseRepository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture expense')
+    const move = moveCommand('confirmed-context-move', groceries)
+    const moved = movedExpense(groceries)
+    const tombstone = { ...groceries, revision: 2, updatedAt: '2026-09-01T20:00:01.000Z', deletedAt: '2026-09-01T20:00:01.000Z' }
+    const saved = {
+      originPrincipalKey: PRINCIPAL_KEY,
+      submittedAt: '2026-09-01T20:00:00.000Z',
+      status: 'fresh',
+      envelope: move,
+      result: { kind: 'expense.edit', operationId: move.operationId, status: 'saved', expense: moved },
+    } as CommandOperation
+    const queue = new CommandQueue({ originPrincipalKey: PRINCIPAL_KEY, storage: storageWith([saved]), handlers: {} })
+    const repository = await repositoryWithTargetGroup(baseRepository, { targetExpenses: [moved], sourceTombstone: tombstone })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const store = useGroupStore()
+
+    await store.loadGroup(TARGET_GROUP_ID)
+
+    expect(queue.get(move.operationId)).toBeUndefined()
+    expect(store.journalExpenses).toEqual([expect.objectContaining({ id: moved.id, groupId: TARGET_GROUP_ID })])
+    await store.loadGroup(groceries.groupId)
+    expect(store.journalExpenses.some(({ id }) => id === groceries.id)).toBe(false)
+  })
 })
+
+function moveCommand(operationId: string, expense: ExpenseRow): ExpenseEditCommand {
+  return {
+    ...editCommand(operationId, expense, expense.revision, 'Moved groceries'),
+    draft: { ...draftFor(expense, 'Moved groceries'), groupId: TARGET_GROUP_ID },
+  }
+}
+
+function movedExpense(source: ExpenseRow): ExpenseRow {
+  return {
+    ...source,
+    id: 'moved-groceries',
+    groupId: TARGET_GROUP_ID,
+    description: 'Moved groceries',
+    revision: 1,
+    createdAt: '2026-09-01T20:00:01.000Z',
+    updatedAt: '2026-09-01T20:00:01.000Z',
+    deletedAt: undefined,
+  }
+}
+
+async function repositoryWithTargetGroup(
+  base: AppRepository,
+  options: { readonly targetExpenses?: readonly ExpenseRow[]; readonly sourceTombstone?: ExpenseRow } = {},
+): Promise<AppRepository> {
+  const sourceGroup = await base.groups.getById('lake-house-weekend')
+  if (!sourceGroup) throw new Error('Missing fixture group')
+  const sourceMembers = await base.groups.listMembers(sourceGroup.id)
+  const targetGroup = { ...sourceGroup, id: TARGET_GROUP_ID, name: 'Road trip weekend' }
+  const targetExpenses = options.targetExpenses ?? []
+  return {
+    ...base,
+    groups: {
+      ...base.groups,
+      async getById(groupId) { return groupId === TARGET_GROUP_ID ? targetGroup : base.groups.getById(groupId) },
+      async listMembers(groupId) { return groupId === TARGET_GROUP_ID ? sourceMembers : base.groups.listMembers(groupId) },
+    },
+    expenses: {
+      ...base.expenses,
+      async listForGroup(groupId) {
+        if (groupId === TARGET_GROUP_ID) return targetExpenses
+        if (groupId === sourceGroup.id && options.sourceTombstone) return []
+        return base.expenses.listForGroup(groupId)
+      },
+      async getById(groupId, expenseId) {
+        if (groupId === TARGET_GROUP_ID) return targetExpenses.find(({ id }) => id === expenseId)
+        if (groupId === sourceGroup.id && options.sourceTombstone?.id === expenseId) return options.sourceTombstone
+        return base.expenses.getById(groupId, expenseId)
+      },
+    },
+  }
+}
 
 function storageWith(operations: readonly CommandOperation[]) {
   return createMemoryCommandStorage({

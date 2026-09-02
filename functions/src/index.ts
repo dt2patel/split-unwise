@@ -57,14 +57,18 @@ export const scheduledRecurrenceProcessing = onSchedule({ region, schedule: 'eve
 
 export const projectGroupActivity = onDocumentCreated({ region, document: 'groups/{groupId}/activity/{activityId}', minInstances: 0, maxInstances: 10, concurrency: 20, timeoutSeconds: 60 }, async (event) => {
   if (!event.data) return
-  await fanOutActivity(db, event.params.groupId, event.params.activityId, event.data.data())
+  const activity = event.data.data()
+  if (!activity) return
+  await fanOutActivity(db, event.params.groupId, event.params.activityId, activity)
 })
 
 export const processPrivateJob = onDocumentCreated({ region, document: 'users/{uid}/jobs/{jobId}', minInstances: 0, maxInstances: 2, concurrency: 1, memory: '512MiB', timeoutSeconds: 300, secrets: [ocrProviderKey] }, async (event) => {
   if (!event.data) return
+  const job = event.data.data()
+  if (!job) return
   // Reading the bound secret here ensures only this worker receives provider material.
   if (process.env.FUNCTIONS_EMULATOR !== 'true') void ocrProviderKey.value()
-  await runJobWorker(db, storage, event.params.uid, event.params.jobId, event.data.data(), process.env.FUNCTIONS_EMULATOR === 'true')
+  await runJobWorker(db, storage, event.params.uid, event.params.jobId, job, process.env.FUNCTIONS_EMULATOR === 'true')
 })
 
 function guarded(handler: (request: CallableRequest<unknown>) => Promise<unknown>): (request: CallableRequest<unknown>) => Promise<unknown> {

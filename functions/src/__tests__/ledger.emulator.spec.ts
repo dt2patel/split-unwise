@@ -157,6 +157,90 @@ suite('ledger against the Firestore emulator', () => {
     })
   })
 
+  it('atomically moves an ordinary expense between shared groups and rejects inaccessible targets', async () => {
+    await Promise.all([
+      db.doc('groups/group-b').set({ name: 'Group B', currency: 'USD', memberIds: ['owner', 'member'] }),
+      db.doc('groups/group-b/members/owner').set({ status: 'active', role: 'owner', canManage: true }),
+      db.doc('groups/group-b/members/member').set({ status: 'active', role: 'member', canManage: false }),
+      db.doc('groups/group-b/settings/defaults').set({ schemaVersion: 1, groupId: 'group-b', revision: 1, simplifyDebtsEnabled: true }),
+      db.doc('groups/group-b/balance/current').set({ groupId: 'group-b', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] }),
+      db.doc('groups/private-target').set({ name: 'Private target', currency: 'USD', memberIds: ['owner'] }),
+      db.doc('groups/private-target/members/owner').set({ status: 'active', role: 'owner', canManage: true }),
+      db.doc('groups/private-target/settings/defaults').set({ schemaVersion: 1, groupId: 'private-target', revision: 1, simplifyDebtsEnabled: true }),
+      db.doc('groups/private-target/balance/current').set({ groupId: 'private-target', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] }),
+    ])
+    const sourceResult = await executeLedgerCommand(db, 'owner', addRequest('move-source'), new Date('2026-09-01T12:00:00.000Z'))
+    const source = sourceResult.expense as Record<string, any>
+    const { kind: _kind, operationId: _operationId, ...baseDraft } = addRequest('move-draft').command
+
+    await expect(executeLedgerCommand(db, 'member', {
+      schemaVersion: 1,
+      command: {
+        kind: 'expense.edit', operationId: 'move-private-denied', groupId: 'group-a', expenseId: source.id, expectedRevision: 1,
+        draft: { ...baseDraft, groupId: 'private-target', description: 'Moved expense' },
+      },
+    }, new Date('2026-09-01T12:01:00.000Z'))).rejects.toMatchObject({ code: 'permission-denied' })
+    expect((await db.doc(`groups/group-a/expenses/${source.id}`).get()).data()).toMatchObject({ revision: 1 })
+    expect((await db.doc(`groups/group-a/expenses/${source.id}`).get()).data()).not.toHaveProperty('deletedAt')
+
+    const request = {
+      schemaVersion: 1 as const,
+      command: {
+        kind: 'expense.edit' as const, operationId: 'move-shared', groupId: 'group-a', expenseId: source.id as string, expectedRevision: 1,
+        draft: { ...baseDraft, groupId: 'group-b', description: 'Moved expense' },
+      },
+    }
+    const moved = await executeLedgerCommand(db, 'member', request, new Date('2026-09-01T12:02:00.000Z'))
+    const replay = await executeLedgerCommand(db, 'member', request, new Date('2026-09-01T13:00:00.000Z'))
+
+    expect(replay).toEqual(moved)
+    expect(moved).toMatchObject({
+      kind: 'expense.edit', status: 'saved',
+      expense: { groupId: 'group-b', description: 'Moved expense', revision: 1, createdBy: { id: 'member' }, updatedBy: { id: 'member' } },
+    })
+    const target = moved.expense as Record<string, any>
+    expect(target.id).not.toBe(source.id)
+    expect((await db.doc(`groups/group-a/expenses/${source.id}`).get()).data()).toMatchObject({
+      revision: 2, deletedAt: '2026-09-01T12:02:00.000Z', createdBy: { id: 'owner' }, updatedBy: { id: 'member' },
+    })
+    expect((await db.doc(`groups/group-b/expenses/${target.id}`).get()).data()).toMatchObject({ groupId: 'group-b', revision: 1 })
+    expect((await db.doc('groups/group-a/balance/current').get()).data()).toMatchObject({ balanceRevision: 2, simplified: [] })
+    expect((await db.doc('groups/group-b/balance/current').get()).data()).toMatchObject({
+      balanceRevision: 1,
+      simplified: [{ fromParticipantId: 'member', toParticipantId: 'owner', money: { currency: 'USD', minorAmount: 500 } }],
+    })
+    expect((await db.doc(`groups/group-a/expenses/${source.id}`).collection('revisions').get()).size).toBe(2)
+    expect((await db.doc(`groups/group-b/expenses/${target.id}`).collection('revisions').get()).size).toBe(1)
+    expect((await db.collection('groups/group-a/activity').get()).size).toBe(2)
+    expect((await db.collection('groups/group-b/activity').get()).size).toBe(1)
+    expect((await db.collection('groups/group-a/activity').where('kind', '==', 'expense.deleted').get()).docs[0]?.data()).toMatchObject({ operationId: 'move-shared' })
+    expect((await db.collection('groups/group-b/activity').get()).docs[0]?.data()).toMatchObject({ operationId: 'move-shared.move-target' })
+  })
+
+  it('requires a recurring series to stop before its source expense can move', async () => {
+    await Promise.all([
+      db.doc('groups/group-b').set({ name: 'Group B', currency: 'USD', memberIds: ['owner', 'member'] }),
+      db.doc('groups/group-b/members/owner').set({ status: 'active', role: 'owner', canManage: true }),
+      db.doc('groups/group-b/members/member').set({ status: 'active', role: 'member', canManage: false }),
+      db.doc('groups/group-b/settings/defaults').set({ schemaVersion: 1, groupId: 'group-b', revision: 1, simplifyDebtsEnabled: true }),
+      db.doc('groups/group-b/balance/current').set({ groupId: 'group-b', balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] }),
+    ])
+    const recurringRequest = addRequest('recurring-move-source')
+    recurringRequest.command.recurrence = { frequency: 'monthly', anchor: { month: 9, day: 1 }, timeZone: 'America/Chicago' }
+    const sourceResult = await executeLedgerCommand(db, 'owner', recurringRequest)
+    const source = sourceResult.expense as Record<string, any>
+    const { kind: _kind, operationId: _operationId, ...baseDraft } = addRequest('recurring-move-draft').command
+
+    await expect(executeLedgerCommand(db, 'owner', {
+      schemaVersion: 1,
+      command: {
+        kind: 'expense.edit', operationId: 'recurring-move-denied', groupId: 'group-a', expenseId: source.id, expectedRevision: 1,
+        draft: { ...baseDraft, groupId: 'group-b', description: 'Moved recurring expense' },
+      },
+    })).rejects.toMatchObject({ code: 'failed-precondition' })
+    expect((await db.doc(`groups/group-a/expenses/${source.id}`).get()).data()).not.toHaveProperty('deletedAt')
+  })
+
   it('records a confirmed settlement against the exact balance revision and updates debts', async () => {
     await executeLedgerCommand(db, 'owner', addRequest('expense-before-settlement'))
     const result = await executeLedgerCommand(db, 'member', { schemaVersion: 1, command: { kind: 'settlement.record', operationId: 'settlement-operation', groupId: 'group-a', expectedBalanceRevision: 1, basis: { kind: 'simplified', senderId: 'member', recipientId: 'owner', currency: 'USD', debtMinor: 500 }, money: { currency: 'USD', minorAmount: 200 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true } })

@@ -161,6 +161,121 @@ describe('expense store lifecycle', () => {
     expect(store.editor.description).toBe('Groceries')
   })
 
+  it('keeps the source context in a move command and navigates to the newly created target expense', async () => {
+    const base = createDemoRepository()
+    const currentUser = await base.app.getCurrentUser()
+    const original = await base.expenses.getById('lake-house-weekend', 'groceries')
+    if (!original) throw new Error('Expected the seeded expense')
+    const target: Group = {
+      id: 'target-trip', kind: 'group', name: 'Target trip', currency: 'USD',
+      memberIds: (await base.groups.listMembers('lake-house-weekend')).map(({ id }) => id), syncState: 'fresh',
+    }
+    const repository: AppRepository = {
+      ...base,
+      groups: {
+        ...base.groups,
+        async list() { return [...await base.groups.list(), target] },
+        async getById(groupId) { return groupId === target.id ? target : base.groups.getById(groupId) },
+        async listMembers(groupId) { return groupId === target.id ? base.groups.listMembers('lake-house-weekend') : base.groups.listMembers(groupId) },
+        async getSettings(groupId) { return groupId === target.id ? { schemaVersion: 1, groupId, revision: 1 } : base.groups.getSettings(groupId) },
+      },
+    }
+    let submitted: Extract<import('../../../data/repositories').CommandEnvelope, { kind: 'expense.edit' }> | undefined
+    const queue = new CommandQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: { 'expense.edit': async (command) => {
+        if (command.kind !== 'expense.edit') throw new Error('Unexpected command kind')
+        submitted = command
+        return {
+          kind: command.kind, operationId: command.operationId, status: 'saved',
+          expense: {
+            ...original, ...command.draft, id: 'expense-move-target', groupId: command.draft.groupId,
+            createdAt: '2026-09-01T12:00:00.000Z', updatedAt: '2026-09-01T12:00:00.000Z',
+            createdBy: { id: currentUser.id, displayName: currentUser.displayName },
+            updatedBy: { id: currentUser.id, displayName: currentUser.displayName }, revision: 1, syncState: 'fresh',
+          },
+        }
+      } },
+    })
+    queue.bind(currentUser.id)
+    const session = createAppSession({ repository, commandStorage: createMemoryCommandStorage() })
+    setAppSessionForTesting({ ...session, queue })
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: original.groupId, expenseId: original.id })
+
+    await expect(store.selectContext(target.id)).resolves.toBe(true)
+    expect(store.returnPath).toBe('/tabs/groups/target-trip')
+    completeValidEditor(store)
+    expect(await store.submit('move-from-editor')).toBe(true)
+    await queue.submit(queue.get('move-from-editor')!.envelope).result()
+    await eventually(() => store.saveState === 'saved')
+
+    expect(submitted).toMatchObject({
+      kind: 'expense.edit', groupId: original.groupId, expenseId: original.id,
+      draft: { groupId: target.id },
+    })
+    expect(store.returnPath).toBe('/tabs/groups/expenses/expense-move-target?groupId=target-trip')
+    expect(store.notice).toContain('moved')
+  })
+
+  it('does not let a recurring expense move away from its series context', async () => {
+    const base = createDemoRepository()
+    const target: Group = {
+      id: 'target-trip', kind: 'group', name: 'Target trip', currency: 'USD',
+      memberIds: (await base.groups.listMembers('lake-house-weekend')).map(({ id }) => id), syncState: 'fresh',
+    }
+    const repository: AppRepository = {
+      ...base,
+      groups: {
+        ...base.groups,
+        async list() { return [...await base.groups.list(), target] },
+        async listMembers(groupId) { return groupId === target.id ? base.groups.listMembers('lake-house-weekend') : base.groups.listMembers(groupId) },
+        async getSettings(groupId) { return groupId === target.id ? { schemaVersion: 1, groupId, revision: 1 } : base.groups.getSettings(groupId) },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit' })
+
+    await expect(store.selectContext(target.id)).resolves.toBe(false)
+    expect(store.editor.groupId).toBe('lake-house-weekend')
+    expect(store.errors.context).toMatch(/recurring/i)
+  })
+
+  it('requires source receipts to be removed before moving into another context', async () => {
+    const base = createDemoRepository()
+    const target: Group = {
+      id: 'target-trip', kind: 'group', name: 'Target trip', currency: 'USD',
+      memberIds: (await base.groups.listMembers('lake-house-weekend')).map(({ id }) => id), syncState: 'fresh',
+    }
+    const repository: AppRepository = {
+      ...base,
+      groups: {
+        ...base.groups,
+        async list() { return [...await base.groups.list(), target] },
+        async listMembers(groupId) { return groupId === target.id ? base.groups.listMembers('lake-house-weekend') : base.groups.listMembers(groupId) },
+        async getSettings(groupId) { return groupId === target.id ? { schemaVersion: 1, groupId, revision: 1 } : base.groups.getSettings(groupId) },
+      },
+      expenses: {
+        ...base.expenses,
+        async getById(groupId, expenseId) {
+          const expense = await base.expenses.getById(groupId, expenseId)
+          return expense && expenseId === 'groceries' ? { ...expense, attachmentRefs: ['asset-existing-receipt'] } : expense
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'groceries' })
+
+    await expect(store.selectContext(target.id)).resolves.toBe(false)
+    expect(store.editor.groupId).toBe('lake-house-weekend')
+    expect(store.errors.context).toMatch(/remove.*receipt/i)
+
+    store.editor.attachmentRefs = []
+    await expect(store.selectContext(target.id)).resolves.toBe(true)
+  })
+
   it('ignores a stale initialization that resolves after a newer route context', async () => {
     const base = createDemoRepository()
     const slow = deferred<Group | undefined>()

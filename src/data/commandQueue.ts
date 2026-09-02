@@ -450,7 +450,7 @@ function isExecutionEnvelopeFor(execution: CommandEnvelope, original: CommandEnv
   if (execution.kind === 'expense.add' && original.kind === 'expense.add') return equivalentWithPromotedAttachments(execution, original, 'attachmentRefs')
   if (execution.kind === 'expense.edit' && original.kind === 'expense.edit') {
     if (execution.groupId !== original.groupId || execution.expenseId !== original.expenseId || execution.expectedRevision !== original.expectedRevision) return false
-    if (execution.draft.groupId !== execution.groupId || original.draft.groupId !== original.groupId) return false
+    if (execution.draft.groupId !== original.draft.groupId) return false
     return equivalentWithPromotedAttachments(execution.draft, original.draft, 'attachmentRefs')
   }
   if (execution.kind === 'comment.add' && original.kind === 'comment.add') return equivalentWithPromotedAttachments(execution, original, 'attachmentRefs')
@@ -490,7 +490,7 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
   if (!isRecord(value) || !isOperationId(value.operationId) || typeof value.kind !== 'string') return false
   switch (value.kind) {
     case 'expense.add': return isExpenseDraft(value)
-    case 'expense.edit': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision) && isExpenseDraft(value.draft) && value.draft.groupId === value.groupId
+    case 'expense.edit': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision) && isExpenseDraft(value.draft)
     case 'expense.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonNegativeInteger(value.expectedRevision)
     case 'comment.add': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.body) && isStringArray(value.attachmentRefs)
     case 'comment.delete': return isNonEmptyString(value.groupId) && isNonEmptyString(value.expenseId) && isNonEmptyString(value.commentId)
@@ -533,9 +533,12 @@ function isCommandResultFor(value: unknown, envelope: CommandEnvelope): value is
   switch (envelope.kind) {
     case 'expense.add': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId && value.expense.revision === 1 && value.expense.deletedAt === undefined
       && Boolean(value.expense.reimbursement) === Boolean(envelope.reimbursement)
-    case 'expense.edit': return isExpenseRow(value.expense) && value.expense.groupId === envelope.groupId && value.expense.id === envelope.expenseId
-      && value.expense.revision === envelope.expectedRevision + 1 && value.expense.deletedAt === undefined
-      && Boolean(value.expense.reimbursement) === Boolean(envelope.draft.reimbursement)
+    case 'expense.edit': {
+      const move = envelope.draft.groupId !== envelope.groupId
+      return isExpenseRow(value.expense) && value.expense.groupId === envelope.draft.groupId
+        && (move ? value.expense.id !== envelope.expenseId && value.expense.revision === 1 : value.expense.id === envelope.expenseId && value.expense.revision === envelope.expectedRevision + 1)
+        && value.expense.deletedAt === undefined && Boolean(value.expense.reimbursement) === Boolean(envelope.draft.reimbursement)
+    }
     case 'expense.delete': return isTombstone(value.tombstone, envelope)
     case 'comment.add': return isSavedComment(value, envelope, false)
     case 'comment.delete': return isSavedComment(value, envelope, true)

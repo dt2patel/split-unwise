@@ -265,6 +265,7 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         return { kind: 'expense.add', operationId: command.operationId, status: 'saved', expense: cloneExpense(expense) }
       }
       case 'expense.edit': {
+        if (command.draft.groupId !== command.groupId) throw new Error('Moving expenses between contexts requires the Firebase shared ledger.')
         const previous = editableExpense(command.groupId, command.expenseId)
         assertExpenseMutationPermission(previous)
         if (command.expectedRevision !== previous.revision) throw new CommandConflictError('The expense changed remotely.', { local: clone(command.draft), remote: cloneExpense(previous) })

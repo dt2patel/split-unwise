@@ -19,14 +19,16 @@ const friendEmail = `live-friend-${suffix}@example.com`
 const thirdEmail = `live-third-${suffix}@example.com`
 const unverifiedEmail = `live-unverified-${suffix}@example.com`
 const groupId = `grp-live-${suffix}`
+const friendshipGroupId = `grp-live-friendship-${suffix}`
 const groupPath = `/tabs/groups/${groupId}`
 const deepUrl = new URL(groupPath, hostedOrigin).href
+const friendshipDeepUrl = new URL(`/tabs/groups/${friendshipGroupId}`, hostedOrigin).href
 const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; authenticated mobile group, Add Expense, atomic cross-group expense move, and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -114,6 +116,7 @@ async function verifyAuthenticatedMobileJourney() {
     await persistedExpense.getByText(browserExpenseDescription, { exact: true }).waitFor({ state: 'visible' })
     const restoredOfflineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
     if (await restoredOfflineReadyDismiss.isVisible()) await restoredOfflineReadyDismiss.click()
+    await verifyExpenseMove(page, persistedExpense, browserExpenseDescription)
     await verifyReimbursementWorkflow(page)
     await verifySwipeBackGesture(context, page)
     await verifyCurrencyConversion(page)
@@ -140,6 +143,43 @@ async function verifyAuthenticatedMobileJourney() {
   } finally {
     await browser.close()
   }
+}
+
+async function verifyExpenseMove(page, sourceRow, description) {
+  await sourceRow.locator('a.expense-row__body').click()
+  await page.waitForURL(new RegExp(`/tabs/groups/expenses/[^/?]+\\?groupId=${escapeRegExp(groupId)}$`))
+  const detail = page.locator('.expense-detail:not(.ion-page-hidden)')
+  await detail.getByRole('heading', { name: description, exact: true }).waitFor({ state: 'visible' })
+  await detail.locator('[data-action="edit-expense"]').click()
+  await page.waitForURL(new RegExp(`/tabs/groups/expenses/[^/?]+/edit\\?groupId=${escapeRegExp(groupId)}$`))
+  await page.getByRole('heading', { name: 'Edit expense', exact: true }).waitFor({ state: 'visible' })
+  await page.locator('#context-sheet-trigger').click()
+
+  const cardModal = page.locator('ion-modal.show-modal')
+  await cardModal.waitFor({ state: 'visible' })
+  await cardModal.getByRole('heading', { name: 'Group or friend', exact: true }).waitFor({ state: 'visible' })
+  if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted expense context picker did not use the Ionic iOS card modal.')
+  await cardModal.locator(`[data-context-id="${friendshipGroupId}"]`).check()
+  await cardModal.locator('[data-action="apply-context"]').click()
+  await cardModal.waitFor({ state: 'hidden' })
+  await page.getByTestId('expense-context').getByText('Live Proof Friend', { exact: true }).waitFor({ state: 'visible' })
+  await dismissAppStatus(page)
+  await page.locator('[data-action="save-expense"]').click()
+  await page.waitForURL((url) => url.href === friendshipDeepUrl || (url.pathname.includes('/tabs/groups/expenses/') && url.searchParams.get('groupId') === friendshipGroupId), { timeout: 120_000 })
+
+  await page.goto(friendshipDeepUrl, { waitUntil: 'domcontentloaded' })
+  const targetGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+  await targetGroup.getByRole('heading', { name: 'Live Proof Friend', exact: true }).waitFor({ state: 'visible' })
+  const movedRow = targetGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: description })
+  await movedRow.getByText(description, { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
+  const targetOverflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (targetOverflow > 1) throw new Error(`Hosted moved-expense target group overflowed the 390px mobile viewport by ${targetOverflow}px.`)
+
+  await page.goto(deepUrl, { waitUntil: 'domcontentloaded' })
+  const sourceGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+  await sourceGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+  await sourceGroup.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
+  if (await sourceGroup.locator('.expense-row', { hasText: description }).count()) throw new Error('Hosted moved expense remained visible in its source group.')
 }
 
 async function verifyReimbursementWorkflow(page) {

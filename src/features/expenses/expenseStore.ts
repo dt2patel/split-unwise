@@ -139,6 +139,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   const mode = ref<'add' | 'edit'>('add')
   const origin = ref<ExpenseOrigin>('home')
   const expenseId = ref<string>()
+  const sourceGroupId = ref<string>()
   const revision = ref<number>()
   const recurringTemplateId = ref<string>()
   const errors = ref<Readonly<Record<string, string>>>({})
@@ -163,6 +164,9 @@ export const useExpenseStore = defineStore('expense-editor', () => {
 
   const isDirty = computed(() => JSON.stringify(editor) !== initialFingerprint)
   const returnPath = computed(() => {
+    if (mode.value === 'edit' && sourceGroupId.value && editor.groupId && sourceGroupId.value !== editor.groupId) {
+      return origin.value === 'groups' ? `/tabs/groups/${encodeURIComponent(editor.groupId)}` : `/tabs/${origin.value}`
+    }
     if (mode.value === 'edit' && expenseId.value && editor.groupId) {
       return `/tabs/${origin.value}/expenses/${encodeURIComponent(expenseId.value)}?groupId=${encodeURIComponent(editor.groupId)}`
     }
@@ -242,6 +246,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       members.value = loadedMembers
       contextName.value = loadedContextName
       revision.value = loadedExpense?.revision
+      sourceGroupId.value = loadedExpense?.groupId
       recurringTemplateId.value = loadedExpense?.recurringTemplateId
       receiptPreview.value = loadedReceiptPreview
       notice.value = imported ? 'Review the imported transaction, choose who shares it, then save when every detail is correct.' : ''
@@ -262,6 +267,15 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     const group = availableGroups.value.find(({ id }) => id === groupId)
     if (!group) {
       errors.value = { ...errors.value, context: 'This group or friend is not available.' }
+      return false
+    }
+    if (mode.value === 'edit' && recurringTemplateId.value && sourceGroupId.value && group.id !== sourceGroupId.value) {
+      errors.value = { ...errors.value, context: 'Recurring expenses cannot move to another group or friend. Stop the series first.' }
+      return false
+    }
+    if (mode.value === 'edit' && sourceGroupId.value && group.id !== sourceGroupId.value
+      && editor.attachmentRefs.some((reference) => !reference.startsWith('local-receipt:'))) {
+      errors.value = { ...errors.value, context: 'Remove existing receipts before moving this expense. You can reattach them in the new group or friend.' }
       return false
     }
     try {
@@ -313,7 +327,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   async function submit(requestedOperationId?: string): Promise<boolean> {
-    if (mode.value === 'edit' && (!expenseId.value || revision.value === undefined)) {
+    if (mode.value === 'edit' && (!sourceGroupId.value || !expenseId.value || revision.value === undefined)) {
       errorSummary.value = 'This edit is missing its expense revision. Reload the expense before saving.'
       saveState.value = 'failed'
       return false
@@ -340,8 +354,9 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     const refreshSubmittedReceipt = submittedReceiptReference && validation.draft.attachmentRefs.includes(submittedReceiptReference)
       ? submittedReceiptReference
       : undefined
+    const moving = mode.value === 'edit' && sourceGroupId.value !== undefined && sourceGroupId.value !== validation.draft.groupId
     const command = mode.value === 'edit'
-      ? { kind: 'expense.edit' as const, operationId, groupId: validation.draft.groupId, expenseId: expenseId.value!, expectedRevision: revision.value!, draft: validation.draft }
+      ? { kind: 'expense.edit' as const, operationId, groupId: sourceGroupId.value!, expenseId: expenseId.value!, expectedRevision: revision.value!, draft: validation.draft }
       : { kind: 'expense.add' as const, operationId, ...validation.draft }
     lastOperationId.value = operationId
     saveState.value = 'pending'
@@ -367,12 +382,14 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       saveState.value = 'saved'
       const savedExpense = 'expense' in result ? result.expense : undefined
       if (savedExpense) {
+        expenseId.value = savedExpense.id
+        sourceGroupId.value = savedExpense.groupId
         revision.value = savedExpense.revision
         initialFingerprint = submittedFingerprint
       }
       if (refreshSubmittedReceipt) await refreshReceiptPreview(refreshSubmittedReceipt, editorContext)
       if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
-      notice.value = mode.value === 'edit' ? 'Expense updated.' : 'Expense saved.'
+      notice.value = mode.value === 'edit' ? (moving ? `Expense moved to ${contextName.value}.` : 'Expense updated.') : 'Expense saved.'
     }).catch(async () => {
       if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return
       if (refreshSubmittedReceipt) await refreshReceiptPreview(refreshSubmittedReceipt, editorContext)
@@ -504,7 +521,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   return {
-    editor, members, availableGroups, contextName, mode, origin, expenseId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview, receiptDurability,
+    editor, members, availableGroups, contextName, mode, origin, expenseId, sourceGroupId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview, receiptDurability,
     activeSheet, focusTarget, lastOperationId, saveState, isLoading, hasInitialized, loadError, isDirty, returnPath, canSubmit,
     initialize, selectContext, changeCurrency, changeDate, submit, attachReceipt, removeReceipt, confirmReceipt, openSheet, closeSheet, leaveEditor, currencyOptions,
   }
@@ -516,6 +533,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     contextName.value = ''
     currentUser.value = undefined
     expenseId.value = undefined
+    sourceGroupId.value = undefined
     revision.value = undefined
     recurringTemplateId.value = undefined
     errors.value = {}

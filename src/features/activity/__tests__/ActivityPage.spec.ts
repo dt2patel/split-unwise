@@ -288,6 +288,38 @@ describe('Activity durable projection', () => {
     release()
   })
 
+  it('projects distinct source and target events for a pending expense move', async () => {
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const repository = createDemoRepository()
+    const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!groceries) throw new Error('Missing fixture')
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey, storage: createMemoryCommandStorage(),
+      handlers: { 'expense.edit': async (command) => {
+        if (command.kind !== 'expense.edit') throw new Error('Wrong command')
+        await blocked
+        throw new Error('The pending test should release only during cleanup')
+      } },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    queue.submit({
+      kind: 'expense.edit', operationId: 'pending-activity-move', groupId: groceries.groupId, expenseId: groceries.id, expectedRevision: groceries.revision,
+      draft: { groupId: 'target-trip', description: 'Moved groceries', date: groceries.date, total: groceries.total, payments: groceries.payments, allocations: groceries.allocations, category: groceries.category, splitMethod: groceries.splitMethod, attachmentRefs: [] },
+    })
+
+    const store = useActivityStore()
+    await store.load()
+
+    expect(store.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operationId: 'pending-activity-move', groupId: groceries.groupId, kind: 'expense.deleted', expenseId: groceries.id, syncState: 'pending' }),
+      expect.objectContaining({ operationId: 'pending-activity-move.move-target', groupId: 'target-trip', kind: 'expense.created', syncState: 'pending' }),
+    ]))
+    expect(store.items.filter(({ operationId }) => operationId.startsWith('pending-activity-move'))).toHaveLength(2)
+    expect(activityDestination(store.items.find(({ operationId }) => operationId === 'pending-activity-move.move-target')!, 'activity')).toBeUndefined()
+    release()
+  })
+
   it('suppresses conflicted expense audit projections', async () => {
     const repository = createDemoRepository()
     const groceries = await repository.expenses.getById('lake-house-weekend', 'groceries')

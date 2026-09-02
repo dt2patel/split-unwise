@@ -101,21 +101,41 @@ describe('Task 7 queue schema and identity', () => {
     expect(received).toBeUndefined()
   })
 
-  it('rejects an edit whose nested draft crosses the declared group boundary before persistence', async () => {
+  it('retains the declared source while passing an explicit cross-context move to the repository', async () => {
     let writes = 0
     let calls = 0
+    let received: Extract<CommandEnvelope, { kind: 'expense.edit' }> | undefined
     const queue = new CommandQueue({
       originPrincipalKey: principalKey,
       storage: { load: () => undefined, save: async () => { writes += 1 } },
-      handlers: { 'expense.edit': async () => { calls += 1; throw new Error('must not run') } },
+      handlers: { 'expense.edit': async (command) => {
+        if (command.kind !== 'expense.edit') throw new Error('Unexpected command')
+        calls += 1
+        received = command
+        return {
+          kind: command.kind, operationId: command.operationId, status: 'saved',
+          expense: {
+            id: 'moved-expense', groupId: command.draft.groupId, description: command.draft.description, date: command.draft.date,
+            total: command.draft.total, payments: command.draft.payments, allocations: command.draft.allocations,
+            category: command.draft.category, splitMethod: command.draft.splitMethod, attachmentRefs: command.draft.attachmentRefs,
+            createdAt: '2026-09-01T12:00:00.000Z', updatedAt: '2026-09-01T12:00:00.000Z',
+            createdBy: { id: 'maya-p', displayName: 'Maya P.' }, updatedBy: { id: 'maya-p', displayName: 'Maya P.' },
+            revision: 1, syncState: 'fresh',
+          },
+        }
+      } },
     })
-    const draft = expenseAdd('draft-source')
+    const { kind: _kind, operationId: _operationId, ...draft } = expenseAdd('draft-source')
 
-    await expect(queue.submit({
+    const result = await queue.submit({
       kind: 'expense.edit', operationId: 'cross-group-draft', groupId: 'lake-house-weekend', expenseId: 'groceries', expectedRevision: 1,
       draft: { ...draft, groupId: 'another-group' },
-    }).result()).rejects.toMatchObject({ code: 'validation' })
-    expect({ writes, calls }).toEqual({ writes: 0, calls: 0 })
+    }).result()
+
+    expect(result).toMatchObject({ status: 'saved', expense: { id: 'moved-expense', groupId: 'another-group', revision: 1 } })
+    expect(received).toMatchObject({ groupId: 'lake-house-weekend', draft: { groupId: 'another-group' } })
+    expect(calls).toBe(1)
+    expect(writes).toBeGreaterThan(0)
   })
 
   it('quarantines a hydrated execution envelope that changes immutable comment semantics', async () => {

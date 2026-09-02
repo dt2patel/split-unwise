@@ -492,7 +492,7 @@ export async function prepareCommandReceipts(command: CommandEnvelope, provider:
     return { ...command, attachmentRefs: await promoteAttachmentRefs(command.groupId, command.attachmentRefs, provider, receipts) }
   }
   if (command.kind === 'expense.edit') {
-    return { ...command, draft: { ...command.draft, attachmentRefs: await promoteAttachmentRefs(command.groupId, command.draft.attachmentRefs, provider, receipts) } }
+    return { ...command, draft: { ...command.draft, attachmentRefs: await promoteAttachmentRefs(command.draft.groupId, command.draft.attachmentRefs, provider, receipts) } }
   }
   return command
 }

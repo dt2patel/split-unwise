@@ -5,6 +5,7 @@ import type { ActivityFilter, ActivityItem, ActivityKind, ActorSnapshot, Member,
 import type { CommandOperation } from '../../data/commandQueue'
 import { isStrictId } from '../../data/identifiers'
 import { compareTimelineDescending } from '../../data/timeline'
+import { deriveMoveTargetOperationId } from '@split-unwise/shared'
 
 export const useActivityStore = defineStore('activity', () => {
   const session = getAppSession()
@@ -138,50 +139,63 @@ function projectQueueActivity(operations: readonly CommandOperation[], base: rea
     if (operation.status === 'conflicted') return []
     if ((operation.status === 'fresh' || operation.status === 'stale') && operation.result.status === 'saved') {
       if ('activity' in operation.result) return [clone(operation.result.activity)]
-      const saved = savedExpenseActivity(operation, actor, base)
-      return saved ? [saved] : []
+      return savedExpenseActivities(operation, actor, base)
     }
     if (operation.status !== 'pending' && operation.status !== 'failed') return []
-    const projected = pendingActivity(operation, actor, base)
-    return projected ? [projected] : []
+    return pendingActivities(operation, actor, base)
   })
 }
 
-function savedExpenseActivity(operation: Extract<CommandOperation, { status: 'fresh' | 'stale' }>, actor: ActorSnapshot, base: readonly ActivityItem[]): ActivityItem | undefined {
+function savedExpenseActivities(operation: Extract<CommandOperation, { status: 'fresh' | 'stale' }>, actor: ActorSnapshot, base: readonly ActivityItem[]): readonly ActivityItem[] {
   const envelope = operation.envelope
   if (envelope.kind === 'expense.add' || envelope.kind === 'expense.edit') {
-    if (!('expense' in operation.result)) return undefined
+    if (!('expense' in operation.result)) return []
     const expense = operation.result.expense
+    if (envelope.kind === 'expense.edit' && envelope.draft.groupId !== envelope.groupId) {
+      return [
+        activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label: expenseLabel(base, envelope.expenseId) }, actor, expense.updatedAt, operation.status, envelope.expenseId, envelope.expectedRevision + 1),
+        activity(deriveMoveTargetOperationId(envelope.operationId), expense.groupId, 'expense.created', { kind: 'expense', id: expense.id, label: expense.description }, actor, expense.updatedAt, operation.status, expense.id, expense.revision),
+      ]
+    }
     const kind = envelope.kind === 'expense.add' ? 'expense.created' : 'expense.updated'
-    return activity(operation.envelope.operationId, expense.groupId, kind, { kind: 'expense', id: expense.id, label: expense.description }, actor, expense.updatedAt, operation.status, expense.id, expense.revision)
+    return [activity(operation.envelope.operationId, expense.groupId, kind, { kind: 'expense', id: expense.id, label: expense.description }, actor, expense.updatedAt, operation.status, expense.id, expense.revision)]
   }
   if (envelope.kind === 'expense.delete' && 'tombstone' in operation.result) {
     const label = expenseLabel(base, envelope.expenseId)
-    return activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label }, actor, operation.result.tombstone.deletedAt, operation.status, envelope.expenseId, operation.result.tombstone.revision)
+    return [activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label }, actor, operation.result.tombstone.deletedAt, operation.status, envelope.expenseId, operation.result.tombstone.revision)]
   }
-  return undefined
+  return []
 }
 
-function pendingActivity(operation: Extract<CommandOperation, { status: 'failed' | 'pending' }>, actor: ActorSnapshot, base: readonly ActivityItem[]): ActivityItem | undefined {
+function pendingActivities(operation: Extract<CommandOperation, { status: 'failed' | 'pending' }>, actor: ActorSnapshot, base: readonly ActivityItem[]): readonly ActivityItem[] {
   const envelope = operation.envelope
   const syncState = operation.status
   const submittedAt = operation.submittedAt
   if (envelope.kind === 'expense.add') {
-    return activity(envelope.operationId, envelope.groupId, 'expense.created', { kind: 'expense', id: envelope.operationId, label: envelope.description }, actor, submittedAt, syncState)
+    return [activity(envelope.operationId, envelope.groupId, 'expense.created', { kind: 'expense', id: envelope.operationId, label: envelope.description }, actor, submittedAt, syncState)]
   }
   if (envelope.kind === 'expense.edit') {
-    return activity(envelope.operationId, envelope.groupId, 'expense.updated', { kind: 'expense', id: envelope.expenseId, label: envelope.draft.description }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)
+    if (envelope.draft.groupId !== envelope.groupId) {
+      const source = activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label: expenseLabel(base, envelope.expenseId) }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)
+      if (operation.status === 'failed') return [source]
+      const targetOperationId = deriveMoveTargetOperationId(envelope.operationId)
+      return [
+        source,
+        activity(targetOperationId, envelope.draft.groupId, 'expense.created', { kind: 'expense', id: targetOperationId, label: envelope.draft.description }, actor, submittedAt, syncState),
+      ]
+    }
+    return [activity(envelope.operationId, envelope.groupId, 'expense.updated', { kind: 'expense', id: envelope.expenseId, label: envelope.draft.description }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)]
   }
   if (envelope.kind === 'expense.delete') {
-    return activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label: expenseLabel(base, envelope.expenseId) }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)
+    return [activity(envelope.operationId, envelope.groupId, 'expense.deleted', { kind: 'expense', id: envelope.expenseId, label: expenseLabel(base, envelope.expenseId) }, actor, submittedAt, syncState, envelope.expenseId, envelope.expectedRevision + 1)]
   }
   if (envelope.kind === 'comment.add') {
-    return activity(envelope.operationId, envelope.groupId, 'comment.added', { kind: 'comment', id: envelope.operationId, label: envelope.body.trim() }, actor, submittedAt, syncState, envelope.expenseId, undefined, envelope.operationId)
+    return [activity(envelope.operationId, envelope.groupId, 'comment.added', { kind: 'comment', id: envelope.operationId, label: envelope.body.trim() }, actor, submittedAt, syncState, envelope.expenseId, undefined, envelope.operationId)]
   }
   if (envelope.kind === 'comment.delete') {
-    return activity(envelope.operationId, envelope.groupId, 'comment.deleted', { kind: 'comment', id: envelope.commentId }, actor, submittedAt, syncState, envelope.expenseId, undefined, envelope.commentId)
+    return [activity(envelope.operationId, envelope.groupId, 'comment.deleted', { kind: 'comment', id: envelope.commentId }, actor, submittedAt, syncState, envelope.expenseId, undefined, envelope.commentId)]
   }
-  return undefined
+  return []
 }
 
 function activity(

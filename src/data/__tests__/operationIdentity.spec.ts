@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { deriveMoveTargetOperationId } from '@split-unwise/shared'
 import { OperationReplayConflictError, assertReplayIdentity, createOperationIdentity } from '../operationIdentity'
 import type { ExpenseAddCommand } from '../repositories'
 
@@ -12,6 +13,15 @@ const command = (overrides: Partial<ExpenseAddCommand> = {}): ExpenseAddCommand 
 
 describe('operation identity', () => {
   afterEach(() => { vi.unstubAllGlobals() })
+
+  it('derives a distinct bounded target identity for the second half of an expense move', () => {
+    expect(deriveMoveTargetOperationId('move-expense')).toBe('move-expense.move-target')
+    const bounded = deriveMoveTargetOperationId('a'.repeat(128))
+    expect(bounded).toHaveLength(128)
+    expect(bounded).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)
+    expect(bounded).not.toBe('a'.repeat(128))
+    expect(deriveMoveTargetOperationId(`${'a'.repeat(127)}b`)).not.toBe(deriveMoveTargetOperationId(`${'a'.repeat(127)}c`))
+  })
 
   it('replays only an identical authenticated request and rejects changed payload or group', async () => {
     const stored = await createOperationIdentity('maya-p', command())

@@ -10,7 +10,7 @@ import { applyCurrencyConversionToExpense, applyCurrencyConversionToSettlement, 
 import { computeBalancePlans } from '../domain/balances'
 import { buildSparkCommentDeleteRecord, buildSparkCommentRecord, buildSparkExpenseActivityRecord, buildSparkExpenseMutationRecord, buildSparkExpenseRecord, buildSparkFutureRecurringTemplateRecord, buildSparkGroupLifecycleRecord, buildSparkGroupSettingsRecord, buildSparkMaterializationOperationId, buildSparkMemberRemovalRecord, buildSparkNotificationPreferencesRecord, buildSparkNotificationReadAllRecord, buildSparkNotificationReadRecord, buildSparkProfileUpdateRecord, buildSparkRecurrenceCancellationRecord, buildSparkRecurrenceMaterializationRecord, buildSparkSettlementRecord, buildSparkSettlementVoidRecord, type SparkExpenseActivityRecord } from './firebaseSparkMutations'
 import { createOperationIdentity, OperationReplayConflictError } from './operationIdentity'
-import { parseExecuteCommandRequest } from '@split-unwise/shared'
+import { deriveMoveTargetOperationId, parseExecuteCommandRequest } from '@split-unwise/shared'
 import { CommandConflictError } from './commandQueue'
 import { compareTimelineAscending } from './timeline'
 import { recurringOccurrenceId } from '../domain/recurrence'
@@ -440,6 +440,124 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       kind: 'expense.delete', operationId: command.operationId, status: 'saved',
       tombstone: { id: saved.id, groupId: saved.groupId, revision: saved.revision, deletedAt: saved.deletedAt },
     }
+  }
+
+  async function executeSparkExpenseMove(command: ExpenseEditCommand): Promise<ExpenseEditResult> {
+    if (command.draft.groupId === command.groupId) throw new Error('Expense move requires a different target context')
+    if (command.draft.recurrence || command.draft.occurrenceEditScope) throw new Error('Recurring expenses cannot move to another group or friend. Stop the series first.')
+    const { db, firestore, userId } = await context()
+    const sourceCommand: ExpenseDeleteCommand = {
+      kind: 'expense.delete', operationId: command.operationId, groupId: command.groupId,
+      expenseId: command.expenseId, expectedRevision: command.expectedRevision,
+    }
+    const targetCommand: ExpenseAddCommand = { kind: 'expense.add', operationId: deriveMoveTargetOperationId(command.operationId), ...command.draft }
+    const [sourceIdentity, targetIdentity] = await Promise.all([
+      createOperationIdentity(userId, sourceCommand),
+      createOperationIdentity(userId, targetCommand),
+    ])
+    const sourceToken = sourceIdentity.resourceId.slice('operation-'.length)
+    const targetToken = targetIdentity.resourceId.slice('operation-'.length)
+    if (sourceToken === targetToken) throw new Error('Expense move operation identities must be distinct')
+    const sourceMemberReference = firestore.doc(db, 'groups', command.groupId, 'members', userId)
+    const targetMemberReference = firestore.doc(db, 'groups', command.draft.groupId, 'members', userId)
+    const sourceExpenseReference = firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId)
+    const targetExpenseReference = firestore.doc(db, 'groups', command.draft.groupId, 'expenses', `expense-${targetToken}`)
+
+    try {
+      await firestore.runTransaction(db, async (transaction) => {
+        const [sourceMember, targetMember, sourceHead, existingTarget, ...targetAssets] = await Promise.all([
+          transaction.get(sourceMemberReference), transaction.get(targetMemberReference),
+          transaction.get(sourceExpenseReference), transaction.get(targetExpenseReference),
+          ...command.draft.attachmentRefs.map((assetId) => transaction.get(firestore.doc(db, 'groups', command.draft.groupId, 'assets', assetId))),
+        ])
+        const sourceMemberData = sourceMember.data()
+        const targetMemberData = targetMember.data()
+        if (!sourceMember.exists() || !isRecord(sourceMemberData) || sourceMemberData.status !== 'active' || typeof sourceMemberData.displayName !== 'string') {
+          throw new Error('Only active source group members can move an expense')
+        }
+        if (!targetMember.exists() || !isRecord(targetMemberData) || targetMemberData.status !== 'active' || typeof targetMemberData.displayName !== 'string') {
+          throw new Error('Only active target group members can move an expense')
+        }
+        if (!sourceHead.exists()) throw new Error('Expense was not found')
+        const sourceHeadData = sourceHead.data()
+        const targetActor = { id: userId, displayName: targetMemberData.displayName }
+        const targetRecord = buildSparkExpenseRecord(targetCommand, targetActor, targetIdentity, firestore.serverTimestamp())
+        if (targetExpenseReference.id !== targetRecord.expenseId) throw new Error('Expense move target identity is invalid')
+
+        if (sourceHeadData.lastOperationId === sourceIdentity.operationId) {
+          if (sourceHeadData.lastRequestFingerprint !== sourceIdentity.requestFingerprint || sourceHeadData.lastResourceToken !== sourceToken) throw new OperationReplayConflictError()
+          const targetData = existingTarget.data()
+          const targetCreator = isRecord(targetData?.createdBy) ? targetData.createdBy : undefined
+          if (!existingTarget.exists() || targetData?.operationId !== targetIdentity.operationId
+            || targetData.requestFingerprint !== targetIdentity.requestFingerprint || targetData.resourceToken !== targetToken
+            || targetCreator?.id !== userId) throw new OperationReplayConflictError()
+          return
+        }
+        if (existingTarget.exists()) throw new OperationReplayConflictError()
+        if (targetAssets.some((asset) => !asset.exists() || asset.data().groupId !== command.draft.groupId || asset.data().status !== 'ready')) {
+          throw new Error('Remove source receipts before moving this expense, then reattach them in the target group or friendship')
+        }
+
+        const root = decodeExpense(command.groupId, command.expenseId, sourceHeadData)
+        const headRevision = Number.isSafeInteger(sourceHeadData.headRevision) ? Number(sourceHeadData.headRevision) : root.revision
+        const headToken = typeof sourceHeadData.lastResourceToken === 'string'
+          ? sourceHeadData.lastResourceToken
+          : typeof sourceHeadData.resourceToken === 'string' ? sourceHeadData.resourceToken : ''
+        const embeddedCurrent = isRecord(sourceHeadData.current) ? sourceHeadData.current : undefined
+        let currentData: Readonly<Record<string, unknown>> = embeddedCurrent ?? sourceHeadData
+        if (!embeddedCurrent && headRevision > root.revision) {
+          const version = await transaction.get(firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId, 'revisions', headToken))
+          if (!version.exists() || !isRecord(version.data().expense)) throw new Error('Current expense version is unavailable')
+          currentData = version.data().expense as Readonly<Record<string, unknown>>
+        }
+        const current = decodeExpense(command.groupId, command.expenseId, currentData)
+        if (current.recurringTemplateId || current.recurrence) throw new Error('Recurring expenses cannot move to another group or friend. Stop the series first.')
+        try {
+          const sourceMutation = buildSparkExpenseMutationRecord(
+            sourceCommand, sourceHeadData, currentData,
+            { actor: { id: userId, displayName: sourceMemberData.displayName }, canManage: sourceMemberData.canManage === true },
+            sourceIdentity, firestore.serverTimestamp(),
+          )
+          transaction.set(sourceExpenseReference, sourceMutation.headDocument)
+          transaction.set(
+            firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId, 'revisions', sourceMutation.revisionId),
+            sourceMutation.revisionDocument,
+          )
+          transaction.set(targetExpenseReference, targetRecord.expenseDocument)
+        } catch (error) {
+          if (error instanceof Error && /changed remotely/i.test(error.message)) throw new CommandConflictError(error.message, { remote: current })
+          throw error
+        }
+      })
+    } catch (error) {
+      if (isFirestorePermissionDenied(error)) throw new Error('The move was denied. You and every payer or split participant must be active in the target group or friendship.')
+      throw error
+    }
+
+    const sourceRevisionReference = firestore.doc(db, 'groups', command.groupId, 'expenses', command.expenseId, 'revisions', sourceToken)
+    const [savedSourceHead, savedSourceRevision, savedTarget] = await Promise.all([
+      firestore.getDoc(sourceExpenseReference), firestore.getDoc(sourceRevisionReference), firestore.getDoc(targetExpenseReference),
+    ])
+    if (!savedSourceHead.exists() || !savedSourceRevision.exists() || !savedTarget.exists()) throw new Error('Saved expense move is unavailable')
+    const sourceRevision = decodeExpenseRevision(command.groupId, command.expenseId, sourceToken, savedSourceRevision.data())
+    const sourceExpense = await resolveSparkExpenseHead(db, firestore, command.groupId, command.expenseId, savedSourceHead.data())
+    const targetExpense = decodeExpense(command.draft.groupId, savedTarget.id, savedTarget.data())
+    if (!targetExpense.createdBy) throw new Error('Moved expense creator is unavailable')
+    if (sourceRevision.action !== 'deleted' || sourceRevision.operationId !== command.operationId || !sourceExpense.deletedAt
+      || savedTarget.data().operationId !== targetIdentity.operationId || targetExpense.revision !== 1) throw new OperationReplayConflictError()
+    await Promise.all([
+      persistSparkExpenseActivity(db, firestore, command.groupId, buildSparkExpenseActivityRecord({
+        groupId: command.groupId, operationId: command.operationId, kind: 'expense.deleted', actor: sourceRevision.actor,
+        expenseId: command.expenseId, resourceToken: sourceToken, revision: sourceRevision.revision,
+        label: sourceRevision.expense.description, committedAt: savedSourceRevision.data().createdAt,
+      })),
+      persistSparkExpenseActivity(db, firestore, command.draft.groupId, buildSparkExpenseActivityRecord({
+        groupId: command.draft.groupId, operationId: targetIdentity.operationId, kind: 'expense.created', actor: targetExpense.createdBy,
+        expenseId: targetExpense.id, resourceToken: targetToken, revision: 1,
+        label: targetExpense.description, committedAt: savedTarget.data().createdAt,
+      })),
+    ])
+    return { kind: 'expense.edit', operationId: command.operationId, status: 'saved', expense: targetExpense }
   }
 
   async function executeSparkCommentAdd(command: CommentAddCommand): Promise<CommentAddResult> {
@@ -1021,6 +1139,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   async function execute(command: CommandEnvelope): Promise<CommandResult> {
     if (!functionsRegion) {
       if (command.kind === 'expense.add') return executeSparkExpenseAdd(command)
+      if (command.kind === 'expense.edit' && command.draft.groupId !== command.groupId) return executeSparkExpenseMove(command)
       if (command.kind === 'expense.edit' || command.kind === 'expense.delete') return executeSparkExpenseMutation(command)
       if (command.kind === 'comment.add') return executeSparkCommentAdd(command)
       if (command.kind === 'comment.delete') return executeSparkCommentDelete(command)

@@ -527,6 +527,104 @@ describe('Firebase Spark two-account flow', () => {
     ])
   }, 30_000)
 
+  emulatorIt('atomically moves an ordinary expense between two shared contexts while preserving the source audit', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `move-owner-${suffix}@example.com`
+    const friendEmail = `move-friend-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Move Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const source = await createSparkGroup(configuration, { operationId: `move-source-${suffix}`, name: 'Move Source', currency: 'USD' })
+    const target = await createSparkGroup(configuration, { operationId: `move-target-${suffix}`, name: 'Move Target', currency: 'USD' })
+    const privateTarget = await createSparkGroup(configuration, { operationId: `move-private-${suffix}`, name: 'Private Target', currency: 'USD' })
+    const sourceInvitation = await createSparkInvitation(configuration, { groupId: source.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    const targetInvitation = await createSparkInvitation(configuration, { groupId: target.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Move Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, sourceInvitation.invitationId, new URL(sourceInvitation.link).hash.slice('#token='.length))
+    await acceptSparkInvitation(configuration, targetInvitation.invitationId, new URL(targetInvitation.link).hash.slice('#token='.length))
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, ownerEmail, password)
+
+    const ownerRepository = createFirebaseRepository(configuration, owner.user.uid)
+    const added = await ownerRepository.expenses.add({
+      kind: 'expense.add', operationId: `move-expense-${suffix}`, groupId: source.groupId, description: 'Train tickets', date: '2026-09-01',
+      total: { currency: 'USD', minorAmount: 4000 }, payments: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 4000 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2000 } },
+        { participantId: friend.user.uid, money: { currency: 'USD', minorAmount: 2000 } },
+      ],
+      category: 'Transport', splitMethod: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+    })
+    if (added.status !== 'saved') throw new Error('Expected the source expense to save')
+
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, friendEmail, password)
+    const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
+    const moveDraft = {
+      groupId: target.groupId, description: 'Train tickets to Milwaukee', date: '2026-09-01',
+      total: { currency: 'USD' as const, minorAmount: 4000 }, payments: [{ participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 4000 } }],
+      allocations: [
+        { participantId: owner.user.uid, money: { currency: 'USD' as const, minorAmount: 2000 } },
+        { participantId: friend.user.uid, money: { currency: 'USD' as const, minorAmount: 2000 } },
+      ],
+      category: 'Transport', splitMethod: { type: 'equal' as const, participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+    }
+    await expect(friendRepository.expenses.edit({
+      kind: 'expense.edit', operationId: `move-denied-${suffix}`, groupId: source.groupId,
+      expenseId: added.expense.id, expectedRevision: 1, draft: { ...moveDraft, groupId: privateTarget.groupId },
+    })).rejects.toThrow(/active.*target|target.*member/i)
+    const sourceAfterDeniedMove = await friendRepository.expenses.getById(source.groupId, added.expense.id)
+    expect(sourceAfterDeniedMove).toMatchObject({ revision: 1 })
+    expect(sourceAfterDeniedMove?.deletedAt).toBeUndefined()
+
+    const moveCommand = {
+      kind: 'expense.edit' as const, operationId: `move-shared-${suffix}`, groupId: source.groupId,
+      expenseId: added.expense.id, expectedRevision: 1, draft: moveDraft,
+    }
+    const moved = await friendRepository.expenses.edit(moveCommand)
+    await expect(friendRepository.expenses.edit(moveCommand)).resolves.toEqual(moved)
+    expect(moved).toMatchObject({
+      status: 'saved', expense: {
+        groupId: target.groupId, description: moveDraft.description, revision: 1,
+        createdBy: { id: friend.user.uid }, updatedBy: { id: friend.user.uid },
+      },
+    })
+    if (moved.status !== 'saved') throw new Error('Expected the move to save')
+    expect(moved.expense.id).not.toBe(added.expense.id)
+    await expect(friendRepository.expenses.listForGroup(source.groupId)).resolves.toEqual([])
+    await expect(friendRepository.expenses.getById(source.groupId, added.expense.id)).resolves.toMatchObject({
+      revision: 2, deletedAt: expect.any(String), createdBy: { id: owner.user.uid }, updatedBy: { id: friend.user.uid },
+    })
+    await expect(friendRepository.expenses.listForGroup(target.groupId)).resolves.toEqual([
+      expect.objectContaining({ id: moved.expense.id, description: moveDraft.description, revision: 1 }),
+    ])
+    await expect(friendRepository.groups.getBalanceSnapshot(source.groupId)).resolves.toMatchObject({ pairwise: [], simplified: [] })
+    await expect(friendRepository.groups.getBalanceSnapshot(target.groupId)).resolves.toMatchObject({
+      simplified: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2000 } }],
+    })
+    await expect(friendRepository.expenses.listRevisions(source.groupId, added.expense.id)).resolves.toMatchObject([
+      { revision: 1, action: 'created', actor: { id: owner.user.uid } },
+      { revision: 2, action: 'deleted', actor: { id: friend.user.uid } },
+    ])
+    await expect(friendRepository.expenses.listRevisions(target.groupId, moved.expense.id)).resolves.toMatchObject([
+      { revision: 1, action: 'created', actor: { id: friend.user.uid } },
+    ])
+    await expect(friendRepository.activity.listForGroup(source.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ operationId: moveCommand.operationId, kind: 'expense.deleted', expenseId: added.expense.id }),
+    ]))
+    await expect(friendRepository.activity.listForGroup(target.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ operationId: `${moveCommand.operationId}.move-target`, kind: 'expense.created', expenseId: moved.expense.id }),
+    ]))
+  }, 45_000)
+
   emulatorIt('records and voids a replay-safe hosted settlement that both accounts can read', async () => {
     const auth = getAuth(app)
     const suffix = crypto.randomUUID()

@@ -3,6 +3,7 @@ import { afterAll, expect, it } from 'vitest'
 import { getAuth, signInWithEmailAndPassword, updateProfile } from 'firebase/auth'
 import { deleteApp, initializeApp, type FirebaseApp } from 'firebase/app'
 import { collection, doc, getDoc, getDocs, initializeFirestore, limit, query } from 'firebase/firestore'
+import { deriveMoveTargetOperationId } from '@split-unwise/shared'
 import { acceptSparkInvitation, bootstrapFirebaseProfile, createSparkFriendship, createSparkGroup, createSparkInvitation, inspectSparkInvitation, synchronizeFirebaseProfile } from '../firebaseSparkMutations'
 import { getSplitUnwiseFirebaseApp, resetFirebaseBootstrapForTesting } from '../firebaseBootstrap'
 import { createFirebaseRepository } from '../firebaseRepository'
@@ -436,6 +437,82 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   expect(readAll).toMatchObject({ status: 'saved', cutoff, readNotificationIds: expect.arrayContaining(notificationPage.items.slice(0, -1).map(({ notificationId }) => notificationId)) })
   await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(0)
   expect((await ownerNotificationRepository.notifications.list({ limit: 100 })).items.every(({ readAt }) => typeof readAt === 'string')).toBe(true)
+
+  await signInWithEmailAndPassword(auth, friendEmail, password)
+  const moveRepository = createFirebaseRepository(configuration, friendUid)
+  const [sourceBalanceBeforeMove, targetBalanceBeforeMove] = await Promise.all([
+    moveRepository.groups.getBalanceSnapshot(recurringGroupId),
+    moveRepository.groups.getBalanceSnapshot(ledgerGroupId),
+  ])
+  const moveSourceCommand = {
+    kind: 'expense.add' as const, operationId: `live-move-source-${suffix}`, groupId: recurringGroupId,
+    description: 'Hosted expense waiting to move', date: '2026-09-04', total: { currency: 'USD' as const, minorAmount: 1600 },
+    payments: [{ participantId: ownerUid, money: { currency: 'USD' as const, minorAmount: 1600 } }],
+    allocations: [
+      { participantId: ownerUid, money: { currency: 'USD' as const, minorAmount: 800 } },
+      { participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 800 } },
+    ],
+    category: 'Transport', splitMethod: { type: 'equal' as const, participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+  }
+  const moveSource = await moveRepository.expenses.add(moveSourceCommand)
+  if (moveSource.status !== 'saved') throw new Error('Expected the hosted move source to save')
+  const moveCommand = {
+    kind: 'expense.edit' as const, operationId: `live-move-${suffix}`, groupId: recurringGroupId,
+    expenseId: moveSource.expense.id, expectedRevision: 1,
+    draft: {
+      groupId: ledgerGroupId, description: 'Hosted expense moved between groups', date: moveSourceCommand.date,
+      total: moveSourceCommand.total, payments: moveSourceCommand.payments, allocations: moveSourceCommand.allocations,
+      category: moveSourceCommand.category, splitMethod: moveSourceCommand.splitMethod, attachmentRefs: [],
+    },
+  }
+  const moved = await moveRepository.expenses.edit(moveCommand)
+  await expect(moveRepository.expenses.edit(moveCommand)).resolves.toEqual(moved)
+  expect(moved).toMatchObject({
+    status: 'saved', expense: {
+      groupId: ledgerGroupId, description: moveCommand.draft.description, revision: 1,
+      createdBy: { id: friendUid }, updatedBy: { id: friendUid },
+    },
+  })
+  if (moved.status !== 'saved') throw new Error('Expected the hosted move to save')
+  expect(moved.expense.id).not.toBe(moveSource.expense.id)
+  await expect(moveRepository.expenses.getById(recurringGroupId, moveSource.expense.id)).resolves.toMatchObject({
+    revision: 2, deletedAt: expect.any(String), createdBy: { id: friendUid }, updatedBy: { id: friendUid },
+  })
+  expect((await moveRepository.expenses.listForGroup(recurringGroupId)).some(({ id }) => id === moveSource.expense.id)).toBe(false)
+  await expect(moveRepository.expenses.listForGroup(ledgerGroupId)).resolves.toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: moved.expense.id, description: moveCommand.draft.description, revision: 1 }),
+  ]))
+  await expect(moveRepository.expenses.listRevisions(recurringGroupId, moveSource.expense.id)).resolves.toEqual([
+    expect.objectContaining({ revision: 1, action: 'created', operationId: moveSourceCommand.operationId }),
+    expect.objectContaining({ revision: 2, action: 'deleted', operationId: moveCommand.operationId }),
+  ])
+  await expect(moveRepository.expenses.listRevisions(ledgerGroupId, moved.expense.id)).resolves.toEqual([
+    expect.objectContaining({ revision: 1, action: 'created', operationId: deriveMoveTargetOperationId(moveCommand.operationId) }),
+  ])
+  const [sourceBalanceAfterMove, targetBalanceAfterMove] = await Promise.all([
+    moveRepository.groups.getBalanceSnapshot(recurringGroupId),
+    moveRepository.groups.getBalanceSnapshot(ledgerGroupId),
+  ])
+  expect(sourceBalanceAfterMove).toMatchObject({
+    balanceRevision: sourceBalanceBeforeMove.balanceRevision + 2,
+    pairwise: sourceBalanceBeforeMove.pairwise,
+    simplified: sourceBalanceBeforeMove.simplified,
+  })
+  expect(targetBalanceAfterMove.balanceRevision).toBe(targetBalanceBeforeMove.balanceRevision + 1)
+  await expect(moveRepository.activity.listForGroup(recurringGroupId)).resolves.toEqual(expect.arrayContaining([
+    expect.objectContaining({ operationId: moveCommand.operationId, kind: 'expense.deleted', expenseId: moveSource.expense.id }),
+  ]))
+  await expect(moveRepository.activity.listForGroup(ledgerGroupId)).resolves.toEqual(expect.arrayContaining([
+    expect.objectContaining({ operationId: deriveMoveTargetOperationId(moveCommand.operationId), kind: 'expense.created', expenseId: moved.expense.id }),
+  ]))
+  const moveActivities = (await moveRepository.activity.listForAccount({ filter: 'expenses', limit: 100 })).items
+    .filter(({ operationId }) => operationId === moveCommand.operationId || operationId === deriveMoveTargetOperationId(moveCommand.operationId))
+  expect(moveActivities).toEqual(expect.arrayContaining([
+    expect.objectContaining({ groupId: recurringGroupId, kind: 'expense.deleted' }),
+    expect.objectContaining({ groupId: ledgerGroupId, kind: 'expense.created' }),
+  ]))
+  expect(moveActivities).toHaveLength(2)
+  await signInWithEmailAndPassword(auth, ownerEmail, password)
 
   const collaborativeCreatorApp = initializeApp(configuration, `split-unwise-collaborative-creator-${suffix}`)
   initializeFirestore(collaborativeCreatorApp, { experimentalForceLongPolling: true })
