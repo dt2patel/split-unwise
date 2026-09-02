@@ -254,13 +254,7 @@ async function verifyLanguagePreference(page) {
   await page.getByRole('heading', { name: 'Inicio', exact: true }).waitFor({ state: 'visible' })
   await page.getByRole('heading', { name: 'Saldos con amigos', exact: true }).waitFor({ state: 'visible' })
   await assertNoHorizontalOverflow(page, 'Spanish Home at 390px')
-  await page.goto(new URL('/tabs/home/friends', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
-  await page.getByRole('heading', { name: 'Amigos', exact: true }).waitFor({ state: 'visible' })
-  await page.getByText('Consulta lo que debes a cada persona entre los gastos directos y todos los grupos compartidos.', { exact: true }).waitFor({ state: 'visible' })
-  await assertNoHorizontalOverflow(page, 'Spanish Friends at 390px')
-  await page.setViewportSize({ width: 320, height: 844 })
-  await assertNoHorizontalOverflow(page, 'Spanish Friends at 320px')
-  await page.setViewportSize({ width: 390, height: 844 })
+  await verifySpanishFriendsLocalization(page)
   await page.goto(new URL('/tabs/groups', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
   await page.getByText('Viajes, hogares y planes cotidianos, todo en un diario claro.', { exact: true }).waitFor({ state: 'visible' })
   await assertNoHorizontalOverflow(page, 'Spanish Groups at 390px')
@@ -283,6 +277,16 @@ async function verifyLanguagePreference(page) {
   if (await page.locator('html').getAttribute('lang') !== 'en') throw new Error('Hosted language settings did not restore English for the remaining proof.')
   await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+}
+
+async function verifySpanishFriendsLocalization(page) {
+  await page.goto(new URL('/tabs/home/friends', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Amigos', exact: true }).waitFor({ state: 'visible' })
+  await page.getByText('Consulta lo que debes a cada persona entre los gastos directos y todos los grupos compartidos.', { exact: true }).waitFor({ state: 'visible' })
+  await assertNoHorizontalOverflow(page, 'Spanish Friends at 390px')
+  await page.setViewportSize({ width: 320, height: 844 })
+  await assertNoHorizontalOverflow(page, 'Spanish Friends at 320px')
+  await page.setViewportSize({ width: 390, height: 844 })
 }
 
 async function assertNoHorizontalOverflow(page, label) {

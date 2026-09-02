@@ -108,20 +108,73 @@ describe('hosted bundle proof contract', () => {
 
   it('keeps the hosted Spanish Friends and invitation journeys exact-SHA verified', () => {
     const browser = readFileSync(resolve(process.cwd(), 'scripts/runHostedBrowserProof.mjs'), 'utf8')
-    const requiredProofMarkers = [
+    const functionBody = (name: string) => {
+      const start = browser.indexOf(`async function ${name}(`)
+      const end = browser.indexOf('\nasync function ', start + 1)
+      expect(start, `missing hosted proof helper ${name}`).toBeGreaterThanOrEqual(0)
+      return browser.slice(start, end === -1 ? undefined : end)
+    }
+    const expectInOrder = (source: string, actions: readonly string[], label: string) => {
+      let cursor = 0
+      for (const action of actions) {
+        const index = source.indexOf(action, cursor)
+        expect(index, `${label} must include ${action} after the preceding localized action`).toBeGreaterThanOrEqual(cursor)
+        cursor = index + action.length
+      }
+    }
+    const authenticatedJourney = functionBody('verifyAuthenticatedMobileJourney')
+    const languagePreference = functionBody('verifyLanguagePreference')
+    const spanishFriends = functionBody('verifySpanishFriendsLocalization')
+    const invitationPreparation = functionBody('prepareInvitation')
+    const invitationAcceptance = functionBody('verifyInvitationAcceptance')
+
+    expectInOrder(languagePreference, [
+      "name: 'Idioma de la app', exact: true",
+      'await verifySpanishFriendsLocalization(page)',
+      "new URL('/tabs/groups', hostedOrigin)",
+    ], 'Spanish language preference')
+    expectInOrder(spanishFriends, [
       "new URL('/tabs/home/friends', hostedOrigin)",
       "name: 'Amigos', exact: true",
-      "'Spanish Friends at 390px'",
-      "'Spanish Friends at 320px'",
+      'Consulta lo que debes a cada persona entre los gastos directos y todos los grupos compartidos.',
+      "await assertNoHorizontalOverflow(page, 'Spanish Friends at 390px')",
+      'await page.setViewportSize({ width: 320, height: 844 })',
+      "await assertNoHorizontalOverflow(page, 'Spanish Friends at 320px')",
+      'await page.setViewportSize({ width: 390, height: 844 })',
+    ], 'Spanish Friends proof')
+    expectInOrder(invitationPreparation, [
+      "[data-locale=\"es\"] ion-radio",
+      "document.documentElement.lang === 'es'",
       "name: 'Invitar a Live Account Proof', exact: true",
       "name: 'Preparar invitación', exact: true",
-      "aria-label=\"URL de invitación preparada\"",
-      "sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`)",
+      'aria-label="URL de invitación preparada"',
+      "await assertNoHorizontalOverflow(page, 'Spanish invitation preparation at 390px')",
+      "name: 'Idioma de la app', exact: true",
+      "[data-locale=\"en\"] ion-radio",
+      "name: 'App language', exact: true",
+      "getAttribute('lang') !== 'en'",
+    ], 'Spanish invitation preparation')
+    expectInOrder(invitationAcceptance, [
+      'await signIn(page, thirdEmail)',
+      'const persistedInvitationToken = await page.evaluate',
+      'sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`)',
+      'if (persistedInvitationToken !== invitationToken)',
       "localStorage.setItem('split-unwise.locale', 'es')",
+      "await page.reload({ waitUntil: 'domcontentloaded' })",
+      'const restoredInvitationToken = await page.evaluate',
+      'sessionStorage.getItem(`split-unwise:invitation-secret:v1:${invitationId}`)',
+      'if (restoredInvitationToken !== invitationToken)',
       "'Te invitaron a unirte a Live Account Proof.'",
       "name: 'Unirse al grupo', exact: true",
-    ]
-
-    expect(requiredProofMarkers.filter((marker) => !browser.includes(marker))).toEqual([])
+    ], 'localized invitation acceptance')
+    expect(invitationAcceptance.match(/sessionStorage\.getItem\(`split-unwise:invitation-secret:v1:\$\{invitationId\}`\)/g)).toHaveLength(2)
+    expectInOrder(authenticatedJourney, [
+      'await verifyLanguagePreference(page)',
+      'const verifiedInvitationUrl = await prepareInvitation(page, thirdEmail)',
+      'const unverifiedInvitationUrl = await prepareInvitation(page, unverifiedEmail)',
+      'await context.close()',
+      'await verifyInvitationAcceptance(browser, verifiedInvitationUrl)',
+      'await verifyInvitationVerificationGate(browser, unverifiedInvitationUrl)',
+    ], 'authenticated hosted journey')
   })
 })
