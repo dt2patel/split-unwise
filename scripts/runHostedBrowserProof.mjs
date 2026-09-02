@@ -32,7 +32,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, opt-in payment-handle persistence and real PayPal/Venmo handoffs, native group-creation card modal with built-in covers, authenticated mobile group, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, persisted eight-locale language selection, opt-in payment-handle persistence and real PayPal/Venmo handoffs, native group-creation card modal with built-in covers, authenticated mobile group, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -102,6 +102,7 @@ async function verifyAuthenticatedMobileJourney() {
     await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
     await verifyAccountBalanceDashboard(page)
     await verifyPaymentHandleProfile(page)
+    await verifyLanguagePreference(page)
     await verifyCreateGroupCardModal(page)
 
     const groupLink = page.getByRole('link', { name: /Live Account Proof/ }).first()
@@ -208,6 +209,34 @@ async function verifyPaymentHandleProfile(page) {
   const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
   if (overflow > 1) throw new Error(`Hosted Account payment handles overflowed the 390px mobile viewport by ${overflow}px.`)
 
+  await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+}
+
+async function verifyLanguagePreference(page) {
+  const languageUrl = new URL('/tabs/account/language', hostedOrigin).href
+  await page.goto(languageUrl, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'App language', exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
+  if (await page.locator('[data-locale]').count() !== 9) throw new Error('Hosted language settings did not expose system plus eight supported locales.')
+
+  for (const locale of ['de', 'nl', 'fr', 'it', 'pt-BR', 'pt-PT', 'es']) {
+    await page.locator(`[data-locale="${locale}"] ion-radio`).click()
+    await page.waitForFunction((expected) => document.documentElement.lang === expected, locale)
+    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+    if (overflow > 1) throw new Error(`Hosted ${locale} language settings overflowed the 390px mobile viewport by ${overflow}px.`)
+  }
+  await page.getByRole('heading', { name: 'Idioma de la app', exact: true }).waitFor({ state: 'visible' })
+  if (await page.locator('html').getAttribute('lang') !== 'es') throw new Error('Hosted Spanish preference did not update the document language.')
+  await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.locator('ion-tab-button[tab="home"]').getByText('Inicio', { exact: true }).waitFor({ state: 'visible' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.locator('ion-tab-button[tab="account"]').getByText('Cuenta', { exact: true }).waitFor({ state: 'visible' })
+
+  await page.goto(languageUrl, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Idioma de la app', exact: true }).waitFor({ state: 'visible' })
+  await page.locator('[data-locale="en"] ion-radio').click()
+  await page.getByRole('heading', { name: 'App language', exact: true }).waitFor({ state: 'visible' })
+  if (await page.locator('html').getAttribute('lang') !== 'en') throw new Error('Hosted language settings did not restore English for the remaining proof.')
   await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
 }

@@ -24,4 +24,12 @@ describe('Capacitor release contract', () => {
     const privacy = readFileSync(resolve(process.cwd(), 'ios/App/App/PrivacyInfo.xcprivacy'), 'utf8')
     expect(privacy).toContain('NSPrivacyTracking')
   })
+
+  it('advertises every translated web locale to native iOS language settings', () => {
+    const info = readFileSync(resolve(process.cwd(), 'ios/App/App/Info.plist'), 'utf8')
+    expect(info).toContain('<key>CFBundleLocalizations</key>')
+    for (const locale of ['en', 'es', 'de', 'nl', 'fr', 'it', 'pt-BR', 'pt-PT']) {
+      expect(info).toContain(`<string>${locale}</string>`)
+    }
+  })
 })

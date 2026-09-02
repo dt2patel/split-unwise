@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, type ComponentPublicInstance } from 'vue'
 import { IonAlert, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonIcon, IonInput, IonModal, IonPage, IonSpinner, IonTitle, IonToolbar } from '@ionic/vue'
-import { archiveOutline, cardOutline, chevronForward, cloudOfflineOutline, colorPaletteOutline, documentAttachOutline, logOutOutline, notificationsOutline, personCircleOutline, trashOutline } from 'ionicons/icons'
+import { archiveOutline, cardOutline, chevronForward, cloudOfflineOutline, colorPaletteOutline, documentAttachOutline, languageOutline, logOutOutline, notificationsOutline, personCircleOutline, trashOutline } from 'ionicons/icons'
+import { useI18n } from '../../app/i18n'
 import { getAppSession, type UnresolvedWorkSummary } from '../../data/session'
 import { createBrowserPrincipalLocalDataPort } from '../../data/localData'
 import { createClientOperationId } from '../../data/clientOperationId'
@@ -11,6 +12,7 @@ import type { AccountDeletionProgress, AccountDeletionProgressStage } from '../.
 
 const session = getAppSession()
 const auth = peekAuthService()
+const { t } = useI18n()
 const member = ref<Member>()
 const displayName = ref('')
 const paypalHandle = ref('')
@@ -236,6 +238,7 @@ function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
           <label class="toggle-row"><span class="row-icon"><ion-icon :icon="notificationsOutline" /></span><span><strong>Push notifications</strong><small>Alerts on supported devices</small></span><input v-model="notificationPreferences.pushEnabled" type="checkbox" aria-label="Push notifications"></label>
           <button class="text-action" type="button" @click="saveNotifications">Save notifications</button>
           <router-link class="nav-row" to="/tabs/account/appearance"><span class="row-icon"><ion-icon :icon="colorPaletteOutline" /></span><span><strong>Appearance</strong><small>Automatic, light, or dark</small></span><ion-icon :icon="chevronForward" /></router-link>
+          <router-link class="nav-row" to="/tabs/account/language"><span class="row-icon"><ion-icon :icon="languageOutline" /></span><span><strong>{{ t('language.title') }}</strong><small>{{ t('language.accountDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
           <router-link class="nav-row" to="/tabs/account/currencies"><span class="row-icon"><ion-icon :icon="cardOutline" /></span><span><strong>Currencies</strong><small>Default and preferred order</small></span><ion-icon :icon="chevronForward" /></router-link>
         </section>
 

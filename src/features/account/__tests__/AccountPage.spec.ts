@@ -28,6 +28,7 @@ describe('Account page', () => {
     expect(wrapper.get('h1').text()).toBe('Account')
     expect(wrapper.text()).toContain('Maya P.')
     expect(wrapper.text()).toContain('Appearance')
+    expect(wrapper.text()).toContain('Language')
     expect(wrapper.text()).toContain('Currencies')
     expect(wrapper.text()).toContain('Export your data')
     expect(wrapper.text()).toContain('Import transactions')

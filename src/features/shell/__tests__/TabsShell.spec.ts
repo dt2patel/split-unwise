@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { IonFabButton } from '@ionic/vue'
+import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import TabsShell from '../TabsShell.vue'
 
@@ -18,6 +19,8 @@ const ionicStubs = {
 }
 
 describe('TabsShell', () => {
+  beforeEach(() => localeController.setPreference('en'))
+
   it.each([
     ['home', '/tabs/home', 'Home'],
     ['groups', '/tabs/groups', 'Groups'],
@@ -30,6 +33,19 @@ describe('TabsShell', () => {
     expect(wrapper.find('[data-testid="tab-outlet"]').exists()).toBe(true)
     expect(wrapper.get(`[data-tab="${tab}"]`).attributes('href')).toBe(href)
     expect(wrapper.get(`[data-tab="${tab}"]`).text()).toBe(label)
+  })
+
+  it('reactively localizes the native tab labels and navigation name', async () => {
+    const wrapper = mount(TabsShell, { global: { stubs: ionicStubs } })
+
+    localeController.setPreference('es')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[aria-label="Navegación principal"]').exists()).toBe(true)
+    expect(wrapper.get('[data-tab="home"]').text()).toBe('Inicio')
+    expect(wrapper.get('[data-tab="groups"]').text()).toBe('Grupos')
+    expect(wrapper.get('[data-tab="activity"]').text()).toBe('Actividad')
+    expect(wrapper.get('[data-tab="account"]').text()).toBe('Cuenta')
   })
 
   it('keeps Add Expense outside the four-tab bar as a current-stack action', async () => {

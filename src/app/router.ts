@@ -23,6 +23,7 @@ const ExportPage = () => import('../features/exports/ExportPage.vue')
 const AuthPage = () => import('../features/auth/AuthPage.vue')
 const AccountPage = () => import('../features/account/AccountPage.vue')
 const AppearancePage = () => import('../features/account/AppearancePage.vue')
+const LanguagePage = () => import('../features/account/LanguagePage.vue')
 const CurrencyPreferencesPage = () => import('../features/account/CurrencyPreferencesPage.vue')
 const InviteSheet = () => import('../features/invitations/InviteSheet.vue')
 const InvitationLandingPage = () => import('../features/invitations/InvitationLandingPage.vue')
@@ -64,6 +65,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'activity', name: 'activity', component: ActivityPage, meta: { pageTitle: 'Activity', pageDescription: 'Review expense changes, comments, and settlements.' } },
       { path: 'account', name: 'account', component: AccountPage, meta: { pageTitle: 'Account', pageDescription: 'Manage your profile, appearance, currencies, and data.' } },
       { path: 'account/appearance', name: 'account-appearance', component: AppearancePage, meta: { pageTitle: 'Appearance', hideAppChrome: true } },
+      { path: 'account/language', name: 'account-language', component: LanguagePage, meta: { pageTitle: 'Language', hideAppChrome: true } },
       { path: 'account/currencies', name: 'account-currencies', component: CurrencyPreferencesPage, meta: { pageTitle: 'Currencies', hideAppChrome: true } },
       { path: 'account/transactions/import', name: 'account-transaction-import', component: TransactionImportPage, meta: { pageTitle: 'Import transactions', pageDescription: 'Review statement transactions before splitting them.', hideAppChrome: true } },
       { path: 'account/export', name: 'account-export', component: ExportPage, meta: { pageTitle: 'Export', pageDescription: 'Download your account data as CSV or JSON.', hideAppChrome: true } },

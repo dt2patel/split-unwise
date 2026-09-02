@@ -2,15 +2,17 @@
 import { computed, nextTick, ref } from 'vue'
 import { IonButton, IonContent, IonIcon, IonPage, IonSpinner } from '@ionic/vue'
 import { logoGoogle, mailOutline, lockClosedOutline, personOutline } from 'ionicons/icons'
+import { useI18n } from '../../app/i18n'
 import { useAuthStore } from './authStore'
 
 const store = useAuthStore()
+const { t } = useI18n()
 const displayName = ref('')
 const email = ref('')
 const password = ref('')
 const errorSummary = ref<HTMLElement>()
-const heading = computed(() => store.view === 'sign-up' ? 'Create your account' : store.view === 'reset' ? 'Reset your password' : 'Welcome back')
-const subtitle = computed(() => store.view === 'sign-up' ? 'Start splitting without the premium gate.' : store.view === 'reset' ? 'We’ll send a secure reset link.' : 'Bills, balances, and the truth—settled.')
+const heading = computed(() => store.view === 'sign-up' ? t('auth.heading.signUp') : store.view === 'reset' ? t('auth.heading.reset') : t('auth.heading.signIn'))
+const subtitle = computed(() => store.view === 'sign-up' ? t('auth.subtitle.signUp') : store.view === 'reset' ? t('auth.subtitle.reset') : t('auth.subtitle.signIn'))
 
 async function submit(): Promise<void> {
   const ok = store.view === 'sign-up'
@@ -35,57 +37,57 @@ async function submit(): Promise<void> {
 
         <div v-if="store.state.status === 'loading'" class="auth-state" role="status" aria-live="polite">
           <ion-spinner name="crescent" />
-          <span>Opening your account…</span>
+          <span>{{ t('auth.openingAccount') }}</span>
         </div>
         <div v-else-if="store.state.status === 'error'" class="auth-card auth-card--error" role="alert">
-          <strong>Split Unwise needs attention</strong>
+          <strong>{{ t('auth.needsAttention') }}</strong>
           <p>{{ store.state.message }}</p>
-          <small>No demo data was opened.</small>
+          <small>{{ t('auth.noDemo') }}</small>
         </div>
         <div v-else-if="store.state.status === 'signed-in'" class="auth-state" role="status" aria-live="polite">
           <ion-spinner name="crescent" />
-          <span>Loading {{ store.state.identity.displayName }}’s groups…</span>
+          <span>{{ t('auth.loadingGroups', { name: store.state.identity.displayName }) }}</span>
         </div>
         <form v-else class="auth-card" novalidate @submit.prevent="submit">
           <label v-if="store.view === 'sign-up'" for="auth-name">
-            <span>Name</span>
-            <span class="auth-input"><ion-icon :icon="personOutline" aria-hidden="true" /><input id="auth-name" v-model="displayName" autocomplete="name" required placeholder="Your name" :aria-invalid="store.fieldErrors.displayName ? 'true' : undefined" :aria-describedby="store.fieldErrors.displayName ? 'auth-name-error' : undefined"></span>
+            <span>{{ t('auth.name') }}</span>
+            <span class="auth-input"><ion-icon :icon="personOutline" aria-hidden="true" /><input id="auth-name" v-model="displayName" autocomplete="name" required :placeholder="t('auth.namePlaceholder')" :aria-invalid="store.fieldErrors.displayName ? 'true' : undefined" :aria-describedby="store.fieldErrors.displayName ? 'auth-name-error' : undefined"></span>
             <small v-if="store.fieldErrors.displayName" id="auth-name-error" class="field-error">{{ store.fieldErrors.displayName }}</small>
           </label>
           <label for="auth-email">
-            <span>Email</span>
+            <span>{{ t('auth.email') }}</span>
             <span class="auth-input"><ion-icon :icon="mailOutline" aria-hidden="true" /><input id="auth-email" v-model="email" type="email" inputmode="email" autocomplete="email" required placeholder="you@example.com" :aria-invalid="store.fieldErrors.email ? 'true' : undefined" :aria-describedby="store.fieldErrors.email ? 'auth-email-error' : undefined"></span>
             <small v-if="store.fieldErrors.email" id="auth-email-error" class="field-error">{{ store.fieldErrors.email }}</small>
           </label>
           <label v-if="store.view !== 'reset'" for="auth-password">
-            <span>Password</span>
-            <span class="auth-input"><ion-icon :icon="lockClosedOutline" aria-hidden="true" /><input id="auth-password" v-model="password" type="password" :autocomplete="store.view === 'sign-up' ? 'new-password' : 'current-password'" minlength="8" required placeholder="At least 8 characters" :aria-invalid="store.fieldErrors.password ? 'true' : undefined" :aria-describedby="store.fieldErrors.password ? 'auth-password-error' : undefined"></span>
+            <span>{{ t('auth.password') }}</span>
+            <span class="auth-input"><ion-icon :icon="lockClosedOutline" aria-hidden="true" /><input id="auth-password" v-model="password" type="password" :autocomplete="store.view === 'sign-up' ? 'new-password' : 'current-password'" minlength="8" required :placeholder="t('auth.passwordPlaceholder')" :aria-invalid="store.fieldErrors.password ? 'true' : undefined" :aria-describedby="store.fieldErrors.password ? 'auth-password-error' : undefined"></span>
             <small v-if="store.fieldErrors.password" id="auth-password-error" class="field-error">{{ store.fieldErrors.password }}</small>
           </label>
 
           <p v-if="store.error" ref="errorSummary" class="auth-error" role="alert" aria-live="assertive" tabindex="-1">{{ store.error }}</p>
           <p v-if="store.notice" class="auth-notice" role="status" aria-live="polite">{{ store.notice }}</p>
           <ion-button type="submit" expand="block" shape="round" :disabled="store.busy">
-            {{ store.busy ? 'Please wait…' : store.view === 'sign-up' ? 'Create account' : store.view === 'reset' ? 'Send reset link' : 'Sign in' }}
+            {{ store.busy ? t('auth.pleaseWait') : store.view === 'sign-up' ? t('auth.createAccount') : store.view === 'reset' ? t('auth.sendReset') : t('auth.signIn') }}
           </ion-button>
 
           <template v-if="store.view === 'sign-in'">
-            <div class="auth-divider"><span>or</span></div>
+            <div class="auth-divider"><span>{{ t('auth.or') }}</span></div>
             <ion-button class="google-button" type="button" expand="block" shape="round" fill="outline" :disabled="store.busy || !store.canUseGoogle" @click="store.google()">
-              <ion-icon slot="start" :icon="logoGoogle" aria-hidden="true" /> Continue with Google
+              <ion-icon slot="start" :icon="logoGoogle" aria-hidden="true" /> {{ t('auth.continueGoogle') }}
             </ion-button>
-            <p v-if="!store.canUseApple" class="provider-note">Apple sign-in isn’t configured yet.</p>
+            <p v-if="!store.canUseApple" class="provider-note">{{ t('auth.appleUnavailable') }}</p>
           </template>
 
-          <nav class="auth-links" aria-label="Account help">
-            <button v-if="store.view !== 'sign-in'" type="button" @click="store.show('sign-in')">Back to sign in</button>
+          <nav class="auth-links" :aria-label="t('auth.accountHelp')">
+            <button v-if="store.view !== 'sign-in'" type="button" @click="store.show('sign-in')">{{ t('auth.backToSignIn') }}</button>
             <template v-else>
-              <button type="button" @click="store.show('reset')">Forgot password?</button>
-              <button type="button" @click="store.show('sign-up')">Create account</button>
+              <button type="button" @click="store.show('reset')">{{ t('auth.forgotPassword') }}</button>
+              <button type="button" @click="store.show('sign-up')">{{ t('auth.createAccount') }}</button>
             </template>
           </nav>
         </form>
-        <p class="demo-note">Your financial data is isolated to the signed-in account.</p>
+        <p class="demo-note">{{ t('auth.dataIsolation') }}</p>
       </main>
     </ion-content>
   </ion-page>
