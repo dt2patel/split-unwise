@@ -315,6 +315,11 @@ describe('Firebase Spark two-account flow', () => {
     await bootstrapFirebaseProfile(configuration, friend.user)
     await synchronizeFirebaseProfile(configuration, friend.user)
     await acceptSparkInvitation(configuration, invitation.invitationId, token)
+    const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
+    await friendRepository.app.updateProfile({
+      kind: 'profile.update', operationId: `removal-profile-${suffix}`, displayName: 'Removal Friend', initials: 'RF',
+      paymentHandles: { paypal: 'removal.friend', venmo: 'removal-friend' },
+    })
     await signOut(auth)
     await signInWithEmailAndPassword(auth, ownerEmail, password)
 
@@ -370,6 +375,7 @@ describe('Firebase Spark two-account flow', () => {
     await expect(repository.groups.removeMember(command)).resolves.toEqual(saved)
 
     expect(saved).toEqual({ kind: command.kind, operationId: command.operationId, status: 'saved', resourceId: friend.user.uid })
+    expect((await getDoc(targetReference)).data()).not.toHaveProperty('paymentHandles')
     await expect(repository.groups.listMembers(created.groupId)).resolves.toEqual([expect.objectContaining({ id: owner.user.uid, role: 'owner' })])
     await expect(repository.groups.getSettings(created.groupId)).resolves.toMatchObject({ revision: 3 })
     expect((await repository.groups.getSettings(created.groupId)).defaultSplit).toBeUndefined()

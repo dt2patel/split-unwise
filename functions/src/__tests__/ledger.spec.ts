@@ -92,6 +92,29 @@ describe('strict shared ledger protocol', () => {
     expect(() => parseExecuteCommandRequest({ ...request, command: { ...request.command, privateState: true } })).toThrow()
   })
 
+  it('accepts only bounded provider handles on profile updates', () => {
+    const request = {
+      schemaVersion: 1,
+      command: {
+        kind: 'profile.update', operationId: 'profile-payment-handles', displayName: 'Maya Patel',
+        paymentHandles: { paypal: 'maya.payments', venmo: 'maya-payments' },
+      },
+    }
+
+    expect(parseExecuteCommandRequest(request).command).toMatchObject({
+      kind: 'profile.update',
+      paymentHandles: { paypal: 'maya.payments', venmo: 'maya-payments' },
+    })
+    expect(() => parseExecuteCommandRequest({
+      ...request,
+      command: { ...request.command, paymentHandles: { paypal: 'https://evil.example/maya' } },
+    })).toThrow()
+    expect(() => parseExecuteCommandRequest({
+      ...request,
+      command: { ...request.command, paymentHandles: { cashapp: 'maya' } },
+    })).toThrow()
+  })
+
   it.each(['group.delete', 'group.restore'] as const)('accepts only a strict %s lifecycle command', (kind) => {
     const request = { schemaVersion: 1, command: { kind, operationId: `${kind}-operation`, groupId: 'group-a' } }
     expect(() => parseExecuteCommandRequest(request)).not.toThrow()

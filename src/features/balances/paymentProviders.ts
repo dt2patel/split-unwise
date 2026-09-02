@@ -1,3 +1,4 @@
+import type { Member } from '../../data/repositories'
 import type { Money } from '../../domain/model'
 import { assertCurrencyCode, fromMinorUnits } from '../../domain/money'
 
@@ -53,3 +54,19 @@ export function createPaymentHandoff(request: PaymentHandoffRequest): PaymentHan
 }
 
 export const EMPTY_PAYMENT_PROVIDER_CONFIGURATION: PaymentProviderConfiguration = Object.freeze({})
+
+/** Projects opt-in shared member handles into the UID-keyed provider boundary. */
+export function paymentProviderConfigurationFromMembers(
+  members: readonly Pick<Member, 'id' | 'paymentHandles'>[],
+): PaymentProviderConfiguration {
+  const paypal: Record<string, PaymentProviderRecipient> = {}
+  const venmo: Record<string, PaymentProviderRecipient> = {}
+  for (const member of members) {
+    if (member.paymentHandles?.paypal) paypal[member.id] = { recipientToken: member.paymentHandles.paypal }
+    if (member.paymentHandles?.venmo) venmo[member.id] = { recipientToken: member.paymentHandles.venmo }
+  }
+  return {
+    ...(Object.keys(paypal).length ? { paypal } : {}),
+    ...(Object.keys(venmo).length ? { venmo } : {}),
+  }
+}

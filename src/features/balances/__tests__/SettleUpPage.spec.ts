@@ -252,6 +252,27 @@ describe('settle up page', () => {
     expect(session.queue.snapshot()).toEqual([])
   })
 
+  it('uses the recipient shared payment handles without injected provider configuration', async () => {
+    const repository = createDemoRepository({ currentUserId: 'taylor-s' })
+    const sharedHandles: AppRepository = {
+      ...repository,
+      groups: {
+        ...repository.groups,
+        async listMembers(requestedGroupId) {
+          return (await repository.groups.listMembers(requestedGroupId)).map((member) => member.id === 'maya-p'
+            ? { ...member, paymentHandles: { paypal: 'maya.payments', venmo: 'maya-payments' } }
+            : member)
+        },
+      },
+    }
+    setAppSessionForTesting(createAppSession({ repository: sharedHandles, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up?plan=simplified&senderId=taylor-s&recipientId=maya-p&currency=USD&debtMinor=3625`, SettleUpPage)
+
+    expect(wrapper.get('a[href^="https://www.paypal.com/paypalme/maya.payments/"]').text()).toBe('Open PayPal')
+    expect(wrapper.get('a[href^="https://account.venmo.com/pay?recipients=maya-payments"]').text()).toBe('Open Venmo')
+  })
+
   it('does not offer the recipient a payer-mode provider handoff', async () => {
     const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage, createAppRouter(), {
       providerConfiguration: { paypal: { 'maya-p': { recipientToken: 'maya.payments' } } },

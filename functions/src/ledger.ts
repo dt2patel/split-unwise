@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { FieldValue } from 'firebase-admin/firestore'
 import type { Firestore, Transaction, DocumentReference, DocumentData, QueryDocumentSnapshot } from 'firebase-admin/firestore'
 import { assertSplitMatchesAllocations, canonicalize, computeLedgerBalancePlans, deriveMoveTargetOperationId, parseExecuteCommandRequest, validateLedgerExpense, type ExecuteCommandRequest, type SharedCommandEnvelope } from '@split-unwise/shared'
 
@@ -80,10 +81,11 @@ async function executePrivateCommand({ db, transaction, uid, command, isoNow }: 
       ? await transaction.getAll(...counterpartMemberRefs, ...counterpartProjectionRefs)
       : []
     const initials = command.initials ?? initialsFor(command.displayName)
-    const profile = { displayName: command.displayName, initials, updatedAt: isoNow }
+    const paymentHandles = command.paymentHandles === undefined ? {} : { paymentHandles: command.paymentHandles }
+    const profile = { displayName: command.displayName, initials, ...paymentHandles, updatedAt: isoNow }
     current.exists ? transaction.update(userRef, profile) : transaction.create(userRef, { ...profile, createdAt: isoNow })
     members.forEach((member, index) => {
-      if (member.data()?.status === 'active') transaction.update(memberRefs[index]!, { displayName: command.displayName, initials })
+      if (member.data()?.status === 'active') transaction.update(memberRefs[index]!, { displayName: command.displayName, initials, ...paymentHandles })
     })
     friendships.forEach((_, index) => {
       const counterpartMember = counterpartSnapshots[index]
@@ -254,7 +256,7 @@ async function executeGroupCommand(context: GroupContext): Promise<CallableResul
       subject: { kind: 'membership', id: command.targetMemberId, label: `${String(target.displayName ?? 'Member')} removed` }, actor, createdAt: isoNow,
     }
     transaction.update(groupRef, { memberIds: group.memberIds.filter((memberId: unknown) => memberId !== command.targetMemberId), updatedAt: isoNow })
-    transaction.update(targetRef, { status: 'removed', removedByUid: uid, removedAt: isoNow })
+    transaction.update(targetRef, { status: 'removed', paymentHandles: FieldValue.delete(), removedByUid: uid, removedAt: isoNow })
     transaction.update(projectionRef, { status: 'removed', removedByUid: uid, removedAt: isoNow, updatedAt: isoNow })
     transaction.set(settingsRef, {
       schemaVersion: 1, groupId, revision: revision + 1, ...(defaultSplit === undefined ? {} : { defaultSplit }),

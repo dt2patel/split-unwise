@@ -104,7 +104,7 @@ export function buildDeletedMemberDocument(
   assertStrictId(uid, 'account UID')
   assertDeletionId(deletionId)
   if (current.status !== 'active') throw new Error('Only an active member can be deleted from an account.')
-  const { id: _id, ...member } = current
+  const { id: _id, paymentHandles: _paymentHandles, ...member } = current
   return {
     ...member,
     status: 'removed',

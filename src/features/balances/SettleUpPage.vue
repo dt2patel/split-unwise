@@ -24,7 +24,7 @@ import { fromMinorUnits, toMinorUnits } from '../../domain/money'
 import { useMotion } from '../../composables/useMotion'
 import {
   createPaymentHandoff,
-  EMPTY_PAYMENT_PROVIDER_CONFIGURATION,
+  paymentProviderConfigurationFromMembers,
   type PaymentHandoff,
   type PaymentProviderConfiguration,
 } from './paymentProviders'
@@ -33,11 +33,9 @@ import { useSettlementOperationAnnouncement } from './useSettlementOperationAnno
 
 type BalancePlan = SettlementBasis['kind']
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   providerConfiguration?: PaymentProviderConfiguration
-}>(), {
-  providerConfiguration: () => EMPTY_PAYMENT_PROVIDER_CONFIGURATION,
-})
+}>()
 
 const route = useRoute()
 const router = useRouter()
@@ -95,6 +93,7 @@ const selectedBasis = computed<SettlementBasis | undefined>(() => {
   } : undefined
 })
 const canSubmit = computed(() => Boolean(selectedBasis.value && outsidePaymentConfirmed.value && !isSubmitting.value))
+const providerConfiguration = computed(() => props.providerConfiguration ?? paymentProviderConfigurationFromMembers(store.members))
 const providerHandoffs = computed<readonly PaymentHandoff[]>(() => {
   const basis = selectedBasis.value
   if (!basis) return []
@@ -115,7 +114,7 @@ const providerHandoffs = computed<readonly PaymentHandoff[]>(() => {
     recipientId: basis.recipientId,
     money: { currency: basis.currency, minorAmount },
     note: note.value || `${group.value?.name ?? 'Group'} settlement`,
-    configuration: props.providerConfiguration,
+    configuration: providerConfiguration.value,
   }))
 })
 

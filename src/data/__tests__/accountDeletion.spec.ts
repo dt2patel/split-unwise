@@ -92,7 +92,7 @@ describe('account deletion data contract', () => {
   it('marks the member anonymous and removed while retaining its tombstone document', () => {
     expect(buildDeletedMemberDocument({
       status: 'active', role: 'owner', canManage: true, displayName: 'Owner Name', initials: 'ON',
-      avatarUrl: 'https://example.com/owner.png', joinedAt: 'joined',
+      avatarUrl: 'https://example.com/owner.png', paymentHandles: { paypal: 'owner.payments', venmo: 'owner-payments' }, joinedAt: 'joined',
     }, 'owner', 'account-delete-12345678', 'now')).toEqual({
       status: 'removed', role: 'member', canManage: false, displayName: DELETED_ACCOUNT_NAME,
       initials: DELETED_ACCOUNT_INITIALS, avatarUrl: null, joinedAt: 'joined', accountStatus: 'deleted',

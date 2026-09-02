@@ -32,7 +32,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, native group-creation card modal with built-in covers, authenticated mobile group, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, opt-in payment-handle persistence and real PayPal/Venmo handoffs, native group-creation card modal with built-in covers, authenticated mobile group, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, reimbursement saves with reversed debt direction, deleted-expense restoration with preserved history, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, unverified-email recovery, and permanent account deletion all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -100,6 +100,7 @@ async function verifyAuthenticatedMobileJourney() {
     await signIn(page, ownerEmail)
     await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
     await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+    await verifyPaymentHandleProfile(page)
     await verifyAccountBalanceDashboard(page)
     await verifyCreateGroupCardModal(page)
 
@@ -116,6 +117,7 @@ async function verifyAuthenticatedMobileJourney() {
     const activeGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
     await activeGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
     await activeGroup.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
+    await verifyPaymentProviderHandoffs(page)
 
     await activeGroup.getByRole('link', { name: 'Add expense', exact: true }).click()
     await page.waitForURL(new RegExp(`/tabs/groups/expenses/new\\?groupId=${escapeRegExp(groupId)}$`))
@@ -175,6 +177,72 @@ async function verifyAuthenticatedMobileJourney() {
     await browser.close()
     await rm(receiptFixtureDirectory, { recursive: true, force: true })
   }
+}
+
+async function verifyPaymentHandleProfile(page) {
+  await page.goto(new URL('/tabs/account', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Account', exact: true }).waitFor({ state: 'visible' })
+  const paypal = page.getByTestId('paypal-handle')
+  const venmo = page.getByTestId('venmo-handle')
+  await paypal.waitFor({ state: 'visible' })
+  await paypal.fill('@hosted.owner.paypal')
+  await venmo.fill('@hosted-owner-venmo')
+  await page.locator('[data-action="save-profile"]').click()
+  await page.getByText('Profile saved.', { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
+
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Account', exact: true }).waitFor({ state: 'visible' })
+  await page.getByTestId('paypal-handle').waitFor({ state: 'visible' })
+  await page.waitForFunction(() => {
+    const paypal = document.querySelector('[data-testid="paypal-handle"]')
+    const venmo = document.querySelector('[data-testid="venmo-handle"]')
+    return paypal instanceof HTMLInputElement && paypal.value === 'hosted.owner.paypal'
+      && venmo instanceof HTMLInputElement && venmo.value === 'hosted-owner-venmo'
+  }, undefined, { timeout: 120_000 })
+  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (overflow > 1) throw new Error(`Hosted Account payment handles overflowed the 390px mobile viewport by ${overflow}px.`)
+
+  await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+}
+
+async function verifyPaymentProviderHandoffs(page) {
+  await page.goto(new URL(`/tabs/groups/${groupId}/settle-up`, hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Settle up', exact: true }).waitFor({ state: 'visible' })
+  const direction = page.getByTestId('selected-direction')
+  await direction.waitFor({ state: 'visible', timeout: 120_000 })
+  if ((await direction.textContent())?.trim() !== 'Live Renamed Owner pays Live Proof Friend') {
+    throw new Error(`Hosted payment handoff selected an unexpected direction: ${(await direction.textContent())?.trim() ?? 'missing'}`)
+  }
+  const paypal = page.getByRole('link', { name: 'Open PayPal', exact: true })
+  const venmo = page.getByRole('link', { name: 'Open Venmo', exact: true })
+  await paypal.waitFor({ state: 'visible' })
+  await venmo.waitFor({ state: 'visible' })
+
+  const paypalUrl = new URL((await paypal.getAttribute('href')) ?? '')
+  const venmoUrl = new URL((await venmo.getAttribute('href')) ?? '')
+  if (paypalUrl.origin !== 'https://www.paypal.com' || !paypalUrl.pathname.startsWith('/paypalme/live.friend.paypal/')) {
+    throw new Error(`Hosted PayPal handoff targeted an unexpected recipient: ${paypalUrl.href}`)
+  }
+  if (venmoUrl.origin !== 'https://account.venmo.com' || venmoUrl.searchParams.get('recipients') !== 'live-friend-venmo'
+    || venmoUrl.searchParams.get('txn') !== 'pay') {
+    throw new Error(`Hosted Venmo handoff targeted an unexpected recipient: ${venmoUrl.href}`)
+  }
+  for (const link of [paypal, venmo]) {
+    if (await link.getAttribute('target') !== '_blank' || !(await link.getAttribute('rel'))?.includes('noopener')) {
+      throw new Error('Hosted payment-provider handoff did not preserve external-link isolation.')
+    }
+  }
+  if (await page.getByTestId('outside-payment-confirmation').isChecked()) throw new Error('Hosted payment handoff pre-confirmed an outside payment.')
+  if (!(await page.locator('[data-action="record-payment"]').isDisabled())) throw new Error('Hosted payment handoff enabled ledger recording without confirmation.')
+  if (await page.locator('[data-operation-id]').count()) throw new Error('Hosted payment handoff created a ledger operation without confirmation.')
+  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
+  if (overflow > 1) throw new Error(`Hosted payment handoff overflowed the 390px mobile viewport by ${overflow}px.`)
+
+  await page.goto(deepUrl, { waitUntil: 'domcontentloaded' })
+  const activeGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
+  await activeGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
+  await activeGroup.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
 }
 
 async function createReceiptFixture(browser, receiptFixturePath) {

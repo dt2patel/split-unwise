@@ -2,7 +2,7 @@ import { assertCurrencyCode } from '../domain/money'
 import { recurringOccurrenceId } from '../domain/recurrence'
 import { computeAllocations } from '../domain/splits'
 import type { Allocation, Recurrence, SplitMethod } from '../domain/model'
-import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseContextKind, ExpenseRevision, ExpenseRow, Group, GroupBalanceSnapshot, Member, NotificationItem, RecurringExpense, SettlementBasis, SettlementMethod, SettlementRecord, SettlementVoid } from './repositories'
+import type { ActivityItem, ActivityKind, ActivitySubject, ActorSnapshot, ExpenseComment, ExpenseContextKind, ExpenseRevision, ExpenseRow, Group, GroupBalanceSnapshot, Member, NotificationItem, PaymentHandles, RecurringExpense, SettlementBasis, SettlementMethod, SettlementRecord, SettlementVoid } from './repositories'
 import { isStrictId } from './identifiers'
 
 export class DocumentDecodeError extends Error {
@@ -60,6 +60,7 @@ export function decodeMember(id: string, value: unknown, isCurrentUser: boolean)
   return {
     id, displayName: requiredString(data.displayName, `member ${id}.displayName`), initials: requiredString(data.initials, `member ${id}.initials`),
     ...(data.avatarUrl === undefined || data.avatarUrl === null ? {} : { avatarUrl: requiredString(data.avatarUrl, `member ${id}.avatarUrl`) }),
+    ...(data.paymentHandles === undefined ? {} : { paymentHandles: paymentHandles(data.paymentHandles, `member ${id}.paymentHandles`) }),
     ...(data.canManage === undefined ? {} : { canManage: requiredBoolean(data.canManage, `member ${id}.canManage`) }),
     ...(data.role === undefined ? {} : { role: memberRole(data.role, `member ${id}.role`) }),
     ...(accountStatus ? { accountStatus } : {}),
@@ -67,11 +68,27 @@ export function decodeMember(id: string, value: unknown, isCurrentUser: boolean)
   }
 }
 
+function paymentHandles(value: unknown, label: string): PaymentHandles {
+  const data = record(value, label)
+  const unexpected = Object.keys(data).filter((key) => key !== 'paypal' && key !== 'venmo')
+  if (unexpected.length) throw new DocumentDecodeError(label, `contains unsupported provider ${unexpected[0]}`)
+  return {
+    ...(data.paypal === undefined ? {} : { paypal: paymentProviderToken(data.paypal, `${label}.paypal`) }),
+    ...(data.venmo === undefined ? {} : { venmo: paymentProviderToken(data.venmo, `${label}.venmo`) }),
+  }
+}
+
+function paymentProviderToken(value: unknown, label: string): string {
+  const token = requiredString(value, label)
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(token)) throw new DocumentDecodeError(label, 'must be a bounded provider handle')
+  return token
+}
+
 function deletedMemberStatus(data: Readonly<Record<string, unknown>>, label: string): Member['accountStatus'] {
   if (data.accountStatus === undefined) return undefined
   if (data.accountStatus !== 'deleted') throw new DocumentDecodeError(`${label}.accountStatus`, 'must be deleted')
   if (data.status !== 'removed' || data.displayName !== 'Deleted user' || data.initials !== 'DU' || data.avatarUrl !== null
-    || data.canManage !== false || data.role !== 'member') {
+    || 'paymentHandles' in data || data.canManage !== false || data.role !== 'member') {
     throw new DocumentDecodeError(label, 'deleted account identity is not canonical')
   }
   return 'deleted'

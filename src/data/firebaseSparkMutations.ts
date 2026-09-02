@@ -9,7 +9,7 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp } from './firebaseBootstrap'
 import { decodeExpense, decodeRecurringExpense, decodeSettlement } from './firebaseDecoders'
 import { isStrictId } from './identifiers'
-import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRestoreCommand, ExpenseRow, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
+import type { ActorSnapshot, CommentAddCommand, CommentDeleteCommand, ExpenseAddCommand, ExpenseContextKind, ExpenseDeleteCommand, ExpenseDraft, ExpenseEditCommand, ExpenseRestoreCommand, ExpenseRow, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPreferencesCommand, NotificationReadAllCommand, NotificationReadCommand, PaymentHandles, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceMaterializeCommand, RecurringExpense, SettlementRecordCommand, SettlementVoidCommand } from './repositories'
 import { createOperationIdentity, type OperationIdentity } from './operationIdentity'
 import { compareTimelineAscending } from './timeline'
 import { nextOccurrence, recurringOccurrenceId } from '../domain/recurrence'
@@ -26,6 +26,7 @@ export interface FirebaseProfileDocument {
   readonly displayName: string
   readonly initials: string
   readonly avatarUrl: string | null
+  readonly paymentHandles?: PaymentHandles
 }
 
 export interface SparkInvitationPreview {
@@ -596,6 +597,7 @@ export function buildSparkMemberRemovalRecord(
     lastRequestFingerprint: identity.requestFingerprint,
     lastResourceToken: token,
   }
+  const { paymentHandles: _paymentHandles, ...retainedTargetMember } = targetMember
   return {
     groupDocument: {
       ...group,
@@ -608,7 +610,7 @@ export function buildSparkMemberRemovalRecord(
       lastRemovedMemberId: parsed.targetMemberId,
     },
     memberDocument: {
-      ...targetMember,
+      ...retainedTargetMember,
       status: 'removed',
       removedByUid: authorization.actor.id,
       removedAt: committedAt,
@@ -706,7 +708,11 @@ export function buildSparkProfileUpdateRecord(
   if (current.createdAt === undefined) throw new Error('Stored Firebase profile is invalid.')
   const displayName = normalizeDisplayName(parsed.displayName)
   const initials = parsed.initials?.trim() ?? profileInitials(displayName)
-  const memberPatch = { displayName, initials, avatarUrl: profile.avatarUrl }
+  const paymentHandles = parsed.paymentHandles ?? profile.paymentHandles
+  const memberPatch = {
+    displayName, initials, avatarUrl: profile.avatarUrl,
+    ...(paymentHandles ? { paymentHandles } : {}),
+  }
   return {
     profileDocument: {
       ...memberPatch, createdAt: current.createdAt, updatedAt: committedAt,
@@ -1186,7 +1192,8 @@ function validateInvitation(data: DocumentData, user: Pick<User, 'uid' | 'email'
 function requireProfile(data: DocumentData): FirebaseProfileDocument {
   if (typeof data.displayName !== 'string' || typeof data.initials !== 'string') throw new Error('Firebase profile data is invalid.')
   const avatarUrl = typeof data.avatarUrl === 'string' ? data.avatarUrl : null
-  return { displayName: data.displayName, initials: data.initials, avatarUrl }
+  const paymentHandles = isRecord(data.paymentHandles) ? data.paymentHandles as PaymentHandles : undefined
+  return { displayName: data.displayName, initials: data.initials, avatarUrl, ...(paymentHandles ? { paymentHandles } : {}) }
 }
 
 function normalizeDisplayName(value: string): string {

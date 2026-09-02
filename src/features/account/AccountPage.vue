@@ -13,6 +13,8 @@ const session = getAppSession()
 const auth = peekAuthService()
 const member = ref<Member>()
 const displayName = ref('')
+const paypalHandle = ref('')
+const venmoHandle = ref('')
 const notificationPreferences = ref<NotificationPreferences>({ emailEnabled: true, pushEnabled: true })
 const status = ref('')
 const error = ref('')
@@ -50,6 +52,8 @@ onMounted(async () => {
     const [profile, preferences] = await Promise.all([session.repository.app.getCurrentUser(), session.repository.notifications.getPreferences()])
     member.value = profile
     displayName.value = profile.displayName
+    paypalHandle.value = profile.paymentHandles?.paypal ?? ''
+    venmoHandle.value = profile.paymentHandles?.venmo ?? ''
     notificationPreferences.value = preferences
     refreshQueue()
     unsubscribeQueue = session.queue.subscribe(refreshQueue)
@@ -70,9 +74,25 @@ async function saveProfile(): Promise<void> {
   try {
     const name = displayName.value.trim()
     if (!name) throw new Error('Enter your name')
-    await session.queue.submit({ kind: 'profile.update', operationId: createClientOperationId('profile'), displayName: name, initials: initials.value }).result()
+    const paypal = normalizePaymentHandle(paypalHandle.value, 'PayPal')
+    const venmo = normalizePaymentHandle(venmoHandle.value, 'Venmo')
+    const paymentHandles = { ...(paypal ? { paypal } : {}), ...(venmo ? { venmo } : {}) }
+    await session.queue.submit({
+      kind: 'profile.update', operationId: createClientOperationId('profile'), displayName: name,
+      initials: initials.value, paymentHandles,
+    }).result()
+    paypalHandle.value = paypal ?? ''
+    venmoHandle.value = venmo ?? ''
+    if (member.value) member.value = { ...member.value, displayName: name, initials: initials.value, paymentHandles }
     status.value = 'Profile saved.'
   } catch (reason) { error.value = message(reason) }
+}
+
+function normalizePaymentHandle(value: string, label: string): string | undefined {
+  const token = value.trim().replace(/^@/, '')
+  if (!token) return undefined
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(token)) throw new Error(`${label} handle can use letters, numbers, periods, underscores, and hyphens.`)
+  return token
 }
 
 async function saveNotifications(): Promise<void> {
@@ -201,7 +221,10 @@ function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
         <p class="section-label">Profile</p>
         <section class="settings-group">
           <label class="input-row" for="account-name"><span>Name</span><input id="account-name" v-model="displayName" autocomplete="name"></label>
-          <button class="text-action" type="button" @click="saveProfile">Save profile</button>
+          <label class="input-row" for="paypal-handle"><span>PayPal</span><input id="paypal-handle" v-model="paypalHandle" data-testid="paypal-handle" autocomplete="off" inputmode="text" maxlength="65" placeholder="Optional handle"></label>
+          <label class="input-row" for="venmo-handle"><span>Venmo</span><input id="venmo-handle" v-model="venmoHandle" data-testid="venmo-handle" autocomplete="off" inputmode="text" maxlength="65" placeholder="Optional handle"></label>
+          <p class="profile-help">Payment handles are optional and visible to people who share a group with you. Links never record a payment automatically.</p>
+          <button class="text-action" data-action="save-profile" type="button" @click="saveProfile">Save profile</button>
         </section>
 
         <p class="section-label">Preferences</p>
@@ -282,6 +305,6 @@ function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
 </template>
 
 <style scoped>
-.account-page{padding:16px 16px calc(116px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--su-lilac) 28%,var(--su-surface))}.profile-card{display:grid;grid-template-columns:64px 1fr;align-items:center;gap:14px;margin:2px 0 25px;padding:8px 4px}.profile-avatar{display:grid;width:62px;height:62px;place-items:center;border-radius:50%;background:linear-gradient(145deg,var(--ion-color-primary),var(--su-indigo));color:#fff;font-size:1.2rem;font-weight:750;box-shadow:0 8px 24px rgb(69 42 183 / 22%)}.profile-card>span:last-child{display:grid;gap:4px;min-width:0}.profile-card strong{font-size:1.22rem}.profile-card small{display:flex;flex-wrap:wrap;gap:6px;color:var(--ion-color-medium);font-size:.78rem;overflow-wrap:anywhere}.profile-card em{padding:2px 6px;border-radius:8px;background:var(--su-lilac);color:var(--ion-color-primary);font-size:.72rem;font-style:normal;font-weight:700}.section-label{margin:22px 12px 8px;color:var(--ion-color-medium);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}.settings-group{overflow:hidden;border-radius:14px;background:var(--su-surface);box-shadow:0 0 0 1px color-mix(in srgb,var(--su-divider) 18%,transparent)}.nav-row,.toggle-row,.info-row,.danger-row,.input-row{box-sizing:border-box;display:grid;width:100%;min-height:58px;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:9px;padding:7px 13px;border:0;border-bottom:1px solid color-mix(in srgb,var(--su-divider) 24%,transparent);background:transparent;color:inherit;font:inherit;text-align:start;text-decoration:none}.settings-group>:last-child{border-bottom:0}.nav-row>span:nth-child(2),.toggle-row>span:nth-child(2),.info-row>span:nth-child(2),.danger-row>span:nth-child(2){display:grid;gap:2px;min-width:0}.nav-row small,.toggle-row small,.info-row small,.danger-row small{color:var(--ion-color-medium);font-size:.74rem;line-height:1.3;overflow-wrap:anywhere}.row-icon{display:grid;width:28px;height:28px;place-items:center;border-radius:8px;background:var(--su-lilac);color:var(--ion-color-primary)}.toggle-row input{width:42px;height:24px;accent-color:var(--ion-color-primary)}.input-row{grid-template-columns:90px 1fr}.input-row input{min-width:0;min-height:44px;border:0;background:transparent;color:inherit;font:inherit;font-size:16px;text-align:end}.text-action{width:100%;min-height:48px;border:0;border-bottom:1px solid color-mix(in srgb,var(--su-divider) 24%,transparent);background:transparent;color:var(--ion-color-primary);font:inherit;font-weight:650}.danger-row{color:var(--ion-color-danger)}.danger-row small{color:var(--ion-color-medium)}.danger-row:disabled{opacity:.55}.account-error,.account-status{padding:11px 13px;border-radius:12px;font-size:.82rem}.account-error{background:color-mix(in srgb,var(--ion-color-danger) 10%,var(--su-surface));color:var(--ion-color-danger)}.account-status{background:var(--su-lilac);color:var(--ion-color-primary)}
+.account-page{padding:16px 16px calc(116px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--su-lilac) 28%,var(--su-surface))}.profile-card{display:grid;grid-template-columns:64px 1fr;align-items:center;gap:14px;margin:2px 0 25px;padding:8px 4px}.profile-avatar{display:grid;width:62px;height:62px;place-items:center;border-radius:50%;background:linear-gradient(145deg,var(--ion-color-primary),var(--su-indigo));color:#fff;font-size:1.2rem;font-weight:750;box-shadow:0 8px 24px rgb(69 42 183 / 22%)}.profile-card>span:last-child{display:grid;gap:4px;min-width:0}.profile-card strong{font-size:1.22rem}.profile-card small{display:flex;flex-wrap:wrap;gap:6px;color:var(--ion-color-medium);font-size:.78rem;overflow-wrap:anywhere}.profile-card em{padding:2px 6px;border-radius:8px;background:var(--su-lilac);color:var(--ion-color-primary);font-size:.72rem;font-style:normal;font-weight:700}.section-label{margin:22px 12px 8px;color:var(--ion-color-medium);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}.settings-group{overflow:hidden;border-radius:14px;background:var(--su-surface);box-shadow:0 0 0 1px color-mix(in srgb,var(--su-divider) 18%,transparent)}.nav-row,.toggle-row,.info-row,.danger-row,.input-row{box-sizing:border-box;display:grid;width:100%;min-height:58px;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:9px;padding:7px 13px;border:0;border-bottom:1px solid color-mix(in srgb,var(--su-divider) 24%,transparent);background:transparent;color:inherit;font:inherit;text-align:start;text-decoration:none}.settings-group>:last-child{border-bottom:0}.nav-row>span:nth-child(2),.toggle-row>span:nth-child(2),.info-row>span:nth-child(2),.danger-row>span:nth-child(2){display:grid;gap:2px;min-width:0}.nav-row small,.toggle-row small,.info-row small,.danger-row small{color:var(--ion-color-medium);font-size:.74rem;line-height:1.3;overflow-wrap:anywhere}.row-icon{display:grid;width:28px;height:28px;place-items:center;border-radius:8px;background:var(--su-lilac);color:var(--ion-color-primary)}.toggle-row input{width:42px;height:24px;accent-color:var(--ion-color-primary)}.input-row{grid-template-columns:90px 1fr}.input-row input{min-width:0;min-height:44px;border:0;background:transparent;color:inherit;font:inherit;font-size:16px;text-align:end}.profile-help{margin:0;padding:11px 13px;border-bottom:1px solid color-mix(in srgb,var(--su-divider) 24%,transparent);color:var(--ion-color-medium);font-size:.74rem;line-height:1.4}.text-action{width:100%;min-height:48px;border:0;border-bottom:1px solid color-mix(in srgb,var(--su-divider) 24%,transparent);background:transparent;color:var(--ion-color-primary);font:inherit;font-weight:650}.danger-row{color:var(--ion-color-danger)}.danger-row small{color:var(--ion-color-medium)}.danger-row:disabled{opacity:.55}.account-error,.account-status{padding:11px 13px;border-radius:12px;font-size:.82rem}.account-error{background:color-mix(in srgb,var(--ion-color-danger) 10%,var(--su-surface));color:var(--ion-color-danger)}.account-status{background:var(--su-lilac);color:var(--ion-color-primary)}
 .account-deletion-card{display:grid;width:min(100%,560px);margin:0 auto;padding:28px 20px calc(36px + env(safe-area-inset-bottom));gap:16px}.account-deletion-card h2{margin:2px 0 -8px;font-size:1.7rem;letter-spacing:-.035em}.account-deletion-card>p{margin:0;color:var(--ion-color-medium);font-size:.92rem;line-height:1.45}.deletion-mark{display:grid;width:54px;height:54px;place-items:center;border-radius:18px;background:color-mix(in srgb,var(--ion-color-danger) 12%,var(--su-surface));color:var(--ion-color-danger);font-size:1.55rem}.deletion-summary{padding:14px 15px;border:1px solid color-mix(in srgb,var(--su-divider) 72%,transparent);border-radius:14px;background:var(--su-surface)}.deletion-summary strong{font-size:.92rem}.deletion-summary p{margin:5px 0 0;color:var(--ion-color-medium);font-size:.8rem;line-height:1.45}.account-deletion-card ion-input{--border-radius:12px;--padding-start:14px;--padding-end:14px}.account-deletion-card ion-checkbox{font-size:.86rem;line-height:1.35}.google-reauth{padding:12px 14px;border-radius:12px;background:var(--su-lilac);color:var(--ion-color-primary)!important;font-weight:650}.deletion-error,.deletion-progress{padding:11px 13px;border-radius:12px;font-size:.82rem!important}.deletion-error{background:color-mix(in srgb,var(--ion-color-danger) 10%,var(--su-surface));color:var(--ion-color-danger)!important}.deletion-progress{display:flex;align-items:center;gap:9px;background:var(--su-lilac);color:var(--ion-color-primary)!important}.deletion-progress ion-spinner{width:18px;height:18px}
 </style>

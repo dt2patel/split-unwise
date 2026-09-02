@@ -602,7 +602,12 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
         return saved(command, command.groupId)
       }
       case 'profile.update':
-        currentUser = { ...currentUser, displayName: command.displayName, initials: command.initials ?? initials(command.displayName) }
+        currentUser = {
+          ...currentUser,
+          displayName: command.displayName,
+          initials: command.initials ?? initials(command.displayName),
+          ...(command.paymentHandles === undefined ? {} : { paymentHandles: { ...command.paymentHandles } }),
+        }
         return saved(command, currentUser.id)
       case 'recurrence.materialize': {
         assertLakeHouseGroup(command.groupId)
@@ -696,7 +701,15 @@ export function createDemoRepository(options: DemoRepositoryOptions = {}): AppRe
       async getById(groupId) { return groupId === LAKE_HOUSE_GROUP_ID && !groupDeletion ? { ...lakeHouseGroup, memberIds: activeMembers().map(({ id }) => id) } : undefined },
       async listMembers(groupId) {
         assertLakeHouseGroup(groupId)
-        return activeMembers().map((member) => ({ ...member, isCurrentUser: member.id === currentUser.id, ...(member.id === currentUser.id ? { displayName: currentUser.displayName, initials: currentUser.initials } : {}) }))
+        return activeMembers().map((member) => ({
+          ...member,
+          isCurrentUser: member.id === currentUser.id,
+          ...(member.id === currentUser.id ? {
+            displayName: currentUser.displayName,
+            initials: currentUser.initials,
+            ...(currentUser.paymentHandles ? { paymentHandles: { ...currentUser.paymentHandles } } : {}),
+          } : {}),
+        }))
       },
       async getBalanceSnapshot(groupId) { return clone(groupBalanceSnapshot(groupId)) },
       async getSettings(groupId) { assertLakeHouseGroup(groupId); return clone(groupSettings) },

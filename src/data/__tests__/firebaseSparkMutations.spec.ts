@@ -669,7 +669,10 @@ describe('Firebase Spark mutations', () => {
     }
     const committedAt = { kind: 'member-removed' }
     const group = { id: 'group-a', kind: 'group', name: 'Group A', currency: 'USD', memberIds: ['owner', 'friend'], createdByUid: 'owner', createdAt: 'created', updatedAt: 'old' }
-    const target = { status: 'active', role: 'member', canManage: false, displayName: 'Friend Account', initials: 'FA', avatarUrl: null, invitationId: 'invite-a', joinedAt: 'joined' }
+    const target = {
+      status: 'active', role: 'member', canManage: false, displayName: 'Friend Account', initials: 'FA', avatarUrl: null,
+      paymentHandles: { paypal: 'friend.payments', venmo: 'friend-payments' }, invitationId: 'invite-a', joinedAt: 'joined',
+    }
     const settings = { schemaVersion: 1, groupId: 'group-a', revision: 3, simplifyDebtsEnabled: true, defaultSplit: { type: 'equal', participantIds: ['owner', 'friend'] } }
     const buildRemoval = (sparkMutations as unknown as { buildSparkMemberRemovalRecord: SparkMemberRemovalBuilder }).buildSparkMemberRemovalRecord
 
@@ -684,7 +687,8 @@ describe('Firebase Spark mutations', () => {
       lastMembershipRequestFingerprint: identity.requestFingerprint, lastMembershipResourceToken: '8'.repeat(48), lastRemovedMemberId: 'friend',
     })
     expect(record.memberDocument).toEqual({
-      ...target, status: 'removed', removedByUid: 'owner', removedAt: committedAt,
+      status: 'removed', role: 'member', canManage: false, displayName: 'Friend Account', initials: 'FA', avatarUrl: null,
+      invitationId: 'invite-a', joinedAt: 'joined', removedByUid: 'owner', removedAt: committedAt,
       lastCommandKind: command.kind, lastOperationId: command.operationId,
       lastRequestFingerprint: identity.requestFingerprint, lastResourceToken: '8'.repeat(48),
     })
@@ -736,8 +740,11 @@ describe('Firebase Spark mutations', () => {
     expect(restored.activityDocument).toMatchObject({ kind: 'group.restored', subject: { kind: 'group', id: 'group-a', label: 'Group A' } })
   })
 
-  it('versions a private profile command while preserving account identity fields for membership propagation', () => {
-    const command: ProfileUpdateCommand = { kind: 'profile.update', operationId: 'profile-rename', displayName: '  Maya Rivera  ' }
+  it('versions profile payment handles for the private profile and active membership snapshots', () => {
+    const command: ProfileUpdateCommand = {
+      kind: 'profile.update', operationId: 'profile-rename', displayName: '  Maya Rivera  ',
+      paymentHandles: { paypal: 'maya.payments', venmo: 'maya-payments' },
+    }
     const identity: OperationIdentity = { userId: 'maya-p', operationId: command.operationId, kind: command.kind, groupId: null, requestFingerprint: 'a'.repeat(64), resourceId: `operation-${'b'.repeat(48)}` }
     const createdAt = { kind: 'created' }
     const committedAt = { kind: 'updated' }
@@ -746,11 +753,16 @@ describe('Firebase Spark mutations', () => {
     const record = buildProfile(command, { displayName: 'Maya P.', initials: 'MP', avatarUrl: null, createdAt }, identity, committedAt)
 
     expect(record.profileDocument).toEqual({
-      displayName: 'Maya Rivera', initials: 'MR', avatarUrl: null, createdAt, updatedAt: committedAt,
+      displayName: 'Maya Rivera', initials: 'MR', avatarUrl: null,
+      paymentHandles: { paypal: 'maya.payments', venmo: 'maya-payments' },
+      createdAt, updatedAt: committedAt,
       lastCommandKind: 'profile.update', lastOperationId: command.operationId,
       lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: 'b'.repeat(48),
     })
-    expect(record.memberPatch).toEqual({ displayName: 'Maya Rivera', initials: 'MR', avatarUrl: null })
+    expect(record.memberPatch).toEqual({
+      displayName: 'Maya Rivera', initials: 'MR', avatarUrl: null,
+      paymentHandles: { paypal: 'maya.payments', venmo: 'maya-payments' },
+    })
   })
 
   it('creates and advances replay-bound notification preferences without inventing delivery state', () => {

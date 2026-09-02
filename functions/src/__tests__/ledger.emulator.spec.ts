@@ -22,7 +22,10 @@ suite('ledger against the Firestore emulator', () => {
       db.doc('users/removed').set({ displayName: 'Removed', initials: 'R' }),
       db.doc('groups/group-a').set({ name: 'Group A', currency: 'USD', memberIds: ['owner', 'member'] }),
       db.doc('groups/group-a/members/owner').set({ status: 'active', role: 'owner', canManage: true }),
-      db.doc('groups/group-a/members/member').set({ status: 'active', role: 'member', canManage: false }),
+      db.doc('groups/group-a/members/member').set({
+        status: 'active', role: 'member', canManage: false, displayName: 'Member', initials: 'M',
+        paymentHandles: { paypal: 'member.payments', venmo: 'member-payments' },
+      }),
       db.doc('groups/group-a/members/removed').set({ status: 'removed', role: 'member', canManage: false }),
       db.doc('users/owner/groups/group-a').set({ groupId: 'group-a', status: 'active', contextLabel: 'Group A' }),
       db.doc('users/member/groups/group-a').set({ groupId: 'group-a', status: 'active', contextLabel: 'Group A' }),
@@ -88,16 +91,28 @@ suite('ledger against the Firestore emulator', () => {
       db.doc('users/owner/groups/friendship-removed').set({ groupId: 'friendship-removed', status: 'removed', contextLabel: 'Removed' }),
       db.doc('users/removed/groups/friendship-removed').set({ groupId: 'friendship-removed', status: 'active', contextLabel: 'Owner', updatedAt: '2026-08-01T00:00:00.000Z' }),
     ])
-    const request = { schemaVersion: 1, command: { kind: 'profile.update', operationId: 'rename-owner', displayName: 'Renamed Owner', initials: 'RO' } }
+    const request = {
+      schemaVersion: 1,
+      command: {
+        kind: 'profile.update', operationId: 'rename-owner', displayName: 'Renamed Owner', initials: 'RO',
+        paymentHandles: { paypal: 'owner.payments', venmo: 'owner-payments' },
+      },
+    }
     const committedAt = '2026-09-01T16:00:00.000Z'
 
     const first = await executeLedgerCommand(db, 'owner', request, new Date(committedAt))
     const replay = await executeLedgerCommand(db, 'owner', request, new Date('2026-09-01T17:00:00.000Z'))
 
     expect(replay).toEqual(first)
-    expect((await db.doc('users/owner').get()).data()).toMatchObject({ displayName: 'Renamed Owner', initials: 'RO', updatedAt: committedAt })
-    expect((await db.doc('groups/group-a/members/owner').get()).data()).toMatchObject({ status: 'active', displayName: 'Renamed Owner', initials: 'RO' })
-    expect((await db.doc('groups/friendship-active/members/owner').get()).data()).toMatchObject({ status: 'active', displayName: 'Renamed Owner', initials: 'RO' })
+    expect((await db.doc('users/owner').get()).data()).toMatchObject({
+      displayName: 'Renamed Owner', initials: 'RO', paymentHandles: { paypal: 'owner.payments', venmo: 'owner-payments' }, updatedAt: committedAt,
+    })
+    expect((await db.doc('groups/group-a/members/owner').get()).data()).toMatchObject({
+      status: 'active', displayName: 'Renamed Owner', initials: 'RO', paymentHandles: { paypal: 'owner.payments', venmo: 'owner-payments' },
+    })
+    expect((await db.doc('groups/friendship-active/members/owner').get()).data()).toMatchObject({
+      status: 'active', displayName: 'Renamed Owner', initials: 'RO', paymentHandles: { paypal: 'owner.payments', venmo: 'owner-payments' },
+    })
     expect((await db.doc('groups/friendship-removed/members/owner').get()).data()).toMatchObject({ status: 'removed', displayName: 'Owner', initials: 'O' })
     expect((await db.doc('users/member/groups/friendship-active').get()).data()).toMatchObject({ contextLabel: 'Renamed Owner', updatedAt: committedAt })
     expect((await db.doc('users/owner/groups/friendship-active').get()).data()).toMatchObject({ contextLabel: 'Member' })
@@ -283,7 +298,9 @@ suite('ledger against the Firestore emulator', () => {
 
     expect(saved).toEqual({ kind: 'group.member-remove', operationId: 'remove-member', status: 'saved', resourceId: 'member' })
     expect((await db.doc('groups/group-a').get()).data()?.memberIds).toEqual(['owner'])
-    expect((await db.doc('groups/group-a/members/member').get()).data()).toMatchObject({ status: 'removed', removedByUid: 'owner', removedAt: committedAt })
+    const removedMember = (await db.doc('groups/group-a/members/member').get()).data()
+    expect(removedMember).toMatchObject({ status: 'removed', removedByUid: 'owner', removedAt: committedAt })
+    expect(removedMember).not.toHaveProperty('paymentHandles')
     expect((await db.doc('users/member/groups/group-a').get()).data()).toMatchObject({ status: 'removed', removedByUid: 'owner', removedAt: committedAt })
     expect((await db.doc('groups/group-a/settings/defaults').get()).data()).toMatchObject({ revision: 2, simplifyDebtsEnabled: true })
     expect((await db.collection('groups/group-a/activity').get()).docs.map((document) => document.data())).toContainEqual(expect.objectContaining({

@@ -50,6 +50,8 @@ const fxRate = z.strictObject({
 })
 const cursor = z.strictObject({ createdAt: z.iso.datetime({ offset: true }), id })
 const basis = z.strictObject({ kind: z.enum(['pairwise', 'simplified']), senderId: id, recipientId: id, currency, debtMinor: positiveMinor })
+const paymentProviderToken = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/)
+const paymentHandles = z.strictObject({ paypal: paymentProviderToken.optional(), venmo: paymentProviderToken.optional() })
 
 export const commandEnvelopeSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('expense.add'), ...base, ...expenseDraft }),
@@ -69,7 +71,7 @@ export const commandEnvelopeSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('group.simplify-debts'), ...base, groupId: id, expectedRevision: z.number().int().positive(), simplifyDebtsEnabled: z.boolean() }),
   z.strictObject({ kind: z.literal('group.member-remove'), ...base, groupId: id, targetMemberId: id }),
   z.strictObject({ kind: z.literal('group.restore'), ...base, groupId: id }),
-  z.strictObject({ kind: z.literal('profile.update'), ...base, displayName: z.string().trim().min(1).max(120), initials: z.string().trim().min(1).max(4).optional() }),
+  z.strictObject({ kind: z.literal('profile.update'), ...base, displayName: z.string().trim().min(1).max(120), initials: z.string().trim().min(1).max(4).optional(), paymentHandles: paymentHandles.optional() }),
 ])
 
 export const executeCommandRequestSchema = z.strictObject({ schemaVersion: z.literal(1), command: commandEnvelopeSchema })

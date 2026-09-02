@@ -531,7 +531,9 @@ function isCommandEnvelope(value: unknown): value is CommandEnvelope {
       && isNonEmptyString(value.groupId) && isStrictId(value.templateId) && isIsoDate(value.occurrenceDate)
     case 'recurrence.cancel': return onlyOperationFields(value, ['kind', 'operationId', 'groupId', 'templateId', 'expectedRevision'])
       && isNonEmptyString(value.groupId) && isStrictId(value.templateId) && isPositiveInteger(value.expectedRevision)
-    case 'profile.update': return isNonEmptyString(value.displayName) && (value.initials === undefined || isNonEmptyString(value.initials))
+    case 'profile.update': return Object.keys(value).every((field) => ['kind', 'operationId', 'displayName', 'initials', 'paymentHandles'].includes(field))
+      && isNonEmptyString(value.displayName) && (value.initials === undefined || isNonEmptyString(value.initials))
+      && (value.paymentHandles === undefined || isPaymentHandles(value.paymentHandles))
     default: return false
   }
 }
@@ -752,6 +754,12 @@ function isTimelineCursor(value: unknown): value is import('./repositories').Tim
 function sameTimelineCursor(left: import('./repositories').TimelineCursor, right: import('./repositories').TimelineCursor): boolean { return left.createdAt === right.createdAt && left.id === right.id }
 function isNotificationPreferences(value: unknown): value is import('./repositories').NotificationPreferences { return isRecord(value) && typeof value.emailEnabled === 'boolean' && typeof value.pushEnabled === 'boolean' && Object.keys(value).length === 2 }
 function samePreferences(left: import('./repositories').NotificationPreferences, right: import('./repositories').NotificationPreferences): boolean { return left.emailEnabled === right.emailEnabled && left.pushEnabled === right.pushEnabled }
+function isPaymentHandles(value: unknown): value is import('./repositories').PaymentHandles {
+  if (!isRecord(value) || !Object.keys(value).every((provider) => provider === 'paypal' || provider === 'venmo')) return false
+  return (value.paypal === undefined || isPaymentHandle(value.paypal))
+    && (value.venmo === undefined || isPaymentHandle(value.venmo))
+}
+function isPaymentHandle(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) }
 
 function isTombstone(value: unknown, envelope: Extract<CommandEnvelope, { kind: 'expense.delete' }>): boolean {
   return isRecord(value) && value.id === envelope.expenseId && value.groupId === envelope.groupId && value.revision === envelope.expectedRevision + 1 && isIsoTimestamp(value.deletedAt)

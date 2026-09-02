@@ -6,11 +6,18 @@ import type { VerifiedFxRate } from '../domain/premiumProviders'
 /** A persisted command or document synchronization state. */
 export type SyncState = 'fresh' | 'stale' | 'pending' | 'failed' | 'conflicted'
 
+export interface PaymentHandles {
+  readonly paypal?: string
+  readonly venmo?: string
+}
+
 export interface Member {
   readonly id: ParticipantId
   readonly displayName: string
   readonly initials: string
   readonly avatarUrl?: string
+  /** Opt-in public handles exposed only through shared membership documents. */
+  readonly paymentHandles?: PaymentHandles
   readonly isCurrentUser: boolean
   /** Unknown/omitted capability is intentionally treated as false. */
   readonly canManage?: boolean
@@ -320,7 +327,12 @@ export interface RecurrenceCancelCommand extends OperationRequest {
   readonly templateId: string
   readonly expectedRevision: number
 }
-export interface ProfileUpdateCommand extends OperationRequest { readonly kind: 'profile.update'; readonly displayName: string; readonly initials?: string }
+export interface ProfileUpdateCommand extends OperationRequest {
+  readonly kind: 'profile.update'
+  readonly displayName: string
+  readonly initials?: string
+  readonly paymentHandles?: PaymentHandles
+}
 
 export type CommandEnvelope = CommentAddCommand | CommentDeleteCommand | ExpenseAddCommand | ExpenseDeleteCommand | ExpenseEditCommand | ExpenseRestoreCommand | GroupCurrencyConversionCommand | GroupDefaultSplitCommand | GroupDeleteCommand | GroupMemberRemoveCommand | GroupRestoreCommand | GroupSimplifyDebtsCommand | NotificationPreferencesCommand | NotificationReadAllCommand | NotificationReadCommand | ProfileUpdateCommand | RecurrenceCancelCommand | RecurrenceMaterializeCommand | SettlementRecordCommand | SettlementVoidCommand
 export type CommandKind = CommandEnvelope['kind']

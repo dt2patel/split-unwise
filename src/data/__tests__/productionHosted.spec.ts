@@ -109,7 +109,13 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   ;({ auth, db } = await restartHostedClient(configuration))
   await signInWithEmailAndPassword(auth, ownerEmail, password)
   const ownerRepository = createFirebaseRepository(configuration, ownerUid)
-  const profileCommand = { kind: 'profile.update' as const, operationId: `live-rename-${suffix}`, displayName: 'Live Renamed Owner', initials: 'LR' }
+  const profileCommand = {
+    kind: 'profile.update' as const,
+    operationId: `live-rename-${suffix}`,
+    displayName: 'Live Renamed Owner',
+    initials: 'LR',
+    paymentHandles: { paypal: 'live.owner.paypal', venmo: 'live-owner-venmo' },
+  }
   await expect(ownerRepository.app.updateProfile(profileCommand)).resolves.toEqual({
     kind: 'profile.update', operationId: profileCommand.operationId, status: 'saved', resourceId: ownerUid,
   })
@@ -124,6 +130,16 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   await signInWithEmailAndPassword(auth, friendEmail, password)
   const friendRepository = createFirebaseRepository(configuration, friendUid)
   const ledgerGroupId = friendship.groupId
+  const friendProfileCommand = {
+    kind: 'profile.update' as const,
+    operationId: `live-friend-profile-${suffix}`,
+    displayName: 'Live Proof Friend',
+    initials: 'LF',
+    paymentHandles: { paypal: 'live.friend.paypal', venmo: 'live-friend-venmo' },
+  }
+  await expect(friendRepository.app.updateProfile(friendProfileCommand)).resolves.toEqual({
+    kind: 'profile.update', operationId: friendProfileCommand.operationId, status: 'saved', resourceId: friendUid,
+  })
   await expect(getDocs(query(collection(db, `users/${friendUid}/groups`), limit(100)))).resolves.toMatchObject({ size: 2 })
   await expect(getDoc(doc(db, `groups/${ledgerGroupId}`))).resolves.toMatchObject({ exists: expect.any(Function) })
   await expect(getDoc(doc(db, `groups/${ledgerGroupId}/members/${friendUid}`))).resolves.toMatchObject({ exists: expect.any(Function) })
@@ -133,8 +149,14 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
     expect.objectContaining({ id: ledgerGroupId, kind: 'friendship', name: 'Live Renamed Owner' }),
   ]))
   await expect(friendRepository.groups.listMembers(ledgerGroupId)).resolves.toEqual(expect.arrayContaining([
-    expect.objectContaining({ id: ownerUid, displayName: 'Live Renamed Owner', initials: 'LR' }),
-    expect.objectContaining({ id: friendUid, displayName: 'Live Proof Friend' }),
+    expect.objectContaining({
+      id: ownerUid, displayName: 'Live Renamed Owner', initials: 'LR',
+      paymentHandles: { paypal: 'live.owner.paypal', venmo: 'live-owner-venmo' },
+    }),
+    expect.objectContaining({
+      id: friendUid, displayName: 'Live Proof Friend', initials: 'LF',
+      paymentHandles: { paypal: 'live.friend.paypal', venmo: 'live-friend-venmo' },
+    }),
   ]))
   const expenseCommand = {
     kind: 'expense.add' as const, operationId: `live-expense-${suffix}`, groupId: ledgerGroupId,

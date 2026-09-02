@@ -57,7 +57,18 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(setDoc(doc(owner, 'users/someone-else'), profile('Someone Else', 'SE')))
     await assertFails(setDoc(doc(attacker, 'users/attacker'), { ...profile('Attacker', 'A'), admin: true }))
     await assertFails(updateDoc(doc(owner, 'users/new-owner'), { displayName: 'Unversioned Owner', initials: 'UO', updatedAt: serverTimestamp() }))
-    await assertSucceeds(commitSparkProfileUpdate(owner, 'new-owner', 'group-profile', 'Owner Updated', 'OU'))
+    await assertSucceeds(commitSparkProfileUpdate(owner, 'new-owner', 'group-profile', 'Owner Updated', 'OU', undefined, {
+      paypal: 'owner.payments', venmo: 'owner-payments',
+    }))
+    expect((await getDoc(doc(owner, 'users/new-owner'))).data()).toMatchObject({
+      paymentHandles: { paypal: 'owner.payments', venmo: 'owner-payments' },
+    })
+    expect((await getDoc(doc(owner, 'groups/group-profile/members/new-owner'))).data()).toMatchObject({
+      paymentHandles: { paypal: 'owner.payments', venmo: 'owner-payments' },
+    })
+    await assertFails(commitSparkProfileUpdate(owner, 'new-owner', 'group-profile', 'Owner Updated', 'OU', undefined, {
+      paypal: 'https://evil.example/owner',
+    }))
     await assertFails(commitSparkProfileUpdate(attacker, 'new-owner', 'group-profile', 'Forged Owner', 'FO'))
     await assertFails(updateDoc(doc(owner, 'users/new-owner'), { createdAt: serverTimestamp() }))
   })
@@ -66,9 +77,10 @@ describe('Firestore rules in the emulator', () => {
     const owner = environment.authenticatedContext('delete-owner', { email: 'delete-owner@example.com', email_verified: true }).firestore()
     const attacker = environment.authenticatedContext('delete-attacker', { email: 'attacker@example.com', email_verified: true }).firestore()
     const profileReference = doc(owner, 'users/delete-owner')
-    await assertSucceeds(setDoc(profileReference, profile('Delete Owner', 'DO')))
+    const paymentHandles = { paypal: 'delete.owner', venmo: 'delete-owner' }
+    await assertSucceeds(setDoc(profileReference, { ...profile('Delete Owner', 'DO'), paymentHandles }))
     await assertSucceeds(setDoc(doc(attacker, 'users/delete-attacker'), profile('Delete Attacker', 'DA')))
-    await assertSucceeds(commitGroupBundle(owner, 'group-delete-account', 'delete-owner', 'Delete Owner', 'DO'))
+    await assertSucceeds(commitGroupBundle(owner, 'group-delete-account', 'delete-owner', 'Delete Owner', 'DO', ['delete-owner'], 'group', undefined, paymentHandles))
     const createdAt = (await getDoc(profileReference)).data()!.createdAt
 
     await assertSucceeds(setDoc(profileReference, deletingProfile(createdAt, ['group-delete-account'], 'deleting')))
@@ -82,12 +94,19 @@ describe('Firestore rules in the emulator', () => {
       deletedAt: serverTimestamp(), deletedBy: { id: 'delete-owner', displayName: 'Deleted user' }, updatedAt: serverTimestamp(),
       lastAccountDeletionId: 'account-delete-12345678', lastDeletedAccountUid: 'delete-owner',
     })
+    const existingMember = (await getDoc(doc(owner, 'groups/group-delete-account/members/delete-owner'))).data()!
+    const { paymentHandles: _paymentHandles, ...retainedMember } = existingMember
     cleanup.set(doc(owner, 'groups/group-delete-account/members/delete-owner'), {
-      ...(await getDoc(doc(owner, 'groups/group-delete-account/members/delete-owner'))).data()!, status: 'removed', role: 'member', canManage: false,
+      ...retainedMember, status: 'removed', role: 'member', canManage: false,
       displayName: 'Deleted user', initials: 'DU', avatarUrl: null, accountStatus: 'deleted',
       accountDeletionId: 'account-delete-12345678', accountDeletedAt: serverTimestamp(),
     })
     await assertSucceeds(cleanup.commit())
+    let deletedMemberData: Record<string, unknown> | undefined
+    await environment.withSecurityRulesDisabled(async (context) => {
+      deletedMemberData = (await getDoc(doc(context.firestore(), 'groups/group-delete-account/members/delete-owner'))).data()
+    })
+    expect(deletedMemberData).not.toHaveProperty('paymentHandles')
     await assertSucceeds(deleteDoc(doc(owner, 'users/delete-owner/groups/group-delete-account')))
 
     const deleting = (await getDoc(profileReference)).data()!
@@ -928,15 +947,23 @@ function deletingProfile(createdAt: unknown, deletionGroupIds: readonly string[]
   }
 }
 
-function commitSparkProfileUpdate(source: unknown, uid: string, groupId: string, displayName: string, initials: string, counterpartUid?: string): Promise<void> {
+function commitSparkProfileUpdate(
+  source: unknown,
+  uid: string,
+  groupId: string,
+  displayName: string,
+  initials: string,
+  counterpartUid?: string,
+  paymentHandles?: Readonly<Record<string, string>>,
+): Promise<void> {
   const db = source as Firestore
   const batch = writeBatch(db)
   batch.update(doc(db, `users/${uid}`), {
-    displayName, initials, avatarUrl: null, updatedAt: serverTimestamp(),
+    displayName, initials, avatarUrl: null, ...(paymentHandles ? { paymentHandles } : {}), updatedAt: serverTimestamp(),
     lastCommandKind: 'profile.update', lastOperationId: 'profile-rename',
     lastRequestFingerprint: 'e'.repeat(64), lastResourceToken: 'e'.repeat(48),
   })
-  batch.update(doc(db, `groups/${groupId}/members/${uid}`), { displayName, initials, avatarUrl: null })
+  batch.update(doc(db, `groups/${groupId}/members/${uid}`), { displayName, initials, avatarUrl: null, ...(paymentHandles ? { paymentHandles } : {}) })
   if (counterpartUid) batch.update(doc(db, `users/${counterpartUid}/groups/${groupId}`), { contextLabel: displayName, updatedAt: serverTimestamp() })
   return batch.commit()
 }
@@ -970,11 +997,24 @@ function group(groupId: string, ownerUid: string, memberIds: readonly string[], 
   return { id: groupId, kind, name: 'Shared group', currency: 'USD', ...(coverImageUrl ? { coverImageUrl } : {}), memberIds, createdByUid: ownerUid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
 }
 
-function commitGroupBundle(source: unknown, groupId: string, ownerUid: string, displayName: string, initials: string, memberIds: readonly string[] = [ownerUid], kind: 'group' | 'friendship' = 'group', coverImageUrl?: string): Promise<void> {
+function commitGroupBundle(
+  source: unknown,
+  groupId: string,
+  ownerUid: string,
+  displayName: string,
+  initials: string,
+  memberIds: readonly string[] = [ownerUid],
+  kind: 'group' | 'friendship' = 'group',
+  coverImageUrl?: string,
+  paymentHandles?: Readonly<Record<string, string>>,
+): Promise<void> {
   const db = source as Firestore
   const batch = writeBatch(db)
   batch.set(doc(db, `groups/${groupId}`), group(groupId, ownerUid, memberIds, kind, coverImageUrl))
-  batch.set(doc(db, `groups/${groupId}/members/${ownerUid}`), { status: 'active', role: 'owner', canManage: true, displayName, initials, avatarUrl: null, joinedAt: serverTimestamp() })
+  batch.set(doc(db, `groups/${groupId}/members/${ownerUid}`), {
+    status: 'active', role: 'owner', canManage: true, displayName, initials, avatarUrl: null,
+    ...(paymentHandles ? { paymentHandles } : {}), joinedAt: serverTimestamp(),
+  })
   batch.set(doc(db, `groups/${groupId}/settings/defaults`), { schemaVersion: 1, groupId, revision: 1, simplifyDebtsEnabled: true, updatedAt: serverTimestamp() })
   batch.set(doc(db, `groups/${groupId}/balance/current`), { groupId, balanceRevision: 0, simplifyDebtsEnabled: true, pairwise: [], simplified: [] })
   batch.set(doc(db, `users/${ownerUid}/groups/${groupId}`), { groupId, status: 'active', contextLabel: 'Shared group', joinedAt: serverTimestamp(), updatedAt: serverTimestamp() })

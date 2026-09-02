@@ -1,7 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryCommandStorage } from '../../../data/commandQueue'
+import { createDemoRepository } from '../../../data/demoRepository'
 import { setAppSessionForTesting, type AppDataSession, type UnresolvedWorkSummary } from '../../../data/session'
+import { createAppSession } from '../../../data/session'
 import { setAuthService, type AccountDeletionInput, type AuthService } from '../../auth/authService'
 import AccountPage from '../AccountPage.vue'
 
@@ -30,6 +33,22 @@ describe('Account page', () => {
     expect(wrapper.text()).toContain('Import transactions')
     expect(wrapper.text()).toContain('Everything on this device is settled')
     expect(wrapper.get('[data-testid="open-account-delete"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('persists opt-in PayPal and Venmo handles from account settings', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="paypal-handle"]').setValue('maya.payments')
+    await wrapper.get('[data-testid="venmo-handle"]').setValue('maya-payments')
+    await wrapper.get('[data-action="save-profile"]').trigger('click')
+
+    await vi.waitFor(async () => expect(await repository.app.getCurrentUser()).toMatchObject({
+      paymentHandles: { paypal: 'maya.payments', venmo: 'maya-payments' },
+    }))
+    expect(wrapper.get('[role="status"]').text()).toContain('Profile saved')
   })
 
   it('presents a native iOS card and requires password plus acknowledgement', async () => {

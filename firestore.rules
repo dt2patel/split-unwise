@@ -7,13 +7,23 @@ service cloud.firestore {
     function validName(value) { return value is string && value.size() > 0 && value.size() <= 120; }
     function validInitials(value) { return value is string && value.size() > 0 && value.size() <= 4; }
     function validAvatar(data) { return data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 2048); }
+    function validPaymentHandle(value) {
+      return value is string && value.matches('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$');
+    }
+    function validPaymentHandles(data) {
+      return !('paymentHandles' in data)
+        || (data.paymentHandles is map
+          && data.paymentHandles.keys().hasOnly(['paypal', 'venmo'])
+          && (!('paypal' in data.paymentHandles) || validPaymentHandle(data.paymentHandles.paypal))
+          && (!('venmo' in data.paymentHandles) || validPaymentHandle(data.paymentHandles.venmo)));
+    }
     function validProfileCore(data) {
       return data.keys().hasAll(['displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt'])
-        && validName(data.displayName) && validInitials(data.initials) && validAvatar(data)
+        && validName(data.displayName) && validInitials(data.initials) && validAvatar(data) && validPaymentHandles(data)
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
     function validProfile(data) {
-      return data.keys().hasOnly(['displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt'])
+      return data.keys().hasOnly(['displayName', 'initials', 'avatarUrl', 'paymentHandles', 'createdAt', 'updatedAt'])
         && validProfileCore(data);
     }
     function activeAccount() {
@@ -171,12 +181,12 @@ service cloud.firestore {
     }
     function validSparkProfileUpdate(data) {
       return data.keys().hasOnly([
-          'displayName', 'initials', 'avatarUrl', 'createdAt', 'updatedAt',
+          'displayName', 'initials', 'avatarUrl', 'paymentHandles', 'createdAt', 'updatedAt',
           'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
         ])
         && validProfileCore(data) && validSparkPrivateReplay(data, 'profile.update')
         && data.diff(resource.data).affectedKeys().hasOnly([
-          'displayName', 'initials', 'updatedAt',
+          'displayName', 'initials', 'paymentHandles', 'updatedAt',
           'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
         ])
         && data.avatarUrl == resource.data.avatarUrl && data.createdAt == resource.data.createdAt
@@ -1294,17 +1304,19 @@ service cloud.firestore {
         && data.createdAt == request.time && data.updatedAt == request.time;
     }
     function validOwnerMember(data, profile) {
-      return data.keys().hasOnly(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'joinedAt'])
+      return data.keys().hasOnly(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'paymentHandles', 'joinedAt'])
         && data.keys().hasAll(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'joinedAt'])
         && data.status == 'active' && data.role == 'owner' && data.canManage == true
         && data.displayName == profile.displayName && data.initials == profile.initials && data.avatarUrl == profile.avatarUrl
+        && validPaymentHandles(data) && data.get('paymentHandles', {}) == profile.get('paymentHandles', {})
         && data.joinedAt == request.time;
     }
     function validJoinMember(data, profile, invitationId) {
-      return data.keys().hasOnly(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'invitationId', 'joinedAt'])
+      return data.keys().hasOnly(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'paymentHandles', 'invitationId', 'joinedAt'])
         && data.keys().hasAll(['status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'invitationId', 'joinedAt'])
         && data.status == 'active' && data.role == 'member' && data.canManage == false
         && data.displayName == profile.displayName && data.initials == profile.initials && data.avatarUrl == profile.avatarUrl
+        && validPaymentHandles(data) && data.get('paymentHandles', {}) == profile.get('paymentHandles', {})
         && data.invitationId == invitationId && data.joinedAt == request.time;
     }
     function validSettings(groupId, data) {
@@ -1460,6 +1472,7 @@ service cloud.firestore {
           'removedByUid', 'removedAt', 'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
         ])
         && data.status == 'removed' && data.role == 'member' && data.canManage == false
+        && !('paymentHandles' in data)
         && data.removedByUid == request.auth.uid && data.removedAt == request.time
         && data.lastCommandKind == 'group.member-remove'
         && data.lastOperationId == group.lastMembershipOperationId
@@ -1470,7 +1483,7 @@ service cloud.firestore {
       return activeManager(groupId) && resource.data.status == 'active' && resource.data.role == 'member'
         && resource.data.canManage == false && validRemovedMemberDocument(groupId, uid, data)
         && data.diff(resource.data).affectedKeys().hasOnly([
-          'status', 'removedByUid', 'removedAt', 'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
+          'status', 'paymentHandles', 'removedByUid', 'removedAt', 'lastCommandKind', 'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken'
         ]);
     }
     function validTargetProjectionRemoval(groupId, uid, data) {
@@ -1517,11 +1530,12 @@ service cloud.firestore {
     function validDeletedAccountMember(before, after, uid) {
       return uid == request.auth.uid && before.status == 'active' && after.status == 'removed'
         && after.diff(before).affectedKeys().hasOnly([
-          'status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'accountStatus',
+          'status', 'role', 'canManage', 'displayName', 'initials', 'avatarUrl', 'paymentHandles', 'accountStatus',
           'accountDeletionId', 'accountDeletedAt'
         ])
         && after.role == 'member' && after.canManage == false
         && after.displayName == 'Deleted user' && after.initials == 'DU' && after.avatarUrl == null
+        && !('paymentHandles' in after)
         && after.accountStatus == 'deleted' && after.accountDeletionId == currentAccountDeletionId()
         && after.accountDeletedAt == request.time;
     }
@@ -1683,10 +1697,12 @@ service cloud.firestore {
           && activeAccount()
           && ((owns(uid) && resource.data.status == 'active'
                 && request.resource.data.status == 'active'
-                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'initials', 'avatarUrl'])
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'initials', 'avatarUrl', 'paymentHandles'])
                 && request.resource.data.displayName == getAfter(/databases/$(database)/documents/users/$(uid)).data.displayName
                 && request.resource.data.initials == getAfter(/databases/$(database)/documents/users/$(uid)).data.initials
                 && request.resource.data.avatarUrl == getAfter(/databases/$(database)/documents/users/$(uid)).data.avatarUrl
+                && validPaymentHandles(request.resource.data)
+                && request.resource.data.get('paymentHandles', {}) == getAfter(/databases/$(database)/documents/users/$(uid)).data.get('paymentHandles', {})
                 && getAfter(/databases/$(database)/documents/users/$(uid)).data.updatedAt == request.time
                 && validSparkPrivateReplay(getAfter(/databases/$(database)/documents/users/$(uid)).data, 'profile.update'))
               || validTargetMemberRemoval(groupId, uid, request.resource.data));

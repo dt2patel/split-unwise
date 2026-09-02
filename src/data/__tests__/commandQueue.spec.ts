@@ -79,6 +79,30 @@ function createWebStorage(): Storage {
 }
 
 describe('CommandQueue', () => {
+  it('validates opt-in payment handles before persisting a profile update', async () => {
+    const queue = createBoundQueue({
+      storage: createMemoryCommandStorage(),
+      handlers: {
+        'profile.update': async (command) => ({
+          kind: 'profile.update', operationId: command.operationId, status: 'saved', resourceId: DEMO_UID,
+        }),
+      },
+    })
+
+    await expect(queue.submit({
+      kind: 'profile.update', operationId: 'profile-handles-valid', displayName: 'Maya P.',
+      paymentHandles: { paypal: 'maya.payments', venmo: 'maya-payments' },
+    }).result()).resolves.toMatchObject({ status: 'saved' })
+    await expect(queue.submit({
+      kind: 'profile.update', operationId: 'profile-handles-url', displayName: 'Maya P.',
+      paymentHandles: { paypal: 'https://evil.example/maya' },
+    } as never).result()).rejects.toMatchObject({ code: 'validation' })
+    await expect(queue.submit({
+      kind: 'profile.update', operationId: 'profile-handles-unknown', displayName: 'Maya P.',
+      paymentHandles: { cashapp: 'maya' },
+    } as never).result()).rejects.toMatchObject({ code: 'validation' })
+  })
+
   it('accepts only the literal reimbursement marker in queued expense drafts', async () => {
     const queue = createBoundQueue({
       storage: createMemoryCommandStorage(),
