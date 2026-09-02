@@ -219,13 +219,14 @@ describe('Friends page', () => {
 
   it('retains every semantic share result and retranslates it without sharing again', async () => {
     localeController.setPreference('es')
+    const privateUrl = `https://split-unwise-aditya.web.app/invite/invite-ravi#token=${'r'.repeat(43)}`
     firebaseMocks.createSparkFriendship.mockResolvedValueOnce({
       status: 'ready',
       groupId: 'friend-ravi',
       invitation: {
         invitationId: 'invite-ravi',
         groupId: 'friend-ravi',
-        link: 'https://split-unwise-aditya.web.app/invite/invite-ravi#token=secret',
+        link: privateUrl,
         expiresAt: '2026-09-09T12:00:00.000Z',
         capability: 'firebase-client',
         targetEmail: 'ravi@example.com',
@@ -235,7 +236,7 @@ describe('Friends page', () => {
       .mockResolvedValueOnce({ status: 'shared' })
       .mockResolvedValueOnce({ status: 'copied' })
       .mockResolvedValueOnce({ status: 'cancelled' })
-      .mockResolvedValueOnce({ status: 'manual', url: 'https://split-unwise-aditya.web.app/invite/invite-ravi#token=secret' })
+      .mockResolvedValueOnce({ status: 'manual', url: privateUrl })
     const source = createDemoRepository()
     setAppSessionForTesting(createAppSession({ repository: { ...source, mode: 'firebase' as const }, commandStorage: createMemoryCommandStorage() }))
     const router = createAppRouter()
@@ -260,12 +261,30 @@ describe('Friends page', () => {
       expect(wrapper.get('[role="status"]').text()).toBe(expected)
     }
     expect(firebaseMocks.sharePreparedInvitation).toHaveBeenCalledTimes(4)
+    expect(firebaseMocks.sharePreparedInvitation).toHaveBeenLastCalledWith(privateUrl, {
+      title: 'Únete a mi grupo de Split Unwise',
+      text: 'Usa esta invitación privada para unirte al grupo.',
+    })
+    const manualUrl = wrapper.get<HTMLTextAreaElement>('.invitation-ready__manual-url')
+    expect(manualUrl.element.readOnly).toBe(true)
+    expect(manualUrl.element.value).toBe(privateUrl)
+    expect(manualUrl.attributes('aria-label')).toBe('URL de invitación preparada')
+    expect(manualUrl.attributes('aria-describedby')).toBe('friend-invitation-status')
+    const manualStatus = wrapper.get('#friend-invitation-status')
+    expect(manualStatus.text()).toBe('Selecciona y copia la invitación a continuación.')
+    expect(manualStatus.element.compareDocumentPosition(manualUrl.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     localeController.setPreference('de')
     await wrapper.vm.$nextTick()
 
     expect(wrapper.get('[role="status"]').text()).toBe('Wähle die Einladung unten aus und kopiere sie.')
+    expect(manualUrl.attributes('aria-label')).toBe('Vorbereitete Einladungs-URL')
     expect(firebaseMocks.sharePreparedInvitation).toHaveBeenCalledTimes(4)
+
+    firebaseMocks.sharePreparedInvitation.mockResolvedValueOnce({ status: 'shared' })
+    await share.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.invitation-ready__manual-url').exists()).toBe(false)
   })
 
   it('includes friends from shared groups and expands their per-group balance', async () => {

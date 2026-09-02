@@ -70,9 +70,13 @@ describe('invitations', () => {
 
   it('uses share, cancellation, clipboard, then manual fallback without auto-sending', async () => {
     const link = (await prepareDemoInvitation({ groupId: 'g', canonicalOrigin: 'https://split-unwise.web.app', random: fill })).link
-    expect(await sharePreparedInvitation(link, { share: vi.fn().mockResolvedValue(undefined) })).toEqual({ status: 'shared' })
-    expect(await sharePreparedInvitation(link, { share: vi.fn().mockRejectedValue(new DOMException('cancel', 'AbortError')) })).toEqual({ status: 'cancelled' })
-    expect(await sharePreparedInvitation(link, { share: vi.fn().mockRejectedValue(new Error('no')), clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })).toEqual({ status: 'copied' })
-    expect(await sharePreparedInvitation(link, { share: vi.fn().mockRejectedValue(new Error('no')), clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })).toEqual({ status: 'manual', url: link })
+    const copy = { title: 'Únete a mi grupo de Split Unwise', text: 'Usa esta invitación privada para unirte al grupo.' }
+    const share = vi.fn().mockResolvedValue(undefined)
+
+    expect(await sharePreparedInvitation(link, copy, { share })).toEqual({ status: 'shared' })
+    expect(share).toHaveBeenCalledWith({ title: copy.title, text: copy.text, url: link })
+    expect(await sharePreparedInvitation(link, copy, { share: vi.fn().mockRejectedValue(new DOMException('cancel', 'AbortError')) })).toEqual({ status: 'cancelled' })
+    expect(await sharePreparedInvitation(link, copy, { share: vi.fn().mockRejectedValue(new Error('no')), clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })).toEqual({ status: 'copied' })
+    expect(await sharePreparedInvitation(link, copy, { share: vi.fn().mockRejectedValue(new Error('no')), clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })).toEqual({ status: 'manual', url: link })
   })
 })

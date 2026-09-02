@@ -66,7 +66,10 @@ async function create(): Promise<void> {
 }
 async function share(): Promise<void> {
   if (!invitation.value) return
-  const result = await sharePreparedInvitation(invitation.value.link)
+  const result = await sharePreparedInvitation(invitation.value.link, {
+    title: t('invite.shareTitle'),
+    text: t('invite.shareBody'),
+  })
   const key = {
     shared: 'invite.status.shared',
     copied: 'invite.status.copied',

@@ -2,7 +2,12 @@ export type ShareInvitationResult =
   | { readonly status: 'shared' | 'copied' | 'cancelled' }
   | { readonly status: 'manual'; readonly url: string }
 
-export async function sharePreparedInvitation(url: string, options: {
+export interface ShareInvitationCopy {
+  readonly title: string
+  readonly text: string
+}
+
+export async function sharePreparedInvitation(url: string, copy: ShareInvitationCopy, options: {
   readonly share?: (data: ShareData) => Promise<void>
   readonly clipboard?: { writeText(value: string): Promise<void> }
 } = {}): Promise<ShareInvitationResult> {
@@ -10,7 +15,7 @@ export async function sharePreparedInvitation(url: string, options: {
   const share = options.share ?? globalThis.navigator?.share?.bind(globalThis.navigator)
   if (share) {
     try {
-      await share({ title: 'Join my Split Unwise group', text: 'Use this private invitation to join the group.', url: safe })
+      await share({ title: copy.title, text: copy.text, url: safe })
       return { status: 'shared' }
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'AbortError') return { status: 'cancelled' }

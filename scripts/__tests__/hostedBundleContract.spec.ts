@@ -135,12 +135,28 @@ describe('hosted bundle proof contract', () => {
     ], 'Spanish language preference')
     expectInOrder(spanishFriends, [
       "new URL('/tabs/home/friends', hostedOrigin)",
+      'await page.setViewportSize({ width: 390, height: 844 })',
       "name: 'Amigos', exact: true",
       'Consulta lo que debes a cada persona entre los gastos directos y todos los grupos compartidos.',
+      "page.locator('.friend-entry').filter({ hasText: 'Live Proof Friend' }).first()",
+      "await friendEntry.waitFor({ state: 'visible', timeout: 120_000 })",
+      "getByText('En 2 contextos compartidos', { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })",
+      "getByRole('button', { name: /Live Proof Friend/ })",
+      'await friendRow.click()',
+      "friendEntry.locator('.friend-breakdown')",
+      "await breakdown.waitFor({ state: 'visible' })",
+      "getByRole('button', { name: 'Añadir amigo', exact: true })",
+      'await addFriendButton.click()',
+      "page.locator('.friend-form')",
+      "await friendForm.waitFor({ state: 'visible' })",
       "await assertNoHorizontalOverflow(page, 'Spanish Friends at 390px')",
       'await page.setViewportSize({ width: 320, height: 844 })',
       "await assertNoHorizontalOverflow(page, 'Spanish Friends at 320px')",
       'await page.setViewportSize({ width: 390, height: 844 })',
+      'await addFriendButton.click()',
+      "await friendForm.waitFor({ state: 'hidden' })",
+      'await friendRow.click()',
+      "await breakdown.waitFor({ state: 'hidden' })",
     ], 'Spanish Friends proof')
     expectInOrder(invitationPreparation, [
       `await page.locator('[data-locale="es"] ion-radio').click()`,

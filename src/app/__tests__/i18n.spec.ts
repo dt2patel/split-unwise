@@ -32,6 +32,8 @@ describe('locale controller', () => {
       'invite.urlAria': 'Prepared invitation URL',
       'invite.revoked': 'Invitation revoked',
       'invite.share': 'Share invitation',
+      'invite.shareTitle': 'Join my Split Unwise group',
+      'invite.shareBody': 'Use this private invitation to join the group.',
       'invite.revoke': 'Revoke invitation',
       'invite.status.privateReady': 'Private seven-day invitation ready.',
       'invite.status.demoReady': 'Local preview ready. It is not a cross-device production invitation.',
@@ -78,6 +80,8 @@ describe('locale controller', () => {
       'invite.heading': 'Invitar a {group}',
       'invite.prepare': 'Preparar invitación',
       'invite.urlAria': 'URL de invitación preparada',
+      'invite.shareTitle': 'Únete a mi grupo de Split Unwise',
+      'invite.shareBody': 'Usa esta invitación privada para unirte al grupo.',
       'inviteLanding.invited': 'Te invitaron a unirte a {group}.',
       'inviteLanding.join': 'Unirse al grupo',
     })

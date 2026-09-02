@@ -108,6 +108,7 @@ describe('invitation preparation page', () => {
       invitationId: 'invite-maya', groupId: LAKE_HOUSE_GROUP_ID, link, expiresAt,
       capability: 'firebase-client', targetEmail: targetEmail.toLowerCase(),
     })
+    firebaseMocks.sharePreparedInvitation.mockResolvedValueOnce({ status: 'shared' })
     const wrapper = await mountInvitationSheet()
 
     await wrapper.get('#invite-email').setValue(targetEmail)
@@ -122,6 +123,13 @@ describe('invitation preparation page', () => {
     expect(wrapper.get('.prepared-card').text()).toContain('Compartir invitación')
     expect(wrapper.get('.prepared-card').text()).toContain('Revocar invitación')
     expect(wrapper.get('textarea').attributes('aria-label')).toBe('URL de invitación preparada')
+
+    await wrapper.get('.prepared-card button').trigger('click')
+    await flushPromises()
+    expect(firebaseMocks.sharePreparedInvitation).toHaveBeenCalledWith(link, {
+      title: 'Únete a mi grupo de Split Unwise',
+      text: 'Usa esta invitación privada para unirte al grupo.',
+    })
   })
 })
 

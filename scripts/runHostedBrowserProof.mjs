@@ -281,12 +281,28 @@ async function verifyLanguagePreference(page) {
 
 async function verifySpanishFriendsLocalization(page) {
   await page.goto(new URL('/tabs/home/friends', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
+  await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole('heading', { name: 'Amigos', exact: true }).waitFor({ state: 'visible' })
   await page.getByText('Consulta lo que debes a cada persona entre los gastos directos y todos los grupos compartidos.', { exact: true }).waitFor({ state: 'visible' })
+  const friendEntry = page.locator('.friend-entry').filter({ hasText: 'Live Proof Friend' }).first()
+  await friendEntry.waitFor({ state: 'visible', timeout: 120_000 })
+  await friendEntry.getByText('En 2 contextos compartidos', { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
+  const friendRow = friendEntry.getByRole('button', { name: /Live Proof Friend/ })
+  await friendRow.click()
+  const breakdown = friendEntry.locator('.friend-breakdown')
+  await breakdown.waitFor({ state: 'visible' })
+  const addFriendButton = page.getByRole('button', { name: 'Añadir amigo', exact: true })
+  await addFriendButton.click()
+  const friendForm = page.locator('.friend-form')
+  await friendForm.waitFor({ state: 'visible' })
   await assertNoHorizontalOverflow(page, 'Spanish Friends at 390px')
   await page.setViewportSize({ width: 320, height: 844 })
   await assertNoHorizontalOverflow(page, 'Spanish Friends at 320px')
   await page.setViewportSize({ width: 390, height: 844 })
+  await addFriendButton.click()
+  await friendForm.waitFor({ state: 'hidden' })
+  await friendRow.click()
+  await breakdown.waitFor({ state: 'hidden' })
 }
 
 async function assertNoHorizontalOverflow(page, label) {
