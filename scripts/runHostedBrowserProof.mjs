@@ -147,7 +147,7 @@ async function verifyAuthenticatedMobileJourney() {
 }
 
 async function verifyAccountBalanceDashboard(page) {
-  const summary = page.locator('[data-testid="account-summary"][aria-label="Account balance"]')
+  const summary = page.getByTestId('account-summary').filter({ hasText: 'You are owed' })
   await summary.waitFor({ state: 'visible', timeout: 120_000 })
   const summaryText = (await summary.textContent()) ?? ''
   for (const label of ['Overall,', 'You owe', 'You are owed']) {

@@ -79,6 +79,7 @@ describe('hosted bundle proof contract', () => {
     expect(browser).toContain('verifySwipeBackGesture')
     expect(browser).toContain('verifyCancelledSwipeBackGesture')
     expect(browser).toContain('verifyCurrencyConversion')
+    expect(browser).toContain("getByTestId('account-summary').filter({ hasText: 'You are owed' })")
     expect(browser).toContain('data-testid="confirm-conversion"')
     expect(browser).toContain('Hosted currency-conversion screen overflowed the 390px mobile viewport')
     expect(browser).toContain('visibleSiblingIonicPages')
