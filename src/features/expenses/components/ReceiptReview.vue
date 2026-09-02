@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { IonSpinner } from '@ionic/vue'
 import type { Member } from '../../../data/repositories'
 import type { ReceiptDurability } from '../../../data/receipts'
 import { toMinorUnits, type CurrencyCode } from '../../../domain/money'
 import { computeAllocations } from '../../../domain/splits'
-import type { ReceiptItemInput } from '../expenseStore'
+import type { ReceiptItemInput, ReceiptScanState } from '../expenseStore'
 import { useSheetKeyboardAvoidance } from './useSheetKeyboardAvoidance'
 
 const props = defineProps<{
@@ -15,6 +16,7 @@ const props = defineProps<{
   providerMessage?: string
   imageUrl?: string
   durability?: ReceiptDurability
+  scanState?: ReceiptScanState
 }>()
 const emit = defineEmits<{ confirm: [value: readonly ReceiptItemInput[]]; cancel: []; dirty: [] }>()
 const items = ref<ReceiptItemInput[]>(props.modelValue.map((item) => ({ ...item, participantIds: [...item.participantIds] })))
@@ -23,6 +25,8 @@ const tipText = ref('')
 const error = ref('')
 const errorTarget = ref('')
 const sheet = ref<HTMLElement>()
+const scanning = computed(() => props.scanState === 'reading' || props.scanState === 'recognizing')
+const scanTitle = computed(() => props.scanState === 'reading' ? 'Preparing receipt' : 'Scanning on this device')
 const durabilityMessage = computed(() => {
   if (!props.durability || props.durability.status === 'uploaded') return ''
   const summary = props.durability.status === 'local-only'
@@ -108,8 +112,12 @@ function confirm(): void {
 
 <template>
   <section ref="sheet" class="expense-sheet receipt-review" data-sheet-scroll aria-labelledby="receipt-title">
-    <header class="expense-sheet__header"><button type="button" @click="emit('cancel')">Cancel</button><h2 id="receipt-title">Receipt review</h2><button type="button" data-action="confirm-receipt" @click="confirm">Confirm</button></header>
+    <header class="expense-sheet__header"><button type="button" @click="emit('cancel')">Cancel</button><h2 id="receipt-title">Receipt review</h2><button type="button" data-action="confirm-receipt" :disabled="scanning" @click="confirm">Confirm</button></header>
     <img v-if="imageUrl" :src="imageUrl" alt="Attached receipt preview" class="receipt-review__image">
+    <div v-if="scanning" data-testid="receipt-scan-progress" class="scan-progress" role="status" aria-live="polite">
+      <ion-spinner name="crescent" aria-hidden="true" />
+      <span><strong>{{ scanTitle }}</strong><small>The image stays on this device while line items are detected.</small></span>
+    </div>
     <p v-if="durabilityMessage" data-testid="receipt-durability-warning" role="status" aria-live="polite" class="durability-warning">{{ durabilityMessage }}</p>
     <p v-if="providerMessage" role="status" class="provider-message">{{ providerMessage }}</p>
     <article v-for="(item, index) in items" :key="index" class="receipt-item">
@@ -117,10 +125,10 @@ function confirm(): void {
       <label><span>Amount</span><input inputmode="decimal" :value="item.amountText" :data-item-amount="index" :aria-invalid="errorTarget === `amount-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `amount-${index}` ? 'receipt-error' : undefined" @input="update(index, 'amountText', ($event.target as HTMLInputElement).value)"></label>
       <fieldset :aria-invalid="errorTarget === `assignment-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `assignment-${index}` ? 'receipt-error' : undefined"><legend>Assign to</legend><label v-for="member in members" :key="member.id"><input type="checkbox" :checked="item.participantIds.includes(member.id)" :data-item-assignment="index" :aria-invalid="errorTarget === `assignment-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `assignment-${index}` ? 'receipt-error' : undefined" @change="toggle(index, member.id, ($event.target as HTMLInputElement).checked)">{{ member.displayName }}</label></fieldset>
     </article>
-    <button type="button" class="add-line" @click="addItem">Add item</button>
+    <button type="button" class="add-line" :disabled="scanning" @click="addItem">Add item</button>
     <div class="receipt-extras">
-      <label><span>Tax</span><input v-model="taxText" data-testid="receipt-tax" inputmode="decimal" :aria-invalid="errorTarget === 'tax' ? 'true' : undefined" :aria-describedby="errorTarget === 'tax' ? 'receipt-error' : undefined" @input="clearError"></label>
-      <label><span>Tip</span><input v-model="tipText" data-testid="receipt-tip" inputmode="decimal" :aria-invalid="errorTarget === 'tip' ? 'true' : undefined" :aria-describedby="errorTarget === 'tip' ? 'receipt-error' : undefined" @input="clearError"></label>
+      <label><span>Tax</span><input v-model="taxText" data-testid="receipt-tax" inputmode="decimal" :disabled="scanning" :aria-invalid="errorTarget === 'tax' ? 'true' : undefined" :aria-describedby="errorTarget === 'tax' ? 'receipt-error' : undefined" @input="clearError"></label>
+      <label><span>Tip</span><input v-model="tipText" data-testid="receipt-tip" inputmode="decimal" :disabled="scanning" :aria-invalid="errorTarget === 'tip' ? 'true' : undefined" :aria-describedby="errorTarget === 'tip' ? 'receipt-error' : undefined" @input="clearError"></label>
     </div>
     <p class="sheet-note">Items remain suggestions until you explicitly confirm them.</p>
     <p v-if="error" id="receipt-error" role="alert" class="sheet-error">{{ error }}</p>
@@ -130,6 +138,11 @@ function confirm(): void {
 <style scoped src="./expense-sheet.css"></style>
 <style scoped>
 .receipt-review__image { display: block; width: 100%; max-height: 190px; margin: 12px 0; border-radius: 14px; object-fit: cover; }
+.scan-progress { display: grid; grid-template-columns: 34px minmax(0,1fr); align-items: center; gap: 10px; margin: 12px 0; padding: 12px; border-radius: 12px; background: color-mix(in srgb,var(--su-lilac) 58%,var(--su-surface)); color: var(--ion-color-primary); }
+.scan-progress ion-spinner { width: 26px; height: 26px; }
+.scan-progress span { display: grid; gap: 2px; min-width: 0; }
+.scan-progress strong { color: var(--su-text); font-size: .9rem; }
+.scan-progress small { color: var(--ion-color-medium); font-size: .75rem; line-height: 1.35; }
 .durability-warning { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--ion-color-warning) 58%, var(--su-divider)); border-radius: 10px; background: color-mix(in srgb, var(--ion-color-warning) 13%, var(--su-surface)); color: var(--ion-text-color) !important; font-size: 0.84rem; }
 .provider-message { padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--su-lilac) 52%, var(--su-surface)); color: var(--ion-color-medium); font-size: 0.84rem; }
 .receipt-item { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--su-divider); }
@@ -139,4 +152,5 @@ function confirm(): void {
 .receipt-item legend { width: 100%; color: var(--ion-color-medium); font-size: 0.78rem; }
 .receipt-extras { display: grid; gap: 8px; margin-top: 12px; }
 .add-line { min-height: 44px; color: var(--ion-color-primary); }
+.add-line:disabled { opacity: .45; }
 </style>

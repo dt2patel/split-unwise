@@ -11,6 +11,7 @@ import { consumeTransactionImportDraft } from '../transactions/transactionImport
 
 export type ExpenseOrigin = 'account' | 'activity' | 'groups' | 'home'
 export type ExpenseSheet = 'context' | 'participants' | 'payers' | 'receipt' | 'recurrence' | 'split'
+export type ReceiptScanState = 'failed' | 'idle' | 'reading' | 'ready' | 'recognizing'
 
 export interface PaymentInput { readonly participantId: string; readonly amountText: string }
 export interface ReceiptItemInput { readonly description: string; readonly amountText: string; readonly participantIds: readonly string[] }
@@ -148,6 +149,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   const receiptMessage = ref('')
   const receiptPreview = ref<ReceiptAsset>()
   const receiptSuggestions = ref<readonly ReceiptSuggestion[]>([])
+  const receiptScanState = ref<ReceiptScanState>('idle')
   const activeSheet = ref<ExpenseSheet>()
   const focusTarget = ref<string>()
   const lastOperationId = ref<string>()
@@ -405,6 +407,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     const editorRequest = initializationRequest
     const attachmentRequest = ++receiptAttachmentRequest
     receiptRecognitionRequest += 1
+    receiptScanState.value = 'reading'
     const reference = await session.receipts.put(blob, { fileName })
     if (!isCurrentReceiptAttachment(editorRequest, attachmentRequest)) {
       await rollbackStaleAttachment(reference)
@@ -419,6 +422,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     receiptPreview.value = preview
     receiptSuggestions.value = []
     receiptMessage.value = ''
+    receiptScanState.value = 'recognizing'
     const recognitionRequest = ++receiptRecognitionRequest
     try {
       const recognition = await session.receiptProvider.recognize(reference, editor.groupId)
@@ -428,10 +432,17 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       }
       if (recognition.status === 'suggestions') {
         receiptSuggestions.value = recognition.items
-        receiptMessage.value = recognition.source === 'demo' ? 'Demo suggestions are ready to edit. Confirm them before applying a split.' : 'Suggestions are ready to edit. Confirm them before applying a split.'
+        if (!editor.amountText.trim() && recognition.totalAmountText) editor.amountText = recognition.totalAmountText
+        receiptMessage.value = recognition.source === 'demo'
+          ? 'Demo suggestions are ready to edit. Confirm them before applying a split.'
+          : recognition.source === 'device'
+            ? 'Scanned on this device. Review each item and assignment before confirming.'
+            : 'Suggestions are ready to edit. Confirm them before applying a split.'
+        receiptScanState.value = 'ready'
       } else {
         receiptSuggestions.value = []
         receiptMessage.value = recognition.reason
+        receiptScanState.value = 'failed'
       }
     } catch {
       if (!isCurrentReceiptRecognition(editorRequest, recognitionRequest, reference)) {
@@ -440,6 +451,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       }
       receiptSuggestions.value = []
       receiptMessage.value = 'Receipt recognition failed. The image is still saved here, and you can enter items manually.'
+      receiptScanState.value = 'failed'
     }
     return true
   }
@@ -460,6 +472,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       receiptPreview.value = undefined
       receiptSuggestions.value = []
       receiptMessage.value = ''
+      receiptScanState.value = 'idle'
     }
     editor.attachmentRefs = editor.attachmentRefs.filter((item) => item !== reference)
     if (reference.startsWith('local-receipt:')) {
@@ -521,7 +534,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   return {
-    editor, members, availableGroups, contextName, mode, origin, expenseId, sourceGroupId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview, receiptDurability,
+    editor, members, availableGroups, contextName, mode, origin, expenseId, sourceGroupId, revision, recurringTemplateId, errors, errorSummary, notice, receiptMessage, receiptSuggestions, receiptPreview, receiptDurability, receiptScanState,
     activeSheet, focusTarget, lastOperationId, saveState, isLoading, hasInitialized, loadError, isDirty, returnPath, canSubmit,
     initialize, selectContext, changeCurrency, changeDate, submit, attachReceipt, removeReceipt, confirmReceipt, openSheet, closeSheet, leaveEditor, currencyOptions,
   }
@@ -542,6 +555,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
     receiptMessage.value = ''
     receiptSuggestions.value = []
     receiptPreview.value = undefined
+    receiptScanState.value = 'idle'
     activeSheet.value = undefined
     focusTarget.value = undefined
     lastOperationId.value = undefined

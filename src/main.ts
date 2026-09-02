@@ -9,6 +9,7 @@ import { createAppSession, createAppSessionCoordinator, createAppSessionMountHos
 import { appPrincipalKey } from './data/principal'
 import { createIndexedDbReceiptStore } from './data/receipts'
 import { createFirebaseReceiptProvider } from './data/firebaseReceiptProvider'
+import { createOnDeviceReceiptProvider } from './data/onDeviceReceiptProvider'
 import { setAuthService } from './features/auth/authService'
 import { registerPwa } from './app/pwa'
 import './app/theme.css'
@@ -64,13 +65,16 @@ const mountHost = createAppSessionMountHost({
 const sessionCoordinator = createAppSessionCoordinator({
   createSession: (principal) => {
     const receipts = createIndexedDbReceiptStore({ namespace: appPrincipalKey(principal) })
+    const uploadProvider = principal.mode === 'firebase' && repositoryRuntime.configuration.kind === 'firebase'
+      && repositoryRuntime.configuration.capabilities.storage === 'available'
+      && repositoryRuntime.configuration.capabilities.functions === 'available'
+      ? createFirebaseReceiptProvider(repositoryRuntime.configuration.firebase, receipts)
+      : undefined
     return createAppSession({
       principal,
       repository: repositoryRuntime.createRepository(principal),
       receipts,
-      ...(principal.mode === 'firebase' && repositoryRuntime.configuration.kind === 'firebase'
-        ? { receiptProvider: createFirebaseReceiptProvider(repositoryRuntime.configuration.firebase, receipts) }
-        : {}),
+      receiptProvider: createOnDeviceReceiptProvider(receipts, { ...(uploadProvider ? { uploadProvider } : {}) }),
     })
   },
   resetFeatureStores: mountHost.resetFeatureStores,

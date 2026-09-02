@@ -268,6 +268,7 @@ describe('ExpenseEditorPage', () => {
     expect(input.attributes('hidden')).toBeDefined()
     expect(input.attributes('tabindex')).toBe('-1')
     expect(input.attributes('accept')).toBe('image/jpeg,image/png,image/heic,image/webp')
+    expect(input.attributes('capture')).toBe('environment')
     expect(wrapper.find('.editor-row--upload').exists()).toBe(false)
 
     const receipt = wrapper.get('#receipt-sheet-trigger')
@@ -291,6 +292,40 @@ describe('ExpenseEditorPage', () => {
 
     expect(picker).not.toHaveBeenCalled()
     expect(wrapper.get('[data-testid="active-sheet"]').text()).toContain('Receipt')
+  })
+
+  it('opens the receipt card as soon as the local preview is ready while recognition continues', async () => {
+    const recognition = deferred<ReceiptRecognitionResult>()
+    const recognitionStarted = deferred<void>()
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(),
+      receipts: createMemoryReceiptStore({ id: () => 'live-scan-sheet' }),
+      receiptProvider: {
+        async upload() { return { status: 'unavailable', reason: 'Upload unavailable.' } },
+        recognize() { recognitionStarted.resolve(); return recognition.promise },
+        async delete() { /* no remote asset exists */ },
+      },
+    }))
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    const input = wrapper.get<HTMLInputElement>('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['receipt'], 'receipt.jpg', { type: 'image/jpeg' })],
+    })
+
+    const selection = input.trigger('change')
+    await recognitionStarted.promise
+    await flushPromises()
+    const sheetWasOpenWhileScanning = wrapper.find('[data-testid="active-sheet"]').exists()
+    const scanCopyWhilePending = wrapper.find('[data-testid="receipt-scan-progress"]').text()
+    const stateWhilePending = store.receiptScanState
+    recognition.resolve({ status: 'unavailable', reason: 'No rows found.' })
+    await selection
+    await flushPromises()
+
+    expect(sheetWasOpenWhileScanning).toBe(true)
+    expect(scanCopyWhilePending).toContain('Scanning on this device')
+    expect(stateWhilePending).toBe('recognizing')
   })
 
   it('uses restrained disclosure icons only on option rows that open choices', async () => {

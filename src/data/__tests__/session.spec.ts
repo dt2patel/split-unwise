@@ -469,6 +469,33 @@ describe('app data session', () => {
     })
   })
 
+  it('omits an explicitly device-only receipt from the execution copy while preserving the durable draft', async () => {
+    const demo = createDemoRepository()
+    const executed: CommandEnvelope[] = []
+    const repository = {
+      ...demo,
+      commands: { execute: async (command: CommandEnvelope) => {
+        executed.push(JSON.parse(JSON.stringify(command)) as CommandEnvelope)
+        return demo.commands.execute(command)
+      } },
+    }
+    const receipts = createMemoryReceiptStore({ id: () => 'device-only' })
+    await receipts.put(new Blob(['receipt'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })
+    const provider = receiptProvider(async () => ({ status: 'local-only', reason: 'Cloud receipt upload is not configured.' }))
+    const session = createAppSession({ repository, commandStorage: createMemoryCommandStorage(), receipts, receiptProvider: provider })
+    await session.ready
+
+    await expect(session.queue.submit(expenseAdd('device-only-add', ['local-receipt:device-only'])).result()).resolves.toMatchObject({
+      status: 'saved', expense: { attachmentRefs: [] },
+    })
+
+    expect(executed[0]).toMatchObject({ attachmentRefs: [] })
+    expect(session.queue.get('device-only-add')?.envelope).toMatchObject({ attachmentRefs: ['local-receipt:device-only'] })
+    await expect(receipts.get('local-receipt:device-only')).resolves.toMatchObject({
+      durability: { status: 'local-only' },
+    })
+  })
+
   it('persists a thrown upload reason while leaving the command normally retryable', async () => {
     const receipts = createMemoryReceiptStore({ id: () => 'throw-then-retry' })
     const reference = await receipts.put(new Blob(['receipt'], { type: 'image/jpeg' }), { fileName: 'receipt.jpg' })

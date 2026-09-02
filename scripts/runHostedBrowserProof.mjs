@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 
 import { assertExpectedHostedCommit, collectHashedStartupAssets } from './hostedBundleContract.mjs'
@@ -28,7 +31,7 @@ const noStore = { cache: 'no-store', headers: { 'cache-control': 'no-cache' } }
 await verifyDeployedBundle()
 await verifyAuthenticatedMobileJourney()
 
-process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, native group-creation card modal with built-in covers, authenticated mobile group, Add Expense, atomic cross-group expense move, and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
+process.stdout.write(`Hosted browser proof passed for deployed commit ${expectedCommit}; account-wide Home totals and cross-group friend breakdowns, native group-creation card modal with built-in covers, authenticated mobile group, on-device receipt scanning and itemization in Add Expense, atomic cross-group expense move, and reimbursement saves with reversed debt direction, reimbursement detail, applied currency conversion card modal, completed and cancelled touch swipe-back navigation across eager and lazy pages, recurrence, member-removal, delete, and restore card modals, shared group recovery, invitation acceptance, removed-member access revocation, and unverified-email recovery all completed.\n`)
 
 async function verifyDeployedBundle() {
   const [buildResponse, rootResponse, deepResponse] = await Promise.all([
@@ -67,7 +70,10 @@ async function verifyAuthenticatedMobileJourney() {
     ? { executablePath: process.env.LIVE_PROOF_BROWSER_EXECUTABLE, headless: true }
     : { channel: process.env.LIVE_PROOF_BROWSER_CHANNEL ?? 'chrome', headless: true }
   const browser = await chromium.launch(launchOptions)
+  const receiptFixtureDirectory = await mkdtemp(join(tmpdir(), 'split-unwise-hosted-receipt-'))
+  const receiptFixturePath = join(receiptFixtureDirectory, 'receipt.png')
   try {
+    await createReceiptFixture(browser, receiptFixturePath)
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
     const page = await context.newPage()
     const assertOwnerPageClean = monitorBrowserErrors(page, 'owner journey')
@@ -108,9 +114,9 @@ async function verifyAuthenticatedMobileJourney() {
     if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted recurrence editor did not use the Ionic iOS card modal.')
     await cardModal.getByRole('button', { name: 'Cancel', exact: true }).click()
     await cardModal.waitFor({ state: 'hidden' })
+    await verifyOnDeviceReceiptScan(page, receiptFixturePath)
     const browserExpenseDescription = `Hosted browser transport ${suffix}`
     await page.locator('#expense-description').fill(browserExpenseDescription)
-    await page.locator('#expense-amount').fill('13.37')
     await page.locator('#expense-category').selectOption({ label: 'Food' })
     const offlineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
     if (await offlineReadyDismiss.isVisible()) await offlineReadyDismiss.click()
@@ -150,7 +156,59 @@ async function verifyAuthenticatedMobileJourney() {
     await verifyInvitationVerificationGate(browser, unverifiedInvitationUrl)
   } finally {
     await browser.close()
+    await rm(receiptFixtureDirectory, { recursive: true, force: true })
   }
+}
+
+async function createReceiptFixture(browser, receiptFixturePath) {
+  const context = await browser.newContext({ viewport: { width: 760, height: 980 }, deviceScaleFactor: 1 })
+  try {
+    const page = await context.newPage()
+    await page.setContent(`<!doctype html><meta charset="utf-8"><style>
+      body{margin:0;background:white;color:black;font-family:Arial,sans-serif}
+      .receipt{box-sizing:border-box;width:760px;min-height:980px;padding:70px 60px}
+      .brand{font-size:50px;font-weight:800;text-align:center;margin-bottom:70px}
+      .row{display:flex;justify-content:space-between;font-size:38px;line-height:1.8;border-bottom:1px solid #ddd}
+      .total{margin-top:40px;border-top:5px solid black;border-bottom:0;font-weight:800}
+    </style><div class="receipt"><div class="brand">LAKE HOUSE MARKET</div>
+      <div class="row"><span>Groceries</span><span>42.00</span></div>
+      <div class="row"><span>Ice</span><span>8.00</span></div>
+      <div class="row"><span>Snacks</span><span>15.00</span></div>
+      <div class="row"><span>Tax</span><span>5.00</span></div>
+      <div class="row total"><span>TOTAL</span><span>70.00</span></div>
+    </div>`)
+    await page.screenshot({ path: receiptFixturePath, fullPage: true })
+  } finally {
+    await context.close()
+  }
+}
+
+async function verifyOnDeviceReceiptScan(page, receiptFixturePath) {
+  const input = page.locator('#expense-receipt-input')
+  if (await input.getAttribute('capture') !== 'environment') throw new Error('Hosted receipt input did not prefer the rear mobile camera.')
+  await input.setInputFiles(receiptFixturePath)
+
+  const modal = page.locator('ion-modal.show-modal')
+  await modal.waitFor({ state: 'visible' })
+  await modal.getByRole('heading', { name: 'Receipt review', exact: true }).waitFor({ state: 'visible' })
+  if (!(await modal.evaluate((element) => element.classList.contains('modal-card')))) throw new Error('Hosted receipt review did not use the Ionic iOS card modal.')
+  const progress = modal.getByTestId('receipt-scan-progress')
+  await progress.getByText('Scanning on this device', { exact: true }).waitFor({ state: 'visible' })
+  const confirm = modal.getByRole('button', { name: 'Confirm', exact: true })
+  if (!(await confirm.isDisabled())) throw new Error('Hosted receipt review allowed confirmation before recognition completed.')
+
+  await modal.getByText('Scanned on this device. Review each item and assignment before confirming.', { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
+  const descriptions = await modal.locator('[data-item-description]').evaluateAll((elements) => elements.map((element) => element.value))
+  const amounts = await modal.locator('[data-item-amount]').evaluateAll((elements) => elements.map((element) => element.value))
+  if (JSON.stringify(descriptions) !== JSON.stringify(['Groceries', 'Ice', 'Snacks', 'Tax'])
+    || JSON.stringify(amounts) !== JSON.stringify(['42.00', '8.00', '15.00', '5.00'])) {
+    throw new Error(`Hosted receipt scanner returned unexpected editable rows: ${JSON.stringify({ descriptions, amounts })}`)
+  }
+  if (await page.locator('#expense-amount').inputValue() !== '70.00') throw new Error('Hosted receipt scanner did not seed the recognized total.')
+  if (await confirm.isDisabled()) throw new Error('Hosted receipt review did not enable confirmation after recognition.')
+  await confirm.click()
+  await modal.waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: 'split by receipt items', exact: true }).waitFor({ state: 'visible' })
 }
 
 async function verifyCreateGroupCardModal(page) {

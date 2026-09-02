@@ -23,6 +23,7 @@ const errorSummary = ref<HTMLElement>()
 const receiptInput = ref<HTMLInputElement>()
 const presentingElement = shallowRef<HTMLElement>()
 const receiptPreviewUrl = ref<string>()
+const awaitingReceiptSheet = ref(false)
 const sheetDirty = ref(false)
 const categories = ['Food', 'Transport', 'Lodging', 'Supplies', 'Entertainment', 'Utilities', 'Other']
 const pageTitle = computed(() => store.mode === 'edit' ? 'Edit expense' : 'Add expense')
@@ -44,6 +45,13 @@ const splitSummary = computed(() => {
 })
 const recurrenceSummary = computed(() => store.editor.recurrence ? `${store.editor.recurrence.frequency} · ${store.editor.recurrence.timeZone}` : 'Does not repeat')
 const hasReceipt = computed(() => store.editor.attachmentRefs.length > 0)
+const receiptSummary = computed(() => store.receiptScanState === 'reading'
+  ? 'Preparing…'
+  : store.receiptScanState === 'recognizing'
+    ? 'Scanning…'
+    : hasReceipt.value
+      ? `${store.editor.attachmentRefs.length} attached`
+      : 'Add receipt')
 const modalCanDismiss = computed<true | typeof canDismissSheet>(() => sheetDirty.value ? canDismissSheet : true)
 const receiptItems = computed<readonly ReceiptItemInput[]>(() => {
   if (store.editor.split.type === 'itemized') return store.editor.split.items
@@ -57,13 +65,19 @@ watch(() => store.saveState, (state) => {
 watch(() => store.receiptPreview, (asset) => {
   if (receiptPreviewUrl.value && typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(receiptPreviewUrl.value)
   receiptPreviewUrl.value = asset && typeof URL.createObjectURL === 'function' ? URL.createObjectURL(asset.blob) : undefined
+  if (asset && awaitingReceiptSheet.value) {
+    awaitingReceiptSheet.value = false
+    openSheet('receipt', 'receipt-sheet-trigger')
+  }
 }, { immediate: true })
 onBeforeUnmount(() => {
+  awaitingReceiptSheet.value = false
   store.leaveEditor()
   if (receiptPreviewUrl.value && typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(receiptPreviewUrl.value)
 })
 
 async function initialize(): Promise<void> {
+  awaitingReceiptSheet.value = false
   const match = /^\/tabs\/(home|groups|activity|account)\/expenses\//.exec(route.path)
   const origin = (match?.[1] ?? 'home') as ExpenseOrigin
   const groupId = parseStrictScalarId(route.query.groupId)
@@ -131,8 +145,13 @@ async function selectReceipt(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
-  if (await store.attachReceipt(file, file.name)) openSheet('receipt', 'receipt-sheet-trigger')
-  input.value = ''
+  awaitingReceiptSheet.value = true
+  try {
+    if (!await store.attachReceipt(file, file.name)) awaitingReceiptSheet.value = false
+  } finally {
+    awaitingReceiptSheet.value = false
+    input.value = ''
+  }
 }
 </script>
 
@@ -192,9 +211,9 @@ async function selectReceipt(event: Event): Promise<void> {
             <p v-if="store.errors.date" id="expense-date-error" class="field-error">{{ store.errors.date }}</p>
             <ion-item id="participant-sheet-trigger" button :detail="true" class="editor-row" :aria-invalid="store.errors.participants ? 'true' : undefined" :aria-describedby="store.errors.participants ? 'expense-participants-error' : undefined" @click="openSheet('participants', 'participant-sheet-trigger')"><ion-icon slot="start" :icon="peopleOutline" aria-hidden="true" /><ion-label>Split with</ion-label><ion-note slot="end" class="editor-row__note">{{ store.editor.participants.length }} participant{{ store.editor.participants.length === 1 ? '' : 's' }}</ion-note></ion-item>
             <p v-if="store.errors.participants" id="expense-participants-error" class="field-error">{{ store.errors.participants }}</p>
-            <ion-item id="receipt-sheet-trigger" button :detail="true" class="editor-row" :aria-label="hasReceipt ? 'Review attached receipt' : 'Add receipt image'" :aria-invalid="store.errors.receipt ? 'true' : undefined" :aria-describedby="store.errors.receipt ? 'expense-receipt-error' : undefined" @click="openReceipt"><ion-icon slot="start" :icon="cameraOutline" aria-hidden="true" /><ion-label>Receipt</ion-label><ion-note slot="end" class="editor-row__note">{{ hasReceipt ? `${store.editor.attachmentRefs.length} attached` : 'Add receipt' }}</ion-note></ion-item>
+            <ion-item id="receipt-sheet-trigger" button :detail="true" class="editor-row" :aria-label="hasReceipt ? 'Review attached receipt' : 'Add receipt image'" :aria-invalid="store.errors.receipt ? 'true' : undefined" :aria-describedby="store.errors.receipt ? 'expense-receipt-error' : undefined" @click="openReceipt"><ion-icon slot="start" :icon="cameraOutline" aria-hidden="true" /><ion-label>Receipt</ion-label><ion-note slot="end" class="editor-row__note">{{ receiptSummary }}</ion-note></ion-item>
             <p v-if="store.errors.receipt" id="expense-receipt-error" class="field-error">{{ store.errors.receipt }}</p>
-            <input id="expense-receipt-input" ref="receiptInput" hidden tabindex="-1" aria-hidden="true" type="file" accept="image/jpeg,image/png,image/heic,image/webp" @change="selectReceipt">
+            <input id="expense-receipt-input" ref="receiptInput" hidden tabindex="-1" aria-hidden="true" type="file" accept="image/jpeg,image/png,image/heic,image/webp" capture="environment" @change="selectReceipt">
             <ion-item class="editor-row editor-row--notes"><ion-icon slot="start" :icon="documentTextOutline" aria-hidden="true" /><label class="editor-notes-field" for="expense-notes"><span>Notes</span><textarea id="expense-notes" v-model="store.editor.notes" rows="2" placeholder="Optional details"></textarea></label></ion-item>
             <ion-item id="recurrence-sheet-trigger" button :detail="true" class="editor-row" :aria-invalid="store.errors.recurrence ? 'true' : undefined" :aria-describedby="store.errors.recurrence ? 'expense-recurrence-error' : undefined" @click="openSheet('recurrence', 'recurrence-sheet-trigger')"><ion-icon slot="start" :icon="repeatOutline" aria-hidden="true" /><ion-label>Repeat</ion-label><ion-note slot="end" class="editor-row__note">{{ recurrenceSummary }}</ion-note></ion-item>
             <p v-if="store.errors.recurrence" id="expense-recurrence-error" class="field-error">{{ store.errors.recurrence }}</p>
@@ -212,7 +231,7 @@ async function selectReceipt(event: Event): Promise<void> {
           <participant-sheet v-else-if="store.activeSheet === 'participants'" class="expense-sheet--ionic-content" :model-value="store.editor.participants" :members="store.members" @apply="applyParticipants" @cancel="closeSheet" />
           <split-editor v-else-if="store.activeSheet === 'split'" class="expense-sheet--ionic-content" :model-value="store.editor.split" :participants="store.members.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" @apply="applySplit" @cancel="closeSheet" @dirty="markSheetDirty" />
           <recurrence-sheet v-else-if="store.activeSheet === 'recurrence'" class="expense-sheet--ionic-content" :model-value="store.editor.recurrence" :occurrence-edit-scope="store.editor.occurrenceEditScope" :is-recurring-instance="Boolean(store.recurringTemplateId)" :date="store.editor.date" @apply="applyRecurrence" @cancel="closeSheet" @dirty="markSheetDirty" />
-          <receipt-review v-else-if="store.activeSheet === 'receipt'" class="expense-sheet--ionic-content" :model-value="receiptItems" :members="store.members.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" :provider-message="store.receiptMessage" :image-url="receiptPreviewUrl" :durability="store.receiptDurability" @confirm="confirmReceipt" @cancel="closeSheet" @dirty="markSheetDirty" />
+          <receipt-review v-else-if="store.activeSheet === 'receipt'" class="expense-sheet--ionic-content" :model-value="receiptItems" :members="store.members.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" :provider-message="store.receiptMessage" :image-url="receiptPreviewUrl" :durability="store.receiptDurability" :scan-state="store.receiptScanState" @confirm="confirmReceipt" @cancel="closeSheet" @dirty="markSheetDirty" />
         </ion-content>
       </ion-modal>
     </ion-content>

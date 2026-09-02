@@ -613,6 +613,37 @@ describe('expense store lifecycle', () => {
     expect(store.receiptSuggestions).toEqual([])
   })
 
+  it('shows live scan state and seeds a blank expense total from the recognized receipt total', async () => {
+    const recognition = deferred<ReceiptRecognitionResult>()
+    const recognitionStarted = deferred<void>()
+    setAppSessionForTesting(createAppSession({
+      repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(),
+      receipts: createMemoryReceiptStore({ id: () => 'device-scan-state' }),
+      receiptProvider: {
+        async upload() { return { status: 'unavailable', reason: 'Upload unavailable.' } },
+        recognize() { recognitionStarted.resolve(); return recognition.promise },
+        async delete() { /* no remote asset exists */ },
+      },
+    }))
+    const store = useExpenseStore()
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend' })
+
+    const attachment = store.attachReceipt(new Blob(['receipt'], { type: 'image/jpeg' }), 'receipt.jpg')
+    await recognitionStarted.promise
+
+    expect((store as typeof store & { receiptScanState?: string }).receiptScanState).toBe('recognizing')
+    expect(store.receiptPreview).toMatchObject({ reference: 'local-receipt:device-scan-state' })
+    recognition.resolve({
+      status: 'suggestions', source: 'device', totalAmountText: '50.00',
+      items: [{ description: 'Groceries', amountText: '42.00' }, { description: 'Ice', amountText: '8.00' }],
+    })
+
+    await expect(attachment).resolves.toBe(true)
+    expect(store.editor.amountText).toBe('50.00')
+    expect(store.receiptSuggestions).toEqual([{ description: 'Groceries', amountText: '42.00' }, { description: 'Ice', amountText: '8.00' }])
+    expect((store as typeof store & { receiptScanState?: string }).receiptScanState).toBe('ready')
+  })
+
   it('does not apply receipt recognition after the editor route changes', async () => {
     const recognition = deferred<ReceiptRecognitionResult>()
     const receiptProvider: ReceiptProvider = {

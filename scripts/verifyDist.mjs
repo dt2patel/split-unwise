@@ -6,7 +6,14 @@ const root = resolve(import.meta.dirname, '..')
 const dist = resolve(root, 'dist')
 const files = await walk(dist)
 const names = files.map((path) => relative(dist, path).replaceAll('\\', '/'))
-const required = ['index.html', 'manifest.webmanifest', 'sw.js', 'build-info.json', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png']
+const required = [
+  'index.html', 'manifest.webmanifest', 'sw.js', 'build-info.json',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png',
+  'ocr/worker.min.js', 'ocr/lang/eng.traineddata.gz',
+  'ocr/core/tesseract-core-lstm.wasm.js', 'ocr/core/tesseract-core-lstm.wasm',
+  'ocr/core/tesseract-core-simd-lstm.wasm.js', 'ocr/core/tesseract-core-simd-lstm.wasm',
+  'ocr/core/tesseract-core-relaxedsimd-lstm.wasm.js', 'ocr/core/tesseract-core-relaxedsimd-lstm.wasm',
+]
 for (const name of required) requireCondition(names.includes(name), `missing built artifact: ${name}`)
 requireCondition(!names.some((name) => name.endsWith('.map')), 'production source maps must not ship')
 requireCondition(!names.includes('assets/images/app-icon-1024.png') && !names.includes('app-icon-1024.png'), 'the 1024 source icon must not be shipped or precached')
@@ -22,6 +29,7 @@ for (const icon of manifest.icons ?? []) {
 const serviceWorker = await readFile(resolve(dist, 'sw.js'), 'utf8')
 requireCondition(serviceWorker.includes('index.html'), 'service worker is missing the offline app shell')
 requireCondition(!serviceWorker.includes('app-icon-1024.png'), 'service worker precaches the source icon')
+requireCondition(!serviceWorker.includes('ocr/'), 'service worker must load large OCR assets on demand')
 requireCondition(!/background.?sync/i.test(serviceWorker), 'service worker must not own financial background replay')
 
 for (const name of names.filter((name) => name.startsWith('assets/'))) {

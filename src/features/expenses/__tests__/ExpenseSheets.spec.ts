@@ -117,6 +117,17 @@ describe('staged expense sheets', () => {
     ])
   })
 
+  it('announces an active on-device scan and holds confirmation until suggestions arrive', () => {
+    const wrapper = mount(ReceiptReview, { props: {
+      modelValue: [], members, currency: 'USD', totalMinorAmount: 0, scanState: 'recognizing',
+    } })
+
+    expect(wrapper.get('[data-testid="receipt-scan-progress"]').text()).toContain('Scanning on this device')
+    expect(wrapper.get('[data-testid="receipt-scan-progress"]').attributes('aria-live')).toBe('polite')
+    expect(wrapper.get('[data-action="confirm-receipt"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.add-line').attributes('disabled')).toBeDefined()
+  })
+
   it('emits dirty when Add item stages a receipt row', async () => {
     const wrapper = mount(ReceiptReview, { props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,

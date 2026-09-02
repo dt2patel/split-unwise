@@ -469,10 +469,17 @@ function equivalentWithPromotedAttachments<T extends object & { readonly attachm
 }
 
 function isAllowedAttachmentPromotion(original: readonly string[], execution: readonly string[]): boolean {
-  return original.length === execution.length && original.every((reference, index) => {
-    const prepared = execution[index]
-    return prepared === reference || (/^local-receipt:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(reference) && /^remote-receipt:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(prepared))
-  })
+  let executionIndex = 0
+  for (const reference of original) {
+    const prepared = execution[executionIndex]
+    const local = /^local-receipt:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(reference)
+    if (prepared === reference || (local && /^remote-receipt:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(prepared))) {
+      executionIndex += 1
+      continue
+    }
+    if (!local) return false
+  }
+  return executionIndex === execution.length
 }
 
 function isIndeterminateExecutionError(error: unknown): boolean {

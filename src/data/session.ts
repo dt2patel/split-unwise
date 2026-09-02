@@ -498,7 +498,7 @@ export async function prepareCommandReceipts(command: CommandEnvelope, provider:
 }
 
 async function promoteAttachmentRefs(groupId: string, references: readonly string[], provider: ReceiptProvider, receipts?: ReceiptBlobStore): Promise<readonly string[]> {
-  return Promise.all(references.map(async (reference) => {
+  const promoted = await Promise.all(references.map(async (reference): Promise<string | undefined> => {
     if (!isLocalReceiptReference(reference)) return reference
     const existing = await receipts?.get(reference)
     if (existing?.durability.status === 'uploaded') return existing.durability.attachmentRef
@@ -516,12 +516,14 @@ async function promoteAttachmentRefs(groupId: string, references: readonly strin
       await receipts?.setDurability(reference, { status: 'uploaded', attachmentRef: upload.attachmentRef })
       return upload.attachmentRef
     }
+    if (upload.status === 'local-only') return undefined
     await receipts?.setDurability(reference, {
       status: 'upload-unavailable',
       reason: upload.reason.trim() || 'Receipt upload is unavailable. The image remains only on this device.',
     })
     return reference
   }))
+  return promoted.filter((reference): reference is string => typeof reference === 'string')
 }
 
 function isLocalReceiptReference(value: string): value is LocalReceiptReference {

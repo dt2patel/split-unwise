@@ -35,11 +35,12 @@ export interface ReceiptSuggestion {
 }
 
 export type ReceiptRecognitionResult =
-  | { readonly status: 'suggestions'; readonly source: 'demo' | 'provider'; readonly items: readonly ReceiptSuggestion[] }
+  | { readonly status: 'suggestions'; readonly source: 'demo' | 'device' | 'provider'; readonly items: readonly ReceiptSuggestion[]; readonly totalAmountText?: string }
   | { readonly status: 'unavailable'; readonly reason: string }
 
 export type ReceiptUploadResult =
   | { readonly status: 'uploaded'; readonly attachmentRef: string }
+  | { readonly status: 'local-only'; readonly reason: string }
   | { readonly status: 'unavailable'; readonly reason: string }
 
 export interface ReceiptProvider {
