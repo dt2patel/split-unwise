@@ -206,8 +206,8 @@ describe('recurring expense management page states', () => {
     const monthly = wrapper.get('[data-template-id="cabin-deposit-monthly"]')
     const yearly = wrapper.get('[data-template-id="yearly-permit"]')
 
-    expect(wrapper.get('.recurring-intro').text()).toContain('series creator or a group manager')
-    expect(wrapper.get('.recurring-intro').text()).not.toContain('when an active member opens')
+    expect(wrapper.get('.recurring-intro').text()).toContain('when an active member opens')
+    expect(wrapper.get('.recurring-intro').text()).not.toContain('series creator or a group manager')
 
     expect(weekly.text()).toContain('Weekly')
     expect(weekly.get('[data-testid="recurring-next-date"]').attributes('datetime')).toBe('2026-09-08')
@@ -253,7 +253,7 @@ describe('recurring expense management page states', () => {
     expect(card.get('[data-action="edit-recurring-expense"]').attributes('href')).toBe(`/tabs/groups/expenses/${frontier.id}/edit?groupId=lake-house-weekend`)
   })
 
-  it('does not grant a non-manager materializer future-edit or cancellation authority', async () => {
+  it('lets an active non-manager edit or stop another member\'s recurring series', async () => {
     const repository = createDemoRepository({ currentUserId: 'jordan-k' })
     const source = recurringSourceExpense()
     const frontier = recurringOccurrenceExpense({ createdBy: { id: 'jordan-k', displayName: 'Jordan K.' }, updatedBy: { id: 'jordan-k', displayName: 'Jordan K.' } })
@@ -276,9 +276,9 @@ describe('recurring expense management page states', () => {
     const wrapper = await mountRecurring()
     const card = wrapper.get(`[data-template-id="${template.id}"]`)
 
-    expect(card.find('[data-action="edit-recurring-expense"]').exists()).toBe(false)
-    expect(card.find('[data-action="cancel-recurrence"]').exists()).toBe(false)
-    expect(card.get('[data-testid="recurrence-permission"]').text()).toContain('Only the series creator or a group manager')
+    expect(card.get('[data-action="edit-recurring-expense"]').attributes('href')).toBe(`/tabs/groups/expenses/${frontier.id}/edit?groupId=lake-house-weekend`)
+    expect(card.find('[data-action="cancel-recurrence"]').exists()).toBe(true)
+    expect(card.find('[data-testid="recurrence-permission"]').exists()).toBe(false)
   })
 
   it('fails closed for Edit future when the declared frontier expense is not in the confirmed list', async () => {
@@ -507,7 +507,7 @@ describe('recurring catch-up and cancellation', () => {
     expect(wrapper.get('[data-testid="recurrence-operation-error"]').text()).toContain('latest recurring list could not be refreshed')
   })
 
-  it('permits a current manager but gives another active member a read-only explanation', async () => {
+  it('offers cancellation to both a current manager and another active member', async () => {
     const managerRepository = createDemoRepository({ currentUserId: 'maya-p' })
     setSession({
       ...managerRepository,
@@ -523,8 +523,8 @@ describe('recurring catch-up and cancellation', () => {
       groups: { ...memberRepository.groups, async materializeDue() { return { occurrences: [], moreRemain: false } } },
     })
     const member = await mountRecurring()
-    expect(member.find('[data-action="cancel-recurrence"]').exists()).toBe(false)
-    expect(member.get('[data-testid="recurrence-permission"]').text()).toContain('Only the series creator or a group manager')
+    expect(member.find('[data-action="cancel-recurrence"]').exists()).toBe(true)
+    expect(member.find('[data-testid="recurrence-permission"]').exists()).toBe(false)
   })
 
   it('surfaces a failed durable cancellation accessibly and makes the active action available again', async () => {

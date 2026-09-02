@@ -270,7 +270,6 @@ function isCurrentEntry(id: string, entry: number): boolean {
 function canCancel(template: RecurringExpense): boolean {
   return template.status === 'active'
     && Boolean(currentUser.value)
-    && (template.createdBy.id === currentUser.value?.id || currentUser.value?.canManage === true)
 }
 
 function canEditFuture(template: RecurringExpense): boolean {
@@ -278,7 +277,6 @@ function canEditFuture(template: RecurringExpense): boolean {
   return template.status === 'active'
     && Boolean(currentUser.value)
     && Boolean(frontier)
-    && (currentUser.value?.canManage === true || template.createdBy.id === currentUser.value?.id)
 }
 
 function confirmedFrontierExpense(template: RecurringExpense): ExpenseRow | undefined {
@@ -371,7 +369,7 @@ function messageFor(reason: unknown, fallback: string): string {
           <div>
             <p>{{ group?.name ?? 'Group' }}</p>
             <h1>Recurring expenses</h1>
-            <span>Due expenses are added when the series creator or a group manager opens this group or this screen.</span>
+            <span>Due expenses are added when an active member opens this group or this screen.</span>
           </div>
         </header>
 
@@ -467,9 +465,6 @@ function messageFor(reason: unknown, fallback: string): string {
                   @click="requestCancellation(template)"
                 >{{ cancellingTemplateId === template.id ? 'Stopping…' : 'Stop series' }}</ion-button>
               </div>
-              <p v-if="template.status === 'active' && !canCancel(template)" class="recurring-card__permission" data-testid="recurrence-permission">
-                Only the series creator or a group manager can stop future expenses.
-              </p>
             </article>
           </transition-group>
         </template>
@@ -536,7 +531,7 @@ function messageFor(reason: unknown, fallback: string): string {
 .recurring-card__schedule dt { color: var(--ion-color-medium); font-size: .67rem; font-weight: 680; letter-spacing: .03em; text-transform: uppercase; }
 .recurring-card__schedule dd { min-width: 0; margin: 3px 0 0; font-size: .82rem; font-weight: 650; overflow-wrap: anywhere; }
 .recurring-card--cancelled .recurring-card__schedule { grid-template-columns: minmax(0, 1fr); }
-.recurring-card__stopped-copy,.recurring-card__permission { margin-top: 12px !important; color: var(--ion-color-medium); font-size: .78rem; line-height: 1.4; }
+.recurring-card__stopped-copy { margin-top: 12px !important; color: var(--ion-color-medium); font-size: .78rem; line-height: 1.4; }
 .recurring-card__actions { display: flex; min-width: 0; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
 .recurring-card__actions ion-button { min-width: 0; min-height: 44px; flex: 1 1 126px; margin: 0; --padding-start: 10px; --padding-end: 10px; font-size: .78rem; text-transform: none; }
 .recurring-card__actions ion-icon { margin-inline-end: 5px; }

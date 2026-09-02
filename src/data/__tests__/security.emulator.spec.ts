@@ -256,33 +256,40 @@ describe('Firestore rules in the emulator', () => {
     expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 2, headDeleted: false, current: { description: 'Audited change', revision: 2 } })
     expect((await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense).toMatchObject({ description: 'Audited change', revision: 2 })
 
-    const beforeDeniedEdit = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}`))).data()!
+    const beforeFriendEdit = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}`))).data()!
     const currentEditedExpense = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense as Record<string, unknown>
-    const deniedToken = 'd'.repeat(48)
-    const forgedExpense = {
-      ...currentEditedExpense, description: 'Friend forged edit', lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: deniedToken,
+    const friendEditToken = 'd'.repeat(48)
+    const friendEditedExpense = {
+      ...currentEditedExpense, description: 'Friend corrected dinner', lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: friendEditToken,
       updatedAt: serverTimestamp(), updatedBy: { id: 'friend', displayName: 'Friend' }, revision: 3,
     }
-    await assertFails(commitSparkExpenseMutation(friend, expense.id as string, deniedToken, {
-      ...beforeDeniedEdit, lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: deniedToken,
-      headRevision: 3, headDeleted: false, current: forgedExpense,
-    }, sparkExpenseVersion(forgedExpense, 'friend-edit-d', 'updated', { id: 'friend', displayName: 'Friend' })))
+    await assertSucceeds(commitSparkExpenseMutation(friend, expense.id as string, friendEditToken, {
+      ...beforeFriendEdit, lastOperationId: 'friend-edit-d', lastRequestFingerprint: 'a'.repeat(64), lastResourceToken: friendEditToken,
+      headRevision: 3, headDeleted: false, current: friendEditedExpense,
+    }, sparkExpenseVersion(friendEditedExpense, 'friend-edit-d', 'updated', { id: 'friend', displayName: 'Friend' })))
+    const savedFriendEditVersion = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}/revisions/${friendEditToken}`))).data()!
+    await assertSucceeds(setDoc(doc(friend, `groups/group-a/activity/activity-${friendEditToken}`), sparkExpenseActivity(friendEditedExpense, 'expense.updated', savedFriendEditVersion.createdAt)))
+    expect((await getDoc(reference)).data()).toMatchObject({
+      createdBy: { id: 'active', displayName: 'Active Member' },
+      headRevision: 3,
+      current: { description: 'Friend corrected dinner', updatedBy: { id: 'friend', displayName: 'Friend' }, revision: 3 },
+    })
 
-    const beforeDelete = (await getDoc(reference)).data()!
-    const beforeDeleteExpense = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${editToken}`))).data()?.expense as Record<string, unknown>
+    const beforeDelete = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}`))).data()!
+    const beforeDeleteExpense = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}/revisions/${friendEditToken}`))).data()?.expense as Record<string, unknown>
     const deleteToken = '1'.repeat(48)
     const deletedExpense = {
       ...beforeDeleteExpense, lastOperationId: 'delete-operation-1', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: deleteToken,
-      updatedAt: serverTimestamp(), updatedBy: { id: 'active', displayName: 'Active Member' }, revision: 3, deletedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(), updatedBy: { id: 'friend', displayName: 'Friend' }, revision: 4, deletedAt: serverTimestamp(),
     }
-    await assertSucceeds(commitSparkExpenseMutation(active, expense.id as string, deleteToken, {
+    await assertSucceeds(commitSparkExpenseMutation(friend, expense.id as string, deleteToken, {
       ...beforeDelete, lastOperationId: 'delete-operation-1', lastRequestFingerprint: 'b'.repeat(64), lastResourceToken: deleteToken,
-      headRevision: 3, headDeleted: true, current: deletedExpense,
-    }, sparkExpenseVersion(deletedExpense, 'delete-operation-1', 'deleted', { id: 'active', displayName: 'Active Member' })))
-    const savedDeleteVersion = (await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()!
-    await assertSucceeds(setDoc(doc(active, `groups/group-a/activity/activity-${deleteToken}`), sparkExpenseActivity(deletedExpense, 'expense.deleted', savedDeleteVersion.createdAt)))
-    expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 3, headDeleted: true, current: { description: 'Audited change', revision: 3 } })
-    expect((await getDoc(doc(active, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()?.expense).toMatchObject({ description: 'Audited change', revision: 3 })
+      headRevision: 4, headDeleted: true, current: deletedExpense,
+    }, sparkExpenseVersion(deletedExpense, 'delete-operation-1', 'deleted', { id: 'friend', displayName: 'Friend' })))
+    const savedDeleteVersion = (await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()!
+    await assertSucceeds(setDoc(doc(friend, `groups/group-a/activity/activity-${deleteToken}`), sparkExpenseActivity(deletedExpense, 'expense.deleted', savedDeleteVersion.createdAt)))
+    expect((await getDoc(reference)).data()).toMatchObject({ description: 'Dinner', revision: 1, headRevision: 4, headDeleted: true, current: { description: 'Friend corrected dinner', revision: 4 } })
+    expect((await getDoc(doc(friend, `groups/group-a/expenses/${expense.id}/revisions/${deleteToken}`))).data()?.expense).toMatchObject({ description: 'Friend corrected dinner', revision: 4 })
     await assertFails(deleteDoc(reference))
     await assertFails(updateDoc(reference, { description: 'Edit after delete' }))
     await assertFails(setDoc(doc(active, 'groups/group-a/activity/activity-ffffffffffffffffffffffffffffffffffffffffffffffff'), { kind: 'expense.created' }))
@@ -356,7 +363,7 @@ describe('Firestore rules in the emulator', () => {
     const advancedTemplate = (await getDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`))).data()!
     await assertFails(setDoc(doc(friend, `groups/group-a/recurringTemplates/${template.id}`), sparkRecurringCancellation(advancedTemplate, '5', 3, { id: 'friend', displayName: 'Friend' })))
     await assertFails(setDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`), sparkRecurringCancellation(advancedTemplate, '5', 1)))
-    await assertSucceeds(setDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`), sparkRecurringCancellation(advancedTemplate, '5', 2)))
+    await assertSucceeds(setDoc(doc(friend, `groups/group-a/recurringTemplates/${template.id}`), sparkRecurringCancellation(advancedTemplate, '5', 2, { id: 'friend', displayName: 'Friend' })))
 
     const cancelled = (await getDoc(doc(active, `groups/group-a/recurringTemplates/${template.id}`))).data()!
     await assertFails(commitSparkRecurringMaterialization(active, sparkRecurringMaterialization(cancelled, '6', '2026-11-01', '2026-12-01')))
@@ -380,7 +387,7 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(commitSparkRecurringMaterialization(active, removedParticipant))
   })
 
-  emulatorIt('denies an ordinary member raw schedule jump while allowing the creator and a manager to materialize', async () => {
+  emulatorIt('rejects an ordinary member schedule jump while allowing valid collaborative materialization and future edits', async () => {
     const creator = environment.authenticatedContext('friend').firestore()
     const materializer = environment.authenticatedContext('materializer').firestore()
     const manager = environment.authenticatedContext('manager').firestore()
@@ -403,28 +410,25 @@ describe('Firestore rules in the emulator', () => {
     })
 
     const advanced = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${template.id}`))).data()!
-    const creatorMaterialization = sparkRecurringMaterialization(advanced, '7', '2026-11-01', '2026-12-01', creatorActor)
-    await assertSucceeds(commitSparkRecurringMaterialization(creator, creatorMaterialization))
+    const memberMaterialization = sparkRecurringMaterialization(advanced, '7', '2026-11-01', '2026-12-01', materializerActor)
+    await assertSucceeds(commitSparkRecurringMaterialization(materializer, memberMaterialization))
+    expect((await getDoc(doc(materializer, `groups/group-a/expenses/${memberMaterialization.occurrence.id}`))).data()).toMatchObject({
+      createdBy: creatorActor,
+      updatedBy: materializerActor,
+    })
 
-    const creatorFrontier = (await getDoc(doc(creator, `groups/group-a/expenses/${creatorMaterialization.occurrence.id}`))).data()!
-    const creatorTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${template.id}`))).data()!
-    const deniedFuture = sparkFutureRecurringEdit(creatorFrontier, creatorTemplate, '8', materializerActor)
-    await assertFails(commitSparkFutureRecurringEdit(materializer, deniedFuture, deniedFuture.template))
-
-    const creatorFuture = sparkFutureRecurringEdit(creatorFrontier, creatorTemplate, '9', creatorActor)
-    await assertSucceeds(commitSparkFutureRecurringEdit(creator, creatorFuture, creatorFuture.template))
+    const memberFrontier = (await getDoc(doc(materializer, `groups/group-a/expenses/${memberMaterialization.occurrence.id}`))).data()!
+    const memberTemplate = (await getDoc(doc(materializer, `groups/group-a/recurringTemplates/${template.id}`))).data()!
+    const memberFuture = sparkFutureRecurringEdit(memberFrontier, memberTemplate, '8', materializerActor)
+    await assertSucceeds(commitSparkFutureRecurringEdit(materializer, memberFuture, memberFuture.template))
     const futureTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${template.id}`))).data()!
-    await assertFails(setDoc(
-      doc(materializer, `groups/group-a/recurringTemplates/${template.id}`),
-      sparkRecurringCancellation(futureTemplate, 'a', Number(futureTemplate.revision), materializerActor),
-    ))
     await assertSucceeds(setDoc(
       doc(creator, `groups/group-a/recurringTemplates/${template.id}`),
       sparkRecurringCancellation(futureTemplate, 'b', Number(futureTemplate.revision), creatorActor),
     ))
   })
 
-  emulatorIt('authorizes cancellation independently for the creator or a manager at the current revision', async () => {
+  emulatorIt('authorizes cancellation independently for any active member at the current revision', async () => {
     const creator = environment.authenticatedContext('active').firestore()
     const manager = environment.authenticatedContext('manager').firestore()
     const nonManager = environment.authenticatedContext('friend').firestore()
@@ -457,7 +461,7 @@ describe('Firestore rules in the emulator', () => {
     const deniedTemplate = sparkRecurringTemplate(deniedSource, '2026-10-01')
     await assertSucceeds(commitSparkRecurringCreation(creator, deniedSource, deniedTemplate))
     const savedDeniedTemplate = (await getDoc(doc(creator, `groups/group-a/recurringTemplates/${deniedTemplate.id}`))).data()!
-    await assertFails(setDoc(
+    await assertSucceeds(setDoc(
       doc(nonManager, `groups/group-a/recurringTemplates/${deniedTemplate.id}`),
       sparkRecurringCancellation(savedDeniedTemplate, '3', 1, nonManagerActor),
     ))

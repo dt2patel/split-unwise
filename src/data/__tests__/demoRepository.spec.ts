@@ -149,6 +149,34 @@ describe('demo repository', () => {
     )
   })
 
+  it('lets an active member edit and delete another member\'s expense with their own audit identity', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    const previous = await repository.expenses.getById('lake-house-weekend', 'groceries')
+    if (!previous) throw new Error('Expected shared expense fixture')
+
+    const edited = await repository.expenses.edit({
+      kind: 'expense.edit', operationId: 'alex-collaborative-edit', groupId: previous.groupId,
+      expenseId: previous.id, expectedRevision: previous.revision,
+      draft: {
+        groupId: previous.groupId, description: 'Groceries and ice', date: previous.date,
+        total: previous.total, payments: previous.payments, allocations: previous.allocations,
+        category: previous.category, splitMethod: previous.splitMethod, attachmentRefs: previous.attachmentRefs,
+      },
+    })
+    if (edited.status !== 'saved') throw new Error('Expected collaborative edit to save')
+    expect(edited.expense).toMatchObject({ revision: 2, updatedBy: { id: 'alex-r', displayName: 'Alex R.' } })
+
+    const deleted = await repository.expenses.delete({
+      kind: 'expense.delete', operationId: 'alex-collaborative-delete', groupId: previous.groupId,
+      expenseId: previous.id, expectedRevision: edited.expense.revision,
+    })
+    expect(deleted).toMatchObject({ status: 'saved', tombstone: { revision: 3 } })
+    await expect(repository.activity.listForGroup(previous.groupId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'expense.updated', actor: { id: 'alex-r', displayName: 'Alex R.' } }),
+      expect.objectContaining({ kind: 'expense.deleted', actor: { id: 'alex-r', displayName: 'Alex R.' } }),
+    ]))
+  })
+
   it('persists reimbursements and reverses their pairwise balance direction', async () => {
     const repository = createDemoRepository()
     const result = await repository.expenses.add({
@@ -298,14 +326,29 @@ describe('demo repository', () => {
     await expect(repository.groups.materializeDue('lake-house-weekend', '2026-11-28', 25)).rejects.toThrow(/24/)
   })
 
-  it('skips another creator due series for an ordinary member and denies direct materialization', async () => {
+  it('lets an ordinary active member advance, replay, and stop another creator recurring series', async () => {
     const repository = createDemoRepository({ currentUserId: 'jordan-k' })
 
-    await expect(repository.groups.materializeDue('lake-house-weekend', '2026-09-28')).resolves.toEqual({ occurrences: [], moreRemain: false })
+    await expect(repository.groups.materializeDue('lake-house-weekend', '2026-09-28')).resolves.toMatchObject({
+      occurrences: [{
+        id: 'occ_cabin-deposit-monthly_2026-09-28',
+        createdBy: { id: 'alex-r', displayName: 'Alex R.' },
+        updatedBy: { id: 'jordan-k', displayName: 'Jordan K.' },
+      }],
+      moreRemain: false,
+    })
     await expect(repository.commands.execute({
-      kind: 'recurrence.materialize', operationId: 'jordan-materialize-alex-series', groupId: 'lake-house-weekend',
+      kind: 'recurrence.materialize', operationId: 'jordan-replay-alex-series', groupId: 'lake-house-weekend',
       templateId: 'cabin-deposit-monthly', occurrenceDate: '2026-09-28',
-    })).rejects.toThrow(/series creator|manager/i)
+    })).resolves.toMatchObject({
+      status: 'saved',
+      occurrence: { id: 'occ_cabin-deposit-monthly_2026-09-28', createdBy: { id: 'alex-r' }, updatedBy: { id: 'jordan-k' } },
+      template: { id: 'cabin-deposit-monthly', revision: 2 },
+    })
+    await expect(repository.commands.execute({
+      kind: 'recurrence.cancel', operationId: 'jordan-stops-alex-series', groupId: 'lake-house-weekend',
+      templateId: 'cabin-deposit-monthly', expectedRevision: 2,
+    })).resolves.toMatchObject({ status: 'saved', template: { id: 'cabin-deposit-monthly', status: 'cancelled', revision: 3 } })
   })
 
   it('updates an active template only for a latest future-series edit', async () => {

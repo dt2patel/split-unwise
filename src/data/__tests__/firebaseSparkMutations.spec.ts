@@ -176,7 +176,7 @@ describe('Firebase Spark mutations', () => {
     })
   })
 
-  it('preserves the series creator as occurrence author when a manager materializes it', () => {
+  it('preserves the series creator as occurrence author when another active member materializes it', () => {
     const templateId = `recurring-${'d'.repeat(48)}`
     const template = {
       id: templateId, groupId: 'group-a', sourceExpenseId: `expense-${'d'.repeat(48)}`,
@@ -204,7 +204,7 @@ describe('Firebase Spark mutations', () => {
     const actor = { id: 'friend', displayName: 'Friend Account' }
     const committedAt = { kind: 'committed-at' }
 
-    const record = sparkMutations.buildSparkRecurrenceMaterializationRecord(command, template, { actor, canManage: true }, identity, committedAt)
+    const record = sparkMutations.buildSparkRecurrenceMaterializationRecord(command, template, { actor, canManage: false }, identity, committedAt)
 
     expect(record.occurrenceId).toBe(`${templateId.startsWith('recurring-') ? 'occ_' : ''}${templateId}_2026-10-01`)
     expect(record.occurrenceDocument).toMatchObject({ reimbursement: true })
@@ -224,7 +224,7 @@ describe('Firebase Spark mutations', () => {
     })
   })
 
-  it('rejects an ordinary member materializing another creator series', () => {
+  it('allows an ordinary active member to materialize another creator series', () => {
     const templateId = `recurring-${'d'.repeat(48)}`
     const template = recurringTemplateRecord(templateId)
     const command: RecurrenceMaterializeCommand = {
@@ -236,9 +236,12 @@ describe('Firebase Spark mutations', () => {
       requestFingerprint: 'a'.repeat(64), resourceId: `operation-${'b'.repeat(48)}`,
     }
 
-    expect(() => sparkMutations.buildSparkRecurrenceMaterializationRecord(
+    expect(sparkMutations.buildSparkRecurrenceMaterializationRecord(
       command, template, { actor, canManage: false }, identity, 'now',
-    )).toThrow(/series creator|manager/i)
+    )).toMatchObject({
+      occurrenceDocument: { createdBy: template.createdBy, updatedBy: actor },
+      templateDocument: { createdBy: template.createdBy, updatedBy: actor, revision: 2 },
+    })
   })
 
   it('cancels only the expected active template revision', () => {
@@ -260,11 +263,11 @@ describe('Firebase Spark mutations', () => {
 
     expect(cancelled).toMatchObject({ status: 'cancelled', revision: 3, lastOperationId: 'cancel-rent', lastResourceToken: '2'.repeat(48), updatedAt: 'now' })
     expect(() => sparkMutations.buildSparkRecurrenceCancellationRecord({ ...command, expectedRevision: 1 }, template, { actor: { id: 'owner', displayName: 'Owner' }, canManage: false }, identity, 'now')).toThrow(/changed remotely/i)
-    const deniedIdentity = { ...identity, userId: 'friend', operationId: 'cancel-rent-denied' }
-    expect(() => sparkMutations.buildSparkRecurrenceCancellationRecord(
-      { ...command, operationId: deniedIdentity.operationId }, template,
-      { actor: { id: 'friend', displayName: 'Friend' }, canManage: false }, deniedIdentity, 'now',
-    )).toThrow(/series creator|manager/i)
+    const memberIdentity = { ...identity, userId: 'friend', operationId: 'cancel-rent-member' }
+    expect(sparkMutations.buildSparkRecurrenceCancellationRecord(
+      { ...command, operationId: memberIdentity.operationId }, template,
+      { actor: { id: 'friend', displayName: 'Friend' }, canManage: false }, memberIdentity, 'now',
+    )).toMatchObject({ status: 'cancelled', revision: 3, updatedBy: { id: 'friend', displayName: 'Friend' } })
   })
 
   it('updates future template fields only from the latest generated occurrence', () => {
@@ -304,12 +307,12 @@ describe('Firebase Spark mutations', () => {
       { ...command, expenseId: 'expense-rent' }, { id: 'expense-rent', recurringTemplateId: templateId }, template,
       { actor: { id: 'owner', displayName: 'Owner' }, canManage: false }, identity, 'now',
     )).toThrow(/latest/i)
-    const deniedCommand = { ...command, operationId: 'edit-future-rent-denied' }
-    const deniedIdentity = { ...identity, userId: 'friend', operationId: deniedCommand.operationId }
-    expect(() => sparkMutations.buildSparkFutureRecurringTemplateRecord(
-      deniedCommand, { id: occurrenceId, recurringTemplateId: templateId }, template,
-      { actor: { id: 'friend', displayName: 'Friend' }, canManage: false }, deniedIdentity, 'now',
-    )).toThrow(/series creator|manager/i)
+    const memberCommand = { ...command, operationId: 'edit-future-rent-member' }
+    const memberIdentity = { ...identity, userId: 'friend', operationId: memberCommand.operationId }
+    expect(sparkMutations.buildSparkFutureRecurringTemplateRecord(
+      memberCommand, { id: occurrenceId, recurringTemplateId: templateId }, template,
+      { actor: { id: 'friend', displayName: 'Friend' }, canManage: false }, memberIdentity, 'now',
+    )).toMatchObject({ description: 'Rent plus parking', revision: 3, updatedBy: { id: 'friend', displayName: 'Friend' } })
   })
 
   it('builds replay-bound edit and soft-delete records while preserving every prior revision', () => {

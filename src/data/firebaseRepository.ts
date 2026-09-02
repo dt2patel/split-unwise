@@ -938,7 +938,6 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           actor: { id: userId, displayName: memberData.displayName },
           canManage: memberData.canManage === true,
         }
-        assertRecurringSeriesAuthority(currentTemplate, authorization, 'materialize it')
         if (occurrenceSnapshot.exists()) {
           const existing = decodeExpense(command.groupId, occurrenceId, occurrenceSnapshot.data())
           if (existing.id !== occurrenceId || existing.groupId !== command.groupId || existing.recurringTemplateId !== command.templateId
@@ -1100,12 +1099,10 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         if (!member.exists() || !isRecord(memberData) || memberData.status !== 'active') {
           throw new Error('Only active group members can check recurring expenses')
         }
-        const canManage = memberData.canManage === true
-        const canMaterialize = (template: RecurringExpense) => template.createdBy.id === userId || canManage
         const templates = [...loadedTemplates]
         const occurrences: ExpenseRow[] = []
         while (occurrences.length < maxOccurrences) {
-          const template = templates.filter((item) => item.status === 'active' && item.nextDate <= throughDate && canMaterialize(item))
+          const template = templates.filter((item) => item.status === 'active' && item.nextDate <= throughDate)
             .sort((left, right) => left.nextDate.localeCompare(right.nextDate) || left.id.localeCompare(right.id))[0]
           if (!template) break
           const command: RecurrenceMaterializeCommand = {
@@ -1118,7 +1115,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
           occurrences.push(result.occurrence)
           templates[templates.indexOf(template)] = result.template
         }
-        const moreRemain = templates.some((template) => template.status === 'active' && template.nextDate <= throughDate && canMaterialize(template))
+        const moreRemain = templates.some((template) => template.status === 'active' && template.nextDate <= throughDate)
         return { occurrences, moreRemain }
       },
       convertCurrencies: execute,
@@ -1346,16 +1343,6 @@ function decodeGroupCurrencyConversion(value: unknown): GroupCurrencyConversion 
   } as unknown as GroupCurrencyConversion
   try { assertGroupCurrencyConversion(conversion) } catch { throw new Error('Group currency conversion is invalid') }
   return conversion
-}
-
-function assertRecurringSeriesAuthority(
-  template: Pick<RecurringExpense, 'createdBy'>,
-  authorization: { readonly actor: Pick<Member, 'id'>; readonly canManage: boolean },
-  action: string,
-): void {
-  if (template.createdBy.id !== authorization.actor.id && !authorization.canManage) {
-    throw new Error(`Only the series creator or an active group manager can ${action}.`)
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }

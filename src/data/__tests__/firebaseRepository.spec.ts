@@ -392,7 +392,7 @@ describe('Task 7 Firebase repository query boundaries', () => {
     expect(firebase.queries.filter(({ base }) => base.path === 'groups/lake-house-weekend/recurringTemplates')).toHaveLength(1)
   })
 
-  it('skips due templates an ordinary member did not create', async () => {
+  it('materializes every due template for an ordinary active member', async () => {
     firebase.memberDocument = document('maya-p', { status: 'active', displayName: 'Maya P.', canManage: false })
     firebase.expenseDocuments = []
     firebase.recurringDocuments = [
@@ -403,13 +403,16 @@ describe('Task 7 Firebase repository query boundaries', () => {
     const repository = createFirebaseRepository(configuration)
 
     await expect(repository.groups.materializeDue('lake-house-weekend', '2026-09-30', 24)).resolves.toEqual({
-      occurrences: [expect.objectContaining({ id: 'occ_recurring-own_2026-09-30', createdBy: { id: 'maya-p', displayName: 'Maya P.' } })],
+      occurrences: [
+        expect.objectContaining({ id: 'occ_recurring-other_2026-09-30', createdBy: { id: 'other', displayName: 'Other Creator' }, updatedBy: { id: 'maya-p', displayName: 'Maya P.' } }),
+        expect.objectContaining({ id: 'occ_recurring-own_2026-09-30', createdBy: { id: 'maya-p', displayName: 'Maya P.' } }),
+      ],
       moreRemain: false,
     })
-    expect(firebase.expenseDocuments.some(({ id }) => id === 'occ_recurring-other_2026-09-30')).toBe(false)
+    expect(firebase.expenseDocuments.some(({ id }) => id === 'occ_recurring-other_2026-09-30')).toBe(true)
   })
 
-  it('rejects an unauthorized semantic replay after another principal materialized the occurrence', async () => {
+  it('accepts a semantic replay by another active member after materialization', async () => {
     firebase.memberDocument = document('maya-p', { status: 'active', displayName: 'Maya P.', canManage: false })
     const templateId = 'recurring-other'
     const occurrenceId = `occ_${templateId}_2026-09-30`
@@ -437,7 +440,10 @@ describe('Task 7 Firebase repository query boundaries', () => {
 
     await expect(repository.commands.execute({
       kind: 'recurrence.materialize', operationId: 'unauthorized-replay', groupId: 'lake-house-weekend', templateId, occurrenceDate: '2026-09-30',
-    })).rejects.toThrow(/series creator|manager/i)
+    })).resolves.toMatchObject({
+      status: 'saved', occurrence: { id: occurrenceId, createdBy: { id: 'other' }, updatedBy: { id: 'manager' } },
+      template: { id: templateId, revision: 2, nextDate: '2026-10-30' },
+    })
   })
 })
 

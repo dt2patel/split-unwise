@@ -121,6 +121,42 @@ suite('ledger against the Firestore emulator', () => {
     await expect(executeLedgerCommand(db, 'owner', { schemaVersion: 1, command: { kind: 'expense.edit', operationId: 'stale-edit', groupId: 'group-a', expenseId: expense.id, expectedRevision: 99, draft } })).rejects.toMatchObject({ code: 'failed-precondition' })
   })
 
+  it('lets any active group member edit and delete an expense while retaining the original author', async () => {
+    const saved = await executeLedgerCommand(db, 'owner', addRequest('collaborative-source'), new Date('2026-08-31T14:00:00.000Z'))
+    const source = saved.expense as Record<string, any>
+    const { kind: _kind, operationId: _operationId, ...baseDraft } = addRequest('collaborative-draft').command
+    const edited = await executeLedgerCommand(db, 'member', {
+      schemaVersion: 1,
+      command: {
+        kind: 'expense.edit', operationId: 'member-collaborative-edit', groupId: 'group-a',
+        expenseId: source.id, expectedRevision: 1, draft: { ...baseDraft, description: 'Dinner corrected by member' },
+      },
+    }, new Date('2026-08-31T14:01:00.000Z'))
+
+    expect(edited).toMatchObject({
+      status: 'saved',
+      expense: {
+        revision: 2,
+        createdBy: { id: 'owner', displayName: 'Owner' },
+        updatedBy: { id: 'member', displayName: 'Member' },
+      },
+    })
+
+    const deleted = await executeLedgerCommand(db, 'member', {
+      schemaVersion: 1,
+      command: {
+        kind: 'expense.delete', operationId: 'member-collaborative-delete', groupId: 'group-a',
+        expenseId: source.id, expectedRevision: 2,
+      },
+    }, new Date('2026-08-31T14:02:00.000Z'))
+    expect(deleted).toMatchObject({ status: 'saved', tombstone: { revision: 3 } })
+    expect((await db.doc(`groups/group-a/expenses/${source.id}`).get()).data()).toMatchObject({
+      createdBy: { id: 'owner', displayName: 'Owner' },
+      updatedBy: { id: 'member', displayName: 'Member' },
+      revision: 3,
+    })
+  })
+
   it('records a confirmed settlement against the exact balance revision and updates debts', async () => {
     await executeLedgerCommand(db, 'owner', addRequest('expense-before-settlement'))
     const result = await executeLedgerCommand(db, 'member', { schemaVersion: 1, command: { kind: 'settlement.record', operationId: 'settlement-operation', groupId: 'group-a', expectedBalanceRevision: 1, basis: { kind: 'simplified', senderId: 'member', recipientId: 'owner', currency: 'USD', debtMinor: 500 }, money: { currency: 'USD', minorAmount: 200 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true } })

@@ -69,6 +69,16 @@ describe('expense detail route context', () => {
     expect(wrapper.find('[data-action="edit-expense"]').exists()).toBe(false)
   })
 
+  it('offers edit and delete to an active member on another member\'s group expense', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+
+    const wrapper = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+
+    expect(wrapper.get('[data-action="edit-expense"]').attributes('href')).toContain('/expenses/groceries/edit')
+    expect(wrapper.find('[data-action="delete-expense"]').exists()).toBe(true)
+  })
+
   it('retains a deleted expense with prior audit and disables edit, delete, and new comments', async () => {
     const repository = createDemoRepository()
     await repository.expenses.delete({ kind: 'expense.delete', operationId: 'detail-delete-seed', groupId: 'lake-house-weekend', expenseId: 'cabin-deposit', expectedRevision: 1 })

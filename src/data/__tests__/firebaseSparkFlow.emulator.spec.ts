@@ -599,7 +599,7 @@ describe('Firebase Spark two-account flow', () => {
     ]))
   }, 30_000)
 
-  emulatorIt('keeps materialization with the series creator or manager while ordinary members skip due work', async () => {
+  emulatorIt('lets any active member materialize another creator series while preserving creator and audit provenance', async () => {
     const auth = getAuth(app)
     const suffix = crypto.randomUUID()
     const ownerEmail = `recurrence-owner-${suffix}@example.com`
@@ -645,10 +645,17 @@ describe('Firebase Spark two-account flow', () => {
     await signOut(auth)
     await signInWithEmailAndPassword(auth, friendEmail, password)
     const friendRepository = createFirebaseRepository(configuration, friend.user.uid)
-    await expect(friendRepository.groups.materializeDue(created.groupId, '2026-10-01')).resolves.toEqual({ occurrences: [], moreRemain: false })
+    await expect(friendRepository.groups.materializeDue(created.groupId, '2026-10-01')).resolves.toMatchObject({
+      occurrences: [{
+        id: `occ_${templateId}_2026-10-01`,
+        createdBy: { id: owner.user.uid, displayName: 'Recurrence Owner' },
+        updatedBy: { id: friend.user.uid, displayName: 'Recurrence Friend' },
+      }],
+      moreRemain: false,
+    })
     await expect(friendRepository.commands.execute({
-      kind: 'recurrence.materialize', operationId: `friend-denied-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
-    })).rejects.toThrow(/series creator|manager/i)
+      kind: 'recurrence.materialize', operationId: `friend-replay-initial-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
+    })).resolves.toMatchObject({ status: 'saved', occurrence: { id: `occ_${templateId}_2026-10-01`, createdBy: { id: owner.user.uid }, updatedBy: { id: friend.user.uid } } })
 
     await signOut(auth)
     await signInWithEmailAndPassword(auth, ownerEmail, password)
@@ -668,7 +675,7 @@ describe('Firebase Spark two-account flow', () => {
     expect(recurringExpenses).toHaveLength(2)
     expect(recurringExpenses.find(({ id }) => id === `occ_${templateId}_2026-10-01`)).toMatchObject({
       createdBy: { id: owner.user.uid, displayName: 'Recurrence Owner' },
-      updatedBy: { id: owner.user.uid, displayName: 'Recurrence Owner' },
+      updatedBy: { id: friend.user.uid, displayName: 'Recurrence Friend' },
     })
     await expect(ownerRepository.groups.getBalanceSnapshot(created.groupId)).resolves.toMatchObject({
       pairwise: [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2000 } }],
@@ -679,7 +686,7 @@ describe('Firebase Spark two-account flow', () => {
     await signInWithEmailAndPassword(auth, friendEmail, password)
     await expect(friendRepository.commands.execute({
       kind: 'recurrence.materialize', operationId: `friend-replay-${suffix}`, groupId: created.groupId, templateId, occurrenceDate: '2026-10-01',
-    })).rejects.toThrow(/series creator|manager/i)
+    })).resolves.toMatchObject({ status: 'saved', occurrence: { id: `occ_${templateId}_2026-10-01`, createdBy: { id: owner.user.uid }, updatedBy: { id: friend.user.uid } } })
     expect((await friendRepository.activity.listForGroup(created.groupId)).filter(({ expenseId }) => expenseId === `occ_${templateId}_2026-10-01`)).toHaveLength(1)
 
     const creatorSeries = await friendRepository.expenses.add({

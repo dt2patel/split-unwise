@@ -226,19 +226,26 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
     category: 'Utilities', splitMethod: { type: 'equal' as const, participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
     recurrence: { frequency: 'weekly' as const, anchor: { month: 8, day: 18 }, timeZone: 'America/Chicago' },
   }
-  const recurringSource = await friendRepository.expenses.add(recurringCommand)
-  await expect(friendRepository.expenses.add(recurringCommand)).resolves.toEqual(recurringSource)
+  const recurringCreatorApp = initializeApp(configuration, `split-unwise-recurrence-creator-${suffix}`)
+  initializeFirestore(recurringCreatorApp, { experimentalForceLongPolling: true })
+  isolatedApps.add(recurringCreatorApp)
+  const recurringCreatorAuth = getAuth(recurringCreatorApp)
+  await signInWithEmailAndPassword(recurringCreatorAuth, ownerEmail, password)
+  const recurringCreatorRepository = createFirebaseRepository(configuration, ownerUid, undefined, recurringCreatorApp)
+  const recurringSource = await recurringCreatorRepository.expenses.add(recurringCommand)
+  await expect(recurringCreatorRepository.expenses.add(recurringCommand)).resolves.toEqual(recurringSource)
   if (recurringSource.status !== 'saved' || !recurringSource.expense.recurringTemplateId) {
     throw new Error('Expected hosted recurring source creation to save')
   }
   const templateId = recurringSource.expense.recurringTemplateId
   const expectedOccurrenceId = `occ_${templateId}_${recurringDueDate}`
-  await expect(friendRepository.groups.listRecurring(recurringGroupId)).resolves.toEqual([
+  await expect(recurringCreatorRepository.groups.listRecurring(recurringGroupId)).resolves.toEqual([
     expect.objectContaining({
-      id: templateId, status: 'active', createdBy: expect.objectContaining({ id: friendUid }),
+      id: templateId, status: 'active', createdBy: expect.objectContaining({ id: ownerUid }),
       anchorDate: recurringSourceDate, nextDate: recurringDueDate, revision: 1,
     }),
   ])
+  await deleteIsolatedApps(recurringCreatorApp)
 
   const firstMaterializerApp = initializeApp(configuration, `split-unwise-recurrence-proof-a-${suffix}`)
   const secondMaterializerApp = initializeApp(configuration, `split-unwise-recurrence-proof-b-${suffix}`)
@@ -276,12 +283,12 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   }
   expect(firstMaterialized).toMatchObject({
     kind: 'recurrence.materialize', operationId: firstMaterializeCommand.operationId, status: 'saved',
-    occurrence: { id: expectedOccurrenceId, date: recurringDueDate, recurringTemplateId: templateId, revision: 1, createdBy: { id: friendUid } },
+    occurrence: { id: expectedOccurrenceId, date: recurringDueDate, recurringTemplateId: templateId, revision: 1, createdBy: { id: ownerUid }, updatedBy: { id: friendUid } },
     template: { id: templateId, nextDate: recurringNextDate, revision: 2, lastOccurrenceId: expectedOccurrenceId, lastOccurrenceDate: recurringDueDate },
   })
   expect(secondMaterialized).toMatchObject({
     kind: 'recurrence.materialize', operationId: secondMaterializeCommand.operationId, status: 'saved',
-    occurrence: { id: expectedOccurrenceId, date: recurringDueDate, recurringTemplateId: templateId, revision: 1, createdBy: { id: friendUid } },
+    occurrence: { id: expectedOccurrenceId, date: recurringDueDate, recurringTemplateId: templateId, revision: 1, createdBy: { id: ownerUid }, updatedBy: { id: friendUid } },
     template: { id: templateId, nextDate: recurringNextDate, revision: 2, lastOccurrenceId: expectedOccurrenceId, lastOccurrenceDate: recurringDueDate },
   })
   expect({ occurrence: firstMaterialized.occurrence, template: firstMaterialized.template }).toEqual({
@@ -297,7 +304,7 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   ])
   expect((await friendRepository.expenses.listForGroup(recurringGroupId)).filter(({ recurringTemplateId }) => recurringTemplateId === templateId)).toEqual([
     expect.objectContaining({ id: recurringSource.expense.id, date: recurringSourceDate, revision: 1 }),
-    expect.objectContaining({ id: expectedOccurrenceId, date: recurringDueDate, revision: 1, createdBy: expect.objectContaining({ id: friendUid }) }),
+    expect.objectContaining({ id: expectedOccurrenceId, date: recurringDueDate, revision: 1, createdBy: expect.objectContaining({ id: ownerUid }), updatedBy: expect.objectContaining({ id: friendUid }) }),
   ])
   expect((await friendRepository.activity.listForGroup(recurringGroupId)).filter(({ expenseId }) => expenseId === expectedOccurrenceId)).toHaveLength(1)
 
@@ -307,7 +314,7 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
     kind: 'recurrence.materialize', operationId: `live-recurring-owner-replay-${suffix}`,
     groupId: recurringGroupId, templateId, occurrenceDate: recurringDueDate,
   })).resolves.toMatchObject({
-    status: 'saved', occurrence: { id: expectedOccurrenceId, createdBy: { id: friendUid } },
+    status: 'saved', occurrence: { id: expectedOccurrenceId, createdBy: { id: ownerUid }, updatedBy: { id: friendUid } },
     template: { id: templateId, nextDate: recurringNextDate, revision: 2 },
   })
   expect((await recurringOwnerRepository.activity.listForGroup(recurringGroupId)).filter(({ expenseId }) => expenseId === expectedOccurrenceId)).toHaveLength(1)
@@ -315,7 +322,7 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   await signInWithEmailAndPassword(auth, friendEmail, password)
   const templateBeforeOccurrenceEdit = (await friendRepository.groups.listRecurring(recurringGroupId))[0]!
   const occurrenceBeforeEdit = await friendRepository.expenses.getById(recurringGroupId, expectedOccurrenceId)
-  expect(occurrenceBeforeEdit).toMatchObject({ revision: 1, createdBy: { id: friendUid } })
+  expect(occurrenceBeforeEdit).toMatchObject({ revision: 1, createdBy: { id: ownerUid }, updatedBy: { id: friendUid } })
   const occurrenceEditCommand = {
     kind: 'expense.edit' as const, operationId: `live-recurring-occurrence-edit-${suffix}`,
     groupId: recurringGroupId, expenseId: expectedOccurrenceId, expectedRevision: 1,
@@ -368,40 +375,43 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
     lastOccurrenceId: expectedOccurrenceId, lastOccurrenceDate: recurringDueDate,
   })
 
-  await signInWithEmailAndPassword(auth, ownerEmail, password)
-  expect((await recurringOwnerRepository.groups.listMembers(recurringGroupId)).find(({ id }) => id === ownerUid)).toMatchObject({ canManage: true })
+  expect((await friendRepository.groups.listMembers(recurringGroupId)).find(({ id }) => id === friendUid)).toMatchObject({ canManage: false })
   const cancelCommand = {
     kind: 'recurrence.cancel' as const, operationId: `live-recurring-cancel-${suffix}`,
     groupId: recurringGroupId, templateId, expectedRevision: exactCancellationTemplate.revision,
   }
-  const cancelled = await recurringOwnerRepository.commands.execute(cancelCommand)
-  await expect(recurringOwnerRepository.commands.execute(cancelCommand)).resolves.toEqual(cancelled)
+  const cancelled = await friendRepository.commands.execute(cancelCommand)
+  await expect(friendRepository.commands.execute(cancelCommand)).resolves.toEqual(cancelled)
   expect(cancelled).toMatchObject({
     status: 'saved', template: { id: templateId, status: 'cancelled', revision: exactCancellationTemplate.revision + 1 },
   })
-  const historicalSeriesExpenses = (await recurringOwnerRepository.expenses.listForGroup(recurringGroupId))
+  const historicalSeriesExpenses = (await friendRepository.expenses.listForGroup(recurringGroupId))
     .filter(({ recurringTemplateId }) => recurringTemplateId === templateId)
   expect(historicalSeriesExpenses).toEqual([
     expect.objectContaining({ id: recurringSource.expense.id, date: recurringSourceDate, revision: 1 }),
     expect.objectContaining({ id: expectedOccurrenceId, date: recurringDueDate, revision: 3 }),
   ])
-  await expect(recurringOwnerRepository.groups.materializeDue(recurringGroupId, '2027-12-31', 24)).resolves.toEqual({ occurrences: [], moreRemain: false })
-  expect((await recurringOwnerRepository.expenses.listForGroup(recurringGroupId)).filter(({ recurringTemplateId }) => recurringTemplateId === templateId)).toEqual(historicalSeriesExpenses)
+  await expect(friendRepository.groups.materializeDue(recurringGroupId, '2027-12-31', 24)).resolves.toEqual({ occurrences: [], moreRemain: false })
+  expect((await friendRepository.expenses.listForGroup(recurringGroupId)).filter(({ recurringTemplateId }) => recurringTemplateId === templateId)).toEqual(historicalSeriesExpenses)
 
   await signInWithEmailAndPassword(auth, friendEmail, password)
-  await expect(friendRepository.notifications.list({ limit: 100 })).resolves.toEqual({ items: [] })
+  await expect(friendRepository.notifications.list({ limit: 100 })).resolves.toMatchObject({
+    items: [expect.objectContaining({
+      principalId: friendUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: ownerUid }),
+      kind: 'expense.created', subject: expect.objectContaining({ id: recurringSource.expense.id }),
+    })],
+  })
 
   ;({ auth, db } = await restartHostedClient(configuration))
   await signInWithEmailAndPassword(auth, ownerEmail, password)
   const ownerNotificationRepository = createFirebaseRepository(configuration, ownerUid)
   const notificationPage = await ownerNotificationRepository.notifications.list({ limit: 100 })
-  expect(notificationPage.items).toHaveLength(8)
+  expect(notificationPage.items).toHaveLength(7)
   expect(notificationPage.items).toEqual(expect.arrayContaining([
     expect.objectContaining({ principalId: ownerUid, groupId: ledgerGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.created' }),
     expect.objectContaining({ principalId: ownerUid, groupId: ledgerGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.updated' }),
     expect.objectContaining({ principalId: ownerUid, groupId: ledgerGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'settlement.created' }),
     expect.objectContaining({ principalId: ownerUid, groupId: ledgerGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'settlement.voided' }),
-    expect.objectContaining({ principalId: ownerUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.created', subject: expect.objectContaining({ id: recurringSource.expense.id }) }),
     expect.objectContaining({ principalId: ownerUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.created', subject: expect.objectContaining({ id: expectedOccurrenceId }) }),
     expect.objectContaining({ principalId: ownerUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.updated', subject: expect.objectContaining({ id: expectedOccurrenceId, label: occurrenceEditCommand.draft.description }) }),
     expect.objectContaining({ principalId: ownerUid, groupId: recurringGroupId, actor: expect.objectContaining({ id: friendUid }), kind: 'expense.updated', subject: expect.objectContaining({ id: expectedOccurrenceId, label: futureEditCommand.draft.description }) }),
@@ -409,14 +419,14 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   await expect(ownerNotificationRepository.groups.getTotals(ledgerGroupId)).resolves.toEqual([{
     currency: 'USD', totalPaid: 3000, currentUserPaid: 0, currentUserShare: 1500, currentUserNet: -1500,
   }])
-  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(8)
+  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(7)
 
   const individual = notificationPage.items.at(-1)!
   const readCommand = { kind: 'notification.read' as const, operationId: `live-notification-read-${suffix}`, notificationId: individual.notificationId }
   const read = await ownerNotificationRepository.notifications.markRead(readCommand)
   await expect(ownerNotificationRepository.notifications.markRead(readCommand)).resolves.toEqual(read)
   expect(read).toMatchObject({ status: 'saved', notification: { notificationId: individual.notificationId, readAt: expect.any(String) } })
-  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(7)
+  await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(6)
 
   const latest = notificationPage.items[0]!
   const cutoff = { createdAt: latest.createdAt, id: latest.notificationId }
@@ -426,6 +436,61 @@ hostedIt('proves deployed verified friendship, private accounts, and recurring S
   expect(readAll).toMatchObject({ status: 'saved', cutoff, readNotificationIds: expect.arrayContaining(notificationPage.items.slice(0, -1).map(({ notificationId }) => notificationId)) })
   await expect(ownerNotificationRepository.notifications.unreadCount()).resolves.toBe(0)
   expect((await ownerNotificationRepository.notifications.list({ limit: 100 })).items.every(({ readAt }) => typeof readAt === 'string')).toBe(true)
+
+  const collaborativeCreatorApp = initializeApp(configuration, `split-unwise-collaborative-creator-${suffix}`)
+  initializeFirestore(collaborativeCreatorApp, { experimentalForceLongPolling: true })
+  isolatedApps.add(collaborativeCreatorApp)
+  const collaborativeCreatorAuth = getAuth(collaborativeCreatorApp)
+  await signInWithEmailAndPassword(collaborativeCreatorAuth, friendEmail, password)
+  const collaborativeCreatorRepository = createFirebaseRepository(configuration, friendUid, undefined, collaborativeCreatorApp)
+  const collaborativeSource = await collaborativeCreatorRepository.expenses.add({
+    kind: 'expense.add', operationId: `live-collaborative-create-${suffix}`, groupId: ledgerGroupId,
+    description: 'Hosted shared groceries', date: '2026-09-03', total: { currency: 'USD', minorAmount: 1800 },
+    payments: [{ participantId: friendUid, money: { currency: 'USD', minorAmount: 1800 } }],
+    allocations: [
+      { participantId: ownerUid, money: { currency: 'USD', minorAmount: 900 } },
+      { participantId: friendUid, money: { currency: 'USD', minorAmount: 900 } },
+    ],
+    category: 'Food', splitMethod: { type: 'equal', participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+  })
+  if (collaborativeSource.status !== 'saved') throw new Error('Expected collaborative hosted expense creation to save')
+  await deleteIsolatedApps(collaborativeCreatorApp)
+  const collaborativeEditCommand = {
+    kind: 'expense.edit' as const, operationId: `live-collaborative-edit-${suffix}`, groupId: ledgerGroupId,
+    expenseId: collaborativeSource.expense.id, expectedRevision: 1,
+    draft: {
+      groupId: ledgerGroupId, description: 'Hosted shared groceries and snacks', date: '2026-09-03',
+      total: { currency: 'USD' as const, minorAmount: 2000 },
+      payments: [{ participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 2000 } }],
+      allocations: [
+        { participantId: ownerUid, money: { currency: 'USD' as const, minorAmount: 1000 } },
+        { participantId: friendUid, money: { currency: 'USD' as const, minorAmount: 1000 } },
+      ],
+      category: 'Food', splitMethod: { type: 'equal' as const, participantIds: [ownerUid, friendUid] }, attachmentRefs: [],
+    },
+  }
+  const collaborativeEdit = await ownerNotificationRepository.expenses.edit(collaborativeEditCommand)
+  await expect(ownerNotificationRepository.expenses.edit(collaborativeEditCommand)).resolves.toEqual(collaborativeEdit)
+  expect(collaborativeEdit).toMatchObject({
+    status: 'saved', expense: { revision: 2, createdBy: { id: friendUid }, updatedBy: { id: ownerUid } },
+  })
+  const collaborativeDeleteCommand = {
+    kind: 'expense.delete' as const, operationId: `live-collaborative-delete-${suffix}`, groupId: ledgerGroupId,
+    expenseId: collaborativeSource.expense.id, expectedRevision: 2,
+  }
+  const collaborativeDelete = await ownerNotificationRepository.expenses.delete(collaborativeDeleteCommand)
+  await expect(ownerNotificationRepository.expenses.delete(collaborativeDeleteCommand)).resolves.toEqual(collaborativeDelete)
+  expect(collaborativeDelete).toMatchObject({
+    status: 'saved', tombstone: { id: collaborativeSource.expense.id, groupId: ledgerGroupId, revision: 3, deletedAt: expect.any(String) },
+  })
+  await expect(ownerNotificationRepository.expenses.getById(ledgerGroupId, collaborativeSource.expense.id)).resolves.toMatchObject({
+    revision: 3, createdBy: { id: friendUid }, updatedBy: { id: ownerUid }, deletedAt: expect.any(String),
+  })
+  await expect(ownerNotificationRepository.expenses.listRevisions(ledgerGroupId, collaborativeSource.expense.id)).resolves.toEqual([
+    expect.objectContaining({ revision: 1, action: 'created', actor: { id: friendUid, displayName: 'Live Proof Friend' } }),
+    expect.objectContaining({ revision: 2, action: 'updated', actor: { id: ownerUid, displayName: 'Live Renamed Owner' } }),
+    expect.objectContaining({ revision: 3, action: 'deleted', actor: { id: ownerUid, displayName: 'Live Renamed Owner' } }),
+  ])
 
   const lifecycleExpenses = await ownerNotificationRepository.expenses.listForGroup(ledgerGroupId)
   const lifecycleSettlements = await ownerNotificationRepository.settlements.listForGroup(ledgerGroupId)

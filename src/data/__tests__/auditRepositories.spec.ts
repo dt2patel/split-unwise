@@ -129,7 +129,7 @@ describe('Task 7 immutable audit repository', () => {
     expect(event?.actor).toEqual({ id: 'maya-p', displayName: 'Maya Rivera' })
   })
 
-  it('allows only the expense author or an active group manager to edit or delete', async () => {
+  it('lets any active group member edit or delete while preserving the acting member in the audit trail', async () => {
     const memberRepository = createDemoRepository({ currentUserId: 'jordan-k' })
     const owned = await memberRepository.expenses.getById('lake-house-weekend', 'kayak-rental')
     const other = await memberRepository.expenses.getById('lake-house-weekend', 'groceries')
@@ -144,9 +144,16 @@ describe('Task 7 immutable audit repository', () => {
       },
     })).resolves.toMatchObject({ status: 'saved', expense: { revision: 2 } })
     await expect(memberRepository.expenses.delete({
-      kind: 'expense.delete', operationId: 'unauthorized-delete', groupId: other.groupId,
+      kind: 'expense.delete', operationId: 'collaborative-delete', groupId: other.groupId,
       expenseId: other.id, expectedRevision: other.revision,
-    })).rejects.toThrow('not allowed')
+    })).resolves.toMatchObject({ status: 'saved', tombstone: { revision: 2 } })
+    await expect(memberRepository.expenses.getById(other.groupId, other.id)).resolves.toMatchObject({
+      revision: 2, createdBy: { id: 'maya-p' }, updatedBy: { id: 'jordan-k' }, deletedAt: expect.any(String),
+    })
+    await expect(memberRepository.expenses.listRevisions(other.groupId, other.id)).resolves.toEqual([
+      expect.objectContaining({ revision: 1, actor: { id: 'maya-p', displayName: 'Maya P.' } }),
+      expect.objectContaining({ revision: 2, action: 'deleted', actor: { id: 'jordan-k', displayName: 'Jordan K.' } }),
+    ])
 
     const managerRepository = createDemoRepository()
     await expect(managerRepository.expenses.delete({

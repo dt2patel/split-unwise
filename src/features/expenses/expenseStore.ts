@@ -221,10 +221,6 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         loadedExpense = await session.repository.expenses.getById(options.groupId, options.expenseId)
         if (!loadedExpense) throw new Error('This expense is not available.')
         if (loadedExpense.groupId !== options.groupId) throw new Error('The loaded expense did not match its group context.')
-        const activeMember = loadedMembers.find(({ id }) => id === loadedCurrentUser.id)
-        if (loadedExpense.createdBy?.id !== loadedCurrentUser.id && activeMember?.canManage !== true) {
-          throw new Error('You are not allowed to edit this expense.')
-        }
         Object.assign(nextEditor, editorInputFromExpense(loadedExpense))
       }
       const pristineFingerprint = JSON.stringify(nextEditor)

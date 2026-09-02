@@ -130,16 +130,17 @@ describe('ExpenseEditorPage', () => {
     expect(wrapper.get('[data-action="save-expense"]').attributes('disabled')).toBeDefined()
   })
 
-  it('fails closed when a direct edit route is opened by neither the author nor a manager', async () => {
+  it('opens another member\'s expense for an active group collaborator', async () => {
     setAppSessionForTesting(createAppSession({
       repository: createDemoRepository({ currentUserId: 'jordan-k' }), commandStorage: createMemoryCommandStorage(),
     }))
 
     const { wrapper, store } = await mountRoute('/tabs/home/expenses/groceries/edit?groupId=lake-house-weekend')
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('not allowed')
-    expect(store.hasInitialized).toBe(false)
-    expect(wrapper.find('[data-action="save-expense"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(store.hasInitialized).toBe(true)
+    expect(wrapper.get('#expense-description').element).toHaveProperty('value', 'Groceries')
+    expect(wrapper.find('[data-action="save-expense"]').attributes('disabled')).toBeUndefined()
   })
 
   it('keeps one staged sheet open and restores focus when Cancel closes it', async () => {

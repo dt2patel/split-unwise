@@ -56,7 +56,7 @@ const memberNames = computed(() => new Map(members.value.map((member) => [member
 const canMutate = computed(() => {
   if (!expense.value || expense.value.deletedAt || !currentUser.value) return false
   const membership = members.value.find(({ id }) => id === currentUser.value?.id)
-  return expense.value.createdBy?.id === currentUser.value.id || membership?.canManage === true
+  return membership !== undefined
 })
 const alertButtons = computed(() => [
   { text: 'Cancel', role: 'cancel' },

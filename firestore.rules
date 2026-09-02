@@ -222,6 +222,41 @@ service cloud.firestore {
     function sparkTwoDigits(value) {
       return value < 10 ? '0' + string(value) : string(value);
     }
+    function sparkIsoDateString(year, month, day) {
+      return string(year) + '-' + sparkTwoDigits(month) + '-' + sparkTwoDigits(day);
+    }
+    function sparkIsoDateTimestamp(value) {
+      return timestamp.date(int(value[0:4]), int(value[5:7]), int(value[8:10]));
+    }
+    function sparkDaysInMonth(year, month) {
+      return month == 2
+        ? ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0 ? 29 : 28)
+        : (month == 4 || month == 6 || month == 9 || month == 11 ? 30 : 31);
+    }
+    function validSparkMonthlyNextOccurrence(currentDate, recurrence, nextDate) {
+      let sourceYear = int(currentDate[0:4]);
+      let sourceMonth = int(currentDate[5:7]);
+      let targetYear = sourceMonth == 12 ? sourceYear + 1 : sourceYear;
+      let targetMonth = sourceMonth == 12 ? 1 : sourceMonth + 1;
+      let maximumDay = sparkDaysInMonth(targetYear, targetMonth);
+      let targetDay = recurrence.anchor.day > maximumDay ? maximumDay : recurrence.anchor.day;
+      return nextDate == sparkIsoDateString(targetYear, targetMonth, targetDay);
+    }
+    function validSparkYearlyNextOccurrence(currentDate, recurrence, nextDate) {
+      let targetYear = int(currentDate[0:4]) + 1;
+      let maximumDay = sparkDaysInMonth(targetYear, recurrence.anchor.month);
+      let targetDay = recurrence.anchor.day > maximumDay ? maximumDay : recurrence.anchor.day;
+      return nextDate == sparkIsoDateString(targetYear, recurrence.anchor.month, targetDay);
+    }
+    function validSparkNextOccurrence(currentDate, recurrence, nextDate) {
+      return recurrence.frequency == 'weekly'
+          ? sparkIsoDateTimestamp(nextDate) == sparkIsoDateTimestamp(currentDate) + duration.value(7, 'd')
+          : (recurrence.frequency == 'fortnightly'
+            ? sparkIsoDateTimestamp(nextDate) == sparkIsoDateTimestamp(currentDate) + duration.value(14, 'd')
+            : (recurrence.frequency == 'monthly'
+              ? validSparkMonthlyNextOccurrence(currentDate, recurrence, nextDate)
+              : validSparkYearlyNextOccurrence(currentDate, recurrence, nextDate)));
+    }
     function validSparkRecurrenceAnchor(date, recurrence) {
       return validSparkIsoDate(date) && validSparkRecurrence(recurrence)
         && date[5:7] == sparkTwoDigits(recurrence.anchor.month)
@@ -319,7 +354,6 @@ service cloud.firestore {
         && data.createdAt == request.time && data.updatedAt == request.time
         && data.createdBy == before.createdBy && validSparkActorShape(data.createdBy)
         && validSparkCurrentActor(groupId, data.updatedBy)
-        && (request.auth.uid == before.createdBy.id || activeManager(groupId))
         && data.revision == 1
         && before.status == 'active' && before.nextDate == data.date
         && expenseId == 'occ_' + data.recurringTemplateId + '_' + before.nextDate
@@ -373,7 +407,7 @@ service cloud.firestore {
         && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
         && data.lastOperationId != resource.data.lastOperationId
         && data.lastResourceToken != resource.data.lastResourceToken
-        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
+        && activeMember(groupId)
         && version.keys().hasOnly(['groupId', 'expenseId', 'revision', 'operationId', 'action', 'actor', 'createdAt', 'expense'])
         && version.groupId == groupId && version.expenseId == expenseId
         && version.revision == nextRevision && version.operationId == data.lastOperationId
@@ -425,7 +459,6 @@ service cloud.firestore {
         && data.lastResourceToken is string && data.lastResourceToken.matches('^[a-f0-9]{48}$')
         && data.lastOperationId != resource.data.lastOperationId && data.lastResourceToken != resource.data.lastResourceToken
         && resource.data.createdBy == template.createdBy
-        && (request.auth.uid == template.createdBy.id || activeManager(groupId))
         && version.keys().size() == 8
         && version.groupId == groupId && version.expenseId == expenseId
         && version.revision == nextRevision && version.operationId == data.lastOperationId
@@ -538,7 +571,6 @@ service cloud.firestore {
     function validSparkRecurrenceMaterialization(groupId, templateId, data) {
       let occurrence = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(data.lastOccurrenceId)).data;
       return resource.data.status == 'active' && data.status == 'active'
-        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
         && data.diff(resource.data).affectedKeys().hasOnly([
           'lastOperationId', 'lastRequestFingerprint', 'lastResourceToken',
           'nextDate', 'revision', 'lastOccurrenceId', 'lastOccurrenceDate', 'updatedAt', 'updatedBy'
@@ -546,8 +578,7 @@ service cloud.firestore {
         && data.revision == resource.data.revision + 1
         && data.lastResourceToken != resource.data.lastResourceToken
         && validSparkInvolvedMembers(groupId, resource.data.involvedMemberIds)
-        && validSparkIsoDate(data.nextDate)
-        && data.nextDate > resource.data.nextDate
+        && validSparkNextOccurrence(resource.data.nextDate, resource.data.recurrence, data.nextDate)
         && data.lastOccurrenceDate == resource.data.nextDate
         && data.lastOccurrenceId == 'occ_' + templateId + '_' + resource.data.nextDate
         && data.updatedAt == request.time && validSparkCurrentActor(groupId, data.updatedBy)
@@ -569,7 +600,6 @@ service cloud.firestore {
       let head = getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(frontierId)).data;
       let expense = head.current;
       return resource.data.status == 'active' && data.status == 'active'
-        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
         && data.diff(resource.data).affectedKeys().hasOnly([
           'description', 'total', 'payments', 'allocations', 'payerIds', 'participantIds', 'involvedMemberIds',
           'category', 'splitMethod', 'reimbursement', 'recurrence', 'anchorDate', 'nextDate',
@@ -601,7 +631,6 @@ service cloud.firestore {
         && data.lastOperationId != resource.data.lastOperationId
         && data.lastResourceToken != resource.data.lastResourceToken
         && data.updatedAt == request.time && validSparkCurrentActor(groupId, data.updatedBy)
-        && (request.auth.uid == resource.data.createdBy.id || activeManager(groupId))
         && getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(resource.data.sourceExpenseId)).data
           == get(/databases/$(database)/documents/groups/$(groupId)/expenses/$(resource.data.sourceExpenseId)).data
         && getAfter(/databases/$(database)/documents/groups/$(groupId)/expenses/$(frontierId)).data

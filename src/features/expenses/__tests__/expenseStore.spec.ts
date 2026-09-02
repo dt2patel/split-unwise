@@ -148,6 +148,19 @@ describe('expense store lifecycle', () => {
     expect(store.editor.description).toBe('Cabin deposit')
     expect(store.editor.participants).toEqual(['maya-p', 'jordan-k', 'alex-r', 'taylor-s'])
   })
+
+  it('opens another active group member\'s expense for collaborative editing', async () => {
+    const repository = createDemoRepository({ currentUserId: 'alex-r' })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const store = useExpenseStore()
+
+    await store.initialize({ origin: 'groups', groupId: 'lake-house-weekend', expenseId: 'groceries' })
+
+    expect(store.loadError).toBe('')
+    expect(store.mode).toBe('edit')
+    expect(store.editor.description).toBe('Groceries')
+  })
+
   it('ignores a stale initialization that resolves after a newer route context', async () => {
     const base = createDemoRepository()
     const slow = deferred<Group | undefined>()

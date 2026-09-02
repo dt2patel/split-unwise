@@ -287,7 +287,6 @@ async function executeExpenseCommand(context: GroupContext, actor: Actor): Promi
     if (!existingSnapshot?.exists || !existing) throw new LedgerError('not-found', 'Expense was not found.')
     if (positiveRevision(existing.revision) !== command.expectedRevision) throw new LedgerError('failed-precondition', 'Expense changed remotely.')
     if (existing.deletedAt) throw new LedgerError('failed-precondition', 'Deleted expenses cannot be changed.')
-    if (existing.createdBy?.id !== uid && !canManage(membership)) throw new LedgerError('permission-denied', 'Only the expense author or a group manager can change it.')
   } else if ((await transaction.get(expenseRef)).exists) {
     throw new LedgerError('already-exists', 'The deterministic expense already exists.')
   }

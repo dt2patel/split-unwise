@@ -274,7 +274,6 @@ export function buildSparkRecurrenceMaterializationRecord(
   if (currentTemplate.id !== undefined && currentTemplate.id !== parsed.templateId) throw new Error('Recurring template identity is invalid.')
   if (currentTemplate.groupId !== undefined && currentTemplate.groupId !== parsed.groupId) throw new Error('Recurring template group is invalid.')
   const template = decodeRecurringExpense(parsed.groupId, parsed.templateId, currentTemplate)
-  assertSparkSeriesAuthority(template, authorization, 'materialize it')
   if (template.status !== 'active') throw new Error('Recurring template is not active.')
   if (template.nextDate !== parsed.occurrenceDate) throw new Error('Recurring template changed remotely. Reload it before trying again.')
   const occurrenceId = recurringOccurrenceId(parsed.templateId, parsed.occurrenceDate)
@@ -321,7 +320,6 @@ export function buildSparkRecurrenceCancellationRecord(
     || !Number.isSafeInteger(parsed.expectedRevision) || parsed.expectedRevision < 1) throw new Error('Spark recurrence cancellation command is invalid.')
   const token = assertSparkOperationIdentity(parsed, authorization.actor, identity)
   const template = decodeRecurringExpense(parsed.groupId, parsed.templateId, currentTemplate)
-  assertSparkSeriesAuthority(template, authorization, 'stop future expenses')
   if (template.status !== 'active') throw new Error('Recurring template is already cancelled.')
   if (template.revision !== parsed.expectedRevision) throw new Error('Recurring template changed remotely. Reload it before trying again.')
   const normalizedActorValue = normalizedActor(authorization.actor)
@@ -348,7 +346,6 @@ export function buildSparkFutureRecurringTemplateRecord(
   }
   const token = assertSparkOperationIdentity(parsed, authorization.actor, identity)
   const template = decodeRecurringExpense(parsed.groupId, currentExpense.recurringTemplateId ?? '', currentTemplate)
-  assertSparkSeriesAuthority(template, authorization, 'edit future expenses')
   if (!currentExpense.recurringTemplateId || currentExpense.recurringTemplateId !== template.id) throw new Error('Expense is not linked to this recurring template.')
   if (template.status !== 'active') throw new Error('Recurring template is not active.')
   const sourceExpenseId = typeof currentTemplate.sourceExpenseId === 'string' ? currentTemplate.sourceExpenseId : undefined
@@ -863,16 +860,6 @@ function normalizeSparkExpenseDraft(draft: ExpenseDraft, resourceId: string, rec
 function assertSparkRecurrenceAnchor(date: string, recurrence: NonNullable<ExpenseDraft['recurrence']>): void {
   const anchor = `${String(recurrence.anchor.month).padStart(2, '0')}-${String(recurrence.anchor.day).padStart(2, '0')}`
   if (date.slice(5) !== anchor) throw new Error('Recurring expense date must match its recurrence anchor.')
-}
-
-function assertSparkSeriesAuthority(
-  template: Pick<RecurringExpense, 'createdBy'>,
-  authorization: { readonly actor: ActorSnapshot; readonly canManage: boolean },
-  action: string,
-): void {
-  if (template.createdBy.id !== authorization.actor.id && !authorization.canManage) {
-    throw new Error(`Only the series creator or an active group manager can ${action}.`)
-  }
 }
 
 function assertSparkOperationIdentity(command: { readonly kind: string; readonly operationId: string; readonly groupId: string }, actor: ActorSnapshot, identity: OperationIdentity): string {
