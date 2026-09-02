@@ -360,6 +360,7 @@ async function verifyReimbursementWorkflow(page) {
   await cardModal.waitFor({ state: 'visible' })
   await cardModal.getByRole('heading', { name: 'Split expense', exact: true }).waitFor({ state: 'visible' })
   if (!(await cardModal.evaluate((modal) => modal.classList.contains('modal-card')))) throw new Error('Hosted reimbursement editor did not use the Ionic iOS card modal.')
+  await verifySplitMethodDiscoverability(cardModal)
   await cardModal.locator('[data-method="reimbursement"]').click()
   await cardModal.getByLabel('Live Renamed Owner reimbursement', { exact: true }).fill('0.00')
   await cardModal.getByLabel('Live Proof Friend reimbursement', { exact: true }).fill('10.00')
@@ -425,6 +426,35 @@ async function verifyReimbursementWorkflow(page) {
   const groupAfterRestore = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
   await groupAfterRestore.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
   await groupAfterRestore.locator('.expense-row[data-sync-state="fresh"]', { hasText: description }).getByText(description, { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
+}
+
+async function verifySplitMethodDiscoverability(cardModal) {
+  const methodGroup = cardModal.getByRole('radiogroup', { name: 'Split method', exact: true })
+  const methods = methodGroup.getByRole('radio')
+  if (await methods.count() !== 7) throw new Error('Hosted split editor did not expose all seven documented split methods.')
+  const layout = await methodGroup.evaluate((element) => {
+    const bounds = element.getBoundingClientRect()
+    const buttons = [...element.querySelectorAll('[role="radio"]')].map((button) => {
+      const buttonBounds = button.getBoundingClientRect()
+      return {
+        left: buttonBounds.left,
+        right: buttonBounds.right,
+        visible: buttonBounds.width > 0 && buttonBounds.height > 0,
+      }
+    })
+    return {
+      left: bounds.left,
+      right: bounds.right,
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      overflowX: getComputedStyle(element).overflowX,
+      buttons,
+    }
+  })
+  if (layout.overflowX === 'auto' || layout.scrollWidth > layout.clientWidth + 1
+    || layout.buttons.some((button) => !button.visible || button.left < layout.left - 1 || button.right > layout.right + 1)) {
+    throw new Error('Hosted split editor hid one or more split methods in a horizontal scrolling rail at 390px.')
+  }
 }
 
 async function verifyCurrencyConversion(page) {

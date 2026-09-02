@@ -180,7 +180,7 @@ function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
 .split-editor button { min-height: 44px; border: 0; background: transparent; color: var(--ion-color-primary); font: inherit; }
 .split-editor header button:first-child { text-align: start; }
 .split-editor header button:last-child { font-weight: 680; text-align: end; }
-.split-editor__methods { display: flex; gap: 6px; margin: 14px 0 18px; overflow-x: auto; scrollbar-width: none; }
+.split-editor__methods { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 18px; }
 .split-editor__methods button { flex: 0 0 auto; min-height: 44px; padding: 0 13px; border-radius: 22px; background: color-mix(in srgb, var(--su-lilac) 52%, var(--su-surface)); color: var(--ion-color-medium); font-size: 0.82rem; transition: background-color var(--su-motion-fast) ease, color var(--su-motion-fast) ease; }
 .split-editor__methods button[aria-checked="true"] { background: var(--ion-color-primary); color: var(--ion-color-primary-contrast); }
 .split-editor__values { overflow: hidden; border: 1px solid color-mix(in srgb, var(--su-divider) 62%, transparent); border-radius: 14px; }
