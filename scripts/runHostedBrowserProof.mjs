@@ -100,8 +100,8 @@ async function verifyAuthenticatedMobileJourney() {
     await signIn(page, ownerEmail)
     await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
     await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
-    await verifyPaymentHandleProfile(page)
     await verifyAccountBalanceDashboard(page)
+    await verifyPaymentHandleProfile(page)
     await verifyCreateGroupCardModal(page)
 
     const groupLink = page.getByRole('link', { name: /Live Account Proof/ }).first()
@@ -360,6 +360,8 @@ async function verifyAccountBalanceDashboard(page) {
   }
   const homeOverflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
   if (homeOverflow > 1) throw new Error(`Hosted Home balance dashboard overflowed the 390px mobile viewport by ${homeOverflow}px.`)
+  const homeFriend = page.locator('[data-testid^="friend-balance-"]').filter({ hasText: 'Live Proof Friend' }).first()
+  await homeFriend.getByText('2 shared contexts', { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
 
   await page.getByTestId('friends-link').click()
   await page.waitForURL(new RegExp(`${escapeRegExp(hostedOrigin)}/tabs/home/friends(?:[?#].*)?$`))
@@ -371,7 +373,7 @@ async function verifyAccountBalanceDashboard(page) {
   await breakdown.waitFor({ state: 'visible' })
   const breakdownText = (await breakdown.textContent()) ?? ''
   if (!breakdownText.includes('Live Account Proof') || !breakdownText.includes('Live Proof Friend')) {
-    throw new Error('Hosted friend balance did not include both shared-group and direct-expense breakdowns.')
+    throw new Error(`Hosted friend balance did not include both shared-group and direct-expense breakdowns: ${breakdownText.trim()}`)
   }
   if (await breakdown.locator('.friend-breakdown__link').count() < 2) throw new Error('Hosted friend balance did not expose both account contexts.')
   const friendsOverflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
