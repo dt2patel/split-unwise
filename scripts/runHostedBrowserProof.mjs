@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 
 import { assertExpectedHostedCommit, collectHashedStartupAssets } from './hostedBundleContract.mjs'
+import { createBrowserErrorMonitor } from './browserErrorMonitor.mjs'
 
 const hostedOrigin = 'https://split-unwise-aditya.web.app'
 const suffix = process.env.LIVE_PROOF_SUFFIX
@@ -96,7 +97,7 @@ async function verifyAuthenticatedMobileJourney() {
     await createReceiptFixture(browser, receiptFixturePath)
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
     const page = await context.newPage()
-    const assertOwnerPageClean = monitorBrowserErrors(page, 'owner journey')
+    const ownerPageErrors = createBrowserErrorMonitor(page, 'owner journey')
 
     const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
     if (!navigation?.ok()) throw new Error(`Hosted browser root navigation failed with ${navigation?.status() ?? 'no response'}.`)
@@ -154,7 +155,7 @@ async function verifyAuthenticatedMobileJourney() {
     await persistedExpense.getByText(browserExpenseDescription, { exact: true }).waitFor({ state: 'visible' })
     const restoredOfflineReadyDismiss = page.locator('.app-status').getByRole('button', { name: 'OK', exact: true })
     if (await restoredOfflineReadyDismiss.isVisible()) await restoredOfflineReadyDismiss.click()
-    await verifyColdOfflineGroupReload(browser, context, page, browserExpenseDescription)
+    await verifyColdOfflineGroupReload(browser, context, page, browserExpenseDescription, ownerPageErrors)
     await verifyExpenseMove(page, persistedExpense, browserExpenseDescription)
     await verifyReimbursementWorkflow(page)
     await verifySwipeBackGesture(context, page)
@@ -172,7 +173,7 @@ async function verifyAuthenticatedMobileJourney() {
     if (overflow > 1) throw new Error(`Hosted recurring-series screen overflowed the 390px mobile viewport by ${overflow}px.`)
     const verifiedInvitationUrl = await prepareInvitation(page, thirdEmail)
     const unverifiedInvitationUrl = await prepareInvitation(page, unverifiedEmail)
-    assertOwnerPageClean()
+    ownerPageErrors.assertClean()
     await context.close()
 
     await verifyInvitationAcceptance(browser, verifiedInvitationUrl)
@@ -186,7 +187,7 @@ async function verifyAuthenticatedMobileJourney() {
   }
 }
 
-async function verifyColdOfflineGroupReload(browser, context, page, expenseDescription) {
+async function verifyColdOfflineGroupReload(browser, context, page, expenseDescription, browserErrors) {
   try {
     await page.waitForFunction(async () => {
       if (!('serviceWorker' in navigator) || !('caches' in globalThis)) return false
@@ -228,6 +229,7 @@ async function verifyColdOfflineGroupReload(browser, context, page, expenseDescr
   }, offlineSignalKey)
   await page.evaluate((offlineSignalKey) => sessionStorage.setItem(offlineSignalKey, '1'), offlineSignalKey)
   let reconnectExpenseDescription
+  browserErrors.beginExpectedOfflineWindow()
   try {
     await context.setOffline(true)
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })
@@ -247,8 +249,12 @@ async function verifyColdOfflineGroupReload(browser, context, page, expenseDescr
     await assertNoHorizontalOverflow(page, 'cold offline group at 390px')
     reconnectExpenseDescription = await createReconnectExpenseFromFriend(browser)
   } finally {
-    await context.setOffline(false)
-    await page.evaluate((offlineSignalKey) => sessionStorage.removeItem(offlineSignalKey), offlineSignalKey).catch(() => undefined)
+    try {
+      await context.setOffline(false)
+      await page.evaluate((offlineSignalKey) => sessionStorage.removeItem(offlineSignalKey), offlineSignalKey).catch(() => undefined)
+    } finally {
+      browserErrors.endExpectedOfflineWindow()
+    }
   }
 
   if (!reconnectExpenseDescription) throw new Error('Hosted reconnect proof did not create its remote expense.')
@@ -263,7 +269,7 @@ async function verifyColdOfflineGroupReload(browser, context, page, expenseDescr
 async function createReconnectExpenseFromFriend(browser) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
   const page = await context.newPage()
-  const assertPageClean = monitorBrowserErrors(page, 'offline reconnect friend journey')
+  const pageErrors = createBrowserErrorMonitor(page, 'offline reconnect friend journey')
   const description = `Hosted reconnect ${suffix}`
   try {
     const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
@@ -286,7 +292,7 @@ async function createReconnectExpenseFromFriend(browser) {
     await page.waitForURL(deepUrl, { timeout: 120_000 })
     const restoredGroup = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
     await restoredGroup.locator('.expense-row[data-sync-state="fresh"]', { hasText: description }).waitFor({ state: 'visible', timeout: 120_000 })
-    assertPageClean()
+    pageErrors.assertClean()
     return description
   } finally {
     await context.close()
@@ -1002,7 +1008,21 @@ async function dismissAppStatus(page) {
 async function prepareInvitation(page, targetEmail) {
   const languageUrl = new URL('/tabs/account/language', hostedOrigin).href
   await page.goto(languageUrl, { waitUntil: 'domcontentloaded' })
-  await page.getByRole('heading', { name: 'App language', exact: true }).waitFor({ state: 'visible' })
+  try {
+    await page.getByRole('heading', { name: 'App language', exact: true }).waitFor({ state: 'visible' })
+  } catch (cause) {
+    const diagnostic = await page.evaluate(() => ({
+      pathname: location.pathname,
+      language: document.documentElement.lang,
+      headings: Array.from(document.querySelectorAll('h1, h2, ion-title'))
+        .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
+        .map((element) => (element.textContent ?? '').trim().slice(0, 80)),
+      visiblePageClasses: Array.from(document.querySelectorAll('.ion-page:not(.ion-page-hidden)'))
+        .map((element) => element.className),
+      authInputCount: document.querySelectorAll('#auth-email').length,
+    }))
+    throw new Error(`Hosted invitation language route did not become ready: ${JSON.stringify(diagnostic)}`, { cause })
+  }
   await page.locator('[data-locale="es"] ion-radio').click()
   await page.waitForFunction(() => document.documentElement.lang === 'es')
   await page.goto(`${deepUrl}/invite`, { waitUntil: 'domcontentloaded' })
@@ -1028,7 +1048,7 @@ async function verifyInvitationAcceptance(browser, invitationUrl) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
   try {
     const page = await context.newPage()
-    const assertPageClean = monitorBrowserErrors(page, 'verified invitation journey')
+    const pageErrors = createBrowserErrorMonitor(page, 'verified invitation journey')
     const navigation = await page.goto(invitationUrl, { waitUntil: 'domcontentloaded' })
     if (!navigation?.ok()) throw new Error(`Hosted verified invitation navigation failed with ${navigation?.status() ?? 'no response'}.`)
     await page.getByRole('button', { name: 'Sign in to continue', exact: true }).click()
@@ -1055,7 +1075,7 @@ async function verifyInvitationAcceptance(browser, invitationUrl) {
     const group = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden)')
     await group.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
     await group.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
-    assertPageClean()
+    pageErrors.assertClean()
   } finally {
     await context.close()
   }
@@ -1065,7 +1085,7 @@ async function verifyMemberRemoval(browser) {
   const ownerContext = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
   try {
     const page = await ownerContext.newPage()
-    const assertPageClean = monitorBrowserErrors(page, 'member removal owner journey')
+    const pageErrors = createBrowserErrorMonitor(page, 'member removal owner journey')
     const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
     if (!navigation?.ok()) throw new Error(`Hosted member-removal owner navigation failed with ${navigation?.status() ?? 'no response'}.`)
     await signIn(page, ownerEmail)
@@ -1093,7 +1113,7 @@ async function verifyMemberRemoval(browser) {
     if (await targetRow.count()) {
       throw new Error('Hosted member list still exposed the removed account.')
     }
-    assertPageClean()
+    pageErrors.assertClean()
   } finally {
     await ownerContext.close()
   }
@@ -1101,7 +1121,7 @@ async function verifyMemberRemoval(browser) {
   const removedContext = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
   try {
     const page = await removedContext.newPage()
-    const assertPageClean = monitorBrowserErrors(page, 'removed member journey')
+    const pageErrors = createBrowserErrorMonitor(page, 'removed member journey')
     const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
     if (!navigation?.ok()) throw new Error(`Hosted removed-member navigation failed with ${navigation?.status() ?? 'no response'}.`)
     await signIn(page, thirdEmail)
@@ -1112,7 +1132,7 @@ async function verifyMemberRemoval(browser) {
     const unavailable = page.locator('[data-testid="group-detail"]:not(.ion-page-hidden) [role="alert"]')
     await unavailable.waitFor({ state: 'visible' })
     if (!/not available/i.test((await unavailable.textContent()) ?? '')) throw new Error('Removed account deep link did not show an unavailable-group state.')
-    assertPageClean()
+    pageErrors.assertClean()
   } finally {
     await removedContext.close()
   }
@@ -1124,8 +1144,8 @@ async function verifyGroupLifecycle(browser) {
   try {
     const ownerPage = await ownerContext.newPage()
     const friendPage = await friendContext.newPage()
-    const assertOwnerPageClean = monitorBrowserErrors(ownerPage, 'group lifecycle owner journey')
-    const assertFriendPageClean = monitorBrowserErrors(friendPage, 'group lifecycle friend journey')
+    const ownerPageErrors = createBrowserErrorMonitor(ownerPage, 'group lifecycle owner journey')
+    const friendPageErrors = createBrowserErrorMonitor(friendPage, 'group lifecycle friend journey')
 
     const ownerNavigation = await ownerPage.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
     if (!ownerNavigation?.ok()) throw new Error(`Hosted lifecycle owner navigation failed with ${ownerNavigation?.status() ?? 'no response'}.`)
@@ -1185,8 +1205,8 @@ async function verifyGroupLifecycle(browser) {
     await restoredFriendGroup.getByRole('heading', { name: 'Live Account Proof', exact: true }).waitFor({ state: 'visible' })
     await restoredFriendGroup.locator('[data-testid="expense-journal"]').waitFor({ state: 'visible' })
 
-    assertOwnerPageClean()
-    assertFriendPageClean()
+    ownerPageErrors.assertClean()
+    friendPageErrors.assertClean()
   } finally {
     await Promise.all([ownerContext.close(), friendContext.close()])
   }
@@ -1196,7 +1216,7 @@ async function verifyInvitationVerificationGate(browser, invitationUrl) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
   try {
     const page = await context.newPage()
-    const assertPageClean = monitorBrowserErrors(page, 'unverified invitation journey')
+    const pageErrors = createBrowserErrorMonitor(page, 'unverified invitation journey')
     const navigation = await page.goto(invitationUrl, { waitUntil: 'domcontentloaded' })
     if (!navigation?.ok()) throw new Error(`Hosted unverified invitation navigation failed with ${navigation?.status() ?? 'no response'}.`)
     await page.getByRole('button', { name: 'Sign in to continue', exact: true }).click()
@@ -1208,7 +1228,7 @@ async function verifyInvitationVerificationGate(browser, invitationUrl) {
     await recovery.getByRole('button', { name: 'Resend verification email', exact: true }).waitFor({ state: 'visible' })
     await recovery.getByRole('button', { name: "I've verified my email", exact: true }).waitFor({ state: 'visible' })
     if (!(await recovery.textContent())?.includes(unverifiedEmail)) throw new Error('Hosted verification recovery did not identify the invited account.')
-    assertPageClean()
+    pageErrors.assertClean()
   } finally {
     await context.close()
   }
@@ -1218,7 +1238,7 @@ async function verifyAccountDeletion(browser) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'en-US' })
   try {
     const page = await context.newPage()
-    const assertPageClean = monitorBrowserErrors(page, 'account deletion journey')
+    const pageErrors = createBrowserErrorMonitor(page, 'account deletion journey')
     const navigation = await page.goto(hostedOrigin, { waitUntil: 'domcontentloaded' })
     if (!navigation?.ok()) throw new Error(`Hosted account-deletion navigation failed with ${navigation?.status() ?? 'no response'}.`)
     await signIn(page, deletionEmail)
@@ -1238,7 +1258,7 @@ async function verifyAccountDeletion(browser) {
 
     await page.waitForURL(/\/auth(?:[?#].*)?$/, { timeout: 120_000 })
     await page.locator('#auth-email').waitFor({ state: 'visible' })
-    assertPageClean()
+    pageErrors.assertClean()
     await page.locator('#auth-email').fill(deletionEmail)
     await page.locator('#auth-password').fill(password)
     await page.getByRole('button', { name: 'Sign in', exact: true }).click()
@@ -1274,16 +1294,6 @@ async function signIn(page, email) {
   await page.locator('#auth-email').fill(email)
   await page.locator('#auth-password').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
-}
-
-function monitorBrowserErrors(page, label) {
-  let pageErrorCount = 0
-  let consoleErrorCount = 0
-  page.on('pageerror', () => { pageErrorCount += 1 })
-  page.on('console', (message) => { if (message.type() === 'error') consoleErrorCount += 1 })
-  return () => {
-    if (pageErrorCount > 0 || consoleErrorCount > 0) throw new Error(`Hosted ${label} emitted ${pageErrorCount} page errors and ${consoleErrorCount} console errors.`)
-  }
 }
 
 function requireResponse(response, label) {
