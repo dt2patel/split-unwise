@@ -217,7 +217,8 @@ export function createAppSession(options: AppSessionOptions = {}): AppDataSessio
 }
 
 export function getAppSession(): AppDataSession {
-  return activeSession ??= createAppSession()
+  if (!activeSession) throw new Error('App data session is not active')
+  return activeSession
 }
 
 /** Read-only boot seam: unlike getAppSession, this never constructs an unowned session. */

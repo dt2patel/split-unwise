@@ -1,8 +1,10 @@
 import { mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { IonFabButton } from '@ionic/vue'
 import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
+import { createMemoryCommandStorage } from '../../../data/commandQueue'
+import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import TabsShell from '../TabsShell.vue'
 
 const ionicStubs = {
@@ -19,7 +21,11 @@ const ionicStubs = {
 }
 
 describe('TabsShell', () => {
-  beforeEach(() => localeController.setPreference('en'))
+  beforeEach(() => {
+    localeController.setPreference('en')
+    setAppSessionForTesting(createAppSession({ commandStorage: createMemoryCommandStorage() }))
+  })
+  afterEach(() => setAppSessionForTesting(undefined))
 
   it.each([
     ['home', '/tabs/home', 'Home'],

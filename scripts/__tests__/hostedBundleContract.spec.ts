@@ -95,6 +95,37 @@ describe('hosted bundle proof contract', () => {
     expect(browser).toContain('invitation-verification-required')
   })
 
+  it('ties the hosted profile save to the exact Firebase principal and authoritative Firestore operation', () => {
+    const runner = readFileSync(resolve(process.cwd(), 'scripts/runHostedProof.mjs'), 'utf8')
+    const browser = readFileSync(resolve(process.cwd(), 'scripts/runHostedBrowserProof.mjs'), 'utf8')
+    const expectInOrder = (source: string, actions: readonly string[], label: string) => {
+      let cursor = 0
+      for (const action of actions) {
+        const index = source.indexOf(action, cursor)
+        expect(index, `${label} must include ${action} after the preceding action`).toBeGreaterThanOrEqual(cursor)
+        cursor = index + action.length
+      }
+    }
+
+    expectInOrder(browser, [
+      'const ownerUid = process.env.LIVE_PROOF_OWNER_UID',
+      'const profileOperationId = await verifyPaymentHandleProfile(page)',
+      "console.log('LIVE_PROOF_PROFILE', JSON.stringify({ operationId: profileOperationId }))",
+      'const expectedPrincipalKey = `split-unwise-principal:v1:firebase:split-unwise-aditya:${encodeURIComponent(ownerUid)}`',
+      'operations[0].principalKey !== expectedPrincipalKey',
+      'return operations[0].operationId',
+    ], 'hosted browser profile proof')
+    expectInOrder(runner, [
+      'LIVE_PROOF_OWNER_UID: ownerFixtureUid',
+      "browserProofResult = await run(process.execPath, ['scripts/runHostedBrowserProof.mjs']",
+      'const profileOperationId = profileOperationFromBrowserProof(browserProofResult.stdout)',
+      "getDocuments(projectId, [`users/${ownerFixtureUid}`])",
+      "savedHandles?.paypal?.stringValue !== 'hosted.owner.paypal'",
+      "savedHandles?.venmo?.stringValue !== 'hosted-owner-venmo'",
+      'savedProfile?.fields?.lastOperationId?.stringValue !== profileOperationId',
+    ], 'hosted Firestore profile proof')
+  })
+
   it('measures each visible Ionic scroll host and the hydrated 320px deletion card for overflow', () => {
     const browser = readFileSync(resolve(process.cwd(), 'scripts/runHostedBrowserProof.mjs'), 'utf8')
 
@@ -123,14 +154,15 @@ describe('hosted bundle proof contract', () => {
     for (const expected of [
       'navigator.serviceWorker.getRegistration()',
       '{ timeout: 30_000 }',
-      "Page.addScriptToEvaluateOnNewDocument",
+      'await page.addInitScript',
+      "sessionStorage.setItem(offlineSignalKey, '1')",
       'await context.setOffline(true)',
       "await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })",
       "fetch('/__/firebase/init.json', { cache: 'no-store' })",
       "getByText('Offline', { exact: true })",
       'await createReconnectExpenseFromFriend(browser)',
       'await context.setOffline(false)',
-      'Page.removeScriptToEvaluateOnNewDocument',
+      'sessionStorage.removeItem(offlineSignalKey)',
       "await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 })",
       "if (!(await page.evaluate(() => navigator.onLine)))",
       'reconnectExpenseDescription',

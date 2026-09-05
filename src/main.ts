@@ -36,7 +36,6 @@ function unmountIndependentSurface(): void {
   independentApp = undefined
 }
 
-await mountIndependentSurface()
 void registerPwa()
 const mountHost = createAppSessionMountHost({
   setSession: setActiveAppSession,

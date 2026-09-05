@@ -583,6 +583,14 @@ describe('app data session', () => {
     setAppSessionForTesting(undefined)
   })
 
+  it('refuses to manufacture a demo session before the authenticated owner is activated', () => {
+    setAppSessionForTesting(undefined)
+
+    expect(() => getAppSession()).toThrow('App data session is not active')
+
+    expect(sessionModule.peekActiveAppSession()).toBeUndefined()
+  })
+
   it('provides deterministic repository and storage seams for tests', async () => {
     const repository = createDemoRepository()
     const session = createAppSession({ repository, commandStorage: createMemoryCommandStorage() })

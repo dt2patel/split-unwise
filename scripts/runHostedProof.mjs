@@ -126,6 +126,21 @@ function registerBrowserProofResources(output) {
   return registered
 }
 
+function profileOperationFromBrowserProof(output) {
+  const prefix = 'LIVE_PROOF_PROFILE '
+  const operations = String(output ?? '').split(/\r?\n/).flatMap((line) => {
+    if (!line.startsWith(prefix)) return []
+    try {
+      const value = JSON.parse(line.slice(prefix.length))
+      return typeof value?.operationId === 'string' && /^profile-[A-Za-z0-9-]{10,100}$/.test(value.operationId)
+        ? [value.operationId]
+        : []
+    } catch { return [] }
+  })
+  if (operations.length !== 1) throw new Error('Hosted browser proof did not report exactly one durable Firebase profile operation.')
+  return operations[0]
+}
+
 async function assertAuthUserDeleted(email) {
   try {
     await findUser(projectId, email)
@@ -182,6 +197,7 @@ try {
   }
 
   try {
+    if (!ownerFixtureUid) throw new Error('Hosted proof owner-account fixture is unavailable.')
     if (!thirdFixtureUid) throw new Error('Hosted proof third-account fixture is unavailable.')
     const proofEnvironment = {
       ...process.env,
@@ -190,6 +206,7 @@ try {
       LIVE_PROOF_PASSWORD: password,
       LIVE_PREVERIFIED_ACCOUNTS: '1',
       LIVE_PROOF_EXTERNAL_CLEANUP: '1',
+      LIVE_PROOF_OWNER_UID: ownerFixtureUid,
       LIVE_PROOF_THIRD_UID: thirdFixtureUid,
     }
     await run(process.execPath, [vitestEntrypoint, 'run', 'src/data/__tests__/productionHosted.spec.ts'], {
@@ -280,10 +297,29 @@ try {
       })
     } catch (error) {
       registerBrowserProofResources(error?.stdout)
+      if (ownerFixtureUid) {
+        const [profile] = (await getDocuments(projectId, [`users/${ownerFixtureUid}`])).documents
+        const handles = profile?.fields?.paymentHandles?.mapValue?.fields
+        console.error(`HOSTED_PROFILE_DIAGNOSTIC ${JSON.stringify({
+          ownerFixtureUid,
+          exists: Boolean(profile),
+          paypal: handles?.paypal?.stringValue ?? null,
+          venmo: handles?.venmo?.stringValue ?? null,
+          lastOperationId: profile?.fields?.lastOperationId?.stringValue ?? null,
+        })}`)
+      }
       throw error
     }
     if (registerBrowserProofResources(browserProofResult.stdout) !== 1) {
       throw new Error('Hosted browser proof did not register exactly one UI-created group for cleanup.')
+    }
+    const profileOperationId = profileOperationFromBrowserProof(browserProofResult.stdout)
+    const [savedProfile] = (await getDocuments(projectId, [`users/${ownerFixtureUid}`])).documents
+    const savedHandles = savedProfile?.fields?.paymentHandles?.mapValue?.fields
+    if (savedHandles?.paypal?.stringValue !== 'hosted.owner.paypal'
+      || savedHandles?.venmo?.stringValue !== 'hosted-owner-venmo'
+      || savedProfile?.fields?.lastOperationId?.stringValue !== profileOperationId) {
+      throw new Error('Hosted profile save was not durably committed to the authenticated Firebase account.')
     }
     await assertAuthUserDeleted(deletionEmail)
   } catch (error) {

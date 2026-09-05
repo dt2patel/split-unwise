@@ -10,11 +10,13 @@ import { assertExpectedHostedCommit, collectHashedStartupAssets } from './hosted
 const hostedOrigin = 'https://split-unwise-aditya.web.app'
 const suffix = process.env.LIVE_PROOF_SUFFIX
 const password = process.env.LIVE_PROOF_PASSWORD
+const ownerUid = process.env.LIVE_PROOF_OWNER_UID
 const thirdUid = process.env.LIVE_PROOF_THIRD_UID
 const expectedCommit = assertExpectedHostedCommit(process.env.EXPECTED_HOSTED_COMMIT)
 
 if (!suffix || !/^[a-z0-9-]{10,80}$/.test(suffix)) throw new Error('Hosted browser proof requires a valid LIVE_PROOF_SUFFIX.')
 if (!password || process.env.LIVE_PREVERIFIED_ACCOUNTS !== '1') throw new Error('Hosted browser proof requires preverified disposable accounts from runHostedProof.')
+if (!ownerUid || !/^[A-Za-z0-9_-]{1,128}$/.test(ownerUid)) throw new Error('Hosted browser proof requires the exact disposable owner-account UID.')
 if (!thirdUid || !/^[A-Za-z0-9_-]{1,128}$/.test(thirdUid)) throw new Error('Hosted browser proof requires the exact disposable third-account UID.')
 
 const ownerEmail = `live-owner-${suffix}@example.com`
@@ -103,7 +105,8 @@ async function verifyAuthenticatedMobileJourney() {
     await page.waitForURL(/\/tabs\/home(?:[?#].*)?$/)
     await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
     await verifyAccountBalanceDashboard(page)
-    await verifyPaymentHandleProfile(page)
+    const profileOperationId = await verifyPaymentHandleProfile(page)
+    console.log('LIVE_PROOF_PROFILE', JSON.stringify({ operationId: profileOperationId }))
     await verifyLanguagePreference(page)
     await verifyCreateGroupCardModal(page)
 
@@ -212,10 +215,18 @@ async function verifyColdOfflineGroupReload(browser, context, page, expenseDescr
     throw new Error(`Hosted offline installation was not ready before the cold reload: ${JSON.stringify(install)}`)
   }
 
-  const cdp = await context.newCDPSession(page)
-  const { identifier: offlineStartupScript } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
-    source: "Object.defineProperty(Navigator.prototype, 'onLine', { configurable: true, get: () => false })",
-  })
+  const offlineSignalKey = 'split-unwise:hosted-proof:force-offline'
+  await page.addInitScript((key) => {
+    const nativeGetter = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine')?.get
+    Object.defineProperty(Navigator.prototype, 'onLine', {
+      configurable: true,
+      get() {
+        try { if (sessionStorage.getItem(key) === '1') return false } catch { /* unavailable storage falls through to the browser signal */ }
+        return nativeGetter?.call(this) ?? true
+      },
+    })
+  }, offlineSignalKey)
+  await page.evaluate((offlineSignalKey) => sessionStorage.setItem(offlineSignalKey, '1'), offlineSignalKey)
   let reconnectExpenseDescription
   try {
     await context.setOffline(true)
@@ -236,9 +247,8 @@ async function verifyColdOfflineGroupReload(browser, context, page, expenseDescr
     await assertNoHorizontalOverflow(page, 'cold offline group at 390px')
     reconnectExpenseDescription = await createReconnectExpenseFromFriend(browser)
   } finally {
-    try { await context.setOffline(false) } finally {
-      try { await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: offlineStartupScript }) } finally { await cdp.detach() }
-    }
+    await context.setOffline(false)
+    await page.evaluate((offlineSignalKey) => sessionStorage.removeItem(offlineSignalKey), offlineSignalKey).catch(() => undefined)
   }
 
   if (!reconnectExpenseDescription) throw new Error('Hosted reconnect proof did not create its remote expense.')
@@ -298,17 +308,57 @@ async function verifyPaymentHandleProfile(page) {
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Account', exact: true }).waitFor({ state: 'visible' })
   await page.getByTestId('paypal-handle').waitFor({ state: 'visible' })
-  await page.waitForFunction(() => {
-    const paypal = document.querySelector('[data-testid="paypal-handle"]')
-    const venmo = document.querySelector('[data-testid="venmo-handle"]')
-    return paypal instanceof HTMLInputElement && paypal.value === 'hosted.owner.paypal'
-      && venmo instanceof HTMLInputElement && venmo.value === 'hosted-owner-venmo'
-  }, undefined, { timeout: 120_000 })
+  try {
+    await page.waitForFunction(() => {
+      const paypal = document.querySelector('[data-testid="paypal-handle"]')
+      const venmo = document.querySelector('[data-testid="venmo-handle"]')
+      return paypal instanceof HTMLInputElement && paypal.value === 'hosted.owner.paypal'
+        && venmo instanceof HTMLInputElement && venmo.value === 'hosted-owner-venmo'
+    }, undefined, { timeout: 15_000 })
+  } catch (reason) {
+    const diagnostic = await page.evaluate(() => {
+      const paypal = document.querySelector('[data-testid="paypal-handle"]')
+      const venmo = document.querySelector('[data-testid="venmo-handle"]')
+      const save = document.querySelector('[data-action="save-profile"]')
+      return {
+        online: navigator.onLine,
+        paypal: paypal instanceof HTMLInputElement ? paypal.value : null,
+        venmo: venmo instanceof HTMLInputElement ? venmo.value : null,
+        paypalDisabled: paypal instanceof HTMLInputElement ? paypal.disabled : null,
+        saveDisabled: save instanceof HTMLButtonElement ? save.disabled : null,
+        status: document.querySelector('[role="status"]')?.textContent?.trim() ?? null,
+        alert: document.querySelector('[role="alert"]')?.textContent?.trim() ?? null,
+      }
+    })
+    throw new Error(`Hosted Account did not hydrate the saved payment handles: ${JSON.stringify(diagnostic)}`, { cause: reason })
+  }
   const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth)
   if (overflow > 1) throw new Error(`Hosted Account payment handles overflowed the 390px mobile viewport by ${overflow}px.`)
 
+  const expectedPrincipalKey = `split-unwise-principal:v1:firebase:split-unwise-aditya:${encodeURIComponent(ownerUid)}`
+  const operations = await page.evaluate(({ expectedPrincipalKey }) => Object.entries(localStorage).flatMap(([key, value]) => {
+    if (!key.startsWith('split-unwise:command-queue:')) return []
+    try {
+      const document = JSON.parse(value)
+      if (!Array.isArray(document?.operations)) return []
+      return document.operations.filter((operation) => operation?.envelope?.kind === 'profile.update'
+        && operation.envelope.paymentHandles?.paypal === 'hosted.owner.paypal'
+        && operation.envelope.paymentHandles?.venmo === 'hosted-owner-venmo').map((operation) => ({
+          principalKey: document.principalKey,
+          status: operation.status,
+          operationId: operation.envelope.operationId,
+          resultStatus: operation.result?.status ?? null,
+        }))
+    } catch { return [] }
+  }), { expectedPrincipalKey })
+  if (operations.length !== 1 || operations[0].principalKey !== expectedPrincipalKey
+    || operations[0].status !== 'fresh' || operations[0].resultStatus !== 'saved') {
+    throw new Error(`Hosted profile save did not belong to the authenticated Firebase session: ${JSON.stringify(operations)}`)
+  }
+
   await page.goto(new URL('/tabs/home', hostedOrigin).href, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Home', exact: true }).waitFor({ state: 'visible' })
+  return operations[0].operationId
 }
 
 async function verifyLanguagePreference(page) {
