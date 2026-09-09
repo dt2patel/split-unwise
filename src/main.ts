@@ -12,6 +12,7 @@ import { createFirebaseReceiptProvider } from './data/firebaseReceiptProvider'
 import { createOnDeviceReceiptProvider } from './data/onDeviceReceiptProvider'
 import { setAuthService } from './features/auth/authService'
 import { registerPwa } from './app/pwa'
+import { installWebMcp } from './app/webmcp'
 import './app/theme.css'
 
 const repositoryRuntime = await createRepositorySessionRuntime()
@@ -45,6 +46,7 @@ const mountHost = createAppSessionMountHost({
     const pinia = createPinia()
     const router = createAppRouter({ auth: repositoryRuntime.auth })
     let didMount = false
+    let disposeWebMcp: (() => void) | undefined
 
     app.use(IonicVue, { mode: 'ios', navAnimation: createRouteAnimation() })
     app.use(pinia)
@@ -54,9 +56,14 @@ const mountHost = createAppSessionMountHost({
     if (session.isActive) {
       app.mount('#app')
       didMount = true
+      disposeWebMcp = await installWebMcp({ router, session })
     }
     return {
-      unmount() { if (didMount) app.unmount() },
+      unmount() {
+        disposeWebMcp?.()
+        disposeWebMcp = undefined
+        if (didMount) app.unmount()
+      },
       disposeFeatureStores() { disposePinia(pinia) },
     }
   },
