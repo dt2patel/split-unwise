@@ -9,6 +9,7 @@ import { projectActivityTimeline } from '../activity/activityStore'
 import { compareFirestoreStrings } from '../../data/timeline'
 import { AggregateOverflowError } from '../../data/aggregates'
 import { ApplicationError, displayMessageFor, type DisplayMessage } from '../../app/displayMessages'
+import { markLaunch } from '../../app/perfMarks'
 
 export interface UserExpensePosition {
   readonly money: Money
@@ -110,6 +111,7 @@ export const useGroupStore = defineStore('groups', () => {
       if (!group) throw new ApplicationError('groups.error.unavailable')
       if (group.id !== groupId) throw new ApplicationError('groups.error.unavailable')
       activeGroup.value = group
+      markLaunch('group-header')
       const [user, loadedMembers, loadedExpenses] = await journalRequest
       if (request !== latestGroupRequest) return
       // Preserve deterministic load errors for malformed/overflowing repository data.
@@ -119,6 +121,7 @@ export const useGroupStore = defineStore('groups', () => {
       const counterpart = group.kind === 'friendship' ? loadedMembers.find((member) => member.id !== user.id) : undefined
       if (counterpart) activeGroup.value = { ...group, name: counterpart.displayName }
       expenses.value = loadedExpenses
+      markLaunch('group-content')
       for (const operation of queue.snapshot()) rememberTombstone(operation, tombstoneWatermarks)
       await acknowledgeConfirmedOperations(groupId, loadedExpenses)
     } catch (reason) {

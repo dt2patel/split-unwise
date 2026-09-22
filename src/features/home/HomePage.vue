@@ -29,6 +29,7 @@ import { compareFirestoreStrings } from '../../data/timeline'
 import { useGroupStore } from '../groups/groupStore'
 import { useAccountBalanceStore } from './accountBalanceStore'
 import { displayMessageText } from '../../app/displayMessages'
+import { markLaunch } from '../../app/perfMarks'
 
 const groupStore = useGroupStore()
 const balanceStore = useAccountBalanceStore()
@@ -57,6 +58,7 @@ onIonViewWillEnter(() => {
 async function loadPage(): Promise<void> {
   await groupStore.loadOverview()
   if (currentUser.value) await balanceStore.load(groups.value, currentUser.value.id)
+  markLaunch('home-content')
 }
 
 function direction(position: SignedCurrencyPosition): DebtDirection {

@@ -14,9 +14,11 @@ import { setAuthService } from './features/auth/authService'
 import { registerPwa } from './app/pwa'
 import { forgetFirebaseProfileReady } from './data/profileReady'
 import { installWebMcp } from './app/webmcp'
+import { markLaunch } from './app/perfMarks'
 import './app/theme.css'
 
 const repositoryRuntime = await createRepositorySessionRuntime()
+markLaunch('runtime-ready')
 setAuthService(repositoryRuntime.auth)
 let independentApp: ReturnType<typeof createApp> | undefined
 
@@ -30,6 +32,7 @@ async function mountIndependentSurface(): Promise<void> {
   app.use(router)
   await router.isReady()
   app.mount('#app')
+  markLaunch('app-mounted')
   independentApp = app
 }
 
@@ -56,6 +59,7 @@ const mountHost = createAppSessionMountHost({
     await router.isReady()
     if (session.isActive) {
       app.mount('#app')
+      markLaunch('app-mounted')
       didMount = true
       disposeWebMcp = await installWebMcp({ router, session })
     }
@@ -88,8 +92,10 @@ const sessionCoordinator = createAppSessionCoordinator({
   activateSession: mountHost.activateSession,
 })
 const unsubscribePrincipal = await repositoryRuntime.principals.listen(async (principal) => {
+  markLaunch('principal-ready')
   try {
     await sessionCoordinator.transition(principal)
+    markLaunch('session-ready')
     if (!principal) await mountIndependentSurface()
   } catch (error: unknown) {
     if (error instanceof Error && error.message === 'Current Firebase user profile is missing') forgetFirebaseProfileReady()
