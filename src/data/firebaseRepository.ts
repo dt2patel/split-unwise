@@ -39,11 +39,23 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   }
   function currentUser(): Promise<Member> {
     if (currentUserPromise) return currentUserPromise
-    const pending = (async () => {
+    const pending: Promise<Member> = (async () => {
       const { db, firestore, userId } = await context()
-      const snapshot = await firestore.getDoc(firestore.doc(db, 'users', userId))
-      if (!snapshot.exists()) throw new Error('Current Firebase user profile is missing')
-      return decodeMember(userId, snapshot.data(), true)
+      const reference = firestore.doc(db, 'users', userId)
+      const server = firestore.getDoc(reference).then((snapshot) => {
+        if (!snapshot.exists()) throw new Error('Current Firebase user profile is missing')
+        return decodeMember(userId, snapshot.data(), true)
+      })
+      // The uid comes from Auth, so the device copy is safe to start the session with; don't hold app mount on a server round trip.
+      const cached = await firestore.getDocFromCache(reference)
+        .then((snapshot) => snapshot.exists() ? decodeMember(userId, snapshot.data(), true) : undefined)
+        .catch(() => undefined)
+      if (!cached) return server
+      void server.then(
+        (fresh) => { if (currentUserPromise === pending) currentUserPromise = Promise.resolve(fresh) },
+        () => { if (currentUserPromise === pending) currentUserPromise = undefined },
+      )
+      return cached
     })()
     currentUserPromise = pending
     void pending.catch(() => {

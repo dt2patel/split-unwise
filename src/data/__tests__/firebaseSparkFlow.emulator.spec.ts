@@ -70,6 +70,25 @@ describe('Firebase Spark two-account flow', () => {
     expect((await getDoc(doc(getFirestore(app), `groups/${created.groupId}`))).exists()).toBe(true)
   }, 30_000)
 
+  emulatorIt('starts later sessions from the cached profile and still returns profile updates', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const owner = await createUserWithEmailAndPassword(auth, `profile-cache-${suffix}@example.com`, 'SplitUnwise-Test-42!')
+    await updateProfile(owner.user, { displayName: 'Cached Profile' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const first = createFirebaseRepository(configuration, owner.user.uid)
+    const fromServer = await first.app.getCurrentUser()
+
+    const second = createFirebaseRepository(configuration, owner.user.uid)
+    await expect(second.app.getCurrentUser()).resolves.toEqual(fromServer)
+
+    const updated = await second.app.updateProfile({ kind: 'profile.update', operationId: `profile-cache-${suffix}`, displayName: 'Renamed Profile' })
+    expect(updated.status).toBe('saved')
+    await expect(second.app.getCurrentUser()).resolves.toMatchObject({ id: owner.user.uid, displayName: 'Renamed Profile' })
+    await signOut(auth)
+  })
+
   emulatorIt('peeks a synced group journal from the device cache with the same decoded rows as the server read', async () => {
     const auth = getAuth(app)
     const suffix = crypto.randomUUID()
