@@ -59,4 +59,13 @@ describe('GroupHero', () => {
     expect(wrapper.find('[data-testid="group-balance-pending"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$20.00')
   })
+
+  it('marks cached balances as updating', () => {
+    const wrapper = mount(GroupHero, {
+      props: { group, balances: [{ currency: 'USD', minorAmount: 2000 }], collapsed: false, provisional: true },
+      global: { stubs: { IonIcon: true } },
+    })
+    expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$20.00')
+    expect(wrapper.get('[data-testid="group-balance-updating"]').text()).toBe('Updating…')
+  })
 })

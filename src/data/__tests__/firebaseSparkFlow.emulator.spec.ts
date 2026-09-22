@@ -70,6 +70,38 @@ describe('Firebase Spark two-account flow', () => {
     expect((await getDoc(doc(getFirestore(app), `groups/${created.groupId}`))).exists()).toBe(true)
   }, 30_000)
 
+  emulatorIt('peeks a synced group journal from the device cache with the same decoded rows as the server read', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const owner = await createUserWithEmailAndPassword(auth, `peek-${suffix}@example.com`, 'SplitUnwise-Test-42!')
+    await updateProfile(owner.user, { displayName: 'Peek Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `peek-${suffix}`, name: 'Cached Trip', currency: 'USD' })
+    const repository = createFirebaseRepository(configuration, owner.user.uid)
+    const saved = await repository.expenses.add({
+      kind: 'expense.add', operationId: `peek-expense-${suffix}`, groupId: created.groupId,
+      description: 'Cached dinner', date: '2026-09-01',
+      total: { currency: 'USD', minorAmount: 2400 },
+      payments: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2400 } }],
+      allocations: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 2400 } }],
+      category: 'Food', splitMethod: { type: 'equal', participantIds: [owner.user.uid] }, attachmentRefs: [],
+    })
+    if (saved.status !== 'saved') throw new Error('Expected the cached-journal expense to save')
+
+    const [group, members, expenses] = await Promise.all([
+      repository.groups.getById(created.groupId), repository.groups.listMembers(created.groupId), repository.expenses.listForGroup(created.groupId),
+    ])
+    const peeked = await repository.groups.peekJournal!(created.groupId)
+    expect(peeked).toBeDefined()
+    expect(peeked!.group).toEqual(group)
+    expect(peeked!.members).toEqual(members)
+    expect(peeked!.expenses).toEqual(expenses)
+    expect(peeked!.user).toMatchObject({ id: owner.user.uid, displayName: 'Peek Owner', isCurrentUser: true })
+    await expect(repository.groups.peekJournal!(`grp-group-${crypto.randomUUID()}`)).resolves.toBeUndefined()
+    await signOut(auth)
+  })
+
   emulatorIt('joins an email-targeted invitation after the invitee verifies while holding an older ID token', async () => {
     const auth = getAuth(app)
     const suffix = crypto.randomUUID()

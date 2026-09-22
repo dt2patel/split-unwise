@@ -4,7 +4,7 @@ import type { Component } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
 import { createDemoRepository } from '../../../data/demoRepository'
-import type { ActivityItem, AppRepository, ExpenseRow, Group, Member } from '../../../data/repositories'
+import type { ActivityItem, AppRepository, CachedGroupJournal, ExpenseRow, Group, Member } from '../../../data/repositories'
 import { useGroupStore } from '../groupStore'
 
 const repositoryHarness = vi.hoisted(() => ({ current: undefined as unknown }))
@@ -210,6 +210,50 @@ describe('group load identity', () => {
   })
 })
 
+describe('cache-first group journal', () => {
+  it('shows the cached journal as provisional until the server read replaces it', async () => {
+    const server = deferred<GroupSnapshot>()
+    const cachedExpense = expense('a', 'cached', 'USD', 4000, maya.id, 2000, 2000)
+    const cached = snapshot('a', 'Group A (cached)', [cachedExpense])
+    repositoryHarness.current = withPeek(repositoryFor({ a: server.promise }), { group: cached.group, user: maya, members: cached.members, expenses: cached.expenses })
+    const store = useGroupStore()
+
+    const loading = store.loadGroup('a')
+    await flushPromises()
+    expect(store.activeGroup?.name).toBe('Group A (cached)')
+    expect(store.journalExpenses.map(({ id }) => id)).toEqual(['cached'])
+    expect(store.isProvisional).toBe(true)
+
+    server.resolve(snapshot('a', 'Group A', [expense('a', 'server', 'USD', 6000, maya.id, 3000, 3000)]))
+    await loading
+    expect(store.activeGroup?.name).toBe('Group A')
+    expect(store.journalExpenses.map(({ id }) => id)).toEqual(['server'])
+    expect(store.isProvisional).toBe(false)
+  })
+
+  it('drops the provisional journal and reports the error when the server read fails', async () => {
+    const cached = snapshot('a', 'Group A (cached)', [expense('a', 'cached', 'USD', 4000, maya.id, 2000, 2000)])
+    repositoryHarness.current = withPeek(repositoryFor({ a: Promise.reject(new Error('permission-denied')) }), { group: cached.group, user: maya, members: cached.members, expenses: cached.expenses })
+    const store = useGroupStore()
+
+    await store.loadGroup('a')
+    expect(store.activeGroup).toBeUndefined()
+    expect(store.isProvisional).toBe(false)
+    expect(store.error).toBeDefined()
+  })
+
+  it('does not peek the cache when the same group is already on screen', async () => {
+    const peek = vi.fn(async () => undefined)
+    repositoryHarness.current = { ...repositoryFor({ a: Promise.resolve(snapshot('a', 'Group A')) }) }
+    const repository = repositoryHarness.current as AppRepository
+    repositoryHarness.current = { ...repository, groups: { ...repository.groups, peekJournal: peek } }
+    const store = useGroupStore()
+    await store.loadGroup('a')
+    await store.loadGroup('a')
+    expect(peek).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('per-currency group balances', () => {
   it('reverses both the group balance and row position for a reimbursement', async () => {
     const refund = { ...expense('refund', 'refund', 'USD', 10000, maya.id, 0, 10000), reimbursement: true as const }
@@ -275,6 +319,10 @@ function repositoryFor(requests: Readonly<Record<string, Promise<GroupSnapshot>>
       async listForGroup(groupId) { return read(groupId).then(({ activity }) => activity) },
     },
   }
+}
+
+function withPeek(repository: AppRepository, journal: CachedGroupJournal): AppRepository {
+  return { ...repository, groups: { ...repository.groups, async peekJournal(groupId) { return groupId === journal.group.id ? journal : undefined } } }
 }
 
 function snapshot(id: string, name: string, expenses: readonly ExpenseRow[] = []): GroupSnapshot {

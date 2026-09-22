@@ -7,7 +7,7 @@ import type { Group } from '../../../data'
 import type { Money } from '../../../domain/model'
 import { useI18n } from '../../../app/i18n'
 
-const props = defineProps<{ group: Group; balances: readonly Money[]; collapsed: boolean; balancesPending?: boolean }>()
+const props = defineProps<{ group: Group; balances: readonly Money[]; collapsed: boolean; balancesPending?: boolean; provisional?: boolean }>()
 const { t } = useI18n()
 const initials = computed(() => {
   const parts = props.group.name.trim().split(/\s+/).filter(Boolean)
@@ -36,6 +36,7 @@ const initials = computed(() => {
         <p v-if="balancesPending" class="group-hero__balance-pending" data-testid="group-balance-pending" role="status">{{ t('groups.balancePending') }}</p>
         <template v-else>
           <balance-summary v-for="balance in balances" :key="balance.currency" :money="balance" :counterpart-name="group.kind === 'friendship' ? group.name : undefined" />
+          <p v-if="provisional" class="group-hero__updating" data-testid="group-balance-updating" role="status">{{ t('groups.balanceUpdating') }}</p>
         </template>
       </div>
     </div>
@@ -51,6 +52,7 @@ const initials = computed(() => {
 .group-hero__monogram { display: grid; width: 66px; height: 66px; margin: 0 auto; place-items: center; border: 6px solid var(--su-surface); border-radius: 20px; background: var(--su-indigo); color: #fff; box-shadow: 0 4px 14px rgb(38 32 127 / 18%); font-size: 1.7rem; font-weight: 590; letter-spacing: -0.04em; }
 .group-hero h1 { margin: 20px 0 7px; color: var(--su-text); font-size: clamp(1.4rem, 6vw, 1.72rem); font-weight: 710; letter-spacing: -0.025em; line-height: 1.12; }
 .group-hero__balances { display: grid; gap: 3px; }
+.group-hero__updating { justify-self: center; margin: 2px 0 0; padding: 2px 9px; border-radius: 999px; background: var(--su-lilac); color: var(--ion-color-primary); font-size: 0.72rem; font-weight: 650; }
 .group-hero__balance-pending { margin: 0; color: var(--ion-color-medium); font-size: clamp(0.98rem, 4.2vw, 1.12rem); }
 .group-hero--collapsed .group-hero__cover { transform: scale(1.025); }
 .group-hero--collapsed .group-hero__identity { opacity: 0.18; transform: translateY(-8px) scale(0.97); }
