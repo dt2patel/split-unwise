@@ -432,6 +432,8 @@ function guardRepository(source: AppRepository, assertActive: () => void): AppRe
       list: () => call(() => source.groups.list()),
       getById: (groupId) => call(() => source.groups.getById(groupId)),
       ...(source.groups.peekJournal ? { peekJournal: (groupId: string) => call(() => source.groups.peekJournal!(groupId)) } : {}),
+      ...(source.groups.peekList ? { peekList: () => call(() => source.groups.peekList!()) } : {}),
+      ...(source.groups.peekBalanceContext ? { peekBalanceContext: (groupId: string) => call(() => source.groups.peekBalanceContext!(groupId)) } : {}),
       listMembers: (groupId) => call(() => source.groups.listMembers(groupId)),
       getBalanceSnapshot: (groupId) => call(() => source.groups.getBalanceSnapshot(groupId)),
       getSettings: (groupId) => call(() => source.groups.getSettings(groupId)),

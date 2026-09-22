@@ -5,6 +5,7 @@ import { getAppSession } from '../../data/session'
 import { compareFirestoreStrings } from '../../data/timeline'
 import { projectAccountBalances, type AccountBalanceContext, type AccountBalanceProjection } from '../../domain/accountBalances'
 import type { ParticipantId } from '../../domain/model'
+import { markLaunch } from '../../app/perfMarks'
 
 const MAX_PARALLEL_CONTEXT_READS = 4
 
@@ -24,6 +25,30 @@ export const useAccountBalanceStore = defineStore('account-balances', () => {
   let loadedSignature: string | undefined
   let visibleSignature: string | undefined
   let activeLoad: { readonly signature: string; readonly promise: Promise<void> } | undefined
+  /** True while the balances on screen came from the device cache and the server load has not replaced them yet. */
+  const isProvisional = ref(false)
+
+  /** Shows balances from the device cache when every group has a synced copy; the server load still runs and replaces them. */
+  async function peek(groups: readonly Group[], currentUserId: ParticipantId): Promise<void> {
+    const peekBalanceContext = session.repository.groups.peekBalanceContext
+    if (!peekBalanceContext || groups.length === 0) return
+    const signature = loadSignature(groups, currentUserId)
+    if (visibleSignature === signature && coverage.value.status !== 'idle') return
+    const request = requestNumber
+    try {
+      const contexts = await Promise.all(groups.map(async (group) => {
+        const cached = await peekBalanceContext(group.id)
+        return cached ? { group, members: cached.members, snapshot: cached.snapshot } : undefined
+      }))
+      // A partial cache would understate totals, so only a complete device copy is shown.
+      if (request !== requestNumber || contexts.some((context) => context === undefined)) return
+      if (visibleSignature === signature && coverage.value.status !== 'idle' && !isProvisional.value) return
+      projection.value = projectAccountBalances(currentUserId, contexts as AccountBalanceContext[])
+      visibleSignature = signature
+      isProvisional.value = true
+      markLaunch('home-cached')
+    } catch { /* a corrupt device copy is ignored; the server load is authoritative */ }
+  }
 
   function load(groups: readonly Group[], currentUserId: ParticipantId, options: { readonly force?: boolean } = {}): Promise<void> {
     const signature = loadSignature(groups, currentUserId)
@@ -32,10 +57,12 @@ export const useAccountBalanceStore = defineStore('account-balances', () => {
     if (loadedSignature === signature) loadedSignature = undefined
 
     const request = ++requestNumber
+    const holdCached = isProvisional.value && visibleSignature === signature
     if (visibleSignature !== signature) {
       projection.value = emptyProjection()
       coverage.value = emptyCoverage()
       visibleSignature = signature
+      isProvisional.value = false
     }
     isLoading.value = true
     notice.value = undefined
@@ -61,7 +88,8 @@ export const useAccountBalanceStore = defineStore('account-balances', () => {
             const next = [...successful, candidate]
             const nextProjection = projectAccountBalances(currentUserId, next)
             successful.push(candidate)
-            projection.value = nextProjection
+            // Over a cached copy, publish only the complete server result so totals never dip mid-load.
+            if (!holdCached) projection.value = nextProjection
             coverage.value = {
               status: 'loading',
               loadedContextIds: contextIds(successful),
@@ -82,6 +110,8 @@ export const useAccountBalanceStore = defineStore('account-balances', () => {
       }
 
       if (request !== requestNumber) return
+      if (holdCached && successful.length > 0) projection.value = projectAccountBalances(currentUserId, successful)
+      isProvisional.value = false
       const loadedContextIds = contextIds(successful)
       const failedContextIds = sortedIds(failed)
       if (failedContextIds.length === 0) {
@@ -110,10 +140,11 @@ export const useAccountBalanceStore = defineStore('account-balances', () => {
     projection.value = emptyProjection()
     coverage.value = emptyCoverage()
     isLoading.value = false
+    isProvisional.value = false
     notice.value = undefined
   }
 
-  return { projection, coverage, isLoading, notice, load, reset }
+  return { projection, coverage, isLoading, isProvisional, notice, load, peek, reset }
 })
 
 async function mapWithConcurrency<T>(items: readonly T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {

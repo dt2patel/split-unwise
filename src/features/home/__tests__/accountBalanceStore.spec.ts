@@ -114,6 +114,50 @@ describe('account balance store', () => {
   })
 })
 
+describe('cache-first account balances', () => {
+  it('shows cached balances immediately and swaps in the complete server result without dipping', async () => {
+    const base = createDemoRepository()
+    const first = group('first', 'First trip')
+    const second = group('second', 'Second trip')
+    const secondServer = deferred<GroupBalanceSnapshot>()
+    const peekBalanceContext = vi.fn(async (groupId: string) => ({ members: [maya, alex], snapshot: snapshot(groupId, 1000) }))
+    const getBalanceSnapshot = vi.fn(async (groupId: string) => groupId === first.id ? snapshot(groupId, 1500) : secondServer.promise)
+    setAppSessionForTesting(createAppSession({
+      repository: { ...base, groups: { ...base.groups, listMembers: async () => [maya, alex], getBalanceSnapshot, peekBalanceContext } },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+    const store = useAccountBalanceStore()
+
+    await store.peek([first, second], maya.id)
+    expect(store.isProvisional).toBe(true)
+    expect(store.projection.currencies).toEqual([{ currency: 'USD', netMinor: 2000, owedToUserMinor: 2000, userOwesMinor: 0 }])
+
+    const loading = store.load([first, second], maya.id)
+    await vi.waitFor(() => expect(getBalanceSnapshot).toHaveBeenCalledTimes(2))
+    await Promise.resolve()
+    // The first group's server result is in, but the cached total stays until every group is confirmed.
+    expect(store.projection.currencies[0]?.netMinor).toBe(2000)
+    expect(store.isProvisional).toBe(true)
+
+    secondServer.resolve(snapshot(second.id, 2500))
+    await loading
+    expect(store.projection.currencies).toEqual([{ currency: 'USD', netMinor: 4000, owedToUserMinor: 4000, userOwesMinor: 0 }])
+    expect(store.isProvisional).toBe(false)
+    expect(store.coverage.status).toBe('complete')
+  })
+
+  it('shows nothing from the cache unless every group has a synced copy', async () => {
+    const base = createDemoRepository()
+    const peekBalanceContext = vi.fn(async (groupId: string) => groupId === 'first' ? { members: [maya, alex], snapshot: snapshot(groupId, 1000) } : undefined)
+    setAppSessionForTesting(createAppSession({ repository: { ...base, groups: { ...base.groups, peekBalanceContext } }, commandStorage: createMemoryCommandStorage() }))
+    const store = useAccountBalanceStore()
+
+    await store.peek([group('first', 'First trip'), group('second', 'Second trip')], maya.id)
+    expect(store.isProvisional).toBe(false)
+    expect(store.projection.currencies).toEqual([])
+  })
+})
+
 function group(id: string, name: string): Group {
   return { id, name, kind: 'group', currency: 'USD', memberIds: [maya.id, alex.id], syncState: 'fresh' }
 }

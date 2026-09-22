@@ -1,5 +1,8 @@
 export type AppearancePreference = 'system' | 'light' | 'dark'
 
+/** Browser/status-bar color per theme; theme.css --su-chrome paints toolbars and the tab bar with the same values. */
+export const CHROME_COLORS = { light: '#F8F7FF', dark: '#17152A', contrastDark: '#000000' } as const
+
 export interface AppearanceController {
   readonly preference: AppearancePreference
   setPreference(preference: AppearancePreference): void
@@ -37,7 +40,7 @@ export function bootstrapAppearance(options: AppearanceControllerOptions = {}): 
     root.dataset.appearance = preference
     root.style.colorScheme = dark ? 'dark' : 'light'
     const meta = documentRef.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-    meta?.setAttribute('content', dark ? (contrast ? '#000000' : '#17152A') : '#F8F7FF')
+    meta?.setAttribute('content', dark ? (contrast ? CHROME_COLORS.contrastDark : CHROME_COLORS.dark) : CHROME_COLORS.light)
   }
   const colorChanged = () => apply()
   const contrastChanged = () => apply()

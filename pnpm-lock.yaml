@@ -5,9 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@ionic/vue@9.0.1':
+  '@ionic/vue@9.0.4':
     hash: 40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2
-    path: patches/@ionic__vue@9.0.1.patch
+    path: patches/@ionic__vue@9.0.4.patch
 
 importers:
 
@@ -23,11 +23,11 @@ importers:
         specifier: 8.5.1
         version: 8.5.1(@capacitor/core@8.5.1)
       '@ionic/vue':
-        specifier: 9.0.1
-        version: 9.0.1(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
+        specifier: 9.0.4
+        version: 9.0.4(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
       '@ionic/vue-router':
-        specifier: 9.0.1
-        version: 9.0.1(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
+        specifier: 9.0.4
+        version: 9.0.4(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
       '@split-unwise/shared':
         specifier: workspace:*
         version: link:shared
@@ -1193,8 +1193,8 @@ packages:
     resolution: {integrity: sha512-TshtaFQsovB4NWRBydbNFawql6yul7d5bMiW1WYYf17hd99V6xdDdk3vtF51bw6sLkxON3bDQpWsnUc9/hVo3g==}
     engines: {node: '>=16.0.0'}
 
-  '@ionic/core@9.0.1':
-    resolution: {integrity: sha512-70fIYFxGuBFYOanWIl1PF3/emB+xVQjLQ9OZqgI+9ki8nEZH1y90YkTtAmleLl2jTx6TUpSaJpdUnzkBreIt7w==}
+  '@ionic/core@9.0.4':
+    resolution: {integrity: sha512-tNYTxBt8+Tla61B8OwAeEHuTWuJdJn6+buftCNikhPHi5TW9MbduIPsWn+D8KtlWhZKPVshVyvItfWcYxMN3JA==}
     engines: {node: '>= 16'}
 
   '@ionic/utils-array@2.1.6':
@@ -1225,11 +1225,11 @@ packages:
     resolution: {integrity: sha512-3cKScz9Jx2/Pr9ijj1OzGlBDfcmx7OMVBt4+P1uRR0SSW4cm1/y3Mo4OY3lfkuaYifMNBW8Wz6lQHbs1bihr7A==}
     engines: {node: '>=16.0.0'}
 
-  '@ionic/vue-router@9.0.1':
-    resolution: {integrity: sha512-XbE++/Iepp4P3YbvMH3UX6yTJX/JLlGVOCCmcYWfQCIV7reHpwpbADxSQ/BkSyxu3oTAuaEqplhQAPPZDtFTGA==}
+  '@ionic/vue-router@9.0.4':
+    resolution: {integrity: sha512-C136j+B2cVBSEDiZaJReB5VO/z+0uc1qo9grn8bLzuSM/Y9iz11YWgxhII0hUq2WEXzLBexEn1JUGSXJdiWLBA==}
 
-  '@ionic/vue@9.0.1':
-    resolution: {integrity: sha512-CwgLj7HKBwv/xRIsXqqvHCH+QGQVMjSf3CIWbQ6x+NpnSqlj8Ve5biZwfGTL0zdd3OaclLiDkrbxMVCLHG1Ovw==}
+  '@ionic/vue@9.0.4':
+    resolution: {integrity: sha512-tFGJnnsD1ODiu8daRtOdoB/ee+N7qkaqXZvpFFqpGgTgFcsfwf4gJCCg5JsCrKfoRb0dS8LAyrwI8WZ7k+tUhw==}
 
   '@isaacs/cliui@8.0.2':
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
@@ -6676,7 +6676,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@ionic/core@9.0.1':
+  '@ionic/core@9.0.4':
     dependencies:
       '@stencil/core': 4.44.2
       ionicons: 8.1.0
@@ -6750,17 +6750,17 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@ionic/vue-router@9.0.1(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))':
+  '@ionic/vue-router@9.0.4(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))':
     dependencies:
-      '@ionic/vue': 9.0.1(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
+      '@ionic/vue': 9.0.4(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
     transitivePeerDependencies:
       - '@stencil/core'
       - vue
       - vue-router
 
-  '@ionic/vue@9.0.1(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))':
+  '@ionic/vue@9.0.4(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))':
     dependencies:
-      '@ionic/core': 9.0.1
+      '@ionic/core': 9.0.4
       '@stencil/vue-output-target': 0.14.2(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
       ionicons: 8.1.0
     transitivePeerDependencies:

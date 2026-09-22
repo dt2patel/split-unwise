@@ -160,7 +160,7 @@ function coverDescription(id: GroupCoverId): string {
         <h1>{{ t('groups.title') }}</h1>
         <p>{{ t('groups.intro') }}</p>
 
-        <p v-if="isLoading" role="status">{{ t('groups.loading') }}</p>
+        <p v-if="isLoading && groups.length === 0" role="status">{{ t('groups.loading') }}</p>
         <p v-else-if="groupError" role="alert">{{ groupError }}</p>
         <div v-else class="groups-page__list">
           <router-link

@@ -2,7 +2,8 @@ import { createApp } from 'vue'
 import { IonicVue } from '@ionic/vue'
 import { createPinia, disposePinia } from 'pinia'
 import App from './App.vue'
-import { createRouteAnimation } from './app/navigation'
+import { browserOwnsBackGesture, createRouteAnimation } from './app/navigation'
+import { Capacitor } from '@capacitor/core'
 import { createAppRouter } from './app/router'
 import { createRepositorySessionRuntime } from './data/repositoryFactory'
 import { createAppSession, createAppSessionCoordinator, createAppSessionMountHost, setActiveAppSession } from './data/session'
@@ -17,6 +18,8 @@ import { installWebMcp } from './app/webmcp'
 import { markLaunch } from './app/perfMarks'
 import './app/theme.css'
 
+// In a Safari tab the browser owns edge-swipe back; Ionic's swipe-back only belongs in the home-screen app and native shell.
+const ionicConfig = { mode: 'ios' as const, navAnimation: createRouteAnimation(), swipeBackEnabled: !browserOwnsBackGesture(Capacitor.isNativePlatform()) }
 const repositoryRuntime = await createRepositorySessionRuntime()
 markLaunch('runtime-ready')
 setAuthService(repositoryRuntime.auth)
@@ -27,7 +30,7 @@ async function mountIndependentSurface(): Promise<void> {
   const app = createApp(App)
   const pinia = createPinia()
   const router = createAppRouter({ auth: repositoryRuntime.auth })
-  app.use(IonicVue, { mode: 'ios', navAnimation: createRouteAnimation() })
+  app.use(IonicVue, ionicConfig)
   app.use(pinia)
   app.use(router)
   await router.isReady()
@@ -52,7 +55,7 @@ const mountHost = createAppSessionMountHost({
     let didMount = false
     let disposeWebMcp: (() => void) | undefined
 
-    app.use(IonicVue, { mode: 'ios', navAnimation: createRouteAnimation() })
+    app.use(IonicVue, ionicConfig)
     app.use(pinia)
     app.use(router)
 

@@ -254,6 +254,28 @@ describe('cache-first group journal', () => {
   })
 })
 
+describe('cache-first group overview', () => {
+  it('shows the cached group list and hands it to onCached before the server list replaces it', async () => {
+    const server = deferred<readonly Group[]>()
+    const cachedGroup = snapshot('a', 'Group A (cached)').group
+    const base = repositoryFor({})
+    repositoryHarness.current = { ...base, groups: { ...base.groups, list: () => server.promise, peekList: async () => [cachedGroup] } }
+    const store = useGroupStore()
+    const onCached = vi.fn()
+
+    const loading = store.loadOverview({ onCached })
+    await flushPromises()
+    expect(store.groups.map(({ name }) => name)).toEqual(['Group A (cached)'])
+    expect(onCached).toHaveBeenCalledWith([cachedGroup], maya)
+    expect(store.isLoading).toBe(true)
+
+    server.resolve([snapshot('a', 'Group A').group, snapshot('b', 'Group B').group])
+    await loading
+    expect(store.groups.map(({ name }) => name)).toEqual(['Group A', 'Group B'])
+    expect(store.isLoading).toBe(false)
+  })
+})
+
 describe('per-currency group balances', () => {
   it('reverses both the group balance and row position for a reimbursement', async () => {
     const refund = { ...expense('refund', 'refund', 'USD', 10000, maya.id, 0, 10000), reimbursement: true as const }

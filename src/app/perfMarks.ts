@@ -1,5 +1,5 @@
 /** Per-launch startup timing, measured from navigation start, kept on this device only for diagnosing slow launches. */
-export type LaunchMark = 'runtime-ready' | 'principal-ready' | 'session-ready' | 'app-mounted' | 'home-content' | 'group-cached' | 'group-header' | 'group-content'
+export type LaunchMark = 'runtime-ready' | 'principal-ready' | 'session-ready' | 'app-mounted' | 'home-cached' | 'home-content' | 'group-cached' | 'group-header' | 'group-content'
 
 export interface LaunchRecord {
   readonly startedAt: string
@@ -40,7 +40,7 @@ export function readLaunchHistory(): readonly LaunchRecord[] {
 }
 
 export function describeLaunch(record: LaunchRecord): string {
-  const order: readonly LaunchMark[] = ['runtime-ready', 'principal-ready', 'session-ready', 'app-mounted', 'home-content', 'group-cached', 'group-header', 'group-content']
+  const order: readonly LaunchMark[] = ['runtime-ready', 'principal-ready', 'session-ready', 'app-mounted', 'home-cached', 'home-content', 'group-cached', 'group-header', 'group-content']
   return order.filter((mark) => record.marks[mark] !== undefined).map((mark) => `${mark} ${record.marks[mark]}ms`).join(' · ')
 }
 

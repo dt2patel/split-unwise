@@ -118,6 +118,11 @@ describe('Firebase Spark two-account flow', () => {
     expect(peeked!.expenses).toEqual(expenses)
     expect(peeked!.user).toMatchObject({ id: owner.user.uid, displayName: 'Peek Owner', isCurrentUser: true })
     await expect(repository.groups.peekJournal!(`grp-group-${crypto.randomUUID()}`)).resolves.toBeUndefined()
+
+    const [listed, serverBalance] = await Promise.all([repository.groups.list(), repository.groups.getBalanceSnapshot(created.groupId)])
+    await expect(repository.groups.peekList!()).resolves.toEqual(listed)
+    await expect(repository.groups.peekBalanceContext!(created.groupId)).resolves.toEqual({ members, snapshot: serverBalance })
+    await expect(repository.groups.peekBalanceContext!(`grp-group-${crypto.randomUUID()}`)).resolves.toBeUndefined()
     await signOut(auth)
   })
 

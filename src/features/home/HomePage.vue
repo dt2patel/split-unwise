@@ -35,7 +35,7 @@ const groupStore = useGroupStore()
 const balanceStore = useAccountBalanceStore()
 const { t } = useI18n()
 const { groups, currentUser, error, isLoading } = storeToRefs(groupStore)
-const { projection, isLoading: balancesLoading, notice: balanceNotice } = storeToRefs(balanceStore)
+const { projection, isLoading: balancesLoading, isProvisional: balancesProvisional, notice: balanceNotice } = storeToRefs(balanceStore)
 const groupError = computed(() => {
   return displayMessageText(error.value, t)
 })
@@ -56,7 +56,7 @@ onIonViewWillEnter(() => {
 })
 
 async function loadPage(): Promise<void> {
-  await groupStore.loadOverview()
+  await groupStore.loadOverview({ onCached: (cachedGroups, user) => { void balanceStore.peek(cachedGroups, user.id) } })
   if (currentUser.value) await balanceStore.load(groups.value, currentUser.value.id)
   markLaunch('home-content')
 }
@@ -116,7 +116,7 @@ function absolute(position: SignedCurrencyPosition): SignedCurrencyPosition { re
         <h1>{{ t('home.title') }}</h1>
         <p class="browse-page__intro">{{ t('home.intro') }}</p>
 
-        <p v-if="isLoading" role="status">{{ t('home.loadingGroups') }}</p>
+        <p v-if="isLoading && groups.length === 0" role="status">{{ t('home.loadingGroups') }}</p>
         <p v-else-if="groupError" role="alert">{{ groupError }}</p>
         <template v-else>
           <ion-card v-if="projection.currencies.length" class="balance-card" data-testid="account-summary" :aria-label="t('home.accountBalance')">
@@ -132,7 +132,7 @@ function absolute(position: SignedCurrencyPosition): SignedCurrencyPosition { re
                   <div><dt>{{ t('home.youAreOwed') }}</dt><dd class="is-owed">{{ formatMoney({ currency: balance.currency, minorAmount: balance.owedToUserMinor }) }}</dd></div>
                 </dl>
               </div>
-              <small v-if="balancesLoading" class="balance-card__updating" role="status">{{ t('home.updatingBalances') }}</small>
+              <small v-if="balancesLoading || balancesProvisional" class="balance-card__updating" role="status">{{ t('home.updatingBalances') }}</small>
             </ion-card-content>
           </ion-card>
           <ion-card v-else-if="balancesLoading" class="balance-card balance-card--loading" data-testid="account-summary" :aria-label="t('home.loadingAccountBalance')">

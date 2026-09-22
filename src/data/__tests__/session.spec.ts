@@ -670,8 +670,18 @@ describe('session repository guard', () => {
     await expect(withPeek.repository.groups.peekJournal?.('lake-house-weekend')).resolves.toBe(journal)
     expect(peekJournal).toHaveBeenCalledWith('lake-house-weekend')
 
+    const peekList = vi.fn(async () => [journal.group])
+    const peekBalanceContext = vi.fn(async () => undefined)
+    const withOverview = sessionModule.createAppSession({ repository: { ...demo, groups: { ...demo.groups, peekList, peekBalanceContext } }, commandStorage: createMemoryCommandStorage() })
+    await withOverview.ready
+    await expect(withOverview.repository.groups.peekList?.()).resolves.toEqual([journal.group])
+    await expect(withOverview.repository.groups.peekBalanceContext?.('lake-house-weekend')).resolves.toBeUndefined()
+    expect(peekBalanceContext).toHaveBeenCalledWith('lake-house-weekend')
+
     const without = sessionModule.createAppSession({ repository: demo, commandStorage: createMemoryCommandStorage() })
     await without.ready
     expect(without.repository.groups.peekJournal).toBeUndefined()
+    expect(without.repository.groups.peekList).toBeUndefined()
+    expect(without.repository.groups.peekBalanceContext).toBeUndefined()
   })
 })
