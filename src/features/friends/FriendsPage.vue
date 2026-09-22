@@ -89,7 +89,7 @@ const noticeCopy = computed(() => displayMessageText(notice.value, t))
 
 onMounted(async () => {
   currency.value = loadCurrencyPreferences(await session.principal).defaultCurrency
-  await store.loadOverview()
+  await store.loadOverview({ onCached: (cachedGroups, user) => { void balanceStore.peek(cachedGroups, user.id) } })
   if (currentUser.value) await balanceStore.load(groups.value, currentUser.value.id)
 })
 onIonViewWillEnter(() => {
@@ -197,7 +197,7 @@ async function shareInvitation(): Promise<void> {
             @focus="($event.target as HTMLTextAreaElement).select()"
           />
         </section>
-        <p v-if="isLoading" role="status">{{ t('friends.loading') }}</p>
+        <p v-if="isLoading && groups.length === 0" role="status">{{ t('friends.loading') }}</p>
         <p v-else-if="groupError" role="alert">{{ groupError }}</p>
         <section v-else aria-labelledby="friend-list-title">
           <div class="section-title"><h2 id="friend-list-title">{{ t('friends.yourFriends') }}</h2><span>{{ friends.length }}</span></div>

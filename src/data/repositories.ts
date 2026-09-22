@@ -397,6 +397,10 @@ export interface GroupRepository {
   getById(groupId: string): Promise<Group | undefined>
   /** Reads only the on-device cache; resolves undefined whenever any part is missing. */
   peekJournal?(groupId: string): Promise<CachedGroupJournal | undefined>
+  /** The group list as last synced to this device, or undefined when it was never synced here. */
+  peekList?(): Promise<readonly Group[] | undefined>
+  /** A group's members and balance as last synced to this device, or undefined when any part is missing. */
+  peekBalanceContext?(groupId: string): Promise<{ readonly members: readonly Member[]; readonly snapshot: GroupBalanceSnapshot } | undefined>
   listMembers(groupId: string): Promise<readonly Member[]>
   getBalanceSnapshot(groupId: string): Promise<GroupBalanceSnapshot>
   getSettings(groupId: string): Promise<GroupSettings>

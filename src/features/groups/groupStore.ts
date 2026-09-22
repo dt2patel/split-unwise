@@ -69,12 +69,23 @@ export const useGroupStore = defineStore('groups', () => {
     return projectActivityTimeline(activity.value, queue.snapshot(), currentUser.value, activeGroup.value?.id)
   })
 
-  async function loadOverview(): Promise<void> {
+  /** Loads the group list; with a device copy available, `onCached` sees it (and the screen shows it) before the server confirms. */
+  async function loadOverview(options: { readonly onCached?: (groups: readonly Group[], user: Member) => void } = {}): Promise<void> {
     isLoading.value = true
     error.value = undefined
     try {
       await (session as typeof session & { readonly ready?: Promise<void> }).ready
-      const [loadedGroups, user] = await Promise.all([repository.groups.list(), repository.app.getCurrentUser()])
+      const serverRequest = Promise.all([repository.groups.list(), repository.app.getCurrentUser()])
+      void serverRequest.catch(() => undefined)
+      if (groups.value.length === 0 && repository.groups.peekList) {
+        const [cached, user] = await Promise.all([repository.groups.peekList(), repository.app.getCurrentUser().catch(() => undefined)])
+        if (cached?.length && user && groups.value.length === 0) {
+          groups.value = cached
+          currentUser.value = user
+          options.onCached?.(cached, user)
+        }
+      }
+      const [loadedGroups, user] = await serverRequest
       groups.value = loadedGroups
       currentUser.value = user
     } catch (reason) {

@@ -100,11 +100,45 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         : []
     }).sort((left, right) => left.displayName.localeCompare(right.displayName))
   }
+  /** Same readers and decoders as the server path, pointed at the on-device cache; any cache miss throws. */
+  async function cachedContext(): Promise<FirebaseContext> {
+    const live = await context()
+    return { ...live, firestore: { ...live.firestore, getDoc: live.firestore.getDocFromCache, getDocs: live.firestore.getDocsFromCache } }
+  }
+  async function peekList(): Promise<readonly Group[] | undefined> {
+    try {
+      const cached = await cachedContext()
+      const projection = await cached.firestore.getDocs(cached.firestore.query(cached.firestore.collection(cached.db, 'users', cached.userId, 'groups'), cached.firestore.limit(100)))
+      // An uncached query resolves empty rather than failing, so an empty list can't be told apart from "never synced".
+      if (projection.empty) return undefined
+      const groups = await Promise.all(projection.docs.map((membership) => {
+        const decoded = decodeGroupProjection(membership.id, membership.data())
+        return decoded.status === 'removed' ? undefined : readGroup(cached, decoded.groupId, decoded)
+      }))
+      return groups.filter((group): group is Group => group !== undefined).sort((left, right) => left.name.localeCompare(right.name))
+    } catch (reason) {
+      console.debug('[Split Unwise cache] group list not cached:', reason instanceof Error ? reason.message : reason)
+      return undefined
+    }
+  }
+  async function peekBalanceContext(groupId: string): Promise<{ readonly members: readonly Member[]; readonly snapshot: GroupBalanceSnapshot } | undefined> {
+    if (functionsRegion) return undefined
+    try {
+      const cached = await cachedContext()
+      // The stored balance document is read on every server balance load, so its presence marks the ledger as synced here.
+      const [members, snapshot] = await Promise.all([
+        readMembers(cached, groupId),
+        getSparkBalanceSnapshot(groupId, Promise.resolve(cached), (id, ready) => ready.then((ctx) => readGroupSettings(ctx, id))),
+      ])
+      return members.length === 0 ? undefined : { members, snapshot }
+    } catch (reason) {
+      console.debug('[Split Unwise cache] group balance not cached:', reason instanceof Error ? reason.message : reason)
+      return undefined
+    }
+  }
   async function peekJournal(groupId: string): Promise<CachedGroupJournal | undefined> {
     try {
-      const live = await context()
-      // Same readers and decoders as the server path, pointed at the on-device cache; any cache miss throws and abandons the peek.
-      const cached: FirebaseContext = { ...live, firestore: { ...live.firestore, getDoc: live.firestore.getDocFromCache, getDocs: live.firestore.getDocsFromCache } }
+      const cached = await cachedContext()
       const [group, profile, members, heads, settings] = await Promise.all([
         readGroup(cached, groupId),
         cached.firestore.getDoc(cached.firestore.doc(cached.db, 'users', cached.userId)),
@@ -299,11 +333,11 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (!snapshot.exists() || !isRecord(data) || data.groupId !== groupId || !Number.isSafeInteger(data.balanceRevision) || Number(data.balanceRevision) < 0) throw new Error('Stored group balance is invalid')
     return Number(data.balanceRevision)
   }
-  async function getSparkBalanceSnapshot(groupId: string, readyContext = context()): Promise<GroupBalanceSnapshot> {
+  async function getSparkBalanceSnapshot(groupId: string, readyContext = context(), readSettings: (groupId: string, ready: Promise<FirebaseContext>) => Promise<GroupSettings> = getGroupSettings): Promise<GroupBalanceSnapshot> {
     const [allExpenses, settlements, settings, settingsBalanceRevision] = await Promise.all([
       listExpenseHeads(groupId, readyContext),
       listRawSettlements(groupId, readyContext),
-      getGroupSettings(groupId, readyContext),
+      readSettings(groupId, readyContext),
       getSparkSettingsBalanceRevision(groupId, readyContext),
     ])
     const rawExpenses = allExpenses.filter(({ deletedAt }) => deletedAt === undefined)
@@ -1238,6 +1272,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       },
       getById: loadGroup,
       peekJournal,
+      peekList,
+      peekBalanceContext,
       async listMembers(groupId) { return readMembers(await context(), groupId) },
       async getBalanceSnapshot(groupId) {
         const readyContext = context()
