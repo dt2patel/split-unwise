@@ -105,7 +105,7 @@ vi.mock('firebase/firestore', () => {
     set: setDocument,
   })
   return {
-    collection, doc, documentId: () => '__name__', getDoc, getDocs, getFirestore: () => ({}), limit, orderBy, query, runTransaction,
+    collection, doc, documentId: () => '__name__', getDoc, getDocs, getDocFromCache: async () => { throw new Error('Failed to get document from cache') }, getFirestore: () => ({}), limit, orderBy, query, runTransaction,
     serverTimestamp: () => '2026-09-01T12:00:00.000Z', startAfter, where,
   }
 

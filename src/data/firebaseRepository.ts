@@ -47,7 +47,7 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         return decodeMember(userId, snapshot.data(), true)
       })
       // The uid comes from Auth, so the device copy is safe to start the session with; don't hold app mount on a server round trip.
-      const cached = await firestore.getDocFromCache(reference)
+      const cached = await Promise.resolve().then(() => firestore.getDocFromCache(reference))
         .then((snapshot) => snapshot.exists() ? decodeMember(userId, snapshot.data(), true) : undefined)
         .catch(() => undefined)
       if (!cached) return server
