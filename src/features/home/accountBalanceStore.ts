@@ -5,6 +5,7 @@ import { getAppSession } from '../../data/session'
 import { compareFirestoreStrings } from '../../data/timeline'
 import { projectAccountBalances, type AccountBalanceContext, type AccountBalanceProjection } from '../../domain/accountBalances'
 import type { ParticipantId } from '../../domain/model'
+import { markLaunch } from '../../app/perfMarks'
 
 const MAX_PARALLEL_CONTEXT_READS = 4
 
@@ -45,6 +46,7 @@ export const useAccountBalanceStore = defineStore('account-balances', () => {
       projection.value = projectAccountBalances(currentUserId, contexts as AccountBalanceContext[])
       visibleSignature = signature
       isProvisional.value = true
+      markLaunch('home-cached')
     } catch { /* a corrupt device copy is ignored; the server load is authoritative */ }
   }
 
