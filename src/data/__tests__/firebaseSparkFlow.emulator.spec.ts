@@ -70,6 +70,42 @@ describe('Firebase Spark two-account flow', () => {
     expect((await getDoc(doc(getFirestore(app), `groups/${created.groupId}`))).exists()).toBe(true)
   }, 30_000)
 
+  emulatorIt('joins an email-targeted invitation after the invitee verifies while holding an older ID token', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const ownerEmail = `owner-${suffix}@example.com`
+    const friendEmail = `friend-${suffix}@example.com`
+    const password = 'SplitUnwise-Test-42!'
+
+    const owner = await createUserWithEmailAndPassword(auth, ownerEmail, password)
+    await updateProfile(owner.user, { displayName: 'Owner Account' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `verified-${suffix}`, name: 'Verified Trip', currency: 'USD' })
+    const prepared = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app', targetEmail: friendEmail })
+    const token = new URL(prepared.link).hash.slice('#token='.length)
+
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, friendEmail, password)
+    await updateProfile(friend.user, { displayName: 'Friend Account' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    // The invitee verifies from the emailed link; this app only reloads the user record, so the cached ID token still says unverified.
+    const verified = await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/projects/${configuration.projectId}/accounts:update`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+      body: JSON.stringify({ localId: friend.user.uid, emailVerified: true }),
+    })
+    expect(verified.ok).toBe(true)
+    await friend.user.reload()
+    expect(friend.user.emailVerified).toBe(true)
+    expect((await friend.user.getIdTokenResult()).claims.email_verified).toBe(false)
+
+    await expect(inspectSparkInvitation(configuration, prepared.invitationId, token)).resolves.toMatchObject({ groupId: created.groupId, alreadyMember: false })
+    await expect(acceptSparkInvitation(configuration, prepared.invitationId, token)).resolves.toEqual({ groupId: created.groupId })
+    expect((await getDoc(doc(getFirestore(app), `groups/${created.groupId}`))).data()?.memberIds).toEqual(expect.arrayContaining([owner.user.uid, friend.user.uid]))
+    await signOut(auth)
+  })
+
   emulatorIt('prepares a shared account deletion without changing the remaining member ledger', async () => {
     const auth = getAuth(app)
     const db = getFirestore(app)

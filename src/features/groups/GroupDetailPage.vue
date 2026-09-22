@@ -300,5 +300,5 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
   .journal-fade-enter-from,
   .journal-fade-leave-to { transform: none; }
 }
-@media (min-width: 768px) { .group-detail { --su-journal-gutter: clamp(22px, 4vw, 42px); }.group-detail__main { max-width: 760px; margin: 0 auto; }.group-detail__footer { padding-inline: clamp(22px, 4vw, 42px); }.group-detail__header ion-back-button { display: none; } }
+@media (min-width: 768px) { .group-detail { --su-journal-gutter: clamp(22px, 4vw, 42px); }.group-detail__main { max-width: 760px; margin: 0 auto; }.group-detail__footer { padding-inline: clamp(22px, 4vw, 42px); }}
 </style>
