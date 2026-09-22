@@ -659,3 +659,19 @@ function receiptProvider(upload: ReceiptProvider['upload']): ReceiptProvider {
     async delete() { /* no remote cleanup in this controlled provider */ },
   }
 }
+
+describe('session repository guard', () => {
+  it('forwards the optional cache peek only when the source repository provides it', async () => {
+    const demo = createDemoRepository()
+    const journal = { group: (await demo.groups.list())[0]!, user: await demo.app.getCurrentUser(), members: [], expenses: [] }
+    const peekJournal = vi.fn(async () => journal)
+    const withPeek = sessionModule.createAppSession({ repository: { ...demo, groups: { ...demo.groups, peekJournal } }, commandStorage: createMemoryCommandStorage() })
+    await withPeek.ready
+    await expect(withPeek.repository.groups.peekJournal?.('lake-house-weekend')).resolves.toBe(journal)
+    expect(peekJournal).toHaveBeenCalledWith('lake-house-weekend')
+
+    const without = sessionModule.createAppSession({ repository: demo, commandStorage: createMemoryCommandStorage() })
+    await without.ready
+    expect(without.repository.groups.peekJournal).toBeUndefined()
+  })
+})

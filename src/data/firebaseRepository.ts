@@ -105,7 +105,10 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       const visible = heads.filter(({ deletedAt }) => deletedAt === undefined)
       const expenses = settings.currencyConversion ? visible.map((expense) => applyCurrencyConversionToExpense(expense, settings.currencyConversion!)) : visible
       return { group, user: decodeMember(cached.userId, profile.data(), true), members, expenses }
-    } catch { return undefined }
+    } catch (reason) {
+      console.debug('[Split Unwise cache] group journal not cached:', reason instanceof Error ? reason.message : reason)
+      return undefined
+    }
   }
   async function listExpenseHeads(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
     const { db, firestore } = await readyContext
