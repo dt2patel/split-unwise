@@ -68,6 +68,16 @@ button, input, select, textarea { font-size: max(16px, 1rem); }
 }
 :root.su-contrast-more.su-theme-dark.ios { --ion-background-color: var(--su-surface); --ion-background-color-rgb: var(--su-surface-rgb); --ion-text-color: var(--su-text); --ion-text-color-rgb: var(--su-text-rgb); }
 
+/* One chrome color per theme: toolbars, tab bar, and the browser/status-bar area (theme-color, set in appearance.ts) must match. */
+:root { --su-chrome: #F8F7FF; }
+:root.su-theme-dark { --su-chrome: #17152A; }
+:root.su-contrast-more.su-theme-dark { --su-chrome: #000000; }
+:root.ios, :root.md {
+  --ion-toolbar-background: var(--su-chrome);
+  --ion-tab-bar-background: var(--su-chrome);
+  --ion-tab-bar-background-focused: var(--su-chrome);
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root { --su-motion-fast: 0ms; --su-motion-route: 0ms; }
   *, *::before, *::after { animation-duration: 0ms !important; scroll-behavior: auto !important; transition-duration: 0ms !important; }

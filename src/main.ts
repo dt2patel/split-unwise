@@ -2,7 +2,8 @@ import { createApp } from 'vue'
 import { IonicVue } from '@ionic/vue'
 import { createPinia, disposePinia } from 'pinia'
 import App from './App.vue'
-import { createRouteAnimation } from './app/navigation'
+import { browserOwnsBackGesture, createRouteAnimation } from './app/navigation'
+import { Capacitor } from '@capacitor/core'
 import { createAppRouter } from './app/router'
 import { createRepositorySessionRuntime } from './data/repositoryFactory'
 import { createAppSession, createAppSessionCoordinator, createAppSessionMountHost, setActiveAppSession } from './data/session'
@@ -17,8 +18,8 @@ import { installWebMcp } from './app/webmcp'
 import { markLaunch } from './app/perfMarks'
 import './app/theme.css'
 
-// iOS already provides the edge-swipe back gesture; Ionic's own swipe-back competes with it mid-transition.
-const ionicConfig = { mode: 'ios' as const, navAnimation: createRouteAnimation(), swipeBackEnabled: false }
+// In a Safari tab the browser owns edge-swipe back; Ionic's swipe-back only belongs in the home-screen app and native shell.
+const ionicConfig = { mode: 'ios' as const, navAnimation: createRouteAnimation(), swipeBackEnabled: !browserOwnsBackGesture(Capacitor.isNativePlatform()) }
 const repositoryRuntime = await createRepositorySessionRuntime()
 markLaunch('runtime-ready')
 setAuthService(repositoryRuntime.auth)
