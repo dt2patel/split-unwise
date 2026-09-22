@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, type ComponentPublicInstance } from 'vue'
 import { IonAlert, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonIcon, IonInput, IonModal, IonPage, IonSpinner, IonTitle, IonToolbar } from '@ionic/vue'
-import { archiveOutline, cardOutline, chevronForward, cloudOfflineOutline, colorPaletteOutline, documentAttachOutline, languageOutline, logOutOutline, notificationsOutline, personCircleOutline, trashOutline } from 'ionicons/icons'
+import { archiveOutline, cardOutline, chevronForward, cloudOfflineOutline, colorPaletteOutline, documentAttachOutline, languageOutline, logOutOutline, notificationsOutline, personCircleOutline, speedometerOutline, trashOutline } from 'ionicons/icons'
 import { useI18n } from '../../app/i18n'
+import { describeLaunch, readLaunchHistory } from '../../app/perfMarks'
 import { getAppSession, type UnresolvedWorkSummary } from '../../data/session'
 import { createBrowserPrincipalLocalDataPort } from '../../data/localData'
 import { createClientOperationId } from '../../data/clientOperationId'
@@ -30,6 +31,7 @@ const deletionAcknowledged = ref(false)
 const deletionPassword = ref('')
 const deletionError = ref<DisplayMessage>()
 const deletionProgress = ref<AccountDeletionProgress>()
+const launches = readLaunchHistory().slice(0, 5)
 const unresolved = ref<UnresolvedWorkSummary>({ pending: 0, failed: 0, conflicted: 0, total: 0 })
 const trigger = ref<HTMLElement>()
 const presentingElement = shallowRef<HTMLElement>()
@@ -252,6 +254,7 @@ function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
           <router-link class="nav-row" to="/tabs/account/transactions/import"><span class="row-icon"><ion-icon :icon="documentAttachOutline" /></span><span><strong>{{ t('account.importTransactions') }}</strong><small>{{ t('account.importDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
           <router-link class="nav-row" to="/tabs/account/export"><span class="row-icon"><ion-icon :icon="archiveOutline" /></span><span><strong>{{ t('account.exportData') }}</strong><small>{{ t('account.exportDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
           <div class="info-row"><span class="row-icon"><ion-icon :icon="cloudOfflineOutline" /></span><span><strong>{{ t('account.offlineChanges') }}</strong><small>{{ unresolved.total ? t('account.offlineSummary', unresolved) : t('account.deviceSettled') }}</small></span></div>
+          <div class="info-row launch-timing" data-testid="launch-timing"><span class="row-icon"><ion-icon :icon="speedometerOutline" /></span><span><strong>{{ t('account.launchTiming') }}</strong><small v-if="launches.length === 0">{{ t('account.launchTimingEmpty') }}</small><small v-for="launch in launches" :key="launch.startedAt">{{ launch.path }}{{ launch.standalone ? ' (app)' : '' }}: {{ describeLaunch(launch) }}</small></span></div>
           <button class="danger-row" type="button" @click="beginClear"><span class="row-icon"><ion-icon :icon="trashOutline" /></span><span><strong>{{ t('account.clearLocal') }}</strong><small>{{ t('account.clearLocalDetail') }}</small></span></button>
         </section>
 

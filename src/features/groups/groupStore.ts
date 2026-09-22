@@ -3,12 +3,13 @@ import { defineStore } from 'pinia'
 import { getAppSession } from '../../data'
 import { buildCurrencyTotals } from '../../data/aggregates'
 import type { CommandFailure, CommandHandle, CommandOperation } from '../../data/commandQueue'
-import type { ActivityItem, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, ExpenseRow, Group, Member } from '../../data'
+import type { ActivityItem, CachedGroupJournal, ExpenseAddCommand, ExpenseDeleteCommand, ExpenseEditCommand, ExpenseRow, Group, Member } from '../../data'
 import type { Money } from '../../domain/model'
 import { projectActivityTimeline } from '../activity/activityStore'
 import { compareFirestoreStrings } from '../../data/timeline'
 import { AggregateOverflowError } from '../../data/aggregates'
 import { ApplicationError, displayMessageFor, type DisplayMessage } from '../../app/displayMessages'
+import { markLaunch } from '../../app/perfMarks'
 
 export interface UserExpensePosition {
   readonly money: Money
@@ -35,6 +36,8 @@ export const useGroupStore = defineStore('groups', () => {
   const expenses = ref<readonly ExpenseRow[]>([])
   const activity = ref<readonly ActivityItem[]>([])
   const isLoading = ref(false)
+  /** True while the journal on screen came from the device cache and the server read has not confirmed it yet. */
+  const isProvisional = ref(false)
   const isActivityLoading = ref(false)
   const error = ref<GroupStoreError>()
   const queueRevision = ref(0)
@@ -105,11 +108,16 @@ export const useGroupStore = defineStore('groups', () => {
         repository.expenses.listForGroup(groupId),
       ])
       void journalRequest.catch(() => undefined)
+      if (!activeGroup.value && repository.groups.peekJournal) {
+        const cached = await repository.groups.peekJournal(groupId)
+        if (cached && request === latestGroupRequest && !activeGroup.value && cached.group.id === groupId) showCachedJournal(cached)
+      }
       const group = await groupRequest
       if (request !== latestGroupRequest) return
       if (!group) throw new ApplicationError('groups.error.unavailable')
       if (group.id !== groupId) throw new ApplicationError('groups.error.unavailable')
       activeGroup.value = group
+      markLaunch('group-header')
       const [user, loadedMembers, loadedExpenses] = await journalRequest
       if (request !== latestGroupRequest) return
       // Preserve deterministic load errors for malformed/overflowing repository data.
@@ -119,6 +127,8 @@ export const useGroupStore = defineStore('groups', () => {
       const counterpart = group.kind === 'friendship' ? loadedMembers.find((member) => member.id !== user.id) : undefined
       if (counterpart) activeGroup.value = { ...group, name: counterpart.displayName }
       expenses.value = loadedExpenses
+      isProvisional.value = false
+      markLaunch('group-content')
       for (const operation of queue.snapshot()) rememberTombstone(operation, tombstoneWatermarks)
       await acknowledgeConfirmedOperations(groupId, loadedExpenses)
     } catch (reason) {
@@ -246,6 +256,7 @@ export const useGroupStore = defineStore('groups', () => {
     recentActivity,
     currentUserNets,
     isLoading,
+    isProvisional,
     isActivityLoading,
     error,
     loadOverview,
@@ -347,7 +358,18 @@ export const useGroupStore = defineStore('groups', () => {
     }
   }
 
+  function showCachedJournal(cached: CachedGroupJournal): void {
+    try { netsByCurrency(cached.expenses, cached.user.id, cached.group.currency) } catch { return }
+    const counterpart = cached.group.kind === 'friendship' ? cached.members.find((member) => member.id !== cached.user.id) : undefined
+    activeGroup.value = counterpart ? { ...cached.group, name: counterpart.displayName } : cached.group
+    currentUser.value = cached.user
+    members.value = cached.members
+    expenses.value = cached.expenses
+    isProvisional.value = true
+    markLaunch('group-cached')
+  }
   function clearActiveGroup(): void {
+    isProvisional.value = false
     activeGroup.value = undefined
     members.value = []
     expenses.value = []

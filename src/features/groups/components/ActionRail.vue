@@ -5,7 +5,7 @@ import { analyticsOutline, cashOutline, ellipsisHorizontal, peopleOutline, perso
 
 import type { ExpenseContextKind } from '../../../data'
 
-const props = withDefaults(defineProps<{ groupId: string; contextKind?: ExpenseContextKind; canInvite?: boolean }>(), { contextKind: 'group', canInvite: true })
+const props = withDefaults(defineProps<{ groupId: string; contextKind?: ExpenseContextKind; canInvite?: boolean; settleDisabled?: boolean }>(), { contextKind: 'group', canInvite: true, settleDisabled: false })
 
 const showingMore = ref(false)
 
@@ -38,7 +38,8 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
         :fill="action.primary ? 'solid' : 'outline'"
         shape="round"
         size="small"
-        :router-link="routeFor(action.suffix)"
+        :router-link="action.id === 'settle-up' && settleDisabled ? undefined : routeFor(action.suffix)"
+        :disabled="action.id === 'settle-up' && settleDisabled"
       >
         <span class="action-rail__button-content">
           <ion-icon :icon="action.icon" aria-hidden="true" />

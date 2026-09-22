@@ -2,6 +2,7 @@ import type { FirebaseConfiguration } from './firebase'
 import { getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebaseBootstrap'
 import type { AppPrincipal } from './principal'
 import { bootstrapFirebaseProfile } from './firebaseSparkMutations'
+import { profileReadyKey, readProfileReady, writeProfileReady } from './profileReady'
 
 export interface HydratableFirebaseAuth {
   authStateReady(): Promise<void>
@@ -63,8 +64,12 @@ export async function connectFirebasePrincipalSource(configuration: FirebaseConf
     subscribe: (listener) => authModule.onAuthStateChanged(auth, listener),
     async prepare(user) {
       if (!user) return
+      // The profile document is created once per account; after this device confirmed it, don't block every launch on re-reading it.
+      const readyKey = profileReadyKey(configuration.projectId, user.uid)
+      if (readProfileReady(readyKey)) return
       if (bootstrap) await bootstrap({ schemaVersion: 1 })
       else await bootstrapFirebaseProfile(configuration, auth.currentUser ?? undefined)
+      writeProfileReady(readyKey)
     },
   })
 }

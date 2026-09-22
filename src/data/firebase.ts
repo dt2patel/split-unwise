@@ -123,7 +123,7 @@ export async function resolveRuntimeConfiguration(
   const source = firebaseHostingConfigurationSource(initUrl, locationValue)
   const storage = options.storage ?? browserStorage()
   const fetchConfiguration = options.fetch ?? globalThis.fetch
-  try {
+  const discover = async (): Promise<Extract<RuntimeConfiguration, { kind: 'firebase' }>> => {
     if (!fetchConfiguration) throw new Error('fetch is unavailable')
     const response = await fetchConfiguration(initUrl, { cache: 'no-store', credentials: initUrl.startsWith('/') ? 'same-origin' : 'omit' })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -133,15 +133,20 @@ export async function resolveRuntimeConfiguration(
     if (discovered.kind !== 'firebase') throw new Error(discovered.kind === 'error' ? discovered.message : 'Firebase Hosting returned an empty configuration')
     if (!source || !matchesHostingProject(discovered.firebase.projectId, source)) throw new Error('Firebase Hosting returned configuration for a different project')
     cacheHostingConfiguration(storage, source, discovered.firebase)
+    return discovered
+  }
+  // A validated same-host copy starts the app without a network round trip; the fetch refreshes it for the next launch.
+  const cached = source ? readCachedHostingConfiguration(storage, source, !nativePlatform) : undefined
+  if (cached) {
+    void discover().catch(() => undefined)
+    activeRuntimeConfiguration = cached
+    return cached
+  }
+  try {
+    const discovered = await discover()
     activeRuntimeConfiguration = discovered
     return discovered
   } catch (reason) {
-    const online = options.online ?? browserOnline()
-    const cached = online === false && source ? readCachedHostingConfiguration(storage, source, !nativePlatform) : undefined
-    if (cached) {
-      activeRuntimeConfiguration = cached
-      return cached
-    }
     const detail = reason instanceof Error ? reason.message : 'unknown error'
     const failed: RuntimeConfiguration = { kind: 'error', fields: ['/__/firebase/init.json'], message: `Firebase Hosting configuration could not be loaded: ${detail}` }
     activeRuntimeConfiguration = failed

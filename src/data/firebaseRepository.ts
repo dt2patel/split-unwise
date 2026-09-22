@@ -4,7 +4,7 @@ import { assertFirebaseAppMatchesConfiguration, getSplitUnwiseFirebaseApp, getSp
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
 import { decodeActivity, decodeBalanceSnapshot, decodeComment, decodeExpense, decodeExpenseRevision, decodeGroup, decodeGroupProjection, decodeMember, decodeNotification, decodeRecurringExpense, decodeSettlement, type DecodedGroupProjection } from './firebaseDecoders'
 import { resolveFirebaseSession } from './firebaseSession'
-import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRestoreCommand, ExpenseRestoreResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
+import type { ActivityFilter, ActivityItem, ActivityPage, ActivityQuery, AppRepository, CachedGroupJournal, CommandEnvelope, CommandResult, CommentAddCommand, CommentAddResult, CommentDeleteCommand, CommentDeleteResult, ExpenseAddCommand, ExpenseAddResult, ExpenseDeleteCommand, ExpenseDeleteResult, ExpenseEditCommand, ExpenseEditResult, ExpenseRestoreCommand, ExpenseRestoreResult, ExpenseRow, Group, GroupBalanceSnapshot, GroupCurrencyConversionCommand, GroupDefaultSplitCommand, GroupDeleteCommand, GroupMemberRemoveCommand, GroupRestoreCommand, GroupSimplifyDebtsCommand, Member, NotificationItem, NotificationPage, NotificationPreferencesCommand, NotificationPreferencesResult, NotificationReadAllCommand, NotificationReadAllResult, NotificationReadCommand, NotificationReadResult, ProfileUpdateCommand, RecurrenceCancelCommand, RecurrenceCancelResult, RecurrenceMaterializeCommand, RecurrenceMaterializeResult, RecurringExpense, SavedCommandResult, SettlementRecord, SettlementRecordCommand, SettlementRecordResult, SettlementVoidCommand, SettlementVoidResult, TimelineCursor } from './repositories'
 import { decodeDefaultSplit, type GroupSettings } from '../domain/groupSettings'
 import { applyCurrencyConversionToExpense, applyCurrencyConversionToSettlement, assertGroupCurrencyConversion, type GroupCurrencyConversion } from '../domain/currencyConversion'
 import { computeBalancePlans } from '../domain/balances'
@@ -39,11 +39,23 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   }
   function currentUser(): Promise<Member> {
     if (currentUserPromise) return currentUserPromise
-    const pending = (async () => {
+    const pending: Promise<Member> = (async () => {
       const { db, firestore, userId } = await context()
-      const snapshot = await firestore.getDoc(firestore.doc(db, 'users', userId))
-      if (!snapshot.exists()) throw new Error('Current Firebase user profile is missing')
-      return decodeMember(userId, snapshot.data(), true)
+      const reference = firestore.doc(db, 'users', userId)
+      const server = firestore.getDoc(reference).then((snapshot) => {
+        if (!snapshot.exists()) throw new Error('Current Firebase user profile is missing')
+        return decodeMember(userId, snapshot.data(), true)
+      })
+      // The uid comes from Auth, so the device copy is safe to start the session with; don't hold app mount on a server round trip.
+      const cached = await Promise.resolve().then(() => firestore.getDocFromCache(reference))
+        .then((snapshot) => snapshot.exists() ? decodeMember(userId, snapshot.data(), true) : undefined)
+        .catch(() => undefined)
+      if (!cached) return server
+      void server.then(
+        (fresh) => { if (currentUserPromise === pending) currentUserPromise = Promise.resolve(fresh) },
+        () => { if (currentUserPromise === pending) currentUserPromise = undefined },
+      )
+      return cached
     })()
     currentUserPromise = pending
     void pending.catch(() => {
@@ -57,26 +69,58 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     const existing = groupRequests.get(groupId)
     if (existing) return existing
     const pending = (async () => {
-      const { db, firestore, userId } = await readyContext
-      const projection = knownProjection ?? await firestore.getDoc(firestore.doc(db, 'users', userId, 'groups', groupId))
-        .then((membership) => membership.exists() ? decodeGroupProjection(membership.id, membership.data()) : undefined)
-      if (!projection || projection.status === 'removed') return undefined
-      const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
-      if (!snapshot.exists()) return undefined
-      const decoded = decodeGroup(snapshot.id, snapshot.data())
-      if (decoded.deletedAt) {
-        groupCache.delete(groupId)
-        return undefined
-      }
-      const group = decoded.kind === 'friendship' && projection?.contextLabel
-        ? { ...decoded, name: projection.contextLabel }
-        : decoded
-      groupCache.set(group.id, group)
+      const group = await readGroup(await readyContext, groupId, knownProjection)
+      if (group) groupCache.set(group.id, group)
+      else groupCache.delete(groupId)
       return group
     })()
     groupRequests.set(groupId, pending)
     void pending.finally(() => { if (groupRequests.get(groupId) === pending) groupRequests.delete(groupId) }).catch(() => undefined)
     return pending
+  }
+  async function readGroup({ db, firestore, userId }: FirebaseContext, groupId: string, knownProjection?: DecodedGroupProjection): Promise<Group | undefined> {
+    // Read membership and group together; the group read is only trusted (and its denial surfaced) for an active member.
+    const groupRead = firestore.getDoc(firestore.doc(db, 'groups', groupId))
+    void groupRead.catch(() => undefined)
+    const projection = knownProjection ?? await firestore.getDoc(firestore.doc(db, 'users', userId, 'groups', groupId))
+      .then((membership) => membership.exists() ? decodeGroupProjection(membership.id, membership.data()) : undefined)
+    if (!projection || projection.status === 'removed') return undefined
+    const snapshot = await groupRead
+    if (!snapshot.exists()) return undefined
+    const decoded = decodeGroup(snapshot.id, snapshot.data())
+    if (decoded.deletedAt) return undefined
+    return decoded.kind === 'friendship' && projection.contextLabel ? { ...decoded, name: projection.contextLabel } : decoded
+  }
+  async function readMembers({ db, firestore, userId }: FirebaseContext, groupId: string): Promise<readonly Member[]> {
+    const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'members'), firestore.limit(100)))
+    return snapshot.docs.flatMap((document) => {
+      const data = document.data()
+      return data.status === 'active' || data.accountStatus === 'deleted'
+        ? [decodeMember(document.id, data, document.id === userId)]
+        : []
+    }).sort((left, right) => left.displayName.localeCompare(right.displayName))
+  }
+  async function peekJournal(groupId: string): Promise<CachedGroupJournal | undefined> {
+    try {
+      const live = await context()
+      // Same readers and decoders as the server path, pointed at the on-device cache; any cache miss throws and abandons the peek.
+      const cached: FirebaseContext = { ...live, firestore: { ...live.firestore, getDoc: live.firestore.getDocFromCache, getDocs: live.firestore.getDocsFromCache } }
+      const [group, profile, members, heads, settings] = await Promise.all([
+        readGroup(cached, groupId),
+        cached.firestore.getDoc(cached.firestore.doc(cached.db, 'users', cached.userId)),
+        readMembers(cached, groupId),
+        listExpenseHeads(groupId, Promise.resolve(cached)),
+        readGroupSettings(cached, groupId),
+      ])
+      // An uncached query resolves empty rather than failing, so empty lists can't be told apart from "never synced".
+      if (!group || !profile.exists() || members.length === 0 || heads.length === 0) return undefined
+      const visible = heads.filter(({ deletedAt }) => deletedAt === undefined)
+      const expenses = settings.currencyConversion ? visible.map((expense) => applyCurrencyConversionToExpense(expense, settings.currencyConversion!)) : visible
+      return { group, user: decodeMember(cached.userId, profile.data(), true), members, expenses }
+    } catch (reason) {
+      console.debug('[Split Unwise cache] group journal not cached:', reason instanceof Error ? reason.message : reason)
+      return undefined
+    }
   }
   async function listExpenseHeads(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
     const { db, firestore } = await readyContext
@@ -203,8 +247,13 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   function getGroupSettings(groupId: string, readyContext = context()): Promise<GroupSettings> {
     const existing = groupSettingsRequests.get(groupId)
     if (existing) return existing
-    const pending: Promise<GroupSettings> = (async (): Promise<GroupSettings> => {
-      const { db, firestore } = await readyContext
+    const pending = (async () => readGroupSettings(await readyContext, groupId))()
+    groupSettingsRequests.set(groupId, pending)
+    void pending.finally(() => { if (groupSettingsRequests.get(groupId) === pending) groupSettingsRequests.delete(groupId) }).catch(() => undefined)
+    return pending
+  }
+  function readGroupSettings({ db, firestore }: FirebaseContext, groupId: string): Promise<GroupSettings> {
+    return (async (): Promise<GroupSettings> => {
       const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId, 'settings', 'defaults'))
       if (!snapshot.exists()) return { schemaVersion: 1 as const, groupId, revision: 1, simplifyDebtsEnabled: true }
       const data = snapshot.data()
@@ -242,9 +291,6 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
       })
       return decodeGroupSettings(groupId, { ...data, currencyConversion: { ...manifestData, rates } })
     })()
-    groupSettingsRequests.set(groupId, pending)
-    void pending.finally(() => { if (groupSettingsRequests.get(groupId) === pending) groupSettingsRequests.delete(groupId) }).catch(() => undefined)
-    return pending
   }
   async function getSparkSettingsBalanceRevision(groupId: string, readyContext = context()): Promise<number> {
     const { db, firestore } = await readyContext
@@ -1191,16 +1237,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
         return groups.filter((group): group is NonNullable<typeof group> => group !== undefined).sort((left, right) => left.name.localeCompare(right.name))
       },
       getById: loadGroup,
-      async listMembers(groupId) {
-        const { db, firestore, userId } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'members'), firestore.limit(100)))
-        return snapshot.docs.flatMap((document) => {
-          const data = document.data()
-          return data.status === 'active' || data.accountStatus === 'deleted'
-            ? [decodeMember(document.id, data, document.id === userId)]
-            : []
-        }).sort((left, right) => left.displayName.localeCompare(right.displayName))
-      },
+      peekJournal,
+      async listMembers(groupId) { return readMembers(await context(), groupId) },
       async getBalanceSnapshot(groupId) {
         const readyContext = context()
         if (functionsRegion) {

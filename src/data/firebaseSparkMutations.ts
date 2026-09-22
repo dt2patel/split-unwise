@@ -1131,6 +1131,8 @@ export async function acceptSparkInvitation(configuration: FirebaseConfiguration
   ])
   if (projection.data()?.status === 'active') return { groupId }
   if (!profileSnapshot.exists()) throw new Error('Your profile is still being prepared. Try again.')
+  // Rules match targetEmail against ID-token claims, which stay stale after email verification until the token is refreshed.
+  if (typeof data.targetEmail === 'string') await user.getIdToken(true)
   if (data.groupKind === 'friendship' && typeof data.createdByName !== 'string') throw new Error('This friend invitation is invalid.')
   const profile = requireProfile(profileSnapshot.data())
   const batch = writeBatch(db)

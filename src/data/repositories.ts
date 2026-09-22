@@ -384,9 +384,19 @@ export interface AppRepository {
 }
 
 export interface AppProfileRepository { getCurrentUser(): Promise<Member>; updateProfile(command: ProfileUpdateCommand): Promise<CommandResult> }
+/** A group's journal as last synced to this device; provisional until the server read confirms it. */
+export interface CachedGroupJournal {
+  readonly group: Group
+  readonly user: Member
+  readonly members: readonly Member[]
+  readonly expenses: readonly ExpenseRow[]
+}
+
 export interface GroupRepository {
   list(): Promise<readonly Group[]>
   getById(groupId: string): Promise<Group | undefined>
+  /** Reads only the on-device cache; resolves undefined whenever any part is missing. */
+  peekJournal?(groupId: string): Promise<CachedGroupJournal | undefined>
   listMembers(groupId: string): Promise<readonly Member[]>
   getBalanceSnapshot(groupId: string): Promise<GroupBalanceSnapshot>
   getSettings(groupId: string): Promise<GroupSettings>

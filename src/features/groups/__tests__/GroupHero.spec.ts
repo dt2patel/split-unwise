@@ -45,4 +45,27 @@ describe('GroupHero', () => {
     expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('Jordan Lee owes you')
     expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$12.50')
   })
+
+  it('shows a pending balance instead of a settled-up guess while expenses load', async () => {
+    const wrapper = mount(GroupHero, {
+      props: { group, balances: [], collapsed: false, balancesPending: true },
+      global: { stubs: { IonIcon: true } },
+    })
+
+    expect(wrapper.get('[data-testid="group-balance-pending"]').text()).toBe('Checking balance…')
+    expect(wrapper.find('[data-testid="group-balance"]').exists()).toBe(false)
+
+    await wrapper.setProps({ balancesPending: false, balances: [{ currency: 'USD', minorAmount: -2000 }] })
+    expect(wrapper.find('[data-testid="group-balance-pending"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$20.00')
+  })
+
+  it('marks cached balances as updating', () => {
+    const wrapper = mount(GroupHero, {
+      props: { group, balances: [{ currency: 'USD', minorAmount: 2000 }], collapsed: false, provisional: true },
+      global: { stubs: { IonIcon: true } },
+    })
+    expect(wrapper.get('[data-testid="group-balance"]').text()).toContain('$20.00')
+    expect(wrapper.get('[data-testid="group-balance-updating"]').text()).toBe('Updating…')
+  })
 })

@@ -37,7 +37,7 @@ const route = useRoute()
 const store = useGroupStore()
 const session = getAppSession()
 const { t } = useI18n()
-const { activeGroup, currentUserNets, error, isActivityLoading, isLoading, journalExpenses, members, recentActivity } = storeToRefs(store)
+const { activeGroup, currentUserNets, error, isActivityLoading, isLoading, isProvisional, journalExpenses, members, recentActivity } = storeToRefs(store)
 const selectedView = ref<GroupView>('expenses')
 const isCollapsed = ref(false)
 const groupId = computed(() => String(route.params.groupId ?? ''))
@@ -170,8 +170,8 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
     <ion-content class="group-detail__scroller" data-testid="group-detail-scroll" :fullscreen="true" :scroll-events="true" @ion-scroll="onScroll">
       <p v-if="isLoading && !activeGroup" class="group-detail__status" role="status">Loading expenses…</p>
       <main v-else-if="activeGroup" class="group-detail__main">
-        <group-hero :group="activeGroup" :balances="currentUserNets" :collapsed="isCollapsed" />
-        <action-rail :group-id="groupId" :context-kind="activeGroup.kind" :can-invite="canInvite" />
+        <group-hero :group="activeGroup" :balances="currentUserNets" :balances-pending="isLoading && journalExpenses.length === 0" :provisional="isProvisional" :collapsed="isCollapsed" />
+        <action-rail :group-id="groupId" :context-kind="activeGroup.kind" :can-invite="canInvite" :settle-disabled="isProvisional" />
 
         <section class="group-detail__ledger" :aria-label="isFriendship ? 'Friend expense journal' : 'Group journal'">
           <div v-if="isLoading && selectedView === 'expenses' && journalExpenses.length === 0" class="journal-loading" data-testid="journal-loading" role="status" aria-label="Loading expenses">
@@ -300,5 +300,5 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
   .journal-fade-enter-from,
   .journal-fade-leave-to { transform: none; }
 }
-@media (min-width: 768px) { .group-detail { --su-journal-gutter: clamp(22px, 4vw, 42px); }.group-detail__main { max-width: 760px; margin: 0 auto; }.group-detail__footer { padding-inline: clamp(22px, 4vw, 42px); }.group-detail__header ion-back-button { display: none; } }
+@media (min-width: 768px) { .group-detail { --su-journal-gutter: clamp(22px, 4vw, 42px); }.group-detail__main { max-width: 760px; margin: 0 auto; }.group-detail__footer { padding-inline: clamp(22px, 4vw, 42px); }}
 </style>
