@@ -58,10 +58,13 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     if (existing) return existing
     const pending = (async () => {
       const { db, firestore, userId } = await readyContext
+      // Read membership and group together; the group read is only trusted (and its denial surfaced) for an active member.
+      const groupRead = firestore.getDoc(firestore.doc(db, 'groups', groupId))
+      void groupRead.catch(() => undefined)
       const projection = knownProjection ?? await firestore.getDoc(firestore.doc(db, 'users', userId, 'groups', groupId))
         .then((membership) => membership.exists() ? decodeGroupProjection(membership.id, membership.data()) : undefined)
       if (!projection || projection.status === 'removed') return undefined
-      const snapshot = await firestore.getDoc(firestore.doc(db, 'groups', groupId))
+      const snapshot = await groupRead
       if (!snapshot.exists()) return undefined
       const decoded = decodeGroup(snapshot.id, snapshot.data())
       if (decoded.deletedAt) {

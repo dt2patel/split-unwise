@@ -12,6 +12,7 @@ import { createFirebaseReceiptProvider } from './data/firebaseReceiptProvider'
 import { createOnDeviceReceiptProvider } from './data/onDeviceReceiptProvider'
 import { setAuthService } from './features/auth/authService'
 import { registerPwa } from './app/pwa'
+import { forgetFirebaseProfileReady } from './data/profileReady'
 import { installWebMcp } from './app/webmcp'
 import './app/theme.css'
 
@@ -91,6 +92,7 @@ const unsubscribePrincipal = await repositoryRuntime.principals.listen(async (pr
     await sessionCoordinator.transition(principal)
     if (!principal) await mountIndependentSurface()
   } catch (error: unknown) {
+    if (error instanceof Error && error.message === 'Current Firebase user profile is missing') forgetFirebaseProfileReady()
     repositoryRuntime.auth.reportSessionError?.(error instanceof Error && error.message === 'Current Firebase user profile is missing'
       ? 'Your signed-in account is missing its Split Unwise profile. Secure profile setup is not complete yet.'
       : error instanceof Error ? error.message : 'Your account could not be opened.')

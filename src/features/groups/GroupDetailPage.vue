@@ -170,7 +170,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
     <ion-content class="group-detail__scroller" data-testid="group-detail-scroll" :fullscreen="true" :scroll-events="true" @ion-scroll="onScroll">
       <p v-if="isLoading && !activeGroup" class="group-detail__status" role="status">Loading expenses…</p>
       <main v-else-if="activeGroup" class="group-detail__main">
-        <group-hero :group="activeGroup" :balances="currentUserNets" :collapsed="isCollapsed" />
+        <group-hero :group="activeGroup" :balances="currentUserNets" :balances-pending="isLoading && journalExpenses.length === 0" :collapsed="isCollapsed" />
         <action-rail :group-id="groupId" :context-kind="activeGroup.kind" :can-invite="canInvite" />
 
         <section class="group-detail__ledger" :aria-label="isFriendship ? 'Friend expense journal' : 'Group journal'">

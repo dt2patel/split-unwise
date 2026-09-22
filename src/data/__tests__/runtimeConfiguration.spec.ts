@@ -89,7 +89,7 @@ describe('runtime configuration', () => {
     })
   })
 
-  it('reuses a validated same-host Firebase configuration only for a cold offline start', async () => {
+  it('starts from a validated same-host Firebase configuration and refreshes it in the background', async () => {
     const values = new Map<string, string>()
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
@@ -119,12 +119,26 @@ describe('runtime configuration', () => {
       capabilities: { auth: 'available', firestore: 'available', functions: 'unavailable', storage: 'unavailable' },
     })
 
+    let revalidations = 0
+    let releaseFetch!: () => void
+    const pendingFetch = new Promise<void>((resolve) => { releaseFetch = resolve })
     await expect(resolveRuntimeConfiguration(undefined, {
       nativeUiTestDemo: false,
       nativePlatform: false,
       location: hostedLocation,
       online: true,
       storage,
+      fetch: async () => { revalidations += 1; await pendingFetch; throw new TypeError('Failed to fetch') },
+    })).resolves.toMatchObject({ kind: 'firebase', firebase: { projectId: 'split-unwise-aditya' } })
+    expect(revalidations).toBe(1)
+    releaseFetch()
+
+    await expect(resolveRuntimeConfiguration(undefined, {
+      nativeUiTestDemo: false,
+      nativePlatform: false,
+      location: { hostname: 'split-unwise-aditya.web.app', protocol: 'https:' },
+      online: true,
+      storage: { getItem: () => null, setItem: () => undefined },
       fetch: async () => { throw new TypeError('Failed to fetch') },
     })).resolves.toMatchObject({ kind: 'error', fields: ['/__/firebase/init.json'] })
 
