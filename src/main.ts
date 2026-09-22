@@ -17,6 +17,8 @@ import { installWebMcp } from './app/webmcp'
 import { markLaunch } from './app/perfMarks'
 import './app/theme.css'
 
+// iOS already provides the edge-swipe back gesture; Ionic's own swipe-back competes with it mid-transition.
+const ionicConfig = { mode: 'ios' as const, navAnimation: createRouteAnimation(), swipeBackEnabled: false }
 const repositoryRuntime = await createRepositorySessionRuntime()
 markLaunch('runtime-ready')
 setAuthService(repositoryRuntime.auth)
@@ -27,7 +29,7 @@ async function mountIndependentSurface(): Promise<void> {
   const app = createApp(App)
   const pinia = createPinia()
   const router = createAppRouter({ auth: repositoryRuntime.auth })
-  app.use(IonicVue, { mode: 'ios', navAnimation: createRouteAnimation() })
+  app.use(IonicVue, ionicConfig)
   app.use(pinia)
   app.use(router)
   await router.isReady()
@@ -52,7 +54,7 @@ const mountHost = createAppSessionMountHost({
     let didMount = false
     let disposeWebMcp: (() => void) | undefined
 
-    app.use(IonicVue, { mode: 'ios', navAnimation: createRouteAnimation() })
+    app.use(IonicVue, ionicConfig)
     app.use(pinia)
     app.use(router)
 
