@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
+import { IonAccordion, IonAccordionGroup, IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonItem, IonLabel, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
 import { cardOutline, checkmarkCircleOutline, documentAttachOutline, lockClosedOutline } from 'ionicons/icons'
 import { getAppSession } from '../../data/session'
 import type { AppPrincipal } from '../../data/principal'
@@ -19,6 +19,7 @@ const loading = ref(true)
 const parsing = ref(false)
 const activeFingerprint = ref('')
 const error = ref('')
+const statementInput = ref<HTMLInputElement>()
 
 onMounted(async () => {
   try {
@@ -27,6 +28,11 @@ onMounted(async () => {
   } catch (reason) { error.value = message(reason) }
   finally { loading.value = false }
 })
+
+function chooseStatement(): void {
+  if (parsing.value || loading.value) return
+  statementInput.value?.click()
+}
 
 async function selectStatement(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
@@ -92,11 +98,11 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
           <span><strong>Your statement stays on this device</strong><small>It is parsed in this app and is never uploaded to Split Unwise or Firebase.</small></span>
         </section>
 
-        <label class="file-picker" :class="{ 'file-picker--busy': parsing || loading }">
-          <ion-icon :icon="documentAttachOutline" aria-hidden="true" />
-          <span><strong>{{ parsing ? 'Reading statement…' : 'Choose CSV statement' }}</strong><small>Date, Description or Merchant, Amount or Debit, and optional Currency</small></span>
-          <input type="file" accept=".csv,text/csv,text/plain" :disabled="parsing || loading" @change="selectStatement">
-        </label>
+        <ion-item button :detail="false" lines="none" class="file-picker" :class="{ 'file-picker--busy': parsing || loading }" data-action="choose-statement" :disabled="parsing || loading" @click="chooseStatement">
+          <ion-icon slot="start" :icon="documentAttachOutline" aria-hidden="true" />
+          <ion-label><strong>{{ parsing ? 'Reading statement…' : 'Choose CSV statement' }}</strong><small>Date, Description or Merchant, Amount or Debit, and optional Currency</small></ion-label>
+        </ion-item>
+        <input ref="statementInput" hidden tabindex="-1" aria-hidden="true" type="file" accept=".csv,text/csv,text/plain" :disabled="parsing || loading" @change="selectStatement">
 
         <p v-if="fileName" class="file-name">{{ fileName }}</p>
         <p v-if="error" class="import-error" role="alert">{{ error }}</p>
@@ -114,10 +120,12 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
               <ion-button fill="clear" size="small" data-action="split-imported-transaction" :disabled="Boolean(activeFingerprint)" @click="splitTransaction(proposal)">{{ activeFingerprint === proposal.fingerprint ? 'Opening…' : 'Split this' }}</ion-button>
             </li>
           </ol>
-          <details v-if="result.rejections.length" class="rejections">
-            <summary>{{ result.rejections.length }} row{{ result.rejections.length === 1 ? '' : 's' }} not imported</summary>
-            <ul><li v-for="row in result.rejections" :key="`${row.sourceRow}:${row.reason}`">Row {{ row.sourceRow }}: {{ row.reason }}</li></ul>
-          </details>
+          <ion-accordion-group v-if="result.rejections.length" class="rejections">
+            <ion-accordion value="rejections" data-testid="import-rejections">
+              <ion-item slot="header" lines="none" class="rejections__header"><ion-label>{{ result.rejections.length }} row{{ result.rejections.length === 1 ? '' : 's' }} not imported</ion-label></ion-item>
+              <ul slot="content"><li v-for="row in result.rejections" :key="`${row.sourceRow}:${row.reason}`">Row {{ row.sourceRow }}: {{ row.reason }}</li></ul>
+            </ion-accordion>
+          </ion-accordion-group>
         </template>
 
         <section class="provider-note">
@@ -136,16 +144,15 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
 .eyebrow { margin: 0; color: var(--ion-color-primary); font-size: .72rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
 .import-hero h1 { margin: 0; font-size: clamp(1.65rem, 7vw, 2.2rem); letter-spacing: -.04em; }
 .import-hero > p:last-child { grid-column: 1 / -1; margin: 13px 0 0; color: var(--ion-color-medium); font-size: .9rem; line-height: 1.5; }
-.privacy-card, .file-picker { box-sizing: border-box; display: grid; width: 100%; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 10px; border-radius: 16px; }
-.privacy-card { padding: 13px; background: color-mix(in srgb, var(--su-owed) 10%, var(--su-surface)); color: var(--su-owed); }
+.privacy-card { box-sizing: border-box; display: grid; width: 100%; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 10px; padding: 13px; border-radius: 16px; background: color-mix(in srgb, var(--su-owed) 10%, var(--su-surface)); color: var(--su-owed); }
 .privacy-card ion-icon { justify-self: center; font-size: 1.2rem; }
-.privacy-card span, .file-picker span { display: grid; gap: 3px; min-width: 0; }
+.privacy-card span, .file-picker ion-label { display: grid; gap: 3px; min-width: 0; }
 .privacy-card small, .file-picker small { color: var(--ion-color-medium); font-size: .76rem; line-height: 1.35; }
-.file-picker { position: relative; min-height: 78px; margin-top: 14px; padding: 14px; border: 1.5px dashed color-mix(in srgb, var(--ion-color-primary) 50%, var(--su-divider)); background: color-mix(in srgb, var(--su-lilac) 38%, var(--su-surface)); color: var(--ion-color-primary); transition: transform 160ms ease, background-color 160ms ease; }
+.file-picker { --background: color-mix(in srgb, var(--su-lilac) 38%, var(--su-surface)); --background-activated: var(--ion-color-primary); --background-activated-opacity: .08; --background-focused: var(--ion-color-primary); --background-focused-opacity: .1; --border-color: color-mix(in srgb, var(--ion-color-primary) 50%, var(--su-divider)); --border-radius: 16px; --border-style: dashed; --border-width: 1.5px; --color: var(--ion-color-primary); --inner-padding-end: 14px; --min-height: 78px; --padding-start: 14px; overflow: hidden; margin-top: 14px; border-radius: 16px; transition: transform 160ms ease; }
 .file-picker:active { transform: scale(.985); }
 .file-picker--busy { opacity: .65; }
-.file-picker > ion-icon { justify-self: center; font-size: 1.35rem; }
-.file-picker input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.file-picker > ion-icon { margin-inline: 7px 17px; font-size: 1.35rem; }
+.file-picker ion-label { margin-block: 14px; white-space: normal; }
 .file-name { margin: 8px 4px 0; color: var(--ion-color-medium); font-size: .76rem; overflow-wrap: anywhere; }
 .import-error { margin: 12px 0; padding: 11px 13px; border-radius: 12px; background: color-mix(in srgb, var(--ion-color-danger) 9%, var(--su-surface)); color: var(--ion-color-danger); font-size: .82rem; }
 .result-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 23px 3px 8px; }.result-heading p { margin: 0; }.result-heading small { color: var(--ion-color-medium); }
@@ -153,7 +160,7 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
 .transaction-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 70px; padding: 8px 8px 8px 10px; border: 1px solid color-mix(in srgb, var(--su-divider) 28%, transparent); border-radius: 15px; background: var(--su-surface); box-shadow: 0 3px 12px rgb(39 29 88 / 6%); animation: transaction-in 260ms cubic-bezier(.2,.75,.25,1) both; animation-delay: calc(min(var(--entry-index), 8) * 35ms); }
 .transaction-status { color: var(--su-owed); font-size: 1.15rem; }.transaction-copy { display: grid; gap: 3px; min-width: 0; }.transaction-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.transaction-copy small { color: var(--ion-color-medium); font-size: .74rem; }.transaction-amount { font-variant-numeric: tabular-nums; font-weight: 700; }
 .transaction-list ion-button { min-height: 42px; grid-column: 2 / -1; justify-self: end; margin: -4px 0 0; text-transform: none; }
-.rejections { margin-top: 14px; color: var(--ion-color-medium); font-size: .8rem; }.rejections summary { min-height: 44px; padding: 12px 3px; color: var(--ion-color-danger); font-weight: 650; cursor: pointer; }.rejections ul { margin: 0; padding-left: 22px; line-height: 1.45; }
+.rejections { margin-top: 14px; color: var(--ion-color-medium); font-size: .8rem; }.rejections__header { --background: transparent; --color: var(--ion-color-danger); --inner-padding-end: 3px; --min-height: 44px; --padding-start: 3px; font-size: .8rem; font-weight: 650; }.rejections ul { margin: 0; padding: 0 0 8px 22px; line-height: 1.45; }
 .provider-note { margin-top: 26px; padding-top: 18px; border-top: 1px solid color-mix(in srgb, var(--su-divider) 35%, transparent); }.provider-note p { margin: 5px 0 0; color: var(--ion-color-medium); font-size: .8rem; line-height: 1.45; }
 @keyframes transaction-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .file-picker { transition: none; }.transaction-list li { animation: none; } }
