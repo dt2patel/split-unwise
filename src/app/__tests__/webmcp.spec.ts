@@ -223,6 +223,7 @@ describe('WebMCP integration', () => {
 
       await expect(call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'alex', amount: '12.01' })).rejects.toThrow('cannot exceed the open balance of $12.00')
       await expect(call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'maya' })).rejects.toThrow('someone other than the signed-in user')
+      await expect(call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'sam' })).rejects.toThrow('sam is not an active member')
       await expect(call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'alex', currency: 'EUR' })).rejects.toThrow('no open EUR balance')
       expect(router.push).not.toHaveBeenCalled()
 
@@ -232,6 +233,16 @@ describe('WebMCP integration', () => {
       reportAgentDraftLeft(draftId)
       await expect(pending).resolves.toEqual(expect.objectContaining({ status: 'cancelled', reason: 'left', message: 'The user left the form without saving. No payment was saved.' }))
     })
+  })
+
+  it('names the open balances the user does have when a payment pair has none', async () => {
+    const { registered } = provideModelContext()
+    const { session, repository } = fakeSession()
+    repository.groups.listMembers.mockResolvedValue([...members, { id: 'jo', displayName: 'Jo', initials: 'J', isCurrentUser: false, role: 'member' }])
+    await installWebMcp({ router: fakeRouter(), session })
+
+    await expect(call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'jo' }))
+      .rejects.toThrow("There is no open balance between you and Jo in this group's simplified plan. Your open balances: Alex (alex) owes you $12.00.")
   })
 
   function fakeRouter() {

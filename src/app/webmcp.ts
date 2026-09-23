@@ -578,7 +578,14 @@ async function recordSettlement(session: AppDataSession, read: Reader, router: R
   const plan = snapshot.simplifyDebtsEnabled ? 'simplified' : 'pairwise'
   const between = snapshot[plan].filter((item) => (item.fromParticipantId === user.id && item.toParticipantId === otherId) || (item.fromParticipantId === otherId && item.toParticipantId === user.id))
   const names = memberNames(members)
-  if (between.length === 0) throw new Error(`There is no open balance between you and ${names.get(otherId) ?? otherId} in this group.`)
+  if (between.length === 0) {
+    // Simplifying debts can route a balance through someone else, so say who the user does have balances with.
+    const yours = snapshot[plan].filter((item) => item.fromParticipantId === user.id || item.toParticipantId === user.id)
+      .map((item) => item.fromParticipantId === user.id
+        ? `you owe ${names.get(item.toParticipantId) ?? item.toParticipantId} (${item.toParticipantId}) ${formatMoney(item.money, 'en-US')}`
+        : `${names.get(item.fromParticipantId) ?? item.fromParticipantId} (${item.fromParticipantId}) owes you ${formatMoney(item.money, 'en-US')}`)
+    throw new Error(`There is no open balance between you and ${names.get(otherId) ?? otherId} in this group's ${plan} plan. ${yours.length ? `Your open balances: ${yours.join('; ')}.` : 'You have no open balances in this group.'}`)
+  }
   const matching = requestedCurrency ? between.filter((item) => item.money.currency === requestedCurrency) : between
   if (matching.length === 0) throw new Error(`There is no open ${requestedCurrency} balance between you and ${names.get(otherId) ?? otherId} in this group.`)
   if (matching.length > 1) throw new Error(`You have balances in ${matching.map((item) => item.money.currency).join(' and ')} with ${names.get(otherId) ?? otherId}; pass currency to choose one.`)
