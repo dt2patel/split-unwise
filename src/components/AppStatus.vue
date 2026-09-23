@@ -5,8 +5,8 @@ import { IonToast, type ToastButton } from '@ionic/vue'
 import { useNetwork } from '../composables/useNetwork'
 import { activatePwaUpdate, dismissOfflineReady, dismissPwaUpdate, usePwaStatus } from '../app/pwa'
 
-/** The id TabsShell gives its ion-tab-bar. */
-const TAB_BAR_ID = 'app-tab-bar'
+/** The id of the add-expense button, which TabsShell shows above the tab bar. */
+const FAB_ID = 'app-fab'
 
 const network = useNetwork()
 const networkStatus = network.status
@@ -15,10 +15,11 @@ const route = useRoute()
 const showUpdate = computed(() => pwa.prompt.waiting && !pwa.prompt.dismissed)
 const showOfflineReady = computed(() => !showUpdate.value && pwa.offlineReady)
 const showWarning = computed(() => !showUpdate.value && !pwa.offlineReady && Boolean(pwa.message))
-// Same rule TabsShell uses to render the tab bar: /tabs routes unless the route hides the app chrome.
-const tabBarShowing = computed(() => Boolean(route?.matched.some((record) => record.name === 'tabs')) && route?.meta.hideAppChrome !== true)
-const positionAnchor = computed(() => tabBarShowing.value ? TAB_BAR_ID : undefined)
-// Ionic measures positionAnchor only while presenting, so an open toast is presented again when the tab bar comes or goes.
+// Same rule TabsShell uses to render the tab bar and add button: /tabs routes unless the route hides the app chrome.
+const chromeShowing = computed(() => Boolean(route?.matched.some((record) => record.name === 'tabs')) && route?.meta.hideAppChrome !== true)
+// Anchored to the add button, a toast floats above it and the tab bar instead of covering the button.
+const positionAnchor = computed(() => chromeShowing.value ? FAB_ID : undefined)
+// Ionic measures positionAnchor only while presenting, so an open toast is presented again when the button comes or goes.
 const repositioning = ref(false)
 watch(positionAnchor, async () => {
   if (!showUpdate.value && !showOfflineReady.value) return

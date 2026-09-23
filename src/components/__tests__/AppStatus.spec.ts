@@ -108,15 +108,15 @@ describe('app status', () => {
     expect(updateToast(wrapper).props('isOpen')).toBe(true)
   })
 
-  it('anchors above the tab bar only while one is showing and re-presents an open toast when that changes', async () => {
+  it('anchors above the add button and tab bar only while they show, and re-presents an open toast when that changes', async () => {
     pwa.prompt.waiting = true
     const { wrapper, router } = await mountStatus('/tabs/home')
-    expect(updateToast(wrapper).props('positionAnchor')).toBe('app-tab-bar')
+    expect(updateToast(wrapper).props('positionAnchor')).toBe('app-fab')
     openHistory.length = 0
 
     await router.push('/tabs/groups')
     await flushPromises()
-    expect(updateToast(wrapper).props('positionAnchor')).toBe('app-tab-bar')
+    expect(updateToast(wrapper).props('positionAnchor')).toBe('app-fab')
     expect(openHistory).toEqual([])
 
     await router.push('/tabs/groups/lake-house-weekend')
