@@ -94,8 +94,7 @@ describe('global Activity page', () => {
       'activity-groceries', 'activity-kayak', 'activity-cabin-comment', 'activity-cabin', 'activity-dinner', 'activity-gas',
     ])
     expect(rows[0].text()).toContain('Maya P. added Groceries')
-    const groceries = wrapper.findAllComponents(IonItem).find((item) => item.attributes('data-activity-id') === 'activity-groceries')
-    expect(groceries?.props('routerLink')).toBe('/tabs/activity/expenses/groceries?groupId=lake-house-weekend')
+    expect(wrapper.get('[data-activity-id="activity-groceries"]').getComponent(IonItem).props('routerLink')).toBe('/tabs/activity/expenses/groceries?groupId=lake-house-weekend')
     expect(rows.every((row) => row.get('time').attributes('datetime')?.endsWith('Z'))).toBe(true)
     expect(wrapper.findAll('h1')).toHaveLength(1)
   })
@@ -114,18 +113,36 @@ describe('global Activity page', () => {
     } } }
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
     const wrapper = await mountActivity({ attachTo: document.body })
-    const native = (selector: string) => wrapper.get(selector).element.shadowRoot?.firstElementChild
+    const item = (selector: string) => wrapper.get(selector).element
+    const native = (selector: string) => item(selector).shadowRoot?.firstElementChild
+    const restore = '[data-activity-id] > ion-item[data-action="restore-group"]'
+    const linked = '[data-activity-id="activity-groceries"] > ion-item'
+    const inertRow = '[data-activity-id="activity-inert-row"] > ion-item'
 
-    await vi.waitFor(() => expect(native('[data-action="restore-group"]')?.tagName).toBe('BUTTON'))
-    expect(wrapper.get('[data-action="restore-group"]').attributes('data-activity-id')).toBeTruthy()
-    expect(wrapper.get('[data-action="restore-group"]').classes()).toContain('ion-activatable')
-    expect(wrapper.get('[data-action="restore-group"]').element.shadowRoot?.querySelector('.item-detail-icon')).toBeNull()
-    expect(native('[data-activity-id="activity-groceries"]')?.tagName).toBe('A')
-    expect(native('[data-activity-id="activity-groceries"]')?.getAttribute('href')).toBe('/tabs/activity/expenses/groceries?groupId=lake-house-weekend')
-    expect(wrapper.get('[data-activity-id="activity-groceries"]').element.shadowRoot?.querySelector('.item-detail-icon')).not.toBeNull()
-    expect(native('[data-activity-id="activity-inert-row"]')?.tagName).toBe('DIV')
-    expect(wrapper.get('[data-activity-id="activity-inert-row"]').classes()).not.toContain('ion-activatable')
-    wrapper.unmount()
+    try {
+      await vi.waitFor(() => expect(native(restore)?.tagName).toBe('BUTTON'))
+      expect(item(restore).classList).toContain('ion-activatable')
+      expect(item(restore).shadowRoot?.querySelector('.item-detail-icon')).toBeNull()
+      expect(native(linked)?.tagName).toBe('A')
+      expect(native(linked)?.getAttribute('href')).toBe('/tabs/activity/expenses/groceries?groupId=lake-house-weekend')
+      expect(item(linked).shadowRoot?.querySelector('.item-detail-icon')).not.toBeNull()
+      expect(native(inertRow)?.tagName).toBe('DIV')
+      expect(item(inertRow).classList).not.toContain('ion-activatable')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('keeps each restore action inside its activity row, where the hosted browser proof looks for it', async () => {
+    const repository = createDemoRepository()
+    await repository.commands.execute({ kind: 'group.delete', operationId: 'delete-for-row-hooks', groupId: 'lake-house-weekend' })
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity()
+    const row = wrapper.findAll('[data-activity-id]').find((candidate) => candidate.text().includes('deleted Lake House Weekend'))
+
+    expect(row?.attributes('data-sync-state')).toBe('fresh')
+    await row?.get('[data-action="restore-group"]').trigger('click')
+    expect(wrapper.get('[data-testid="restore-group-modal"] h2').text()).toBe('Restore Lake House Weekend?')
   })
 
   it('filters without mutating canonical history', async () => {

@@ -128,26 +128,27 @@ function translateMessage(message: DisplayMessage | undefined): string | undefin
         <p v-if="feedbackCopy" class="activity-page__feedback" role="status" aria-live="polite">{{ feedbackCopy }}</p>
         <p v-if="!status && items.length === 0" class="activity-page__status">{{ t('activity.empty') }}</p>
         <ion-list v-else-if="!status" class="activity-list" lines="full" :aria-label="t('activity.accountAria')">
-          <template v-for="item in items" :key="item.id">
-            <ion-item v-if="isRestorable(item)" button :detail="false" :data-activity-id="item.id" :data-sync-state="item.syncState" :data-action="item.kind === 'expense.deleted' ? 'restore-expense' : 'restore-group'" @click="openRestore(item)">
+          <!-- The row keeps the activity hooks (restore actions are looked up inside [data-activity-id]); the ion-item inside is the control. -->
+          <div v-for="item in items" :key="item.id" class="activity-list__row" :data-activity-id="item.id" :data-sync-state="item.syncState">
+            <ion-item v-if="isRestorable(item)" button :detail="false" :data-action="item.kind === 'expense.deleted' ? 'restore-expense' : 'restore-group'" @click="openRestore(item)">
               <ion-label class="activity-list__copy"><strong>{{ activityText(item, t) }}</strong><time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time></ion-label>
               <span slot="end" class="activity-list__restore-action"><ion-icon :icon="arrowUndoOutline" aria-hidden="true" />{{ t('activity.restore') }}</span>
             </ion-item>
-            <ion-item v-else-if="activityDestination(item, 'activity')" :router-link="activityDestination(item, 'activity')" detail :data-activity-id="item.id" :data-sync-state="item.syncState">
+            <ion-item v-else-if="activityDestination(item, 'activity')" :router-link="activityDestination(item, 'activity')" detail>
               <ion-label class="activity-list__copy">
                 <strong>{{ activityText(item, t) }}</strong>
                 <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
                 <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ syncStateLabel(item.syncState) }}</span>
               </ion-label>
             </ion-item>
-            <ion-item v-else :data-activity-id="item.id" :data-sync-state="item.syncState">
+            <ion-item v-else>
               <ion-label class="activity-list__copy">
                 <strong>{{ activityText(item, t) }}</strong>
                 <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
                 <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ syncStateLabel(item.syncState) }}</span>
               </ion-label>
             </ion-item>
-          </template>
+          </div>
         </ion-list>
         <ion-button v-if="nextCursor" expand="block" fill="outline" data-action="load-more-activity" :disabled="isLoading || isFiltering || isLoadingMore" @click="store.loadMore">
           {{ isLoadingMore ? t('activity.loadingMore') : t('activity.loadMore') }}
@@ -195,7 +196,7 @@ function translateMessage(message: DisplayMessage | undefined): string | undefin
 .activity-list__copy time,
 .activity-list__state { color: var(--ion-color-medium); font-size: 0.76rem; line-height: 1.3; }
 .activity-list__state { text-transform: capitalize; }
-.activity-list ion-item[data-sync-state="pending"] { animation: activity-enter 160ms ease-out both; }
+.activity-list__row[data-sync-state="pending"] { animation: activity-enter 160ms ease-out both; }
 @keyframes activity-enter { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
 .restore-card { box-sizing: border-box; display: flex; width: min(100%, 520px); min-height: 100%; flex-direction: column; align-items: center; margin: 0 auto; padding: 36px 20px calc(24px + env(safe-area-inset-bottom)); text-align: center; }
 .restore-card__mark { display: grid; width: 54px; height: 54px; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--ion-color-primary) 11%, var(--su-surface)); color: var(--ion-color-primary); }
@@ -209,7 +210,7 @@ function translateMessage(message: DisplayMessage | undefined): string | undefin
 .restore-card > ion-button { width: 100%; min-height: 48px; margin-top: auto; text-transform: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .activity-list ion-item[data-sync-state="pending"] { animation: none; }
+  .activity-list__row[data-sync-state="pending"] { animation: none; }
 }
 @media (max-width: 360px) {
   .activity-page ion-segment-button { --padding-end: 4px; --padding-start: 4px; font-size: .7rem; }
