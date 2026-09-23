@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
-import { createAppSession, setAppSessionForTesting } from '../../../data/session'
+import { createAppSession, getAppSession, setAppSessionForTesting } from '../../../data/session'
+import { appPrincipalKey } from '../../../data/principal'
+import { clearAgentDrafts, offerAgentDraft } from '../../../app/agentDrafts'
 import type { AppRepository, SettlementRecord } from '../../../data/repositories'
 import { fromMinorUnits } from '../../../domain/money'
 import BalancesPage from '../BalancesPage.vue'
@@ -722,6 +724,38 @@ describe('settlement mobile and accessibility contract', () => {
     expect(detailSource).toContain('overflow-wrap: anywhere')
     // An inset outline paints above ion-item's own background, where an inset box-shadow would be hidden.
     expect(settleSource).toMatch(/\.basis-option:focus-within\s*\{[^}]*outline:\s*2px solid/)
+  })
+})
+
+describe('settle up prefilled by an agent', () => {
+  const requested = `plan=simplified&senderId=taylor-s&recipientId=maya-p&currency=USD&debtMinor=3625`
+
+  it('fills the agent\'s payment on the requested balance, leaves the confirmation to the user, and reports the recorded payment', async () => {
+    const owner = appPrincipalKey(await getAppSession().principal)
+    const offer = offerAgentDraft(owner, { kind: 'settlement', groupId, amountText: '10.00', method: 'payment-app', occurredOn: '2026-08-31', note: 'Venmo' })
+
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up?${requested}&agentDraft=${offer.id}`, SettleUpPage)
+
+    await vi.waitFor(() => expect((wrapper.get('[data-testid="amount-input"]').element as HTMLInputElement).value).toBe('10.00'))
+    expect(wrapper.get('[data-testid="agent-draft-note"]').text()).toContain('An AI agent filled this in')
+    expect((wrapper.get('select').element as HTMLSelectElement).value).toBe('payment-app')
+    expect((wrapper.get('input[type="date"]').element as HTMLInputElement).value).toBe('2026-08-31')
+    expect(wrapper.get('[data-testid="outside-payment-confirmation"]').attributes('aria-checked')).toBe('false')
+
+    await confirmOutsidePayment(wrapper)
+    await wrapper.get('form').trigger('submit')
+    await expect(offer.outcome).resolves.toEqual({ status: 'saved', id: expect.any(String) })
+    clearAgentDrafts()
+  })
+
+  it('tells the agent nothing was recorded when the user leaves', async () => {
+    const owner = appPrincipalKey(await getAppSession().principal)
+    const offer = offerAgentDraft(owner, { kind: 'settlement', groupId, amountText: '10.00' })
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up?${requested}&agentDraft=${offer.id}`, SettleUpPage)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="agent-draft-note"]').exists()).toBe(true))
+
+    wrapper.unmount()
+    await expect(offer.outcome).resolves.toEqual({ status: 'cancelled', reason: 'left' })
   })
 })
 

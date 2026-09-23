@@ -14,6 +14,8 @@ import SplitEditor from './components/SplitEditor.vue'
 import { useExpenseStore, type ExpenseOrigin, type PaymentInput, type ReceiptItemInput, type SplitInput } from './expenseStore'
 import { parseStrictScalarId } from '../../data/identifiers'
 import { confirmAction } from '../../app/confirmDialog'
+import { isAgentDraftId } from '../../app/agentDrafts'
+import { EXPENSE_CATEGORIES } from './categories'
 import { restoreInteractiveFocus } from '../../app/focus'
 
 const route = useRoute()
@@ -26,7 +28,7 @@ const presentingElement = shallowRef<HTMLElement>()
 const receiptPreviewUrl = ref<string>()
 const awaitingReceiptSheet = ref(false)
 const sheetDirty = ref(false)
-const categories = ['Food', 'Transport', 'Lodging', 'Supplies', 'Entertainment', 'Utilities', 'Other']
+const categories = EXPENSE_CATEGORIES
 const pageTitle = computed(() => store.mode === 'edit' ? 'Edit expense' : 'Add expense')
 const totalMinorAmount = computed(() => {
   try { return Math.max(0, toMinorUnits(store.editor.amountText || '0', store.editor.currency)) } catch { return 0 }
@@ -83,8 +85,10 @@ async function initialize(): Promise<void> {
   const origin = (match?.[1] ?? 'home') as ExpenseOrigin
   const groupId = parseStrictScalarId(route.query.groupId)
   const importDraftId = parseStrictScalarId(route.query.importDraft)
+  // Set when an agent prefilled this expense through WebMCP; the store takes that draft once.
+  const agentDraftId = isAgentDraftId(route.query.agentDraft) ? route.query.agentDraft : undefined
   const expenseId = typeof route.params.expenseId === 'string' ? route.params.expenseId : undefined
-  await store.initialize({ origin, groupId, expenseId, importDraftId })
+  await store.initialize({ origin, groupId, expenseId, importDraftId, agentDraftId })
 }
 
 // The Ionic alert does not block the page the way window.confirm did, so a quick second tap reuses the open alert.
@@ -180,6 +184,8 @@ async function selectReceipt(event: Event): Promise<void> {
         <p v-if="store.isLoading" data-testid="expense-loading" role="status" aria-live="polite" class="load-status">Loading expense editor…</p>
         <p v-else-if="store.loadError" role="alert" class="load-error">{{ store.loadError }}</p>
         <template v-else-if="store.hasInitialized">
+          <!-- Above the form, so an imported or agent-prefilled draft says so before anything else. -->
+          <p v-if="store.notice" role="status" aria-live="polite" class="editor-notice">{{ store.notice }}</p>
           <ion-list inset lines="none" class="context-list" data-testid="expense-context-list" aria-label="Expense context">
             <ion-item id="context-sheet-trigger" button :detail="true" data-testid="expense-context" :aria-invalid="store.errors.context ? 'true' : undefined" :aria-describedby="store.errors.context ? 'expense-context-error' : undefined" @click="openSheet('context', 'context-sheet-trigger')">
               <ion-icon slot="start" :icon="peopleOutline" aria-hidden="true" />
@@ -228,7 +234,6 @@ async function selectReceipt(event: Event): Promise<void> {
             <p v-if="store.errors.recurrence" id="expense-recurrence-error" class="field-error">{{ store.errors.recurrence }}</p>
           </ion-list>
 
-          <p v-if="store.notice" role="status" aria-live="polite" class="editor-notice">{{ store.notice }}</p>
           <p ref="errorSummary" v-if="store.errorSummary" data-testid="expense-error-summary" class="error-summary" role="alert" aria-live="assertive" tabindex="-1">{{ store.errorSummary }}</p>
         </template>
       </main>
@@ -277,7 +282,7 @@ async function selectReceipt(event: Event): Promise<void> {
 .field-error { margin: 5px var(--su-editor-gutter) 0; color: var(--ion-color-danger); font-size: 0.76rem; }
 .field-error--center { text-align: center; }
 .error-summary, .load-error { margin: 14px 0; padding: 12px; border: 1px solid color-mix(in srgb, var(--ion-color-danger) 36%, transparent); border-radius: 11px; background: color-mix(in srgb, var(--ion-color-danger) 8%, var(--su-surface)); color: var(--ion-color-danger); font-size: 0.86rem; }
-.editor-notice { color: var(--ion-color-primary); font-size: 0.84rem; }
+.editor-notice { margin: 0 var(--su-editor-gutter) 12px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--su-lilac) 72%, var(--su-surface)); color: var(--su-text); font-size: 0.84rem; line-height: 1.4; }
 .load-status { padding: 32px 0; color: var(--ion-color-medium); text-align: center; }
 @media (prefers-reduced-motion: reduce) { .expense-editor * { scroll-behavior: auto; } }
 </style>

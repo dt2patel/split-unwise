@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { getAppSession } from '../../data/session'
 import { useGroupStore } from '../groups/groupStore'
 import type { CommandHandle, CommandOperation } from '../../data/commandQueue'
+import { reportAgentDraftFailed, reportAgentDraftQueued, reportAgentDraftSaved } from '../../app/agentDrafts'
 import type {
   Group,
   GroupBalanceSnapshot,
@@ -123,7 +124,8 @@ export const useSettlementStore = defineStore('settlements', () => {
     } catch { /* the device copy is optional; the server load is authoritative */ }
   }
 
-  async function recordPayment(command: SettlementRecordCommand): Promise<boolean> {
+  /** `agentDraftId` is set when an agent prefilled this payment through WebMCP and is waiting to hear the outcome. */
+  async function recordPayment(command: SettlementRecordCommand, options: { readonly agentDraftId?: string } = {}): Promise<boolean> {
     if (!canRecord.value || !group.value || !balanceSnapshot.value || command.groupId !== group.value.id
       || command.expectedBalanceRevision !== balanceSnapshot.value.balanceRevision) {
       error.value = 'Reload current balances before recording this payment.'
@@ -135,7 +137,17 @@ export const useSettlementStore = defineStore('settlements', () => {
       error.value = 'Deleted accounts cannot be included in a new payment.'
       return false
     }
-    return executeAndRefresh(queue.submit(command), command.groupId)
+    const handle = queue.submit(command)
+    if (options.agentDraftId) reportAgentPayment(options.agentDraftId, handle)
+    return executeAndRefresh(handle, command.groupId)
+  }
+
+  function reportAgentPayment(draftId: string, handle: CommandHandle): void {
+    reportAgentDraftQueued(draftId, handle.operationId)
+    void handle.result().then(
+      (result) => { if (result.kind === 'settlement.record' && result.status === 'saved') reportAgentDraftSaved(draftId, result.settlement.settlementId) },
+      () => reportAgentDraftFailed(draftId, handle.operationId),
+    )
   }
 
   async function voidSettlement(command: SettlementVoidCommand): Promise<boolean> {
