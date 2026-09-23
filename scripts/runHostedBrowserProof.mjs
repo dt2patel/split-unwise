@@ -307,8 +307,9 @@ async function verifyPaymentHandleProfile(page) {
   const venmo = page.getByTestId('venmo-handle')
   await paypal.waitFor({ state: 'visible' })
   await waitForAccountHydration(page)
-  await paypal.fill('@hosted.owner.paypal')
-  await venmo.fill('@hosted-owner-venmo')
+  // The handles are ion-inputs: fill the native input each one renders.
+  await paypal.locator('input').fill('@hosted.owner.paypal')
+  await venmo.locator('input').fill('@hosted-owner-venmo')
   await page.locator('[data-action="save-profile"]').click()
   await page.getByText('Profile saved.', { exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
 
@@ -317,22 +318,22 @@ async function verifyPaymentHandleProfile(page) {
   await page.getByTestId('paypal-handle').waitFor({ state: 'visible' })
   try {
     await page.waitForFunction(() => {
-      const paypal = document.querySelector('[data-testid="paypal-handle"]')
-      const venmo = document.querySelector('[data-testid="venmo-handle"]')
+      const paypal = document.querySelector('[data-testid="paypal-handle"] input')
+      const venmo = document.querySelector('[data-testid="venmo-handle"] input')
       return paypal instanceof HTMLInputElement && paypal.value === 'hosted.owner.paypal'
         && venmo instanceof HTMLInputElement && venmo.value === 'hosted-owner-venmo'
     }, undefined, { timeout: 15_000 })
   } catch (reason) {
     const diagnostic = await page.evaluate(() => {
-      const paypal = document.querySelector('[data-testid="paypal-handle"]')
-      const venmo = document.querySelector('[data-testid="venmo-handle"]')
+      const paypal = document.querySelector('[data-testid="paypal-handle"] input')
+      const venmo = document.querySelector('[data-testid="venmo-handle"] input')
       const save = document.querySelector('[data-action="save-profile"]')
       return {
         online: navigator.onLine,
         paypal: paypal instanceof HTMLInputElement ? paypal.value : null,
         venmo: venmo instanceof HTMLInputElement ? venmo.value : null,
         paypalDisabled: paypal instanceof HTMLInputElement ? paypal.disabled : null,
-        saveDisabled: save instanceof HTMLButtonElement ? save.disabled : null,
+        saveDisabled: save ? Boolean(save.disabled) : null,
         status: document.querySelector('[role="status"]')?.textContent?.trim() ?? null,
         alert: document.querySelector('[role="alert"]')?.textContent?.trim() ?? null,
       }
@@ -521,10 +522,11 @@ async function assertNoHorizontalOverflow(page, label) {
 
 async function waitForAccountHydration(page) {
   await page.waitForFunction(() => {
-    const name = document.querySelector('#account-name')
+    // ion-input renders the native input inside #account-name; ion-button exposes disabled on its host.
+    const name = document.querySelector('#account-name input')
     const save = document.querySelector('[data-action="save-profile"]')
     return name instanceof HTMLInputElement && name.value.length > 0
-      && save instanceof HTMLButtonElement && !save.disabled
+      && save !== null && !save.disabled
   }, undefined, { timeout: 120_000 })
 }
 
@@ -1028,7 +1030,7 @@ async function prepareInvitation(page, targetEmail) {
   await page.waitForFunction(() => document.documentElement.lang === 'es')
   await page.goto(`${deepUrl}/invite`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Invitar a Live Account Proof', exact: true }).waitFor({ state: 'visible' })
-  await page.locator('#invite-email').fill(targetEmail)
+  await page.locator('#invite-email input').fill(targetEmail)
   await page.getByRole('button', { name: 'Preparar invitación', exact: true }).click()
   const invitation = page.locator('[aria-label="URL de invitación preparada"]')
   await invitation.waitFor({ state: 'visible' })
@@ -1260,8 +1262,8 @@ async function verifyAccountDeletion(browser) {
     await page.waitForURL(/\/auth(?:[?#].*)?$/, { timeout: 120_000 })
     await page.locator('#auth-email').waitFor({ state: 'visible' })
     pageErrors.assertClean()
-    await page.locator('#auth-email').fill(deletionEmail)
-    await page.locator('#auth-password').fill(password)
+    await page.locator('#auth-email input').fill(deletionEmail)
+    await page.locator('#auth-password input').fill(password)
     await page.getByRole('button', { name: 'Sign in', exact: true }).click()
     const rejectedSignIn = page.locator('.auth-error[role="alert"]')
     await rejectedSignIn.waitFor({ state: 'visible' })
@@ -1292,8 +1294,8 @@ async function signIn(page, email) {
     }))
     throw new Error(`Hosted sign-in form did not become visible: ${JSON.stringify(diagnostic)}`, { cause })
   }
-  await page.locator('#auth-email').fill(email)
-  await page.locator('#auth-password').fill(password)
+  await page.locator('#auth-email input').fill(email)
+  await page.locator('#auth-password input').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
 }
 
