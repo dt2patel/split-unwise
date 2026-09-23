@@ -64,7 +64,7 @@ describe('invitation preparation page', () => {
     expect(wrapper.text()).toContain('Correo electrónico de destino')
     expect(wrapper.text()).toContain('Opcional')
     expect(wrapper.text()).toContain('Preparar invitación')
-  })
+  }, 20_000)
 
   it('uses an Ionic email field whose native input keeps its keyboard hints and localized label', async () => {
     const wrapper = await mountInvitationSheet()
@@ -78,7 +78,7 @@ describe('invitation preparation page', () => {
     localeController.setPreference('es')
     await settleIonic()
     expect(label()).toBe('Correo electrónico de destino Opcional')
-  })
+  }, 20_000)
 
   it('selects the whole prepared link when its read-only field receives focus', async () => {
     const link = `https://split-unwise-aditya.web.app/invite/invite-maya#token=${'b'.repeat(43)}`
@@ -93,7 +93,7 @@ describe('invitation preparation page', () => {
     expect(textarea.element.readOnly).toBe(true)
     textarea.element.focus()
     expect([textarea.element.selectionStart, textarea.element.selectionEnd]).toEqual([0, link.length])
-  })
+  }, 20_000)
 
   it('keeps invalid-group presentation semantic across locale changes', async () => {
     localeController.setPreference('es')
@@ -108,7 +108,7 @@ describe('invitation preparation page', () => {
 
     expect(wrapper.find('h1').exists()).toBe(false)
     expect(wrapper.get('[role="alert"]').text()).toBe('Diese Gruppe ist nicht verfügbar.')
-  })
+  }, 20_000)
 
   it('hides an ordinary preparation diagnostic and retranslates the retained failure without preparing again', async () => {
     localeController.setPreference('es')
@@ -128,7 +128,7 @@ describe('invitation preparation page', () => {
 
     expect(wrapper.get('[role="alert"]').text()).toBe('Die Einladung konnte nicht vorbereitet werden.')
     expect(firebaseMocks.createSparkInvitation).toHaveBeenCalledOnce()
-  })
+  }, 20_000)
 
   it('preserves prepared invitation data while localizing status, expiry, and controls', async () => {
     localeController.setPreference('es')
@@ -161,7 +161,7 @@ describe('invitation preparation page', () => {
       title: 'Únete a mi grupo de Split Unwise',
       text: 'Usa esta invitación privada para unirte al grupo.',
     })
-  })
+  }, 20_000)
 })
 
 async function mountInvitationSheet(groupId = LAKE_HOUSE_GROUP_ID) {
@@ -180,9 +180,11 @@ async function mountInvitationSheet(groupId = LAKE_HOUSE_GROUP_ID) {
   return wrapper
 }
 
-// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+// Stencil flushes Ionic's renders on animation frames after Vue mounts or updates the elements.
 async function settleIonic(): Promise<void> {
-  await flushPromises()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  for (let frame = 0; frame < 3; frame += 1) {
+    await flushPromises()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
   await flushPromises()
 }

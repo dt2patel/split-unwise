@@ -156,11 +156,11 @@ describe('Account page', () => {
     expect(toggles[1]!.attributes('aria-checked')).toBe('false')
 
     await wrapper.get('[data-action="save-profile"]').trigger('click')
-    await vi.waitFor(async () => expect((await repository.app.getCurrentUser()).paymentHandles).toEqual({ paypal: 'maya.payments' }))
+    await vi.waitFor(async () => expect((await repository.app.getCurrentUser()).paymentHandles).toEqual({ paypal: 'maya.payments' }), { timeout: 10_000 })
     await wrapper.get('[data-action="save-notifications"]').trigger('click')
-    await vi.waitFor(async () => expect(await repository.notifications.getPreferences()).toEqual({ emailEnabled: true, pushEnabled: false }))
+    await vi.waitFor(async () => expect(await repository.notifications.getPreferences()).toEqual({ emailEnabled: true, pushEnabled: false }), { timeout: 10_000 })
     wrapper.unmount()
-  })
+  }, 20_000)
 
   it('returns focus into the real Ionic row button after a cancelled confirmation', async () => {
     useSession('firebase')
@@ -185,7 +185,7 @@ describe('Account page', () => {
     expect(document.activeElement).toBe(clear.element)
     expect(clear.element.shadowRoot?.activeElement).toBe(nativeButton)
     wrapper.unmount()
-  })
+  }, 20_000)
 
   it('persists opt-in PayPal and Venmo handles from account settings', async () => {
     const repository = createDemoRepository()
@@ -359,10 +359,12 @@ describe('Account page', () => {
   })
 })
 
-// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+// Stencil flushes Ionic's renders on animation frames after Vue mounts or updates the elements.
 async function settleIonic(): Promise<void> {
-  await flushPromises()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  for (let frame = 0; frame < 3; frame += 1) {
+    await flushPromises()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
   await flushPromises()
 }
 

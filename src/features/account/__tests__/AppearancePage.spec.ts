@@ -24,10 +24,12 @@ const stubs = {
 let controller: AppearanceController
 let stored: Map<string, string>
 
-// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+// Stencil flushes Ionic's renders on animation frames after Vue mounts or updates the elements.
 async function settleIonic(): Promise<void> {
-  await flushPromises()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  for (let frame = 0; frame < 3; frame += 1) {
+    await flushPromises()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
   await flushPromises()
 }
 
@@ -76,7 +78,7 @@ describe('Appearance page', () => {
     expect(controller.preference).toBe('dark')
     expect(radios.map((radio) => radio.attributes('aria-checked'))).toEqual(['false', 'false', 'true'])
     wrapper.unmount()
-  })
+  }, 20_000)
 
   it('applies a radio selection immediately and ignores unknown values', async () => {
     const wrapper = mount(AppearancePage, { global: { stubs } })

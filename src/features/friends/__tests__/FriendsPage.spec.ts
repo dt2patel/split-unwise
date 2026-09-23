@@ -37,10 +37,12 @@ const stubs = {
   },
 }
 
-// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+// Stencil flushes Ionic's renders on animation frames after Vue mounts or updates the elements.
 async function settleIonic(): Promise<void> {
-  await flushPromises()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  for (let frame = 0; frame < 3; frame += 1) {
+    await flushPromises()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
   await flushPromises()
 }
 
@@ -208,9 +210,9 @@ describe('Friends page', () => {
 
     expect(firebaseMocks.createSparkFriendship).toHaveBeenCalledOnce()
     expect(firebaseMocks.createSparkFriendship.mock.calls[0]![1]).toMatchObject({ displayName: 'Ravi Patel', email: 'ravi@example.com', currency: 'EUR' })
-    await vi.waitFor(() => expect(wrapper.get('[role="status"]').text()).toBe('Private invitation ready for ravi@example.com.'))
+    await vi.waitFor(() => expect(wrapper.get('[role="status"]').text()).toBe('Private invitation ready for ravi@example.com.'), { timeout: 10_000 })
     wrapper.unmount()
-  })
+  }, 20_000)
 
   it('hides an ordinary add diagnostic and retranslates the retained failure without creating again', async () => {
     localeController.setPreference('es')

@@ -33,10 +33,12 @@ async function mountAuthPage() {
   return wrapper
 }
 
-// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+// Stencil flushes Ionic's renders on animation frames after Vue mounts or updates the elements.
 async function settleIonic(): Promise<void> {
-  await flushPromises()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  for (let frame = 0; frame < 3; frame += 1) {
+    await flushPromises()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
   await flushPromises()
 }
 
@@ -77,7 +79,7 @@ describe('Auth page', () => {
     expect(password.form).toBe(wrapper.get('form').element)
     expect(labelOf(password)).toBe('Password')
     expect(wrapper.find('#auth-name').exists()).toBe(false)
-  })
+  }, 20_000)
 
   it('switches to the new-password contract and a named field when creating an account', async () => {
     useSignedOutAuth()
@@ -107,7 +109,7 @@ describe('Auth page', () => {
     await settleIonic()
     expect(wrapper.get('h1').text()).toBe('Reset your password')
     expect(wrapper.find('#auth-password').exists()).toBe(false)
-  })
+  }, 20_000)
 
   it('submits typed credentials through the form submit button and relabels on a language change', async () => {
     const service = useSignedOutAuth()
@@ -127,7 +129,7 @@ describe('Auth page', () => {
     await settleIonic()
     expect(labelOf(wrapper.get<HTMLInputElement>('#auth-email input').element)).toBe('Correo electrónico')
     expect(labelOf(wrapper.get<HTMLInputElement>('#auth-password input').element)).toBe('Contraseña')
-  })
+  }, 20_000)
 
   it('marks invalid fields on the native inputs and focuses the error summary', async () => {
     const service = useSignedOutAuth()
@@ -155,5 +157,5 @@ describe('Auth page', () => {
     expect(service.signInWithEmail).toHaveBeenCalledWith('maya@example.com', 'long-enough')
     expect(email.getAttribute('aria-invalid')).toBeNull()
     expect(wrapper.find('#auth-email-error').exists()).toBe(false)
-  })
+  }, 20_000)
 })

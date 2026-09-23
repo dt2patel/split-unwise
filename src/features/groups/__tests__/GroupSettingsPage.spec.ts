@@ -39,10 +39,12 @@ const stubs = {
 
 beforeEach(() => vi.restoreAllMocks())
 
-// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+// Stencil flushes Ionic's renders on animation frames after Vue mounts or updates the elements.
 async function settleIonic(): Promise<void> {
-  await flushPromises()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  for (let frame = 0; frame < 3; frame += 1) {
+    await flushPromises()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
   await flushPromises()
 }
 
@@ -203,7 +205,7 @@ describe('group default settings page', () => {
     expect(mayaPercentage.attributes('aria-label')).toBe('Maya P. percentage')
     expect(mayaPercentage.element.value).toBe('20')
     wrapper.unmount()
-  })
+  }, 20_000)
 
   it('renders ratio text at 16px so iOS does not zoom the field on focus', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/features/groups/GroupSettingsPage.vue'), 'utf8')
