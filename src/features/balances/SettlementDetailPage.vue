@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch, type ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import {
@@ -9,6 +9,7 @@ import {
   IonContent,
   IonHeader,
   IonPage,
+  IonTextarea,
   IonTitle,
   IonToolbar,
 } from '@ionic/vue'
@@ -28,7 +29,7 @@ const showVoidForm = ref(false)
 const voidReason = ref('')
 const voidError = ref('')
 const isVoiding = ref(false)
-const voidReasonInput = ref<HTMLTextAreaElement>()
+const voidReasonInput = ref<ComponentPublicInstance>()
 let loadNumber = 0
 
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
@@ -81,7 +82,15 @@ async function openVoidForm(): Promise<void> {
   showVoidForm.value = true
   voidError.value = ''
   await nextTick()
-  voidReasonInput.value?.focus()
+  await focusVoidReason()
+}
+
+async function focusVoidReason(): Promise<void> {
+  // getInputElement waits for a freshly opened ion-textarea to render its native textarea before focusing it.
+  const field: unknown = voidReasonInput.value?.$el
+  if (!(field instanceof HTMLElement) || !('getInputElement' in field) || typeof field.getInputElement !== 'function') return
+  const textarea: unknown = await field.getInputElement()
+  if (textarea instanceof HTMLElement) textarea.focus()
 }
 
 async function voidSettlement(): Promise<void> {
@@ -96,7 +105,7 @@ async function voidSettlement(): Promise<void> {
   if (!reason) {
     voidError.value = 'Enter a reason for voiding this payment record.'
     await nextTick()
-    voidReasonInput.value?.focus()
+    await focusVoidReason()
     return
   }
   isVoiding.value = true
@@ -198,14 +207,14 @@ async function dismissOperation(operationId: string): Promise<void> {
             <article v-for="operation in voidOperations" :key="operation.operationId" :data-operation-id="operation.operationId" :data-status="operation.status">
               <div><strong>{{ operationStatus(operation.status) }}</strong><small>{{ operation.error ?? 'Saving this void request.' }}</small></div>
               <div v-if="operation.status === 'failed'" class="settlement-operations__actions">
-                <button type="button" data-action="retry-operation" :disabled="!operation.retryable" @click="retryOperation(operation.operationId)">Retry</button>
-                <button type="button" data-action="discard-operation" @click="discardOperation(operation.operationId)">Discard</button>
+                <ion-button class="settlement-operations__tinted" size="small" fill="solid" data-action="retry-operation" :disabled="!operation.retryable" @click="retryOperation(operation.operationId)">Retry</ion-button>
+                <ion-button size="small" fill="outline" color="danger" data-action="discard-operation" @click="discardOperation(operation.operationId)">Discard</ion-button>
               </div>
               <div v-else-if="operation.status === 'conflicted'" class="settlement-operations__actions">
-                <button type="button" data-action="reload-operation" @click="reloadOperation">Reload</button>
-                <button type="button" data-action="dismiss-operation" @click="dismissOperation(operation.operationId)">Dismiss</button>
+                <ion-button class="settlement-operations__tinted" size="small" fill="solid" data-action="reload-operation" @click="reloadOperation">Reload</ion-button>
+                <ion-button class="settlement-operations__tinted" size="small" fill="solid" data-action="dismiss-operation" @click="dismissOperation(operation.operationId)">Dismiss</ion-button>
               </div>
-              <button v-else type="button" data-action="reload-operation" @click="reloadOperation">Reload</button>
+              <ion-button v-else class="settlement-operations__tinted" size="small" fill="solid" data-action="reload-operation" @click="reloadOperation">Reload</ion-button>
             </article>
           </section>
 
@@ -215,13 +224,24 @@ async function dismissOperation(operationId: string): Promise<void> {
 
           <form v-if="!settlement.void && canVoid && showVoidForm" class="void-form" @submit.prevent="voidSettlement">
             <h2>Why is this record being voided?</h2>
-            <label>
-              <span>Reason</span>
-              <textarea ref="voidReasonInput" v-model="voidReason" data-testid="void-reason" maxlength="500" rows="3" required />
-            </label>
+            <div class="void-form__field">
+              <span id="void-reason-label">Reason</span>
+              <ion-textarea
+                ref="voidReasonInput"
+                v-model="voidReason"
+                class="void-form__reason"
+                data-testid="void-reason"
+                :maxlength="500"
+                :rows="3"
+                autocapitalize="sentences"
+                :spellcheck="true"
+                required
+                aria-labelledby="void-reason-label"
+              />
+            </div>
             <p v-if="voidError" role="alert" class="settlement-detail__error">{{ voidError }}</p>
-            <div>
-              <button type="button" :disabled="isVoiding" @click="showVoidForm = false">Cancel</button>
+            <div class="void-form__actions">
+              <ion-button class="void-form__cancel" fill="solid" data-action="cancel-void" :disabled="isVoiding" @click="showVoidForm = false">Cancel</ion-button>
               <ion-button type="submit" color="danger" data-action="void-settlement" :disabled="isVoiding" @click="voidSettlement">{{ isVoiding ? 'Voiding…' : 'Void record' }}</ion-button>
             </div>
           </form>
@@ -264,14 +284,16 @@ async function dismissOperation(operationId: string): Promise<void> {
 .settlement-operations strong { font-size: .8rem; }
 .settlement-operations small { margin-top: 2px; color: var(--ion-color-medium); font-size: .7rem; }
 .settlement-operations__actions { display: flex; gap: 6px; }
-.settlement-operations button { min-width: 62px; min-height: 44px; border: 0; border-radius: 10px; background: var(--su-lilac); color: var(--ion-color-primary); font-weight: 700; }
+.settlement-operations ion-button { --border-radius: 10px; --box-shadow: none; min-width: 62px; min-height: 44px; margin: 0; font-weight: 700; text-transform: none; }
+.settlement-operations__tinted,
+.void-form__cancel { --background: var(--su-lilac); --background-activated: color-mix(in srgb, var(--ion-color-primary) 22%, var(--su-lilac)); --background-focused: color-mix(in srgb, var(--ion-color-primary) 22%, var(--su-lilac)); --background-hover: color-mix(in srgb, var(--ion-color-primary) 12%, var(--su-lilac)); --box-shadow: none; --color: var(--ion-color-primary); }
 .settlement-detail__main > ion-button { min-height: 46px; margin-top: 16px; --border-radius: 13px; text-transform: none; }
-.void-form label { display: grid; gap: 6px; color: var(--ion-color-medium); font-size: .75rem; font-weight: 650; }
-.void-form textarea { min-height: 76px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--su-divider) 70%, transparent); border-radius: 12px; outline: none; background: var(--su-surface); color: var(--ion-text-color); font: inherit; font-size: 16px; resize: vertical; }
-.void-form textarea:focus { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 14%, transparent); }
-.void-form > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-.void-form button { min-width: 72px; min-height: 44px; border: 0; border-radius: 11px; background: var(--su-lilac); color: var(--ion-color-primary); font-weight: 700; }
+.void-form__field { display: grid; gap: 6px; color: var(--ion-color-medium); font-size: .75rem; font-weight: 650; }
+.void-form__reason { --color: var(--ion-text-color); --padding-top: 10px; --padding-bottom: 10px; --padding-start: 12px; --padding-end: 12px; min-height: 76px; border: 1px solid color-mix(in srgb, var(--su-divider) 70%, transparent); border-radius: 12px; background: var(--su-surface); color: var(--ion-text-color); font-size: 16px; }
+.void-form__reason:focus-within { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 14%, transparent); }
+.void-form__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .void-form ion-button { min-height: 44px; margin: 0; --border-radius: 11px; text-transform: none; }
+.void-form__cancel { min-width: 72px; font-weight: 700; }
 .settlement-detail__status { padding: 44px 8px; color: var(--ion-color-medium); text-align: center; }
 .settlement-detail__error { color: var(--ion-color-danger); font-size: .8rem; line-height: 1.4; }
 @media (prefers-reduced-motion: reduce) { .settlement-detail * { transition-duration: 0ms !important; animation-duration: 0ms !important; } }

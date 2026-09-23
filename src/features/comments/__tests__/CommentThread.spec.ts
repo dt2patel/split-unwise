@@ -1,4 +1,7 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { IonButton } from '@ionic/vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CommandConflictError, CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -7,15 +10,24 @@ import { appPrincipalKey, createAppSession, getAppSession, setAppSessionForTesti
 import CommentThread from '../CommentThread.vue'
 
 const principalKey = appPrincipalKey({ mode: 'demo', projectId: 'split-unwise-demo', uid: 'maya-p' })
+const threadSource = readFileSync(resolve(process.cwd(), 'src/features/comments/CommentThread.vue'), 'utf8')
 
 beforeEach(() => {
+  document.body.innerHTML = ''
   setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
 })
 
+/** Ionic controls only render inside a connected document, so the thread is attached and its composer awaited. */
+async function mountThread(props: { groupId: string; expenseId: string; closed: boolean }): Promise<VueWrapper> {
+  const wrapper = mount(CommentThread, { attachTo: document.body, props })
+  await flushPromises()
+  if (!props.closed) await vi.waitFor(() => expect(wrapper.find('textarea').exists()).toBe(true))
+  return wrapper
+}
+
 describe('comment thread', () => {
   it('renders a labelled chronological list with valid times and author-only delete actions', async () => {
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'cabin-deposit', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'cabin-deposit', closed: false })
 
     const comments = wrapper.get('[data-testid="comment-list"]')
     expect(comments.attributes('aria-labelledby')).toBe('comments-title')
@@ -25,8 +37,7 @@ describe('comment thread', () => {
   })
 
   it('trims and saves a comment through the app queue without duplicating its projection', async () => {
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
 
     await wrapper.get('textarea').setValue('  Bring bags.  ')
     await wrapper.get('form').trigger('submit')
@@ -39,8 +50,7 @@ describe('comment thread', () => {
   })
 
   it('rejects a blank body with a focused error summary and no queue write', async () => {
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     const summary = wrapper.get('[data-testid="comment-error"]')
     const summaryElement = summary.element as HTMLElement
     const focus = summaryElement.focus.bind(summaryElement)
@@ -63,8 +73,7 @@ describe('comment thread', () => {
       handlers: { 'comment.add': async () => { const error = new Error('offline'); Object.assign(error, { code: 'unavailable' }); throw error } },
     })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
 
     await wrapper.get('textarea').setValue('Keep this draft')
     await wrapper.get('form').trigger('submit')
@@ -94,8 +103,7 @@ describe('comment thread', () => {
       } },
     })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage(), receipts }), queue, receipts })
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     const input = wrapper.get<HTMLInputElement>('input[type="file"]')
     Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['photo'], 'locked.jpg', { type: 'image/jpeg' })] })
     await input.trigger('change')
@@ -103,9 +111,10 @@ describe('comment thread', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.get('textarea').attributes('readonly')).toBeDefined()
+    await vi.waitFor(() => expect(wrapper.get('textarea').attributes('readonly')).toBeDefined())
     expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-action="remove-comment-attachment"]').attributes('disabled')).toBeDefined()
+    expect(buttonDisabled(wrapper, 'attach-comment-file')).toBe(true)
+    expect(buttonDisabled(wrapper, 'remove-comment-attachment')).toBe(true)
     expect(wrapper.text()).toContain('Retry sends exactly this text and these attachments')
     expect(queue.snapshot()[0]?.envelope).toMatchObject({ body: 'Immutable failed comment', attachmentRefs: ['local-receipt:locked-comment-file'] })
 
@@ -124,20 +133,20 @@ describe('comment thread', () => {
       handlers: { 'comment.add': async () => { throw new CommandConflictError('Comment target changed') } },
     })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     await wrapper.get('textarea').setValue('Conflicted draft')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
     expect(queue.snapshot()[0]?.status).toBe('conflicted')
     expect(wrapper.get('[data-action="discard-comment-conflict"]').text()).toContain('Discard')
-    expect(wrapper.get('textarea').attributes('readonly')).toBeDefined()
+    await vi.waitFor(() => expect(wrapper.get('textarea').attributes('readonly')).toBeDefined())
+    expect(buttonDisabled(wrapper, 'post-comment')).toBe(true)
     await wrapper.get('[data-action="discard-comment-conflict"]').trigger('click')
     await flushPromises()
     expect(queue.snapshot()).toEqual([])
     expect(wrapper.get('textarea').element).toHaveProperty('value', '')
-    expect(wrapper.get<HTMLButtonElement>('button[type="submit"]').element.disabled).toBe(false)
+    expect(buttonDisabled(wrapper, 'post-comment')).toBe(false)
   })
 
   it('recovers from a pre-queue attachment claim failure and lets the attachment be removed by filename', async () => {
@@ -151,8 +160,7 @@ describe('comment thread', () => {
       },
     }
     setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(), receipts: capture }))
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     const input = wrapper.get<HTMLInputElement>('input[type="file"]')
     Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['photo'], 'groceries.jpg', { type: 'image/jpeg' })] })
     await input.trigger('change')
@@ -165,7 +173,7 @@ describe('comment thread', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="comment-error"]').text()).toContain('no longer available')
-    expect(wrapper.get<HTMLButtonElement>('button[type="submit"]').element.disabled).toBe(false)
+    expect(buttonDisabled(wrapper, 'post-comment')).toBe(false)
     expect(wrapper.text()).toContain('groceries.jpg')
     expect(wrapper.text()).not.toContain(reference)
     expect(getAppSession().queue.snapshot()).toEqual([])
@@ -187,8 +195,7 @@ describe('comment thread', () => {
       } },
     })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
-    const first = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const first = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
 
     await first.get('textarea').setValue('Durable pending note')
     void first.get('form').trigger('submit')
@@ -196,8 +203,7 @@ describe('comment thread', () => {
     expect(first.findAll('[data-comment-id^="pending:"]')).toHaveLength(1)
     first.unmount()
 
-    const recreated = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const recreated = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     expect(recreated.findAll('[data-comment-id^="pending:"]')).toHaveLength(1)
     expect(recreated.get('textarea').element).toHaveProperty('value', 'Durable pending note')
 
@@ -211,8 +217,7 @@ describe('comment thread', () => {
     const added = await repository.comments.add({ kind: 'comment.add', operationId: 'own-visible-comment', groupId: 'lake-house-weekend', expenseId: 'groceries', body: 'My visible note', attachmentRefs: [] })
     if (added.status !== 'saved') throw new Error('Expected save')
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
 
     const row = wrapper.get(`[data-comment-id="${added.comment.commentId}"]`)
     expect(row.find('[data-action="edit-comment"]').exists()).toBe(false)
@@ -232,14 +237,12 @@ describe('comment thread', () => {
       handlers: { 'comment.delete': async () => { throw Object.assign(new Error('offline'), { code: 'unavailable' }) } },
     })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
-    const first = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const first = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     await first.get(`[data-comment-id="${added.comment.commentId}"] [data-action="delete-comment"]`).trigger('click')
     await flushPromises()
     first.unmount()
 
-    const recreated = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const recreated = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     const row = recreated.get(`[data-comment-id="${added.comment.commentId}"]`)
     expect(row.attributes('data-sync-state')).toBe('failed')
     expect(row.find('[data-action="delete-comment"]').exists()).toBe(false)
@@ -258,14 +261,12 @@ describe('comment thread', () => {
       handlers: { 'comment.delete': async () => { throw new CommandConflictError('Comment changed remotely', { commentId: added.comment.commentId }) } },
     })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
-    const first = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const first = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     await first.get(`[data-comment-id="${added.comment.commentId}"] [data-action="delete-comment"]`).trigger('click')
     await flushPromises()
     first.unmount()
 
-    const recreated = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const recreated = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     expect(recreated.get(`[data-comment-id="${added.comment.commentId}"]`).attributes('data-sync-state')).toBe('conflicted')
     await recreated.get('[data-action="resolve-comment-delete-conflict"]').trigger('click')
     await flushPromises()
@@ -294,8 +295,7 @@ describe('comment thread', () => {
       handlers: { 'comment.delete': async () => { throw new CommandConflictError('Comment changed remotely') } },
     })
     setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
     await wrapper.get(`[data-comment-id="${added.comment.commentId}"] [data-action="delete-comment"]`).trigger('click')
     await flushPromises()
     failReload = true
@@ -308,11 +308,69 @@ describe('comment thread', () => {
   })
 
   it('keeps prior comments visible while closing the composer on a deleted expense', async () => {
-    const wrapper = mount(CommentThread, { props: { groupId: 'lake-house-weekend', expenseId: 'cabin-deposit', closed: true } })
-    await flushPromises()
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'cabin-deposit', closed: true })
 
     expect(wrapper.get('[data-testid="comment-list"]').text()).toContain('Perfect, thank you!')
     expect(wrapper.text()).toContain('Comments are closed')
     expect(wrapper.find('form').exists()).toBe(false)
   })
 })
+
+describe('comment composer Ionic controls', () => {
+  it('keeps the composer an auto-growing Ionic textarea named by its label and marked invalid with the error', async () => {
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
+    const textarea = wrapper.get('textarea')
+
+    expect(wrapper.get('ion-textarea').attributes('auto-grow')).toBeDefined()
+    expect(document.getElementById(textarea.attributes('aria-labelledby')!)?.textContent).toBe('Add a comment')
+    expect(textarea.attributes('aria-describedby')).toBe('comment-error')
+    expect(textarea.attributes('aria-invalid')).toBeUndefined()
+    expect(threadSource).toMatch(/\.comment-thread__body\s*\{[^}]*font-size:\s*16px/)
+
+    await textarea.setValue('   ')
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(textarea.attributes('aria-invalid')).toBe('true'))
+    expect(document.getElementById(textarea.attributes('aria-describedby')!)?.textContent).toContain('Enter a comment')
+  })
+
+  it('posts through the Ionic submit button the same way the native form submit did', async () => {
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
+
+    expect(ionButton(wrapper, 'post-comment').props('type')).toBe('submit')
+    await wrapper.get('textarea').setValue('Posted with the button')
+    await wrapper.get('[data-action="post-comment"]').trigger('click')
+
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Comment saved'))
+    expect(wrapper.findAll('[data-comment-id]').filter((item) => item.text().includes('Posted with the button'))).toHaveLength(1)
+    expect(wrapper.get('textarea').element).toHaveProperty('value', '')
+  })
+
+  it('opens the hidden file input from the Ionic Attach file button', async () => {
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'groceries', closed: false })
+    const input = wrapper.get<HTMLInputElement>('input[type="file"]')
+    const openPicker = vi.spyOn(input.element, 'click')
+
+    expect(input.attributes('aria-hidden')).toBe('true')
+    expect(input.attributes('tabindex')).toBe('-1')
+    await wrapper.get('[data-action="attach-comment-file"]').trigger('click')
+    expect(openPicker).toHaveBeenCalledOnce()
+  })
+
+  it('renders inline comment actions as small clear Ionic buttons with destructive ones in danger', async () => {
+    const wrapper = await mountThread({ groupId: 'lake-house-weekend', expenseId: 'cabin-deposit', closed: false })
+    const deleteButton = ionButton(wrapper, 'delete-comment')
+
+    expect([deleteButton.props('size'), deleteButton.props('fill'), deleteButton.props('color')]).toEqual(['small', 'clear', 'danger'])
+    expect(ionButton(wrapper, 'attach-comment-file').props('size')).toBe('small')
+  })
+})
+
+function ionButton(wrapper: VueWrapper, action: string) {
+  const match = wrapper.findAllComponents(IonButton).find((button) => button.attributes('data-action') === action)
+  if (!match) throw new Error(`Missing Ionic button ${action}`)
+  return match
+}
+
+function buttonDisabled(wrapper: VueWrapper, action: string): boolean {
+  return (wrapper.get(`[data-action="${action}"]`).element as HTMLElement & { disabled?: boolean }).disabled === true
+}
