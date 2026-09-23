@@ -378,7 +378,7 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
       </li>
     </ol>
 
-    <p ref="errorSummary" class="comment-thread__error" data-testid="comment-error" role="alert" tabindex="-1">{{ error }}</p>
+    <p id="comment-error" ref="errorSummary" class="comment-thread__error" data-testid="comment-error" role="alert" tabindex="-1">{{ error }}</p>
     <p v-if="status" role="status">{{ status }}</p>
     <p v-if="closed" class="comment-thread__closed">Comments are closed because this expense was deleted.</p>
     <form v-else class="comment-thread__composer" aria-label="Add a comment" @submit.prevent="submit">

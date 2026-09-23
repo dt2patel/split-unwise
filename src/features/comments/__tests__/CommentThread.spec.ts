@@ -330,6 +330,7 @@ describe('comment composer Ionic controls', () => {
     await textarea.setValue('   ')
     await wrapper.get('form').trigger('submit')
     await vi.waitFor(() => expect(textarea.attributes('aria-invalid')).toBe('true'))
+    expect(document.getElementById(textarea.attributes('aria-describedby')!)?.textContent).toContain('Enter a comment')
   })
 
   it('posts through the Ionic submit button the same way the native form submit did', async () => {
