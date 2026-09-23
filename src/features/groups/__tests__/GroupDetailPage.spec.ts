@@ -295,10 +295,19 @@ describe('Lake House group journal', () => {
     await handle.result()
   })
 
-  it('refreshes on Ionic view entry and gives linked Activity rows a full tap target', () => {
+  it('refreshes on Ionic view entry and gives linked Activity rows a full native tap target', async () => {
     expect(groupDetailSource).toContain('onIonViewWillEnter')
-    expect(groupDetailSource).toContain('class="activity-list__body"')
-    expect(groupDetailSource).toMatch(/\.activity-list__body\s*\{[^}]*min-height:\s*44px/s)
+    expect(groupDetailSource).toMatch(/\.activity-list ion-item\s*\{[^}]*--min-height:\s*44px/s)
+
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+    await wrapper.get('[data-view="activity"]').trigger('click')
+    await flushPromises()
+
+    const row = wrapper.get('[data-activity-id="activity-groceries"]')
+    expect(row.attributes('href')).toBe('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    expect(row.attributes('data-sync-state')).toBe('fresh')
+    expect(row.text()).toContain('Maya P. added Groceries')
+    expect(row.get('time').attributes('datetime')).toMatch(/Z$/)
   })
 
   it('starts one non-blocking coalesced catch-up and does not reload the journal when nothing posts', async () => {

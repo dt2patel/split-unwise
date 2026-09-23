@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { IonItem } from '@ionic/vue'
 import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import { CommandQueue, createMemoryCommandStorage } from '../../../data/commandQueue'
@@ -93,9 +94,38 @@ describe('global Activity page', () => {
       'activity-groceries', 'activity-kayak', 'activity-cabin-comment', 'activity-cabin', 'activity-dinner', 'activity-gas',
     ])
     expect(rows[0].text()).toContain('Maya P. added Groceries')
-    expect(rows[0].get('a').attributes('href')).toBe('/tabs/activity/expenses/groceries?groupId=lake-house-weekend')
+    const groceries = wrapper.findAllComponents(IonItem).find((item) => item.attributes('data-activity-id') === 'activity-groceries')
+    expect(groceries?.props('routerLink')).toBe('/tabs/activity/expenses/groceries?groupId=lake-house-weekend')
     expect(rows.every((row) => row.get('time').attributes('datetime')?.endsWith('Z'))).toBe(true)
     expect(wrapper.findAll('h1')).toHaveLength(1)
+  })
+
+  it('renders restore rows as native buttons, linked rows as routed items, and inert rows as plain items', async () => {
+    const source = createDemoRepository()
+    await source.commands.execute({ kind: 'group.delete', operationId: 'delete-for-row-shapes', groupId: 'lake-house-weekend' })
+    const inert: ActivityItem = {
+      id: 'activity-inert-row', groupId: 'lake-house-weekend', operationId: 'inert-row', kind: 'expense.created',
+      subject: { kind: 'expense', id: 'inert-row', label: 'Firewood' }, actor: { id: 'maya-p', displayName: 'Maya P.' },
+      createdAt: '2026-08-31T12:00:00.000Z', syncState: 'pending',
+    }
+    const repository = { ...source, activity: { ...source.activity, async listForAccount(query: ActivityQuery) {
+      const page = await source.activity.listForAccount(query)
+      return { ...page, items: [inert, ...page.items] }
+    } } }
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountActivity({ attachTo: document.body })
+    const native = (selector: string) => wrapper.get(selector).element.shadowRoot?.firstElementChild
+
+    await vi.waitFor(() => expect(native('[data-action="restore-group"]')?.tagName).toBe('BUTTON'))
+    expect(wrapper.get('[data-action="restore-group"]').attributes('data-activity-id')).toBeTruthy()
+    expect(wrapper.get('[data-action="restore-group"]').classes()).toContain('ion-activatable')
+    expect(wrapper.get('[data-action="restore-group"]').element.shadowRoot?.querySelector('.item-detail-icon')).toBeNull()
+    expect(native('[data-activity-id="activity-groceries"]')?.tagName).toBe('A')
+    expect(native('[data-activity-id="activity-groceries"]')?.getAttribute('href')).toBe('/tabs/activity/expenses/groceries?groupId=lake-house-weekend')
+    expect(wrapper.get('[data-activity-id="activity-groceries"]').element.shadowRoot?.querySelector('.item-detail-icon')).not.toBeNull()
+    expect(native('[data-activity-id="activity-inert-row"]')?.tagName).toBe('DIV')
+    expect(wrapper.get('[data-activity-id="activity-inert-row"]').classes()).not.toContain('ion-activatable')
+    wrapper.unmount()
   })
 
   it('filters without mutating canonical history', async () => {
@@ -543,11 +573,11 @@ describe('Activity durable projection', () => {
   })
 })
 
-async function mountActivity() {
+async function mountActivity(options: { readonly attachTo?: HTMLElement } = {}) {
   const router = createAppRouter()
   await router.push('/tabs/activity')
   await router.isReady()
-  const wrapper = mount(ActivityPage, { global: { plugins: [createPinia(), router], stubs: ionicStubs } })
+  const wrapper = mount(ActivityPage, { ...options, global: { plugins: [createPinia(), router], stubs: ionicStubs } })
   await flushPromises()
   return wrapper
 }

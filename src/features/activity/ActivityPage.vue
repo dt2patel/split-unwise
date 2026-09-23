@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, shallowRef, type ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
-import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonLabel, IonModal, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToolbar } from '@ionic/vue'
+import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonItem, IonLabel, IonList, IonModal, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToolbar } from '@ionic/vue'
 import { arrowUndoOutline } from 'ionicons/icons'
 import { useI18n } from '../../app/i18n'
 import { activityDestination, activityText, useActivityStore } from './activityStore'
@@ -127,24 +127,28 @@ function translateMessage(message: DisplayMessage | undefined): string | undefin
         <p v-if="status" class="activity-page__status" :role="activityError ? 'alert' : 'status'">{{ status }}</p>
         <p v-if="feedbackCopy" class="activity-page__feedback" role="status" aria-live="polite">{{ feedbackCopy }}</p>
         <p v-if="!status && items.length === 0" class="activity-page__status">{{ t('activity.empty') }}</p>
-        <ol v-else-if="!status" class="activity-list" :aria-label="t('activity.accountAria')">
-          <li v-for="item in items" :key="item.id" :data-activity-id="item.id" :data-sync-state="item.syncState">
-            <button v-if="isRestorable(item)" type="button" class="activity-list__body activity-list__restore" :data-action="item.kind === 'expense.deleted' ? 'restore-expense' : 'restore-group'" @click="openRestore(item)">
-              <span class="activity-list__copy"><strong>{{ activityText(item, t) }}</strong><time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time></span>
-              <span class="activity-list__restore-action"><ion-icon :icon="arrowUndoOutline" aria-hidden="true" />{{ t('activity.restore') }}</span>
-            </button>
-            <router-link v-else-if="activityDestination(item, 'activity')" :to="activityDestination(item, 'activity')!" class="activity-list__body">
-              <strong>{{ activityText(item, t) }}</strong>
-              <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
-              <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ syncStateLabel(item.syncState) }}</span>
-            </router-link>
-            <div v-else class="activity-list__body">
-              <strong>{{ activityText(item, t) }}</strong>
-              <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
-              <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ syncStateLabel(item.syncState) }}</span>
-            </div>
-          </li>
-        </ol>
+        <ion-list v-else-if="!status" class="activity-list" lines="full" :aria-label="t('activity.accountAria')">
+          <template v-for="item in items" :key="item.id">
+            <ion-item v-if="isRestorable(item)" button :detail="false" :data-activity-id="item.id" :data-sync-state="item.syncState" :data-action="item.kind === 'expense.deleted' ? 'restore-expense' : 'restore-group'" @click="openRestore(item)">
+              <ion-label class="activity-list__copy"><strong>{{ activityText(item, t) }}</strong><time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time></ion-label>
+              <span slot="end" class="activity-list__restore-action"><ion-icon :icon="arrowUndoOutline" aria-hidden="true" />{{ t('activity.restore') }}</span>
+            </ion-item>
+            <ion-item v-else-if="activityDestination(item, 'activity')" :router-link="activityDestination(item, 'activity')" detail :data-activity-id="item.id" :data-sync-state="item.syncState">
+              <ion-label class="activity-list__copy">
+                <strong>{{ activityText(item, t) }}</strong>
+                <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
+                <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ syncStateLabel(item.syncState) }}</span>
+              </ion-label>
+            </ion-item>
+            <ion-item v-else :data-activity-id="item.id" :data-sync-state="item.syncState">
+              <ion-label class="activity-list__copy">
+                <strong>{{ activityText(item, t) }}</strong>
+                <time :datetime="item.createdAt">{{ formatDate(item.createdAt) }}</time>
+                <span v-if="item.syncState !== 'fresh'" class="activity-list__state">{{ syncStateLabel(item.syncState) }}</span>
+              </ion-label>
+            </ion-item>
+          </template>
+        </ion-list>
         <ion-button v-if="nextCursor" expand="block" fill="outline" data-action="load-more-activity" :disabled="isLoading || isFiltering || isLoadingMore" @click="store.loadMore">
           {{ isLoadingMore ? t('activity.loadingMore') : t('activity.loadMore') }}
         </ion-button>
@@ -182,21 +186,16 @@ function translateMessage(message: DisplayMessage | undefined): string | undefin
 .activity-page ion-segment-button { min-width: 0; min-height: 44px; --border-radius: 11px; --color: var(--ion-color-medium); --color-checked: var(--ion-color-primary); --indicator-color: var(--su-surface); --padding-end: 6px; --padding-start: 6px; font-size: .75rem; text-transform: none; }
 .activity-page__status { min-height: 44px; margin: 16px 0; color: var(--ion-color-medium); line-height: 1.45; }
 .activity-page__feedback { margin: 0 0 12px; padding: 10px 12px; border-radius: 11px; background: color-mix(in srgb, var(--ion-color-success) 10%, var(--su-surface)); color: var(--ion-color-success-shade); font-size: .84rem; line-height: 1.4; }
-.activity-list { margin: 0; padding: 0; list-style: none; }
-.activity-list li { border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); }
-.activity-list__body { display: grid; min-height: 70px; align-content: center; gap: 5px; padding: 11px 4px; color: inherit; text-decoration: none; overflow-wrap: anywhere; }
-.activity-list__restore { box-sizing: border-box; width: 100%; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border: 0; border-radius: 10px; background: transparent; font: inherit; text-align: start; }
-.activity-list__copy { display: grid; min-width: 0; gap: 5px; }
+.activity-list { margin: 0; padding: 0; background: transparent; }
+.activity-list ion-item { --background: transparent; --border-color: color-mix(in srgb, var(--su-divider) 45%, transparent); --border-width: 0 0 1px 0; --min-height: 70px; --padding-start: 4px; --inner-padding-end: 4px; color: var(--su-text); }
+.activity-list__copy { display: grid; min-width: 0; gap: 5px; margin: 11px 0; overflow-wrap: anywhere; }
 .activity-list__restore-action { display: inline-flex; min-height: 44px; align-items: center; gap: 5px; margin-inline-start: 12px; color: var(--ion-color-primary); font-size: .78rem; font-weight: 700; }
 .activity-list__restore-action ion-icon { font-size: 1.05rem; }
-a.activity-list__body { border-radius: 10px; }
-a.activity-list__body:focus-visible { outline: 3px solid color-mix(in srgb, var(--ion-color-primary) 48%, transparent); outline-offset: -3px; }
-.activity-list__restore:focus-visible { outline: 3px solid color-mix(in srgb, var(--ion-color-primary) 48%, transparent); outline-offset: -3px; }
-.activity-list__body strong { font-size: 0.94rem; font-weight: 650; line-height: 1.35; }
-.activity-list__body time,
+.activity-list__copy strong { font-size: 0.94rem; font-weight: 650; line-height: 1.35; }
+.activity-list__copy time,
 .activity-list__state { color: var(--ion-color-medium); font-size: 0.76rem; line-height: 1.3; }
 .activity-list__state { text-transform: capitalize; }
-.activity-list li[data-sync-state="pending"] { animation: activity-enter 160ms ease-out both; }
+.activity-list ion-item[data-sync-state="pending"] { animation: activity-enter 160ms ease-out both; }
 @keyframes activity-enter { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
 .restore-card { box-sizing: border-box; display: flex; width: min(100%, 520px); min-height: 100%; flex-direction: column; align-items: center; margin: 0 auto; padding: 36px 20px calc(24px + env(safe-area-inset-bottom)); text-align: center; }
 .restore-card__mark { display: grid; width: 54px; height: 54px; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--ion-color-primary) 11%, var(--su-surface)); color: var(--ion-color-primary); }
@@ -210,7 +209,7 @@ a.activity-list__body:focus-visible { outline: 3px solid color-mix(in srgb, var(
 .restore-card > ion-button { width: 100%; min-height: 48px; margin-top: auto; text-transform: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .activity-list li[data-sync-state="pending"] { animation: none; }
+  .activity-list ion-item[data-sync-state="pending"] { animation: none; }
 }
 @media (max-width: 360px) {
   .activity-page ion-segment-button { --padding-end: 4px; --padding-start: 4px; font-size: .7rem; }
