@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ReceiptReview from '../components/ReceiptReview.vue'
 import { bindSheetKeyboardAvoidance, resolveSheetScrollHost } from '../components/useSheetKeyboardAvoidance'
+import { ionicSheetStubs } from './ionicSheetStubs'
 
 const members = [
   { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true },
@@ -75,7 +76,7 @@ describe('expense sheet keyboard avoidance', () => {
   it('updates the real keyboard inset and scrolls a focused bottom field into the visual viewport', () => {
     const viewport = new TestVisualViewport()
     Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
-    const wrapper = mount(ReceiptReview, { attachTo: document.body, props: {
+    const wrapper = mount(ReceiptReview, { attachTo: document.body, global: { stubs: ionicSheetStubs }, props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
     } })
     const sheet = wrapper.get<HTMLElement>('[data-sheet-scroll]').element
@@ -102,7 +103,7 @@ describe('expense sheet keyboard avoidance', () => {
     const viewport = new TestVisualViewport()
     viewport.height = 500
     Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
-    const wrapper = mount(ReceiptReview, { attachTo: document.body, props: {
+    const wrapper = mount(ReceiptReview, { attachTo: document.body, global: { stubs: ionicSheetStubs }, props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
     } })
     const sheet = wrapper.get<HTMLElement>('[data-sheet-scroll]').element
@@ -121,31 +122,32 @@ describe('expense sheet keyboard avoidance', () => {
     wrapper.unmount()
   })
 
-  it('uses sheet bounds and its sticky header to reveal a focused field hidden under the header', () => {
+  it('keeps the pinned toolbar outside the scroll surface, whose top bound reveals a field scrolled under it', () => {
     const viewport = new TestVisualViewport()
     viewport.height = 500
     Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
-    const wrapper = mount(ReceiptReview, { attachTo: document.body, props: {
+    const wrapper = mount(ReceiptReview, { attachTo: document.body, global: { stubs: ionicSheetStubs }, props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
     } })
     const sheet = wrapper.get<HTMLElement>('[data-sheet-scroll]').element
-    const header = wrapper.get<HTMLElement>('header').element
     const tip = wrapper.get<HTMLInputElement>('[data-testid="receipt-tip"]').element
+    expect(sheet.querySelector('header')).toBeNull()
+    expect(wrapper.get('[data-ionic-header]').element.contains(sheet)).toBe(false)
     let scrollDelta = 0
     Object.defineProperty(sheet, 'scrollBy', { configurable: true, value: (options: ScrollToOptions) => { scrollDelta += options.top ?? 0 } })
-    vi.spyOn(sheet, 'getBoundingClientRect').mockReturnValue(rect({ top: 300, bottom: 800 }))
-    vi.spyOn(header, 'getBoundingClientRect').mockReturnValue(rect({ top: 300, bottom: 354 }))
+    // The scroll surface starts where the 54px toolbar ends; the field sits partly above that edge.
+    vi.spyOn(sheet, 'getBoundingClientRect').mockReturnValue(rect({ top: 354, bottom: 800 }))
     vi.spyOn(tip, 'getBoundingClientRect').mockReturnValue(rect({ top: 332, bottom: 376 }))
 
     tip.focus()
 
-    expect(scrollDelta).toBeLessThan(0)
+    expect(scrollDelta).toBe(-42)
     wrapper.unmount()
   })
 
   it('uses window resize as a safe fallback when VisualViewport is unavailable', () => {
     Reflect.deleteProperty(window, 'visualViewport')
-    const wrapper = mount(ReceiptReview, { attachTo: document.body, props: {
+    const wrapper = mount(ReceiptReview, { attachTo: document.body, global: { stubs: ionicSheetStubs }, props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
     } })
     const sheet = wrapper.get<HTMLElement>('[data-sheet-scroll]').element
@@ -172,7 +174,7 @@ describe('expense sheet keyboard avoidance', () => {
     const viewport = new TestVisualViewport()
     Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
     const remove = vi.spyOn(viewport, 'removeEventListener')
-    const wrapper = mount(ReceiptReview, { attachTo: document.body, props: {
+    const wrapper = mount(ReceiptReview, { attachTo: document.body, global: { stubs: ionicSheetStubs }, props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
     } })
     const sheet = wrapper.get<HTMLElement>('[data-sheet-scroll]').element

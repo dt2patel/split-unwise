@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonTitle, IonToolbar } from '@ionic/vue'
+import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonTextarea, IonTitle, IonToolbar } from '@ionic/vue'
 import { calendarOutline, cameraOutline, cashOutline, documentTextOutline, peopleOutline, pricetagOutline, repeatOutline } from 'ionicons/icons'
 import { currencyExponent, toMinorUnits, type CurrencyCode } from '../../domain/money'
 import { useHaptics } from '../../composables/useHaptics'
@@ -223,7 +223,7 @@ async function selectReceipt(event: Event): Promise<void> {
             <ion-item id="receipt-sheet-trigger" button :detail="true" class="editor-row" :aria-label="hasReceipt ? 'Review attached receipt' : 'Add receipt image'" :aria-invalid="store.errors.receipt ? 'true' : undefined" :aria-describedby="store.errors.receipt ? 'expense-receipt-error' : undefined" @click="openReceipt"><ion-icon slot="start" :icon="cameraOutline" aria-hidden="true" /><ion-label>Receipt</ion-label><ion-note slot="end" class="editor-row__note">{{ receiptSummary }}</ion-note></ion-item>
             <p v-if="store.errors.receipt" id="expense-receipt-error" class="field-error">{{ store.errors.receipt }}</p>
             <input id="expense-receipt-input" ref="receiptInput" hidden tabindex="-1" aria-hidden="true" type="file" accept="image/jpeg,image/png,image/heic,image/webp" capture="environment" @change="selectReceipt">
-            <ion-item class="editor-row editor-row--notes"><ion-icon slot="start" :icon="documentTextOutline" aria-hidden="true" /><label class="editor-notes-field" for="expense-notes"><span>Notes</span><textarea id="expense-notes" v-model="store.editor.notes" rows="2" placeholder="Optional details"></textarea></label></ion-item>
+            <ion-item class="editor-row editor-row--notes"><ion-icon slot="start" :icon="documentTextOutline" aria-hidden="true" /><ion-textarea id="expense-notes" v-model="store.editor.notes" class="editor-notes-field" label="Notes" label-placement="stacked" :auto-grow="true" :rows="2" placeholder="Optional details" /></ion-item>
             <ion-item id="recurrence-sheet-trigger" button :detail="true" class="editor-row" :aria-invalid="store.errors.recurrence ? 'true' : undefined" :aria-describedby="store.errors.recurrence ? 'expense-recurrence-error' : undefined" @click="openSheet('recurrence', 'recurrence-sheet-trigger')"><ion-icon slot="start" :icon="repeatOutline" aria-hidden="true" /><ion-label>Repeat</ion-label><ion-note slot="end" class="editor-row__note">{{ recurrenceSummary }}</ion-note></ion-item>
             <p v-if="store.errors.recurrence" id="expense-recurrence-error" class="field-error">{{ store.errors.recurrence }}</p>
           </ion-list>
@@ -233,15 +233,14 @@ async function selectReceipt(event: Event): Promise<void> {
         </template>
       </main>
 
+      <!-- Each sheet renders its own ion-header and ion-content, so its toolbar stays pinned above the scrolling body. -->
       <ion-modal :is-open="Boolean(store.activeSheet)" :presenting-element="presentingElement" :can-dismiss="modalCanDismiss" @input="markSheetDirty" @change="markSheetDirty" @did-dismiss="closeSheet">
-        <ion-content class="expense-sheet-host">
-          <context-sheet v-if="store.activeSheet === 'context'" class="expense-sheet--ionic-content" :model-value="store.editor.groupId" :groups="store.availableGroups" @apply="applyContext" @cancel="closeSheet" />
-          <payer-sheet v-else-if="store.activeSheet === 'payers'" class="expense-sheet--ionic-content" :model-value="store.editor.payments" :members="store.eligibleMembers" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" :reimbursement="isReimbursement" @apply="applyPayers" @cancel="closeSheet" />
-          <participant-sheet v-else-if="store.activeSheet === 'participants'" class="expense-sheet--ionic-content" :model-value="store.editor.participants" :members="store.eligibleMembers" @apply="applyParticipants" @cancel="closeSheet" />
-          <split-editor v-else-if="store.activeSheet === 'split'" class="expense-sheet--ionic-content" :model-value="store.editor.split" :participants="store.eligibleMembers.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" @apply="applySplit" @cancel="closeSheet" @dirty="markSheetDirty" />
-          <recurrence-sheet v-else-if="store.activeSheet === 'recurrence'" class="expense-sheet--ionic-content" :model-value="store.editor.recurrence" :occurrence-edit-scope="store.editor.occurrenceEditScope" :is-recurring-instance="Boolean(store.recurringTemplateId)" :date="store.editor.date" @apply="applyRecurrence" @cancel="closeSheet" @dirty="markSheetDirty" />
-          <receipt-review v-else-if="store.activeSheet === 'receipt'" class="expense-sheet--ionic-content" :model-value="receiptItems" :members="store.eligibleMembers.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" :provider-message="store.receiptMessage" :image-url="receiptPreviewUrl" :durability="store.receiptDurability" :scan-state="store.receiptScanState" @confirm="confirmReceipt" @cancel="closeSheet" @dirty="markSheetDirty" />
-        </ion-content>
+        <context-sheet v-if="store.activeSheet === 'context'" :model-value="store.editor.groupId" :groups="store.availableGroups" @apply="applyContext" @cancel="closeSheet" @dirty="markSheetDirty" />
+        <payer-sheet v-else-if="store.activeSheet === 'payers'" :model-value="store.editor.payments" :members="store.eligibleMembers" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" :reimbursement="isReimbursement" @apply="applyPayers" @cancel="closeSheet" @dirty="markSheetDirty" />
+        <participant-sheet v-else-if="store.activeSheet === 'participants'" :model-value="store.editor.participants" :members="store.eligibleMembers" @apply="applyParticipants" @cancel="closeSheet" @dirty="markSheetDirty" />
+        <split-editor v-else-if="store.activeSheet === 'split'" :model-value="store.editor.split" :participants="store.eligibleMembers.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" @apply="applySplit" @cancel="closeSheet" @dirty="markSheetDirty" />
+        <recurrence-sheet v-else-if="store.activeSheet === 'recurrence'" :model-value="store.editor.recurrence" :occurrence-edit-scope="store.editor.occurrenceEditScope" :is-recurring-instance="Boolean(store.recurringTemplateId)" :date="store.editor.date" @apply="applyRecurrence" @cancel="closeSheet" @dirty="markSheetDirty" />
+        <receipt-review v-else-if="store.activeSheet === 'receipt'" :model-value="receiptItems" :members="store.eligibleMembers.filter((member) => store.editor.participants.includes(member.id))" :currency="store.editor.currency" :total-minor-amount="totalMinorAmount" :provider-message="store.receiptMessage" :image-url="receiptPreviewUrl" :durability="store.receiptDurability" :scan-state="store.receiptScanState" @confirm="confirmReceipt" @cancel="closeSheet" @dirty="markSheetDirty" />
       </ion-modal>
     </ion-content>
   </ion-page>
@@ -274,9 +273,7 @@ async function selectReceipt(event: Event): Promise<void> {
 .editor-row__note { min-width: 0; max-width: 46%; margin-inline-start: 8px; color: var(--ion-color-medium); font-size: 0.78rem; overflow-wrap: anywhere; text-align: end; white-space: normal; }
 .editor-row--notes { --min-height: 88px; align-items: flex-start; }
 .editor-row--notes ion-icon[slot="start"] { margin-top: 15px; }
-.editor-notes-field { display: grid; min-width: 0; flex: 1; gap: 3px; padding-block: 11px 8px; }
-.editor-notes-field > span { font-size: 0.94rem; }
-.editor-notes-field textarea { width: 100%; min-height: 44px; padding: 6px 0 0; border: 0; background: transparent; color: var(--ion-color-medium); font: inherit; line-height: 1.35; resize: none; text-align: start; }
+.editor-notes-field { width: 100%; min-width: 0; flex: 1; font-size: max(16px, 1rem); line-height: 1.35; text-align: start; }
 .field-error { margin: 5px var(--su-editor-gutter) 0; color: var(--ion-color-danger); font-size: 0.76rem; }
 .field-error--center { text-align: center; }
 .error-summary, .load-error { margin: 14px 0; padding: 12px; border: 1px solid color-mix(in srgb, var(--ion-color-danger) 36%, transparent); border-radius: 11px; background: color-mix(in srgb, var(--ion-color-danger) 8%, var(--su-surface)); color: var(--ion-color-danger); font-size: 0.86rem; }
