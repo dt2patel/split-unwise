@@ -1,9 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Router } from 'vue-router'
+import { appPrincipalKey, type AppPrincipal } from '../../data/principal'
 import type { AppDataSession } from '../../data/session'
 import type { ActivityItem, AppRepository, ExpenseRow, Group, Member } from '../../data/repositories'
 import type { WebMCP } from 'webmcp-types'
+import { claimAgentDraft, clearAgentDrafts, reportAgentDraftLeft, reportAgentDraftQueued, reportAgentDraftSaved } from '../agentDrafts'
 import { installWebMcp } from '../webmcp'
+
+const principal: AppPrincipal = { mode: 'demo', projectId: 'demo-split-unwise', uid: 'maya' }
+const owner = appPrincipalKey(principal)
 
 describe('WebMCP integration', () => {
   const group: Group = { id: 'lake-house', kind: 'group', name: 'Lake House', currency: 'USD', memberIds: ['maya', 'alex'], syncState: 'fresh' }
@@ -29,25 +34,22 @@ describe('WebMCP integration', () => {
   beforeEach(() => {
     Object.defineProperty(document, 'modelContext', { configurable: true, value: undefined })
   })
+  afterEach(() => clearAgentDrafts())
 
   it('registers read-only tools only when the browser provides modelContext', async () => {
     const { registered, registrationOptions } = provideModelContext()
-    const router = { push: vi.fn(async () => undefined) } as unknown as Router
-    const dispose = await installWebMcp({ router, session: fakeSession().session })
+    const dispose = await installWebMcp({ router: fakeRouter(), session: fakeSession().session })
 
     expect(registered.map(({ name }) => name)).toEqual([
       'whoami', 'list_groups', 'list_group_members', 'get_group_balances', 'get_friend_balances',
-      'search_expenses', 'get_expense_details', 'list_recent_activity', 'open_expense_form',
+      'search_expenses', 'get_expense_details', 'list_recent_activity', 'add_expense', 'record_settlement',
     ])
     expect(registered.filter(({ annotations }) => annotations?.readOnlyHint).map(({ name }) => name)).toHaveLength(8)
     // Every result carrying names or text written by other members is marked untrusted.
     expect(registered.filter(({ annotations }) => annotations?.untrustedContentHint).map(({ name }) => name)).toEqual([
       'list_groups', 'list_group_members', 'get_group_balances', 'get_friend_balances', 'search_expenses', 'get_expense_details', 'list_recent_activity',
     ])
-
-    const open = tool(registered, 'open_expense_form')
-    await open.execute({ groupId: group.id }, { signal: new AbortController().signal })
-    expect(router.push).toHaveBeenCalledWith({ name: 'groups-expense-create', query: { groupId: group.id } })
+    expect(tool(registered, 'record_settlement').annotations).toEqual({ consequentialHint: true })
 
     dispose()
     expect(registrationOptions.every(({ signal }) => signal?.aborted)).toBe(true)
@@ -55,7 +57,7 @@ describe('WebMCP integration', () => {
 
   it('returns amounts as minor units, a decimal and a display string', async () => {
     const { registered } = provideModelContext()
-    await installWebMcp({ router: {} as Router, session: fakeSession().session })
+    await installWebMcp({ router: fakeRouter(), session: fakeSession().session })
 
     const output = await call(registered, 'search_expenses', { query: 'dinner' })
     expect(output.expenses).toEqual([expect.objectContaining({ id: 'dinner', total: { currency: 'USD', minorAmount: 2400, amount: '24.00', formatted: '$24.00' } })])
@@ -71,7 +73,7 @@ describe('WebMCP integration', () => {
 
   it('answers who the user is, who is in a group, and what each friend owes across groups', async () => {
     const { registered } = provideModelContext()
-    await installWebMcp({ router: {} as Router, session: fakeSession().session })
+    await installWebMcp({ router: fakeRouter(), session: fakeSession().session })
 
     expect(await call(registered, 'whoami', {})).toEqual({ user: { id: 'maya', name: 'Maya' } })
     expect((await call(registered, 'list_group_members', { groupId: group.id })).members).toEqual([
@@ -93,7 +95,7 @@ describe('WebMCP integration', () => {
   it('lists recent activity with group and actor names', async () => {
     const { registered } = provideModelContext()
     const { session, repository } = fakeSession()
-    await installWebMcp({ router: {} as Router, session })
+    await installWebMcp({ router: fakeRouter(), session })
 
     const output = await call(registered, 'list_recent_activity', { filter: 'expenses', limit: 5 })
     expect(repository.activity.listForAccount).toHaveBeenCalledWith({ filter: 'expenses', limit: 5 })
@@ -109,7 +111,7 @@ describe('WebMCP integration', () => {
     const { registered } = provideModelContext()
     const { session, repository } = fakeSession()
     let now = 1_000_000
-    await installWebMcp({ router: {} as Router, session }, () => now)
+    await installWebMcp({ router: fakeRouter(), session }, () => now)
 
     await call(registered, 'search_expenses', { query: 'dinner' })
     await call(registered, 'search_expenses', { query: 'lunch' })
@@ -130,10 +132,120 @@ describe('WebMCP integration', () => {
 
   it('does not fail or register tools in browsers without WebMCP', async () => {
     const registerTool = vi.fn()
-    const dispose = await installWebMcp({ router: {} as Router, session: fakeSession().session })
+    const dispose = await installWebMcp({ router: fakeRouter(), session: fakeSession().session })
     expect(registerTool).not.toHaveBeenCalled()
     expect(dispose()).toBeUndefined()
   })
+
+  describe('add_expense', () => {
+    it('opens the prefilled editor and waits for the user to save it', async () => {
+      const { registered } = provideModelContext()
+      const router = fakeRouter()
+      const { session, repository } = fakeSession()
+      await installWebMcp({ router, session })
+
+      const pending = call(registered, 'add_expense', { groupId: group.id, description: 'Dinner at Nopa', amount: '84.5', participantIds: ['maya', 'alex'], category: 'Food' })
+      const draftId = await openedDraft(router, { name: 'groups-expense-create', query: { groupId: group.id } })
+      expect(claimAgentDraft(owner, draftId, 'expense')).toEqual({
+        kind: 'expense', groupId: group.id, description: 'Dinner at Nopa', amountText: '84.50', currency: 'USD',
+        date: undefined, category: 'Food', notes: undefined, paidBy: undefined, participantIds: ['maya', 'alex'],
+      })
+      reportAgentDraftQueued(draftId, 'op-1')
+      reportAgentDraftSaved(draftId, 'expense-9')
+      await expect(pending).resolves.toEqual({ status: 'saved', expenseId: 'expense-9', message: 'The user reviewed and saved the expense.' })
+
+      // What the user saved shows up in the next read instead of a reused answer.
+      const listCalls = repository.groups.list.mock.calls.length
+      await call(registered, 'list_groups', {})
+      expect(repository.groups.list.mock.calls.length).toBe(listCalls + 1)
+    })
+
+    it('tells the agent nothing was saved when the user leaves the form', async () => {
+      const { registered } = provideModelContext()
+      const router = fakeRouter()
+      await installWebMcp({ router, session: fakeSession().session })
+
+      const pending = call(registered, 'add_expense', { groupId: group.id })
+      const draftId = await openedDraft(router, { name: 'groups-expense-create' })
+      claimAgentDraft(owner, draftId, 'expense')
+      reportAgentDraftLeft(draftId)
+      await expect(pending).resolves.toEqual(expect.objectContaining({ status: 'cancelled', reason: 'left' }))
+    })
+
+    it('stops waiting when the agent cancels, leaving the form for the user', async () => {
+      const { registered } = provideModelContext()
+      const router = fakeRouter()
+      await installWebMcp({ router, session: fakeSession().session })
+
+      const controller = new AbortController()
+      const pending = tool(registered, 'add_expense').execute({ groupId: group.id }, { signal: controller.signal })
+      await openedDraft(router, { name: 'groups-expense-create' })
+      controller.abort()
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    })
+
+    it('rejects details the editor could not use before opening anything', async () => {
+      const { registered } = provideModelContext()
+      const router = fakeRouter()
+      await installWebMcp({ router, session: fakeSession().session })
+
+      await expect(call(registered, 'add_expense', { groupId: group.id, participantIds: ['maya', 'sam'] })).rejects.toThrow('sam is not an active member of this group. Call list_group_members')
+      await expect(call(registered, 'add_expense', { groupId: group.id, paidBy: 'sam' })).rejects.toThrow('paidBy sam is not an active member')
+      await expect(call(registered, 'add_expense', { groupId: group.id, amount: '84.505' })).rejects.toThrow('at most 2 decimal places')
+      await expect(call(registered, 'add_expense', { groupId: group.id, amount: '0' })).rejects.toThrow('greater than zero')
+      await expect(call(registered, 'add_expense', { groupId: group.id, category: 'Rent' })).rejects.toThrow('category must be one of')
+      await expect(call(registered, 'add_expense', { groupId: 'elsewhere' })).rejects.toThrow('Group was not found')
+      expect(router.push).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('record_settlement', () => {
+    it('opens Settle Up on the open balance with the payment prefilled and waits for Record', async () => {
+      const { registered } = provideModelContext()
+      const router = fakeRouter()
+      await installWebMcp({ router, session: fakeSession().session })
+
+      const pending = call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'alex', amount: '10', method: 'payment-app' })
+      const draftId = await openedDraft(router, {
+        name: 'group-settle-up',
+        params: { groupId: group.id },
+        query: { plan: 'simplified', senderId: 'alex', recipientId: 'maya', currency: 'USD', debtMinor: '1200' },
+      })
+      expect(claimAgentDraft(owner, draftId, 'settlement')).toEqual({ kind: 'settlement', groupId: group.id, amountText: '10.00', method: 'payment-app', occurredOn: undefined, note: undefined })
+      reportAgentDraftSaved(draftId, 'settlement-3')
+      await expect(pending).resolves.toEqual({ status: 'saved', settlementId: 'settlement-3', message: 'The user reviewed and saved the payment.' })
+    })
+
+    it('defaults to the whole open balance and refuses amounts or people it cannot settle', async () => {
+      const { registered } = provideModelContext()
+      const router = fakeRouter()
+      await installWebMcp({ router, session: fakeSession().session })
+
+      await expect(call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'alex', amount: '12.01' })).rejects.toThrow('cannot exceed the open balance of $12.00')
+      await expect(call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'maya' })).rejects.toThrow('someone other than the signed-in user')
+      await expect(call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'alex', currency: 'EUR' })).rejects.toThrow('no open EUR balance')
+      expect(router.push).not.toHaveBeenCalled()
+
+      const pending = call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'alex' })
+      const draftId = await openedDraft(router, { name: 'group-settle-up' })
+      expect(claimAgentDraft(owner, draftId, 'settlement')).toEqual(expect.objectContaining({ amountText: '12.00' }))
+      reportAgentDraftLeft(draftId)
+      await expect(pending).resolves.toEqual(expect.objectContaining({ status: 'cancelled', reason: 'left', message: 'The user left the form without saving. No payment was saved.' }))
+    })
+  })
+
+  function fakeRouter() {
+    return { push: vi.fn(async () => undefined) } as unknown as Router & { push: ReturnType<typeof vi.fn> }
+  }
+
+  /** Waits for the tool to navigate, checks where it went, and returns the draft ID it put in the URL. */
+  async function openedDraft(router: Router & { push: ReturnType<typeof vi.fn> }, expected: Record<string, unknown>): Promise<string> {
+    await vi.waitFor(() => expect(router.push).toHaveBeenCalled())
+    const location = router.push.mock.calls.at(-1)![0] as { query: Record<string, string> }
+    const { query, ...rest } = expected as { query?: Record<string, string> }
+    expect(location).toMatchObject({ ...rest, ...(query ? { query } : {}) })
+    return location.query.agentDraft
+  }
 
   function provideModelContext() {
     const registered: WebMCP.ModelContextTool[] = []
@@ -173,7 +285,7 @@ describe('WebMCP integration', () => {
       },
       activity: { listForAccount: vi.fn(async () => ({ items: [activity] })) },
     }
-    const session = { ready: Promise.resolve(), repository: repository as unknown as AppRepository } as AppDataSession
+    const session = { ready: Promise.resolve(), principal: Promise.resolve(principal), repository: repository as unknown as AppRepository } as AppDataSession
     return { session, repository }
   }
 })

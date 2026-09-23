@@ -1,12 +1,15 @@
 /// <reference types="webmcp-types" />
 import type { Router } from 'vue-router'
 import { formatMoney } from '../components/MoneyAmount.vue'
-import type { ActivityFilter, ActivityItem, ExpenseRow, Group, GroupBalanceSnapshot, Member } from '../data/repositories'
+import { appPrincipalKey } from '../data/principal'
+import type { ActivityFilter, ActivityItem, ExpenseRow, Group, GroupBalanceSnapshot, Member, SettlementMethod } from '../data/repositories'
 import type { AppDataSession } from '../data/session'
 import { projectAccountBalances, type AccountBalanceContext } from '../domain/accountBalances'
 import type { Debt, Money } from '../domain/model'
-import { assertCurrencyCode, fromMinorUnits, type CurrencyCode } from '../domain/money'
+import { assertCurrencyCode, currencyExponent, fromMinorUnits, toMinorUnits, type CurrencyCode } from '../domain/money'
 import { searchExpenses } from '../domain/search'
+import { EXPENSE_CATEGORIES } from '../features/expenses/categories'
+import { abandonAgentDraft, clearAgentDrafts, offerAgentDraft, type AgentDraft, type AgentDraftOutcome } from './agentDrafts'
 
 const MAX_TEXT_LENGTH = 200
 const MAX_TOOL_RESULTS = 25
@@ -15,6 +18,10 @@ const MAX_GROUPS = 100
 const READ_REUSE_MS = 30_000
 const ACTIVITY_FILTERS: readonly ActivityFilter[] = ['all', 'comments', 'expenses', 'payments']
 const AMOUNT_NOTE = 'Amounts include minorAmount (integer minor units such as cents), amount (a decimal string) and formatted (for display).'
+const MAX_NOTES_LENGTH = 1000
+const MAX_PARTICIPANTS = 100
+const SETTLEMENT_METHODS: readonly SettlementMethod[] = ['cash', 'bank-transfer', 'payment-app', 'other']
+const REVIEW_NOTE = 'Nothing is saved until the user checks the prefilled form in this tab and taps the button themselves. The call waits for their decision: saved (with the new ID), queued (saved on this device, syncing when back online), or cancelled (nothing was saved).'
 
 interface ToolInput {
   readonly [key: string]: unknown
@@ -92,12 +99,35 @@ const recentActivitySchema = {
   additionalProperties: false,
 } as const
 
-const openExpenseFormSchema = {
+const addExpenseSchema = {
   type: 'object',
   properties: {
-    groupId: { type: 'string', description: 'The group ID where the new expense should be entered.' },
+    groupId: { type: 'string', description: 'The group ID returned by list_groups.' },
+    description: { type: 'string', description: 'What the expense was for, e.g. "Dinner at Nopa".' },
+    amount: { type: 'string', description: 'The total as a decimal string in the expense currency, e.g. "84.50".' },
+    currency: { type: 'string', description: 'ISO 4217 currency code. Defaults to the group currency.' },
+    date: { type: 'string', description: 'The date in YYYY-MM-DD format. Defaults to today.' },
+    category: { type: 'string', enum: EXPENSE_CATEGORIES, description: 'The expense category.' },
+    notes: { type: 'string', description: 'Optional notes.' },
+    paidBy: { type: 'string', description: 'Participant ID of who paid the whole amount (from list_group_members). Defaults to the signed-in user.' },
+    participantIds: { type: 'array', items: { type: 'string' }, description: 'Participant IDs to split the amount equally between. Defaults to the group’s usual split.' },
   },
   required: ['groupId'],
+  additionalProperties: false,
+} as const
+
+const recordSettlementSchema = {
+  type: 'object',
+  properties: {
+    groupId: { type: 'string', description: 'The group ID returned by list_groups.' },
+    withParticipantId: { type: 'string', description: 'Participant ID of the other person (from list_group_members). The payment can go either way; the direction comes from who owes whom.' },
+    currency: { type: 'string', description: 'ISO 4217 currency code of the balance to settle. Required only when the two people have balances in more than one currency.' },
+    amount: { type: 'string', description: 'The amount paid as a decimal string. Defaults to the whole open balance; it cannot exceed it.' },
+    method: { type: 'string', enum: SETTLEMENT_METHODS, description: 'How the money was paid. Defaults to cash.' },
+    date: { type: 'string', description: 'The date the payment happened, in YYYY-MM-DD format. Defaults to today.' },
+    note: { type: 'string', description: 'Optional note.' },
+  },
+  required: ['groupId', 'withParticipantId'],
   additionalProperties: false,
 } as const
 
@@ -157,6 +187,42 @@ function optionalActivityFilter(input: ToolInput): ActivityFilter {
   const filter = ACTIVITY_FILTERS.find((candidate) => candidate === value)
   if (!filter) throw new Error(`filter must be one of ${ACTIVITY_FILTERS.join(', ')}`)
   return filter
+}
+
+function optionalLongText(input: ToolInput, key: string, maxLength: number): string | undefined {
+  const value = input[key]
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.length > maxLength) throw new Error(`${key} must be a string of at most ${maxLength} characters`)
+  return value.trim() || undefined
+}
+
+function optionalChoice<T extends string>(input: ToolInput, key: string, choices: readonly T[]): T | undefined {
+  const value = optionalText(input, key)
+  if (value === undefined) return undefined
+  const choice = choices.find((candidate) => candidate === value)
+  if (!choice) throw new Error(`${key} must be one of ${choices.join(', ')}`)
+  return choice
+}
+
+function optionalIdList(input: ToolInput, key: string): readonly string[] | undefined {
+  const value = input[key]
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PARTICIPANTS || value.some((id) => typeof id !== 'string' || !id.trim() || id.length > MAX_TEXT_LENGTH)) {
+    throw new Error(`${key} must be a non-empty list of participant IDs`)
+  }
+  const ids = value.map((id: string) => id.trim())
+  if (new Set(ids).size !== ids.length) throw new Error(`${key} must not repeat a participant`)
+  return ids
+}
+
+/** A positive amount written with no more decimals than the currency has; nothing is rounded silently. */
+function positiveMinorAmount(text: string, currency: CurrencyCode, key: string): number {
+  const decimals = currencyExponent(currency)
+  const pattern = decimals === 0 ? /^\d+$/ : new RegExp(`^\\d+(\\.\\d{1,${decimals}})?$`)
+  if (!pattern.test(text)) throw new Error(`${key} must be a decimal amount with at most ${decimals} decimal places, like "${fromMinorUnits(8450 * 10 ** Math.max(0, decimals - 2), currency)}"`)
+  const minor = toMinorUnits(text, currency)
+  if (minor <= 0) throw new Error(`${key} must be greater than zero`)
+  return minor
 }
 
 function json(value: unknown): string {
@@ -412,12 +478,120 @@ async function listRecentActivity(session: AppDataSession, read: Reader, inputVa
   })
 }
 
-async function openExpenseForm(read: Reader, router: Router, inputValue: unknown): Promise<string> {
-  const groupId = requiredText(asInput(inputValue), 'groupId')
-  const group = await read.group(groupId)
+function activeMemberIds(members: readonly Member[]): ReadonlySet<string> {
+  return new Set(members.filter((member) => member.accountStatus !== 'deleted').map(({ id }) => id))
+}
+
+function requireActiveMember(active: ReadonlySet<string>, id: string, key: string): void {
+  if (!active.has(id)) throw new Error(`${key} ${id} is not an active member of this group. Call list_group_members for participant IDs.`)
+}
+
+/** Waits for the user's decision, or for the agent to stop waiting (the prefilled form then stays on screen for the user). */
+function untilDecided(outcome: Promise<AgentDraftOutcome>, draftId: string, signal: AbortSignal): Promise<AgentDraftOutcome> {
+  if (signal.aborted) {
+    abandonAgentDraft(draftId)
+    return Promise.reject(new DOMException('Tool execution cancelled', 'AbortError'))
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      abandonAgentDraft(draftId)
+      reject(new DOMException('Tool execution cancelled', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void outcome.then((value) => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(value)
+    })
+  })
+}
+
+function describeOutcome(outcome: AgentDraftOutcome, idKey: 'expenseId' | 'settlementId', noun: string): unknown {
+  if (outcome.status === 'saved') return { status: 'saved', [idKey]: outcome.id, message: `The user reviewed and saved the ${noun}.` }
+  if (outcome.status === 'queued') return { status: 'queued', operationId: outcome.operationId, message: `The user saved the ${noun} on this device; it syncs when the connection is back.` }
+  const reasons = {
+    left: `The user left the form without saving. No ${noun} was saved.`,
+    replaced: `A newer request replaced this one before it was saved. No ${noun} was saved from this request.`,
+    expired: `The form was not opened in time. No ${noun} was saved.`,
+    aborted: 'Stopped waiting. The prefilled form stays open for the user, who may still save it.',
+    'signed-out': `The user signed out. No ${noun} was saved.`,
+  } as const
+  return { status: 'cancelled', reason: outcome.reason, message: reasons[outcome.reason] }
+}
+
+async function openDraft(session: AppDataSession, read: Reader, draft: AgentDraft, navigate: (draftId: string) => Promise<unknown>, signal: AbortSignal): Promise<AgentDraftOutcome> {
+  const owner = appPrincipalKey(await session.principal)
+  if (signal.aborted) throw new DOMException('Tool execution cancelled', 'AbortError')
+  const offer = offerAgentDraft(owner, draft)
+  try {
+    await navigate(offer.id)
+  } catch (error) {
+    abandonAgentDraft(offer.id)
+    throw error
+  }
+  const outcome = await untilDecided(offer.outcome, offer.id, signal)
+  // Whatever the user saved should show up in the next read.
+  read.forget()
+  return outcome
+}
+
+async function addExpense(session: AppDataSession, read: Reader, router: Router, inputValue: unknown, signal: AbortSignal): Promise<string> {
+  const input = asInput(inputValue)
+  const groupId = requiredText(input, 'groupId')
+  const description = optionalText(input, 'description')
+  const requestedCurrency = optionalCurrency(input)
+  const amount = optionalText(input, 'amount')
+  const date = optionalDate(input, 'date')
+  const category = optionalChoice(input, 'category', EXPENSE_CATEGORIES)
+  const notes = optionalLongText(input, 'notes', MAX_NOTES_LENGTH)
+  const paidBy = optionalText(input, 'paidBy')
+  const participantIds = optionalIdList(input, 'participantIds')
+  const [group, members, user] = await Promise.all([read.group(groupId), read.members(groupId), read.currentUser()])
   if (!group) throw new Error('Group was not found or is not accessible')
-  await router.push({ name: 'groups-expense-create', query: { groupId } })
-  return json({ opened: true, group: { id: group.id, name: group.name } })
+  const active = activeMemberIds(members)
+  if (!active.has(user.id)) throw new Error('You are not an active member of this group')
+  if (paidBy) requireActiveMember(active, paidBy, 'paidBy')
+  for (const id of participantIds ?? []) requireActiveMember(active, id, 'participantIds entry')
+  const currency = requestedCurrency ?? group.currency
+  const amountText = amount === undefined ? undefined : fromMinorUnits(positiveMinorAmount(amount, currency, 'amount'), currency)
+  const outcome = await openDraft(session, read, {
+    kind: 'expense', groupId, description, amountText, currency, date, category, notes, paidBy, participantIds,
+  }, (draftId) => router.push({ name: 'groups-expense-create', query: { groupId, agentDraft: draftId } }), signal)
+  return json(describeOutcome(outcome, 'expenseId', 'expense'))
+}
+
+async function recordSettlement(session: AppDataSession, read: Reader, router: Router, inputValue: unknown, signal: AbortSignal): Promise<string> {
+  const input = asInput(inputValue)
+  const groupId = requiredText(input, 'groupId')
+  const otherId = requiredText(input, 'withParticipantId')
+  const requestedCurrency = optionalCurrency(input)
+  const amount = optionalText(input, 'amount')
+  const method = optionalChoice(input, 'method', SETTLEMENT_METHODS)
+  const occurredOn = optionalDate(input, 'date')
+  const note = optionalLongText(input, 'note', MAX_TEXT_LENGTH)
+  const [group, members, snapshot, user] = await Promise.all([read.group(groupId), read.members(groupId), read.balances(groupId), read.currentUser()])
+  if (!group) throw new Error('Group was not found or is not accessible')
+  const active = activeMemberIds(members)
+  if (!active.has(user.id)) throw new Error('You are not an active member of this group')
+  if (otherId === user.id) throw new Error('withParticipantId must be someone other than the signed-in user')
+  requireActiveMember(active, otherId, 'withParticipantId')
+  const plan = snapshot.simplifyDebtsEnabled ? 'simplified' : 'pairwise'
+  const between = snapshot[plan].filter((item) => (item.fromParticipantId === user.id && item.toParticipantId === otherId) || (item.fromParticipantId === otherId && item.toParticipantId === user.id))
+  const names = memberNames(members)
+  if (between.length === 0) throw new Error(`There is no open balance between you and ${names.get(otherId) ?? otherId} in this group.`)
+  const matching = requestedCurrency ? between.filter((item) => item.money.currency === requestedCurrency) : between
+  if (matching.length === 0) throw new Error(`There is no open ${requestedCurrency} balance between you and ${names.get(otherId) ?? otherId} in this group.`)
+  if (matching.length > 1) throw new Error(`You have balances in ${matching.map((item) => item.money.currency).join(' and ')} with ${names.get(otherId) ?? otherId}; pass currency to choose one.`)
+  const open = matching[0]
+  const minorAmount = amount === undefined ? open.money.minorAmount : positiveMinorAmount(amount, open.money.currency, 'amount')
+  if (minorAmount > open.money.minorAmount) throw new Error(`amount cannot exceed the open balance of ${formatMoney(open.money, 'en-US')}`)
+  const outcome = await openDraft(session, read, {
+    kind: 'settlement', groupId, amountText: fromMinorUnits(minorAmount, open.money.currency), method, occurredOn, note,
+  }, (draftId) => router.push({
+    name: 'group-settle-up',
+    params: { groupId },
+    query: { plan, senderId: open.fromParticipantId, recipientId: open.toParticipantId, currency: open.money.currency, debtMinor: String(open.money.minorAmount), agentDraft: draftId },
+  }), signal)
+  return json(describeOutcome(outcome, 'settlementId', 'payment'))
 }
 
 export async function installWebMcp({ router, session }: WebMcpOptions, now: () => number = Date.now): Promise<() => void> {
@@ -493,11 +667,19 @@ export async function installWebMcp({ router, session }: WebMcpOptions, now: () 
       execute: (input, { signal }) => cancellable(signal, listRecentActivity(session, read, input)),
     },
     {
-      name: 'open_expense_form',
-      title: 'Open expense form',
-      description: 'Open the visible Split Unwise expense form for an authorized group without saving anything.',
-      inputSchema: openExpenseFormSchema,
-      execute: (input, { signal }) => cancellable(signal, openExpenseForm(read, router, input)),
+      name: 'add_expense',
+      title: 'Add expense',
+      description: `Open the Add Expense form in this tab, prefilled with these details, for the user to review. Any detail left out is left for the user to fill in. The amount is split equally between participantIds and paid by paidBy; the user can change anything before saving. ${REVIEW_NOTE}`,
+      inputSchema: addExpenseSchema,
+      execute: (input, { signal }) => addExpense(session, read, router, input, signal),
+    },
+    {
+      name: 'record_settlement',
+      title: 'Record a payment',
+      description: `Open Settle Up in this tab, prefilled to record that the signed-in user and one other group member paid each other outside Split Unwise to settle their open balance. It never moves money. The user must confirm the payment already happened and tap Record. ${REVIEW_NOTE}`,
+      inputSchema: recordSettlementSchema,
+      annotations: { consequentialHint: true },
+      execute: (input, { signal }) => recordSettlement(session, read, router, input, signal),
     },
   ]
   try {
@@ -507,5 +689,8 @@ export async function installWebMcp({ router, session }: WebMcpOptions, now: () 
     console.warn('WebMCP tools could not be registered', error)
     return () => undefined
   }
-  return () => controller.abort()
+  return () => {
+    controller.abort()
+    clearAgentDrafts()
+  }
 }
