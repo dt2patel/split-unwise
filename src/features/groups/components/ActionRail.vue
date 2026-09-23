@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { IonButton, IonIcon } from '@ionic/vue'
+import { IonButton, IonIcon, IonPopover } from '@ionic/vue'
 import { analyticsOutline, cashOutline, ellipsisHorizontal, peopleOutline, personAddOutline, repeatOutline, searchOutline, shareOutline, statsChartOutline, swapHorizontalOutline } from 'ionicons/icons'
 
 import type { ExpenseContextKind } from '../../../data'
@@ -8,6 +8,10 @@ import type { ExpenseContextKind } from '../../../data'
 const props = withDefaults(defineProps<{ groupId: string; contextKind?: ExpenseContextKind; canInvite?: boolean; settleDisabled?: boolean }>(), { contextKind: 'group', canInvite: true, settleDisabled: false })
 
 const showingMore = ref(false)
+// Ionic anchors the popover to the tapped button through the click event.
+const moreEvent = ref<Event>()
+function openMore(event: Event): void { moreEvent.value = event; showingMore.value = true }
+function closeMore(): void { showingMore.value = false }
 
 const primaryActions = computed(() => [
   { id: 'settle-up', label: 'Settle up', icon: cashOutline, suffix: 'settle-up', primary: true },
@@ -52,9 +56,9 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
         fill="outline"
         shape="round"
         size="small"
+        aria-haspopup="true"
         :aria-expanded="showingMore"
-        aria-controls="group-more-actions"
-        @click="showingMore = !showingMore"
+        @click="openMore"
       >
         <span class="action-rail__button-content">
           <ion-icon :icon="ellipsisHorizontal" aria-hidden="true" />
@@ -63,8 +67,9 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
       </ion-button>
     </nav>
 
-    <transition name="more-actions">
-      <nav v-if="showingMore" id="group-more-actions" class="action-rail__more" :aria-label="contextKind === 'friendship' ? 'More friend actions' : 'More group actions'">
+    <!-- An anchored iOS popover instead of an inline panel: nothing on the page moves when More opens or closes. -->
+    <ion-popover class="action-rail__popover" :is-open="showingMore" :event="moreEvent" side="bottom" @did-dismiss="closeMore">
+      <nav class="action-rail__more" :aria-label="contextKind === 'friendship' ? 'More friend actions' : 'More group actions'">
         <ion-button
           v-for="action in moreActions"
           :key="action.id"
@@ -72,6 +77,7 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
           :data-action="action.id"
           fill="clear"
           :router-link="routeFor(action.suffix)"
+          @click="closeMore"
         >
           <span class="action-rail__button-content">
             <ion-icon :icon="action.icon" aria-hidden="true" />
@@ -79,7 +85,7 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
           </span>
         </ion-button>
       </nav>
-    </transition>
+    </ion-popover>
   </section>
 </template>
 
@@ -91,11 +97,10 @@ const routeFor = (suffix: string) => `/tabs/groups/${props.groupId}/${suffix}`
 .action-rail__button-content { display: grid; min-width: 0; justify-items: center; gap: 2px; white-space: nowrap; }
 .action-rail__button ion-icon { margin: 0; font-size: 1.12rem; }
 .action-rail__button:first-child { --box-shadow: 0 4px 12px rgb(95 67 219 / 18%); }
-.action-rail__more { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding: 8px; border: 1px solid color-mix(in srgb, var(--su-divider) 44%, transparent); border-radius: 18px; background: color-mix(in srgb, var(--su-surface) 94%, var(--su-lilac)); box-shadow: 0 10px 24px rgb(36 28 83 / 8%); transform-origin: top center; }
+/* A lifted surface so the popover (and iOS's arrow, which shares --background) reads as a layer above the journal in both themes. */
+.action-rail__popover { --width: min(300px, calc(100vw - 32px)); --background: color-mix(in srgb, var(--su-lilac) 72%, var(--su-surface)); --box-shadow: 0 14px 36px rgb(0 0 0 / 22%); }
+.action-rail__more { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding: 8px; }
 .action-rail__more-button { min-height: 48px; margin: 0; --padding-start: 6px; --padding-end: 6px; color: var(--ion-color-primary); font-size: 0.76rem; text-transform: none; }
 .action-rail__more-button ion-icon { margin: 0; font-size: 1.08rem; }
-.more-actions-enter-active,.more-actions-leave-active { transition: opacity 180ms ease-out, transform 180ms cubic-bezier(.2,.8,.2,1); }
-.more-actions-enter-from,.more-actions-leave-to { opacity: 0; transform: translateY(-6px) scale(.985); }
-@media (prefers-reduced-motion: reduce) { .more-actions-enter-active,.more-actions-leave-active { transition: none; } }
-@media (min-width: 560px) { .action-rail__primary { grid-template-columns: repeat(4, minmax(104px, 1fr)); }.action-rail__more { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@media (min-width: 560px) { .action-rail__primary { grid-template-columns: repeat(4, minmax(104px, 1fr)); } }
 </style>
