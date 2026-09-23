@@ -1,4 +1,5 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
+import { IonicVue } from '@ionic/vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { APPEARANCE_STORAGE_KEY, bootstrapAppearance, installAppearanceController, type AppearanceController } from '../../../app/appearance'
 import AppearancePage from '../AppearancePage.vue'
@@ -22,6 +23,13 @@ const stubs = {
 
 let controller: AppearanceController
 let stored: Map<string, string>
+
+// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+async function settleIonic(): Promise<void> {
+  await flushPromises()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await flushPromises()
+}
 
 beforeEach(() => {
   stored = new Map([[APPEARANCE_STORAGE_KEY, 'light']])
@@ -47,6 +55,27 @@ describe('Appearance page', () => {
     expect(wrapper.findAll('input[type="radio"]').map((radio) => radio.attributes('aria-label'))).toEqual(['Automatic', 'Light', 'Dark'])
     expect(wrapper.get('[data-appearance="system"]').text()).toContain('Match this iPhone or device')
     expect(wrapper.get('[data-appearance="dark"]').text()).toContain('Always use the dark appearance')
+  })
+
+  it('selects an appearance by tapping a real Ionic radio row', async () => {
+    const wrapper = mount(AppearancePage, { attachTo: document.body, global: { plugins: [[IonicVue, { mode: 'ios' }]], stubs: {
+      IonPage: stubs.IonPage, IonHeader: stubs.IonHeader, IonToolbar: stubs.IonToolbar, IonButtons: stubs.IonButtons,
+      IonBackButton: stubs.IonBackButton, IonTitle: stubs.IonTitle, IonContent: stubs.IonContent,
+    } } })
+    await settleIonic()
+
+    const group = wrapper.get('ion-radio-group')
+    expect(group.attributes()).toMatchObject({ role: 'radiogroup', 'aria-label': 'Appearance preference' })
+    const radios = wrapper.findAll('ion-radio')
+    expect(radios.map((radio) => radio.attributes('aria-label'))).toEqual(['Automatic', 'Light', 'Dark'])
+    expect(radios.map((radio) => radio.attributes('aria-checked'))).toEqual(['false', 'true', 'false'])
+
+    ;(radios[2]!.element as HTMLElement).click()
+    await settleIonic()
+
+    expect(controller.preference).toBe('dark')
+    expect(radios.map((radio) => radio.attributes('aria-checked'))).toEqual(['false', 'false', 'true'])
+    wrapper.unmount()
   })
 
   it('applies a radio selection immediately and ignores unknown values', async () => {
