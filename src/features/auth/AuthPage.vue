@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
-import { IonButton, IonContent, IonIcon, IonPage, IonSpinner } from '@ionic/vue'
+import { IonButton, IonContent, IonIcon, IonInput, IonPage, IonSpinner } from '@ionic/vue'
 import { logoGoogle, mailOutline, lockClosedOutline, personOutline } from 'ionicons/icons'
 import { useI18n } from '../../app/i18n'
 import { useAuthStore } from './authStore'
@@ -13,6 +13,8 @@ const password = ref('')
 const errorSummary = ref<HTMLElement>()
 const heading = computed(() => store.view === 'sign-up' ? t('auth.heading.signUp') : store.view === 'reset' ? t('auth.heading.reset') : t('auth.heading.signIn'))
 const subtitle = computed(() => store.view === 'sign-up' ? t('auth.subtitle.signUp') : store.view === 'reset' ? t('auth.subtitle.reset') : t('auth.subtitle.signIn'))
+
+function invalidClasses(field: 'displayName' | 'email' | 'password'): string[] { return store.fieldErrors[field] ? ['ion-invalid', 'ion-touched'] : [] }
 
 async function submit(): Promise<void> {
   const ok = store.view === 'sign-up'
@@ -49,21 +51,30 @@ async function submit(): Promise<void> {
           <span>{{ t('auth.loadingGroups', { name: store.state.identity.displayName }) }}</span>
         </div>
         <form v-else class="auth-card" novalidate @submit.prevent="submit">
-          <label v-if="store.view === 'sign-up'" for="auth-name">
-            <span>{{ t('auth.name') }}</span>
-            <span class="auth-input"><ion-icon :icon="personOutline" aria-hidden="true" /><input id="auth-name" v-model="displayName" autocomplete="name" required :placeholder="t('auth.namePlaceholder')" :aria-invalid="store.fieldErrors.displayName ? 'true' : undefined" :aria-describedby="store.fieldErrors.displayName ? 'auth-name-error' : undefined"></span>
+          <!-- Ionic copies aria-describedby onto the native input once, so it points at the error id up front;
+               ion-invalid + ion-touched make Ionic set aria-invalid on the native input. -->
+          <div v-if="store.view === 'sign-up'" class="auth-field">
+            <ion-input id="auth-name" v-model="displayName" class="auth-input" :class="invalidClasses('displayName')" name="name" autocomplete="name" autocapitalize="words" required label-placement="stacked" :placeholder="t('auth.namePlaceholder')" aria-describedby="auth-name-error">
+              <span slot="label" class="auth-label">{{ t('auth.name') }}</span>
+              <ion-icon slot="start" :icon="personOutline" aria-hidden="true" />
+            </ion-input>
             <small v-if="store.fieldErrors.displayName" id="auth-name-error" class="field-error">{{ store.fieldErrors.displayName }}</small>
-          </label>
-          <label for="auth-email">
-            <span>{{ t('auth.email') }}</span>
-            <span class="auth-input"><ion-icon :icon="mailOutline" aria-hidden="true" /><input id="auth-email" v-model="email" type="email" inputmode="email" autocomplete="email" required placeholder="you@example.com" :aria-invalid="store.fieldErrors.email ? 'true' : undefined" :aria-describedby="store.fieldErrors.email ? 'auth-email-error' : undefined"></span>
+          </div>
+          <div class="auth-field">
+            <ion-input id="auth-email" v-model="email" class="auth-input" :class="invalidClasses('email')" type="email" inputmode="email" name="email" autocomplete="email" required label-placement="stacked" placeholder="you@example.com" aria-describedby="auth-email-error">
+              <span slot="label" class="auth-label">{{ t('auth.email') }}</span>
+              <ion-icon slot="start" :icon="mailOutline" aria-hidden="true" />
+            </ion-input>
             <small v-if="store.fieldErrors.email" id="auth-email-error" class="field-error">{{ store.fieldErrors.email }}</small>
-          </label>
-          <label v-if="store.view !== 'reset'" for="auth-password">
-            <span>{{ t('auth.password') }}</span>
-            <span class="auth-input"><ion-icon :icon="lockClosedOutline" aria-hidden="true" /><input id="auth-password" v-model="password" type="password" :autocomplete="store.view === 'sign-up' ? 'new-password' : 'current-password'" minlength="8" required :placeholder="t('auth.passwordPlaceholder')" :aria-invalid="store.fieldErrors.password ? 'true' : undefined" :aria-describedby="store.fieldErrors.password ? 'auth-password-error' : undefined"></span>
+          </div>
+          <div v-if="store.view !== 'reset'" class="auth-field">
+            <!-- clear-on-edit off: Ionic otherwise wipes an iOS password field on the next keystroke after refocus. -->
+            <ion-input id="auth-password" v-model="password" class="auth-input" :class="invalidClasses('password')" type="password" name="password" :autocomplete="store.view === 'sign-up' ? 'new-password' : 'current-password'" :minlength="8" required :clear-on-edit="false" label-placement="stacked" :placeholder="t('auth.passwordPlaceholder')" aria-describedby="auth-password-error">
+              <span slot="label" class="auth-label">{{ t('auth.password') }}</span>
+              <ion-icon slot="start" :icon="lockClosedOutline" aria-hidden="true" />
+            </ion-input>
             <small v-if="store.fieldErrors.password" id="auth-password-error" class="field-error">{{ store.fieldErrors.password }}</small>
-          </label>
+          </div>
 
           <p v-if="store.error" ref="errorSummary" class="auth-error" role="alert" aria-live="assertive" tabindex="-1">{{ store.error }}</p>
           <p v-if="store.notice" class="auth-notice" role="status" aria-live="polite">{{ store.notice }}</p>
@@ -80,10 +91,10 @@ async function submit(): Promise<void> {
           </template>
 
           <nav class="auth-links" :aria-label="t('auth.accountHelp')">
-            <button v-if="store.view !== 'sign-in'" type="button" @click="store.show('sign-in')">{{ t('auth.backToSignIn') }}</button>
+            <ion-button v-if="store.view !== 'sign-in'" fill="clear" size="small" data-action="show-sign-in" @click="store.show('sign-in')">{{ t('auth.backToSignIn') }}</ion-button>
             <template v-else>
-              <button type="button" @click="store.show('reset')">{{ t('auth.forgotPassword') }}</button>
-              <button type="button" @click="store.show('sign-up')">{{ t('auth.createAccount') }}</button>
+              <ion-button fill="clear" size="small" data-action="show-reset" @click="store.show('reset')">{{ t('auth.forgotPassword') }}</ion-button>
+              <ion-button fill="clear" size="small" data-action="show-sign-up" @click="store.show('sign-up')">{{ t('auth.createAccount') }}</ion-button>
             </template>
           </nav>
         </form>
@@ -107,16 +118,17 @@ async function submit(): Promise<void> {
 .auth-brand h1 { margin: 0; font-size: clamp(2rem, 9vw, 2.65rem); letter-spacing: -.055em; }
 .auth-brand > p:last-child { margin: 9px 0 0; color: var(--ion-color-medium); line-height: 1.45; }
 .auth-card { display: grid; gap: 15px; padding: 20px; border: 1px solid color-mix(in srgb, var(--su-divider) 25%, transparent); border-radius: 24px; background: color-mix(in srgb, var(--su-surface) 94%, transparent); box-shadow: 0 18px 50px rgb(35 27 82 / 10%); backdrop-filter: blur(18px); }
-.auth-card label { display: grid; gap: 7px; color: var(--ion-color-medium); font-size: .8rem; font-weight: 650; }
-.auth-input { display: grid; min-height: 50px; grid-template-columns: 24px 1fr; align-items: center; gap: 8px; padding: 0 14px; border: 1px solid color-mix(in srgb, var(--su-divider) 40%, transparent); border-radius: 14px; background: var(--su-surface); color: var(--ion-color-primary); }
-.auth-input input { min-width: 0; min-height: 48px; border: 0; outline: 0; background: transparent; color: var(--su-text); font: inherit; font-size: 16px; }
+.auth-field { display: grid; gap: 7px; }
+.auth-input { box-sizing: border-box; min-height: 58px; border: 1px solid color-mix(in srgb, var(--su-divider) 40%, transparent); border-radius: 14px; background: var(--su-surface); color: var(--su-text); font-size: 16px; --padding-start: 14px; --padding-end: 14px; --padding-top: 4px; --padding-bottom: 4px; }
+.auth-input ion-icon[slot="start"] { margin-inline: 0 19px; color: var(--ion-color-primary); font-size: .8rem; }
+.auth-label { color: var(--ion-color-medium); font-weight: 650; }
 .auth-input:focus-within { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 15%, transparent); }
-.auth-card ion-button { min-height: 48px; margin: 2px 0 0; font-weight: 700; text-transform: none; }
+.auth-card > ion-button { min-height: 48px; margin: 2px 0 0; font-weight: 700; text-transform: none; }
 .google-button { --border-color: color-mix(in srgb, var(--su-divider) 45%, transparent); --color: var(--su-text); }
 .auth-divider { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; color: var(--ion-color-medium); font-size: .75rem; }
 .auth-divider::before, .auth-divider::after { height: 1px; background: color-mix(in srgb, var(--su-divider) 35%, transparent); content: ''; }
 .auth-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 16px; }
-.auth-links button { min-height: 44px; padding: 0; border: 0; background: none; color: var(--ion-color-primary); font: inherit; font-size: .85rem; font-weight: 650; }
+.auth-links ion-button { min-height: 44px; margin: 0; --padding-start: 0; --padding-end: 0; font-size: .85rem; font-weight: 650; text-transform: none; }
 .auth-error, .auth-notice { margin: 0; padding: 10px 12px; border-radius: 12px; font-size: .82rem; line-height: 1.35; }
 .field-error { color: var(--ion-color-danger); font-size: .72rem; font-weight: 550; }
 .auth-error { background: color-mix(in srgb, var(--ion-color-danger) 10%, var(--su-surface)); color: var(--ion-color-danger); }
