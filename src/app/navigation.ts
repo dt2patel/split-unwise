@@ -9,11 +9,10 @@ export interface RouteMotionCapabilities {
   readonly now?: () => number
 }
 
-const routeDuration = 320
 // A browser back gesture commits its popstate just before Ionic builds the pop transition.
 const historyNavigationWindow = 1000
 
-/** Keeps Ionic's native iOS push/pop behavior while enforcing the product route duration. */
+/** Ionic's native iOS push/pop at its own duration, minus the motion that reduced-motion or a browser-drawn back gesture already covers. */
 export function createRouteAnimation(capabilities?: RouteMotionCapabilities): AnimationBuilder {
   const matchMedia = capabilities ? capabilities.matchMedia : browserMatchMedia()
   const browserOwnsBack = capabilities ? capabilities.browserOwnsBack : () => browserOwnsBackGesture()
@@ -25,7 +24,7 @@ export function createRouteAnimation(capabilities?: RouteMotionCapabilities): An
     // Safari already slid the previous page in; a second Ionic pop on top reads as a glitch mid-transition.
     const at = lastBrowserBackAt?.()
     if (options.direction === 'back' && browserOwnsBack?.() && at !== undefined && now() - at < historyNavigationWindow) return animation.duration(0)
-    return animation.duration(routeDuration)
+    return animation
   }
 }
 

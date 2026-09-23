@@ -44,6 +44,13 @@ const createTrigger = shallowRef<HTMLElement>()
 const createModal = shallowRef<ComponentPublicInstance>()
 const selectedCover = computed(() => groupCoverChoice(coverId.value))
 const hasCreateDraft = computed(() => Boolean(groupName.value.trim()) || coverId.value !== 'trip' || currency.value !== defaultCurrency.value)
+// Ionic follows the finger 1:1 only for a boolean canDismiss; a function makes the card resist, spring back, then close.
+// Keep the confirm function only when there is a draft to protect.
+const createSheetCanDismiss = computed<boolean | (() => Promise<boolean>)>(() => {
+  if (dismissingCommittedCreate.value) return true
+  if (creating.value) return false
+  return hasCreateDraft.value ? canDismissCreate : true
+})
 const visibleCurrencies = computed(() => {
   const query = currencyQuery.value.trim().toUpperCase()
   return query
@@ -185,7 +192,7 @@ function coverDescription(id: GroupCoverId): string {
       ref="createModal"
       :is-open="showingCreate"
       :presenting-element="presentingElement"
-      :can-dismiss="canDismissCreate"
+      :can-dismiss="createSheetCanDismiss"
       @did-dismiss="finishCreateDismissal"
     >
       <ion-header translucent>
