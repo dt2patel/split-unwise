@@ -1,4 +1,5 @@
 import type { FirebaseApp } from 'firebase/app'
+import type { CollectionReference, QueryDocumentSnapshot, QueryOrderByConstraint } from 'firebase/firestore'
 import type { FirebaseConfiguration } from './firebase'
 import { assertFirebaseAppMatchesConfiguration, getSplitUnwiseFirebaseApp, getSplitUnwiseFirebaseAuth } from './firebaseBootstrap'
 import { buildCurrencyTotals, buildGroupCharts } from './aggregates'
@@ -158,8 +159,8 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   }
   async function listExpenseHeads(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
     const { db, firestore } = await readyContext
-    const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'expenses'), firestore.limit(100)))
-    const expenses = await Promise.all(snapshot.docs.map((document) => resolveSparkExpenseHead(db, firestore, groupId, document.id, document.data())))
+    const documents = await listEveryPage(firestore, firestore.collection(db, 'groups', groupId, 'expenses'), [firestore.orderBy(firestore.documentId(), 'asc')])
+    const expenses = await Promise.all(documents.map((document) => resolveSparkExpenseHead(db, firestore, groupId, document.id, document.data())))
     return expenses.sort(oldestExpenseFirst)
   }
   async function listExpenses(groupId: string, readyContext = context()): Promise<readonly ExpenseRow[]> {
@@ -174,13 +175,11 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
   }
   async function listRawSettlements(groupId: string, readyContext = context()): Promise<readonly SettlementRecord[]> {
     const { db, firestore } = await readyContext
-    const snapshot = await firestore.getDocs(firestore.query(
-      firestore.collection(db, 'groups', groupId, 'settlements'),
+    const documents = await listEveryPage(firestore, firestore.collection(db, 'groups', groupId, 'settlements'), [
       firestore.orderBy('occurredOn', 'asc'),
       firestore.orderBy(firestore.documentId(), 'asc'),
-      firestore.limit(100),
-    ))
-    return snapshot.docs.map((document) => decodeSettlement(groupId, document.id, document.data()))
+    ])
+    return documents.map((document) => decodeSettlement(groupId, document.id, document.data()))
   }
   async function listSettlements(groupId: string, readyContext = context()): Promise<readonly SettlementRecord[]> {
     const [settlements, settings] = await Promise.all([listRawSettlements(groupId, readyContext), getGroupSettings(groupId, readyContext)])
@@ -1454,6 +1453,33 @@ async function resolveSparkExpenseHead(
   const decoded = decodeExpenseRevision(groupId, expenseId, version.id, version.data())
   if (decoded.revision !== headRevision || (head.headDeleted === true) !== (decoded.action === 'deleted')) throw new Error('Expense head pointer does not match its immutable version')
   return decoded.expense
+}
+
+/** Security rules cap every list query at 100 documents. */
+const LIST_PAGE_SIZE = 100
+/** 10,000 documents: far past any real group, and a fifth of Spark's 50,000 daily reads. */
+const MAX_LIST_PAGES = 100
+
+/**
+ * Reads a whole group collection one rules-sized page at a time, in `ordering`. Balances are totalled on the device,
+ * so a partial read would show wrong balances: this returns every document or throws.
+ */
+async function listEveryPage(
+  firestore: FirestoreModule,
+  collection: CollectionReference,
+  ordering: readonly QueryOrderByConstraint[],
+): Promise<readonly QueryDocumentSnapshot[]> {
+  const documents: QueryDocumentSnapshot[] = []
+  let cursor: QueryDocumentSnapshot | undefined
+  for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+    const snapshot = await firestore.getDocs(firestore.query(collection, ...ordering, ...(cursor ? [firestore.startAfter(cursor)] : []), firestore.limit(LIST_PAGE_SIZE)))
+    documents.push(...snapshot.docs)
+    if (snapshot.docs.length < LIST_PAGE_SIZE) return documents
+    const last = snapshot.docs[snapshot.docs.length - 1]
+    if (last.id === cursor?.id) throw new Error(`Loading this group's ${collection.id} stopped partway. Try again.`)
+    cursor = last
+  }
+  throw new Error(`This group has too many ${collection.id} to load (${(LIST_PAGE_SIZE * MAX_LIST_PAGES).toLocaleString('en-US')} or more).`)
 }
 
 function oldestExpenseFirst(left: ExpenseRow, right: ExpenseRow): number {
