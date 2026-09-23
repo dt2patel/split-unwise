@@ -3,7 +3,8 @@ import { computed, nextTick, onMounted, ref, shallowRef, type ComponentPublicIns
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonInput, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonRefresher, IonRefresherContent, IonSearchbar, IonTitle, IonToolbar, type RefresherCustomEvent } from '@ionic/vue'
-import { add, checkmarkCircle, chevronDown, chevronForward } from 'ionicons/icons'
+import { add, checkmarkCircle, chevronDown } from 'ionicons/icons'
+import { confirmAction } from '../../app/confirmDialog'
 import { useI18n } from '../../app/i18n'
 import { useGroupStore } from './groupStore'
 import { getAppSession } from '../../data/session'
@@ -81,13 +82,16 @@ function openCreate(event: Event): void {
   showingCreate.value = true
 }
 async function requestCreateDismissal(): Promise<void> {
-  if (await canDismissCreate()) showingCreate.value = false
+  if (!(await canDismissCreate())) return
+  // Closing through isOpen makes Ionic run canDismiss again; the draft was already confirmed, so don't ask twice.
+  dismissingCommittedCreate.value = true
+  showingCreate.value = false
 }
 async function canDismissCreate(): Promise<boolean> {
   if (dismissingCommittedCreate.value) return true
   if (creating.value) return false
   if (!hasCreateDraft.value) return true
-  return window.confirm(t('groups.discardDraft'))
+  return confirmAction({ message: t('groups.discardDraft'), confirmText: t('dialog.discard'), cancelText: t('dialog.keepEditing'), destructive: true })
 }
 async function finishCreateDismissal(): Promise<void> {
   showingCreate.value = false
@@ -173,22 +177,22 @@ function coverDescription(id: GroupCoverId): string {
 
         <p v-if="isLoading && groups.length === 0" role="status">{{ t('groups.loading') }}</p>
         <p v-else-if="groupError" role="alert">{{ groupError }}</p>
-        <div v-else class="groups-page__list">
-          <router-link
+        <ion-list v-else class="groups-page__list" lines="full">
+          <ion-item
             v-for="group in visibleGroups"
             :key="group.id"
             class="group-row"
             data-testid="lake-house-link"
-            :to="`/tabs/groups/${group.id}`"
+            :router-link="`/tabs/groups/${group.id}`"
+            detail
           >
-            <img v-if="group.coverImageUrl" :src="group.coverImageUrl" alt="" aria-hidden="true">
-            <span class="group-row__copy">
+            <img v-if="group.coverImageUrl" slot="start" class="group-row__cover" :src="group.coverImageUrl" alt="" aria-hidden="true">
+            <ion-label class="group-row__copy">
               <strong>{{ group.name }}</strong>
               <small>{{ peopleCount(group.memberIds.length) }} · {{ group.currency }}</small>
-            </span>
-            <ion-icon :icon="chevronForward" aria-hidden="true" />
-          </router-link>
-        </div>
+            </ion-label>
+          </ion-item>
+        </ion-list>
       </main>
     </ion-content>
 
@@ -271,13 +275,12 @@ function coverDescription(id: GroupCoverId): string {
 .groups-page { padding: 20px 18px 110px; }
 .groups-page h1 { margin: 0; font-size: 2rem; letter-spacing: -0.035em; }
 .groups-page > p { margin: 8px 0 24px; color: var(--ion-color-medium); line-height: 1.45; }
-.groups-page__list { border-top: 1px solid var(--su-divider); }
-.group-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) 18px; align-items: center; gap: 12px; min-height: 88px; border-bottom: 1px solid var(--su-divider); color: inherit; text-decoration: none; }
-.group-row img { width: 64px; height: 64px; border-radius: 18px; object-fit: cover; object-position: 50% 88%; }
-.group-row__copy { display: grid; gap: 4px; }
+.groups-page__list { padding: 0; border-top: 1px solid var(--su-divider); background: transparent; }
+.groups-page__list .group-row { --background: transparent; --border-color: var(--su-divider); --border-width: 0 0 1px 0; --min-height: 88px; --padding-start: 0; --inner-padding-end: 2px; --detail-icon-color: var(--su-accent); --detail-icon-opacity: 1; --detail-icon-font-size: 1.05rem; color: var(--su-text); }
+.group-row__cover { width: 64px; height: 64px; margin: 0 12px 0 0; border-radius: 18px; object-fit: cover; object-position: 50% 88%; }
+.group-row__copy { display: grid; gap: 4px; margin: 12px 12px 12px 0; }
 .group-row__copy strong { font-size: 1rem; }
 .group-row__copy small { color: var(--ion-color-medium); }
-.group-row > ion-icon { color: var(--su-accent); font-size: 1.05rem; }
 .create-group-card{box-sizing:border-box;width:min(100%,620px);margin:auto;padding:22px 16px calc(38px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--su-lilac) 24%,var(--su-surface));min-height:100%}.create-group-card__intro{padding:4px 4px 24px}.create-group-card__intro p{margin:0 0 7px;color:var(--ion-color-primary);font-size:.68rem;font-weight:800;letter-spacing:.13em}.create-group-card__intro h1{margin:0;font-size:2rem;letter-spacing:-.045em}.create-group-card__intro span{display:block;max-width:32rem;margin-top:8px;color:var(--ion-color-medium);font-size:.86rem;line-height:1.45}.create-section-heading{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:0 4px 10px}.create-section-heading h2{margin:0;font-size:.94rem}.create-section-heading ion-note{font-size:.7rem}.cover-section{margin-bottom:26px}.cover-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.cover-choice{display:grid;min-width:0;gap:3px;padding:0 0 11px;overflow:hidden;border:1px solid color-mix(in srgb,var(--su-divider) 28%,transparent);border-radius:17px;background:var(--su-surface);color:var(--su-text);font:inherit;text-align:left;box-shadow:0 8px 22px rgb(34 26 76 / 7%);transition:transform var(--su-motion-fast) ease,border-color var(--su-motion-fast) ease,box-shadow var(--su-motion-fast) ease}.cover-choice:active{transform:scale(.98)}.cover-choice--selected{border-color:var(--ion-color-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--ion-color-primary) 20%,transparent),0 10px 24px rgb(34 26 76 / 11%)}.cover-choice__image{position:relative;display:block;width:100%;aspect-ratio:2.17/1;overflow:hidden;background:var(--su-lilac)}.cover-choice__image img{width:100%;height:100%;object-fit:cover}.cover-choice__image ion-icon{position:absolute;right:8px;bottom:7px;padding:2px;border-radius:50%;background:var(--su-surface);color:var(--ion-color-primary);font-size:1.3rem}.cover-choice strong,.cover-choice small{padding:0 11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cover-choice strong{margin-top:5px;font-size:.86rem}.cover-choice small{color:var(--ion-color-medium);font-size:.66rem}.create-fields{overflow:hidden;margin:0;border-radius:16px;background:var(--su-surface);box-shadow:0 0 0 1px color-mix(in srgb,var(--su-divider) 20%,transparent)}.create-fields ion-item{--background:transparent;--min-height:64px;--padding-start:14px;--inner-padding-end:12px;color:var(--su-text)}.create-fields ion-input{--padding-top:7px;--padding-bottom:9px;font-size:16px}.create-fields ion-label{display:grid;gap:3px}.create-fields ion-label span{color:var(--ion-color-medium);font-size:.69rem}.create-fields ion-label strong{font-size:.98rem}.create-fields ion-icon{color:var(--ion-color-primary)}.currency-picker{margin-top:12px;padding:8px 8px 10px;border-radius:18px;background:var(--su-surface);box-shadow:0 12px 30px rgb(34 26 76 / 9%);animation:currency-picker-in 180ms cubic-bezier(.2,.8,.2,1) both}.currency-picker ion-searchbar{--background:color-mix(in srgb,var(--su-lilac) 64%,var(--su-surface));--border-radius:12px;--box-shadow:none;padding:4px}.currency-picker>p{margin:5px 10px 3px;color:var(--ion-color-medium);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.currency-picker ion-list{max-height:270px;overflow:auto;background:transparent}.currency-picker ion-item{--background:transparent;--min-height:48px;color:var(--su-text)}.currency-picker ion-icon{color:var(--ion-color-primary)}.currency-picker>ion-note{display:block;padding:14px 10px}.create-error{margin:14px 2px 0;padding:11px 12px;border-radius:12px;background:color-mix(in srgb,var(--ion-color-danger) 10%,var(--su-surface));color:var(--ion-color-danger);font-size:.8rem}.create-footnote{margin:16px 4px 0;color:var(--ion-color-medium);font-size:.72rem;line-height:1.45}@keyframes currency-picker-in{from{opacity:0;transform:translateY(-6px)}}@media(max-width:350px){.cover-grid{grid-template-columns:1fr}.cover-choice__image{aspect-ratio:2.7/1}}@media(prefers-reduced-motion:reduce){.cover-choice,.currency-picker{transition:none;animation:none}.cover-choice:active{transform:none}}
 @media(max-width:350px){.cover-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.cover-choice__image{aspect-ratio:2.17/1}}
 </style>

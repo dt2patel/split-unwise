@@ -10,7 +10,9 @@ import {
   IonFooter,
   IonHeader,
   IonIcon,
+  IonItem,
   IonLabel,
+  IonList,
   IonPage,
   IonRefresher,
   IonRefresherContent,
@@ -224,18 +226,19 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
               <p v-if="isActivityLoading" class="activity-loading" role="status">Loading activity…</p>
               <section v-for="day in groupedActivity" :key="day.key" class="activity-day">
                 <h3 class="activity-day__heading" data-testid="activity-date-divider">{{ day.label }}</h3>
-                <ol class="activity-list">
-                  <li v-for="item in day.items" :key="item.id" :data-activity-id="item.id" :data-sync-state="item.syncState">
-                    <router-link v-if="activityDestination(item, 'groups')" :to="activityDestination(item, 'groups')!" class="activity-list__body">
-                      <span>{{ activityText(item) }}</span>
-                      <time :datetime="item.createdAt">{{ new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(item.createdAt)) }}</time>
-                    </router-link>
-                    <div v-else class="activity-list__body">
-                      <span>{{ activityText(item) }}</span>
-                      <time :datetime="item.createdAt">{{ new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(item.createdAt)) }}</time>
-                    </div>
-                  </li>
-                </ol>
+                <ion-list class="activity-list" lines="full">
+                  <ion-item
+                    v-for="item in day.items"
+                    :key="item.id"
+                    :data-activity-id="item.id"
+                    :data-sync-state="item.syncState"
+                    :router-link="activityDestination(item, 'groups')"
+                    :detail="activityDestination(item, 'groups') !== undefined"
+                  >
+                    <ion-label>{{ activityText(item) }}</ion-label>
+                    <time slot="end" :datetime="item.createdAt">{{ new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(item.createdAt)) }}</time>
+                  </ion-item>
+                </ion-list>
               </section>
             </div>
           </transition>
@@ -286,9 +289,9 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
 .journal-loading__summary ion-skeleton-text:last-child { width: min(104px, 76%); height: 10px; }
 .journal-loading__amount { width: 54px; height: 14px; justify-self: end; }
 .activity-day__heading { margin: 18px 0 0; padding: 0 3px 7px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); color: var(--ion-color-medium); font-size: 0.82rem; font-weight: 520; }
-.activity-list { margin: 0; padding: 0; list-style: none; }
-.activity-list li { border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 45%, transparent); font-size: 0.9rem; }
-.activity-list__body { display: flex; min-height: 44px; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 2px; color: inherit; text-decoration: none; }
+.activity-list { margin: 0; padding: 0; background: transparent; }
+.activity-list ion-item { --background: transparent; --border-color: color-mix(in srgb, var(--su-divider) 45%, transparent); --border-width: 0 0 1px 0; --min-height: 44px; --padding-start: 2px; --inner-padding-end: 2px; color: var(--su-text); font-size: 0.9rem; }
+.activity-list ion-label { margin: 9px 12px 9px 0; }
 .activity-list time { flex: 0 0 auto; color: var(--ion-color-medium); font-size: 0.75rem; }
 .activity-loading { margin: 22px 0; color: var(--ion-color-medium); text-align: center; }
 .group-detail__status { padding: 32px 18px; color: var(--ion-color-medium); text-align: center; }
