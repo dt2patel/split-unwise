@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { IonicVue } from '@ionic/vue'
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,9 +28,20 @@ const stubs = {
   IonButtons: { template: '<div><slot /></div>' }, IonContent: { template: '<main><slot /></main>' },
   IonIcon: { template: '<span />' }, IonButton: { emits: ['click'], template: '<button type="button" @click="$emit(\'click\')"><slot /></button>' },
   IonList: { template: '<div><slot /></div>' },
-  IonItem: { props: ['routerLink'], emits: ['click'], template: '<component :is="routerLink ? \'a\' : \'button\'" :href="routerLink" @click="$emit(\'click\')"><slot /></component>' },
+  IonItem: { props: ['routerLink', 'detail'], emits: ['click'], template: '<component :is="routerLink ? \'a\' : \'button\'" :href="routerLink" :data-detail="detail" @click="$emit(\'click\')"><slot /></component>' },
   IonAvatar: { template: '<span><slot /></span>' }, IonLabel: { template: '<span><slot /></span>' }, IonNote: { template: '<small><slot /></small>' },
   IonSkeletonText: { template: '<span />' },
+  IonInput: {
+    name: 'IonInput', inheritAttrs: false, props: ['modelValue', 'label', 'labelPlacement'], emits: ['update:modelValue'],
+    template: '<label><span>{{ label }}</span><input v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)"></label>',
+  },
+}
+
+// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+async function settleIonic(): Promise<void> {
+  await flushPromises()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await flushPromises()
 }
 
 beforeEach(() => {
@@ -151,6 +163,53 @@ describe('Friends page', () => {
     await wrapper.get('[aria-label="Añadir amigo"]').trigger('click')
     expect(wrapper.get('form').text()).toContain('Nombre del amigo')
     expect(wrapper.get('input[type="email"]').attributes('inputmode')).toBe('email')
+    const fields = wrapper.findAllComponents({ name: 'IonInput' })
+    expect(fields.map((field) => [field.props('label'), field.props('labelPlacement')])).toEqual([['Nombre del amigo', 'stacked'], ['Correo electrónico', 'stacked']])
+    expect(wrapper.get('input[autocomplete="name"]').attributes()).toMatchObject({ maxlength: '120', autocapitalize: 'words', placeholder: 'Jordan Lee' })
+    expect(wrapper.get('input[type="email"]').attributes()).toMatchObject({ autocomplete: 'email', placeholder: 'jordan@example.com' })
+    const currency = wrapper.get<HTMLSelectElement>('select')
+    expect(currency.element.closest('label')!.textContent).toContain('Moneda')
+    expect(currency.findAll('option').length).toBeGreaterThan(1)
+  })
+
+  it('submits real Ionic name and email fields through the form submit button', async () => {
+    firebaseMocks.createSparkFriendship.mockResolvedValueOnce({
+      status: 'ready',
+      groupId: 'friend-ravi',
+      invitation: {
+        invitationId: 'invite-ravi', groupId: 'friend-ravi', link: 'https://split-unwise-aditya.web.app/invite/invite-ravi#token=secret',
+        expiresAt: '2026-09-09T12:00:00.000Z', capability: 'firebase-client', targetEmail: 'ravi@example.com',
+      },
+    })
+    const source = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository: { ...source, mode: 'firebase' as const }, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+    const wrapper = mount(FriendsPage, { attachTo: document.body, global: { plugins: [createPinia(), router, [IonicVue, { mode: 'ios' }]], stubs: {
+      IonPage: stubs.IonPage, IonHeader: stubs.IonHeader, IonToolbar: stubs.IonToolbar, IonTitle: stubs.IonTitle, IonButtons: stubs.IonButtons, IonContent: stubs.IonContent,
+    } } })
+    await settleIonic()
+
+    await wrapper.get('header ion-button').trigger('click')
+    await settleIonic()
+    const name = wrapper.get<HTMLInputElement>('.friend-form ion-input input[autocomplete="name"]')
+    const email = wrapper.get<HTMLInputElement>('.friend-form ion-input input[type="email"]')
+    expect(name.attributes('maxlength')).toBe('120')
+    expect(email.attributes('inputmode')).toBe('email')
+    expect(document.getElementById(email.attributes('aria-labelledby')!)?.textContent).toBe('Email')
+    name.element.value = 'Ravi Patel'
+    await name.trigger('input')
+    email.element.value = 'ravi@example.com'
+    await email.trigger('input')
+    await wrapper.get('.friend-form select').setValue('EUR')
+
+    const submit = wrapper.findAll('.friend-form__actions ion-button').find((button) => button.text() === 'Add friend')!
+    await submit.trigger('click')
+    await flushPromises()
+
+    expect(firebaseMocks.createSparkFriendship).toHaveBeenCalledOnce()
+    expect(firebaseMocks.createSparkFriendship.mock.calls[0]![1]).toMatchObject({ displayName: 'Ravi Patel', email: 'ravi@example.com', currency: 'EUR' })
+    await vi.waitFor(() => expect(wrapper.get('[role="status"]').text()).toBe('Private invitation ready for ravi@example.com.'))
+    wrapper.unmount()
   })
 
   it('hides an ordinary add diagnostic and retranslates the retained failure without creating again', async () => {
@@ -307,6 +366,13 @@ describe('Friends page', () => {
     expect(breakdown.text()).toContain('Lake House Weekend')
     expect(breakdown.text()).toContain('$36.25')
     expect(breakdown.get('a').attributes('href')).toBe('/tabs/groups/lake-house-weekend')
+    const rows = breakdown.findAll('.friend-breakdown__link')
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) {
+      expect(row.element.tagName).toBe('A')
+      expect(row.attributes('data-detail')).toBe('')
+    }
+    expect(wrapper.get('[data-friend-id="taylor-s"]').attributes('data-detail')).toBe('false')
   })
 
   it('keeps a pending invitation reachable when its balance read is temporarily unavailable', async () => {
