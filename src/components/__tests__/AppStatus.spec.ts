@@ -46,7 +46,7 @@ describe('app status', () => {
     const toast = updateToast(wrapper)
 
     expect(toast.props()).toMatchObject({
-      isOpen: true, header: 'Update ready', message: 'Install after your local work is safely settled.',
+      isOpen: true, header: 'Update ready', message: 'A new version of Split Unwise is ready.',
       duration: 0, position: 'bottom', layout: 'stacked',
     })
     const [later, update] = buttons(toast)

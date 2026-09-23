@@ -141,6 +141,7 @@ async function markRead(notification: NotificationItem): Promise<void> {
   } catch (reason) {
     error.value = message(reason, 'Notification read state could not be saved.')
     status.value = ''
+    if (await dropIfRejected(operationId)) error.value = 'This notification can’t be marked read anymore. Mark all read clears it.'
   } finally {
     const next = new Set(inFlight.value)
     next.delete(notification.notificationId)
@@ -154,13 +155,15 @@ async function markAllRead(): Promise<void> {
   inFlight.value = new Set(inFlight.value).add('all')
   error.value = ''
   status.value = 'Marking notifications read…'
+  const operationId = createOperationId('notification-read-all')
   try {
-    await session.queue.submit({ kind: 'notification.read-all', operationId: createOperationId('notification-read-all'), cutoff }).result()
+    await session.queue.submit({ kind: 'notification.read-all', operationId, cutoff }).result()
     status.value = 'Notifications marked read.'
     await load()
   } catch (reason) {
     error.value = message(reason, 'Notification read state could not be saved.')
     status.value = ''
+    await dropIfRejected(operationId)
   } finally {
     const next = new Set(inFlight.value)
     next.delete('all')
@@ -176,14 +179,30 @@ async function updatePreference(key: keyof NotificationPreferences, event: Custo
   if (next.emailEnabled === current.emailEnabled && next.pushEnabled === current.pushEnabled) return
   error.value = ''
   status.value = 'Saving notification preferences…'
+  const operationId = createOperationId('notification-preferences')
   try {
-    await session.queue.submit({ kind: 'notification.preferences', operationId: createOperationId('notification-preferences'), preferences: next }).result()
+    await session.queue.submit({ kind: 'notification.preferences', operationId, preferences: next }).result()
     status.value = 'Notification preferences saved.'
     await load()
   } catch (reason) {
     error.value = message(reason, 'Notification preferences could not be saved.')
     status.value = ''
+    await dropIfRejected(operationId)
   }
+}
+
+/**
+ * A notification change the server rejects for good (for example, marking read a notification from a group that was
+ * deleted) can never succeed, and left in the queue it would sit there unresolved. The error above already says why.
+ */
+async function dropIfRejected(operationId: string): Promise<boolean> {
+  const operation = session.queue.get(operationId)
+  if (operation?.status !== 'failed' || operation.error.retryable) return false
+  try {
+    await session.queue.discard(operationId)
+    queueRevision.value += 1
+    return true
+  } catch { return false /* the Discard button still offers this */ }
 }
 
 async function retryFailed(): Promise<void> {
