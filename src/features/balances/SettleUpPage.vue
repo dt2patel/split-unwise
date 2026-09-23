@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch, type ComponentPublicInstance } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -24,8 +24,11 @@ import {
   IonToolbar,
 } from '@ionic/vue'
 import { formatMoney } from '../../components/MoneyAmount.vue'
+import { claimAgentDraft, isAgentDraftId, reportAgentDraftLeft, type AgentSettlementDraft } from '../../app/agentDrafts'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { isStrictId } from '../../data/identifiers'
+import { appPrincipalKey } from '../../data/principal'
+import { getAppSession } from '../../data/session'
 import type { SettlementBasis, SettlementMethod } from '../../data/repositories'
 import type { Debt } from '../../domain/model'
 import { fromMinorUnits, toMinorUnits } from '../../domain/money'
@@ -162,6 +165,38 @@ watch(candidateDebts, (debts) => {
   }
 }, { immediate: true })
 
+// An agent can prefill this payment through WebMCP. The user still confirms it happened and taps Record.
+const agentDraft = shallowRef<AgentSettlementDraft>()
+let agentDraftId: string | undefined
+let agentDraftApplied = false
+
+watch([groupId, () => route.query.agentDraft], async ([id, draftId]) => {
+  if (!id || !isAgentDraftId(draftId) || draftId === agentDraftId) return
+  const draft = claimAgentDraft(appPrincipalKey(await getAppSession().principal), draftId, 'settlement', id)
+  if (!draft) return
+  releaseAgentDraft()
+  agentDraftId = draftId
+  agentDraftApplied = false
+  agentDraft.value = draft
+}, { immediate: true })
+
+// Applied once the requested balance is selected, so that balance's full amount doesn't replace the agent's.
+watch([selectedBasis, agentDraft], ([basis, draft]) => {
+  if (!basis || !draft || agentDraftApplied) return
+  agentDraftApplied = true
+  amount.value = draft.amountText
+  if (draft.method) method.value = draft.method
+  if (draft.occurredOn) occurredOn.value = draft.occurredOn
+  if (draft.note) note.value = draft.note
+})
+
+function releaseAgentDraft(): void {
+  reportAgentDraftLeft(agentDraftId)
+  agentDraftId = undefined
+  agentDraft.value = undefined
+}
+onBeforeUnmount(releaseAgentDraft)
+
 function selectPlan(plan: BalancePlan): void {
   if (selectedPlan.value === plan) return
   selectedPlan.value = plan
@@ -237,7 +272,7 @@ async function recordPayment(): Promise<void> {
     occurredOn: occurredOn.value,
     ...(note.value.trim() ? { note: note.value.trim() } : {}),
     outsidePaymentConfirmed: true,
-  })
+  }, { agentDraftId })
   isSubmitting.value = false
   if (!saved) return
   const record = settlements.value.find((settlement) => settlement.operationId === operationId)
@@ -324,6 +359,7 @@ function operationStatus(status: string): string {
           <h1>Settle up</h1>
           <span id="outside-payment-copy" data-testid="outside-payment-copy">Record money that already happened outside Split Unwise.</span>
         </header>
+        <p v-if="agentDraft" class="settle-page__agent-note" role="status" data-testid="agent-draft-note">An AI agent filled this in. Check the details, confirm the payment happened, then record it yourself.</p>
 
         <p v-if="isLoading && !balanceSnapshot" role="status" class="settle-page__status">Loading current balances…</p>
         <p v-else-if="storeError && !balanceSnapshot" role="alert" class="settle-page__status settle-page__error">{{ storeError }}</p>
@@ -512,6 +548,7 @@ ion-textarea.field__control { min-height: 74px; }
 .settle-form > ion-button { min-height: 48px; margin: 2px 0; --border-radius: 14px; font-weight: 720; text-transform: none; }
 .settle-page__status { padding: 40px 8px; color: var(--ion-color-medium); text-align: center; }
 .settle-page__error { margin: 0; color: var(--ion-color-danger); font-size: .8rem; line-height: 1.4; }
+.settle-page__agent-note { margin: 0 0 16px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--su-lilac) 72%, var(--su-surface)); color: var(--su-text); font-size: .82rem; line-height: 1.4; }
 .settle-card__empty { margin: 16px 0 0; color: var(--ion-color-medium); font-size: .84rem; }
 .operations { margin-top: 22px; }
 .operations h2 { font-size: .9rem; }

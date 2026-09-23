@@ -8,8 +8,10 @@ import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import { createMemoryReceiptStore, type ReceiptProvider, type ReceiptRecognitionResult } from '../../../data/receipts'
-import { createAppSession, setAppSessionForTesting } from '../../../data/session'
+import { createAppSession, getAppSession, setAppSessionForTesting } from '../../../data/session'
+import { appPrincipalKey } from '../../../data/principal'
 import { confirmAction } from '../../../app/confirmDialog'
+import { clearAgentDrafts, offerAgentDraft } from '../../../app/agentDrafts'
 import { useExpenseStore } from '../expenseStore'
 import { ionicSheetStubs } from './ionicSheetStubs'
 
@@ -612,6 +614,25 @@ describe('ExpenseEditorPage', () => {
 
     await expect(attachment).resolves.toBe(false)
     expect(store.activeSheet).toBeUndefined()
+  })
+})
+
+describe('ExpenseEditorPage with an agent draft', () => {
+  afterEach(() => clearAgentDrafts())
+
+  it('opens the draft an agent offered, prefilled but unsaved, and says an agent filled it in', async () => {
+    const owner = appPrincipalKey(await getAppSession().principal)
+    const offer = offerAgentDraft(owner, { kind: 'expense', groupId: 'lake-house-weekend', description: 'Dinner at Nopa', amountText: '84.50', currency: 'USD', category: 'Food' })
+
+    const { wrapper, store } = await mountRoute(`/tabs/groups/expenses/new?groupId=lake-house-weekend&agentDraft=${offer.id}`)
+
+    expect((wrapper.get('#expense-description').element as HTMLInputElement).value).toBe('Dinner at Nopa')
+    expect(store.editor).toMatchObject({ amountText: '84.50', currency: 'USD', category: 'Food' })
+    expect(wrapper.get('.editor-notice').text()).toContain('An AI agent filled this in')
+    expect(store.isDirty).toBe(true)
+
+    wrapper.unmount()
+    await expect(offer.outcome).resolves.toEqual({ status: 'cancelled', reason: 'left' })
   })
 })
 

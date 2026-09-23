@@ -14,6 +14,8 @@ import SplitEditor from './components/SplitEditor.vue'
 import { useExpenseStore, type ExpenseOrigin, type PaymentInput, type ReceiptItemInput, type SplitInput } from './expenseStore'
 import { parseStrictScalarId } from '../../data/identifiers'
 import { confirmAction } from '../../app/confirmDialog'
+import { isAgentDraftId } from '../../app/agentDrafts'
+import { EXPENSE_CATEGORIES } from './categories'
 import { restoreInteractiveFocus } from '../../app/focus'
 
 const route = useRoute()
@@ -26,7 +28,7 @@ const presentingElement = shallowRef<HTMLElement>()
 const receiptPreviewUrl = ref<string>()
 const awaitingReceiptSheet = ref(false)
 const sheetDirty = ref(false)
-const categories = ['Food', 'Transport', 'Lodging', 'Supplies', 'Entertainment', 'Utilities', 'Other']
+const categories = EXPENSE_CATEGORIES
 const pageTitle = computed(() => store.mode === 'edit' ? 'Edit expense' : 'Add expense')
 const totalMinorAmount = computed(() => {
   try { return Math.max(0, toMinorUnits(store.editor.amountText || '0', store.editor.currency)) } catch { return 0 }
@@ -83,8 +85,10 @@ async function initialize(): Promise<void> {
   const origin = (match?.[1] ?? 'home') as ExpenseOrigin
   const groupId = parseStrictScalarId(route.query.groupId)
   const importDraftId = parseStrictScalarId(route.query.importDraft)
+  // Set when an agent prefilled this expense through WebMCP; the store takes that draft once.
+  const agentDraftId = isAgentDraftId(route.query.agentDraft) ? route.query.agentDraft : undefined
   const expenseId = typeof route.params.expenseId === 'string' ? route.params.expenseId : undefined
-  await store.initialize({ origin, groupId, expenseId, importDraftId })
+  await store.initialize({ origin, groupId, expenseId, importDraftId, agentDraftId })
 }
 
 // The Ionic alert does not block the page the way window.confirm did, so a quick second tap reuses the open alert.
