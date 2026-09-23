@@ -37,3 +37,7 @@ The confirmation lives in the app because the WebMCP spec doesn't require browse
 Deleting data and changing group settings stay UI-only.
 
 WebMCP is a progressive enhancement. It requires a compatible browser/client and is available only while the authenticated Split Unwise tab is open. It complements rather than replaces a server-side MCP integration.
+
+## Trying it
+
+The site isn't enrolled in Chrome's WebMCP origin trial, so in Chrome the tools appear only after turning on `chrome://flags/#enable-webmcp-testing`. Chrome's Model Context Tool Inspector extension lists the registered tools and can call them by hand. Enrolling later means adding the trial's token as an `Origin-Trial` header in `firebase.json`.
