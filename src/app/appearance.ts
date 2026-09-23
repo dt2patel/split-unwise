@@ -39,8 +39,9 @@ export function bootstrapAppearance(options: AppearanceControllerOptions = {}): 
     root.classList.toggle('su-contrast-more', contrast)
     root.dataset.appearance = preference
     root.style.colorScheme = dark ? 'dark' : 'light'
-    const meta = documentRef.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-    meta?.setAttribute('content', dark ? (contrast ? CHROME_COLORS.contrastDark : CHROME_COLORS.dark) : CHROME_COLORS.light)
+    // index.html ships a light and a dark theme-color for first paint; once the app knows the theme, both carry it.
+    const chrome = dark ? (contrast ? CHROME_COLORS.contrastDark : CHROME_COLORS.dark) : CHROME_COLORS.light
+    documentRef.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]').forEach((meta) => meta.setAttribute('content', chrome))
   }
   const colorChanged = () => apply()
   const contrastChanged = () => apply()

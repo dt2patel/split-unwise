@@ -72,7 +72,10 @@ button, input, select, textarea { font-size: max(16px, 1rem); }
 
 /* One chrome color per theme: toolbars, tab bar, and the browser/status-bar area (theme-color, set in appearance.ts) must match. */
 :root { --su-chrome: #F8F7FF; }
+/* Safari samples the safe-area color at first paint, before appearance.ts adds su-theme-dark; follow the system until then. */
+@media (prefers-color-scheme: dark) { :root:not([data-appearance="light"]) { --su-chrome: #17152A; } }
 :root.su-theme-dark { --su-chrome: #17152A; }
+:root:not(.su-theme-dark)[data-appearance] { --su-chrome: #F8F7FF; }
 :root.su-contrast-more.su-theme-dark { --su-chrome: #000000; }
 :root.ios, :root.md {
   --ion-toolbar-background: var(--su-chrome);

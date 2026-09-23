@@ -15,7 +15,8 @@ describe('appearance controller', () => {
   })
 
   it('applies forced palettes, listens to OS color only in system, and retains contrast', () => {
-    document.head.innerHTML = '<meta name="theme-color" content="#fff">'
+    document.head.innerHTML = '<meta name="theme-color" content="#fff" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#fff" media="(prefers-color-scheme: dark)">'
+    const themeColors = () => Array.from(document.querySelectorAll('meta[name="theme-color"]')).map((meta) => meta.getAttribute('content'))
     const color = media(true)
     const contrast = media(false)
     const stored = new Map([[APPEARANCE_STORAGE_KEY, 'system']])
@@ -33,12 +34,12 @@ describe('appearance controller', () => {
     contrast.matches = true
     contrast.emit()
     expect(document.documentElement.classList.contains('ion-palette-high-contrast')).toBe(true)
-    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe('#F8F7FF')
+    expect(themeColors()).toEqual(['#F8F7FF', '#F8F7FF'])
 
     controller.setPreference('dark')
     expect(document.documentElement.classList.contains('ion-palette-high-contrast-dark')).toBe(true)
     expect(document.documentElement.style.colorScheme).toBe('dark')
-    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe('#000000')
+    expect(themeColors()).toEqual(['#000000', '#000000'])
     controller.destroy()
     expect(contrast.listeners.size).toBe(0)
   })
@@ -54,6 +55,10 @@ describe('appearance controller', () => {
     expect(css).toMatch(/body \{[^}]*background: var\(--su-chrome\);/)
     const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'public/manifest.webmanifest'), 'utf8')) as { theme_color: string }
     expect(manifest.theme_color).toBe(CHROME_COLORS.light)
-    expect(readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')).toContain(`<meta name="theme-color" content="${CHROME_COLORS.light}" />`)
+    const html = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
+    expect(html).toContain(`<meta name="theme-color" content="${CHROME_COLORS.light}" media="(prefers-color-scheme: light)" />`)
+    expect(html).toContain(`<meta name="theme-color" content="${CHROME_COLORS.dark}" media="(prefers-color-scheme: dark)" />`)
+    // First paint follows the system theme before appearance.ts runs.
+    expect(css).toContain(`@media (prefers-color-scheme: dark) { :root:not([data-appearance="light"]) { --su-chrome: ${CHROME_COLORS.dark}; } }`)
   })
 })
