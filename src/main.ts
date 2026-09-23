@@ -18,7 +18,7 @@ import { installWebMcp } from './app/webmcp'
 import { markLaunch } from './app/perfMarks'
 import './app/theme.css'
 
-// In a Safari tab the browser owns edge-swipe back; Ionic's swipe-back only belongs in the home-screen app and native shell.
+// On the web iOS owns edge-swipe back (Safari and home-screen apps); Ionic's swipe-back only belongs in the native shell.
 const ionicConfig = { mode: 'ios' as const, navAnimation: createRouteAnimation(), swipeBackEnabled: !browserOwnsBackGesture(Capacitor.isNativePlatform()) }
 const repositoryRuntime = await createRepositorySessionRuntime()
 markLaunch('runtime-ready')

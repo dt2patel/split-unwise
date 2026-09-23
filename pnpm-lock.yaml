@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@ionic/vue@9.0.4':
-    hash: 40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2
+    hash: 16d9d9be6c08381c432061f673bd9f64e616f0d46831e859ad71e4bef2b2f3b5
     path: patches/@ionic__vue@9.0.4.patch
 
 importers:
@@ -24,7 +24,7 @@ importers:
         version: 8.5.1(@capacitor/core@8.5.1)
       '@ionic/vue':
         specifier: 9.0.4
-        version: 9.0.4(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
+        version: 9.0.4(patch_hash=16d9d9be6c08381c432061f673bd9f64e616f0d46831e859ad71e4bef2b2f3b5)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
       '@ionic/vue-router':
         specifier: 9.0.4
         version: 9.0.4(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
@@ -6752,13 +6752,13 @@ snapshots:
 
   '@ionic/vue-router@9.0.4(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))':
     dependencies:
-      '@ionic/vue': 9.0.4(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
+      '@ionic/vue': 9.0.4(patch_hash=16d9d9be6c08381c432061f673bd9f64e616f0d46831e859ad71e4bef2b2f3b5)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))
     transitivePeerDependencies:
       - '@stencil/core'
       - vue
       - vue-router
 
-  '@ionic/vue@9.0.4(patch_hash=40d18b532cfc0e8e3c137f010157d247441b59aa6543500b427cb236e54305e2)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))':
+  '@ionic/vue@9.0.4(patch_hash=16d9d9be6c08381c432061f673bd9f64e616f0d46831e859ad71e4bef2b2f3b5)(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))':
     dependencies:
       '@ionic/core': 9.0.4
       '@stencil/vue-output-target': 0.14.2(@stencil/core@4.44.2)(vue-router@4.6.4(vue@3.5.42(typescript@6.0.2)))(vue@3.5.42(typescript@6.0.2))

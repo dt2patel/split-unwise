@@ -69,4 +69,11 @@ describe('route navigation animation', () => {
     expect(back()).toBe(540)
     now.mockRestore()
   })
+
+  it('leaves the back gesture to the browser in every web context and to Ionic only in the native shell', async () => {
+    const { browserOwnsBackGesture } = await import('../navigation')
+    expect(browserOwnsBackGesture()).toBe(true)
+    expect(browserOwnsBackGesture(false)).toBe(true)
+    expect(browserOwnsBackGesture(true)).toBe(false)
+  })
 })
