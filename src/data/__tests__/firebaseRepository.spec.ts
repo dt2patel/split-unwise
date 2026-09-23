@@ -28,7 +28,7 @@ vi.mock('firebase/auth', () => ({
 }))
 
 vi.mock('firebase/firestore', () => {
-  const collection = (_db: unknown, ...parts: string[]) => ({ path: parts.join('/') })
+  const collection = (_db: unknown, ...parts: string[]) => ({ path: parts.join('/'), id: parts.at(-1) })
   const doc = (_db: unknown, ...parts: string[]) => ({ path: parts.join('/'), id: parts.at(-1) })
   const orderBy = (field: string, direction = 'asc') => ({ type: 'orderBy', field, direction })
   const where = (field: string, operator: string, value: unknown) => ({ type: 'where', field, operator, value })
@@ -45,18 +45,33 @@ vi.mock('firebase/firestore', () => {
   const getDocs = async (reference: { path?: string; base?: { path: string }; constraints?: readonly Record<string, unknown>[] }) => {
     const base = reference.base ?? { path: reference.path ?? '' }
     const constraints = reference.constraints ?? []
-    firebase.queries.push({ base, constraints })
+    firebase.queries.push({ base: { path: base.path }, constraints })
     let docs = [...dataFor(base.path)]
     const unread = constraints.find((candidate) => candidate.type === 'where' && candidate.field === 'readAt')
     if (unread) docs = docs.filter((document) => document.data().readAt === null)
     const filter = constraints.find((candidate) => candidate.type === 'where' && candidate.field === 'kind')
     if (filter && Array.isArray(filter.value)) docs = docs.filter((document) => (filter.value as unknown[]).includes(document.data().kind))
-    docs.sort((left, right) => String(right.data().createdAt ?? '').localeCompare(String(left.data().createdAt ?? '')) || (right.id < left.id ? -1 : right.id > left.id ? 1 : 0))
+    const requested = constraints.filter((candidate) => candidate.type === 'orderBy') as unknown as ReadonlyArray<{ field: string; direction: string }>
+    // Unordered queries keep this fake's newest-first order.
+    const ordering = requested.length > 0 ? requested : [{ field: 'createdAt', direction: 'desc' }, { field: '__name__', direction: 'desc' }]
+    const valueOf = (document: { id: string; data: () => Record<string, unknown> }, field: string) => String((field === '__name__' ? document.id : document.data()[field]) ?? '')
+    const compare = (left: { id: string; data: () => Record<string, unknown> }, right: { id: string; data: () => Record<string, unknown> }) => {
+      for (const { field, direction } of ordering) {
+        const [a, b] = [valueOf(left, field), valueOf(right, field)]
+        if (a !== b) return (a < b ? -1 : 1) * (direction === 'desc' ? -1 : 1)
+      }
+      return 0
+    }
+    docs.sort(compare)
     const cursor = constraints.find((candidate) => candidate.type === 'startAfter')
     if (cursor && Array.isArray(cursor.values)) {
-      const [createdAt, id] = cursor.values
-      docs = docs.filter((document) => String(document.data().createdAt) < String(createdAt)
-        || (document.data().createdAt === createdAt && document.id < String(id)))
+      // A document snapshot marks its own position; plain values stand for the ordered fields in turn.
+      const [first] = cursor.values as unknown[]
+      const anchor = typeof first === 'object' && first !== null && 'data' in first ? first as { id: string; data: () => Record<string, unknown> } : {
+        id: String(cursor.values[ordering.findIndex(({ field }) => field === '__name__')]),
+        data: () => Object.fromEntries(ordering.map(({ field }, index) => [field, (cursor.values as unknown[])[index]])),
+      }
+      docs = docs.filter((document) => compare(document, anchor) > 0)
     }
     const cap = constraints.find((candidate) => candidate.type === 'limit')?.value
     if ((base.path.endsWith('/activity') || base.path.endsWith('/notifications')) && !unread && typeof cap !== 'number') {
@@ -316,6 +331,47 @@ describe('Task 7 Firebase repository query boundaries', () => {
     })
   })
 
+  it('totals Spark balances from every page of expenses and settlements, not just the first 100', async () => {
+    const repository = createFirebaseRepository(configuration)
+    const expenseIds = Array.from({ length: 250 }, (_, index) => `expense-${String(index).padStart(3, '0')}`)
+    // Stored out of order, and every tenth one deleted: deleted expenses still take up room in a page.
+    firebase.expenseDocuments = [...expenseIds].reverse().map((id) => document(id, {
+      ...sharedExpenseData(), ...(id.endsWith('0') ? { deletedAt: '2026-08-31T12:00:00.000Z' } : {}),
+    }))
+    // Later ids are older payments, so paging must follow the date order rather than the ids.
+    firebase.settlementDocuments = Array.from({ length: 200 }, (_, index) => document(`settlement-${String(index).padStart(3, '0')}`, {
+      ...settlementData(), operationId: `record-${index}`, occurredOn: new Date(Date.UTC(2026, 7, 31 - index)).toISOString().slice(0, 10),
+    }))
+
+    const snapshot = await repository.groups.getBalanceSnapshot('lake-house-weekend')
+
+    // 225 live expenses leave Taylor owing 500 each, and 200 payments of 500 pay most of it back.
+    const owed = [{ fromParticipantId: 'taylor-s', toParticipantId: 'maya-p', money: { currency: 'USD', minorAmount: 225 * 500 - 200 * 500 } }]
+    expect(snapshot).toMatchObject({ balanceRevision: 250 + 200 + 9, pairwise: owed, simplified: owed })
+    const cursors = (collection: string) => firebase.queries
+      .filter(({ base }) => base.path === `groups/lake-house-weekend/${collection}`)
+      .map(({ constraints }) => (constraints.find(({ type }) => type === 'startAfter')?.values as Array<{ id: string }> | undefined)?.[0]?.id)
+    expect(cursors('expenses')).toEqual([undefined, 'expense-099', 'expense-199'])
+    expect(cursors('settlements')).toEqual([undefined, 'settlement-100', 'settlement-000'])
+    expect(firebase.queries).toContainEqual({
+      base: { path: 'groups/lake-house-weekend/expenses' },
+      constraints: [{ type: 'orderBy', field: '__name__', direction: 'asc' }, { type: 'limit', value: 100 }],
+    })
+    const journal = await repository.expenses.listForGroup('lake-house-weekend')
+    expect(journal).toHaveLength(225)
+    expect(journal.some(({ id }) => id === 'expense-249')).toBe(true)
+    const settlements = await repository.settlements.listForGroup('lake-house-weekend')
+    expect(settlements.map(({ settlementId }) => settlementId)).toEqual(Array.from({ length: 200 }, (_, index) => `settlement-${String(199 - index).padStart(3, '0')}`))
+  })
+
+  it('refuses to total a group too large to read rather than showing a partial balance', async () => {
+    const repository = createFirebaseRepository(configuration)
+    firebase.expenseDocuments = Array.from({ length: 10_000 }, (_, index) => document(`expense-${String(index).padStart(5, '0')}`, sharedExpenseData()))
+
+    await expect(repository.groups.getBalanceSnapshot('lake-house-weekend')).rejects.toThrow('This group has too many expenses to load (10,000 or more).')
+    expect(firebase.queries.filter(({ base }) => base.path === 'groups/lake-house-weekend/expenses')).toHaveLength(100)
+  })
+
   it('defaults legacy group settings to simplified debts and strictly decodes an explicit toggle', async () => {
     const repository = createFirebaseRepository(configuration)
 
@@ -455,6 +511,15 @@ function expenseData() {
     createdBy: { id: 'maya-p', displayName: 'Maya P.' }, updatedBy: { id: 'maya-p', displayName: 'Maya P.' },
     total: { currency: 'USD', minorAmount: 1000 }, payments: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }],
     allocations: [{ participantId: 'maya-p', money: { currency: 'USD', minorAmount: 1000 } }], splitMethod: { type: 'equal', participantIds: ['maya-p'] }, attachmentRefs: [],
+  }
+}
+
+function sharedExpenseData() {
+  return {
+    ...expenseData(), allocations: [
+      { participantId: 'maya-p', money: { currency: 'USD', minorAmount: 500 } },
+      { participantId: 'taylor-s', money: { currency: 'USD', minorAmount: 500 } },
+    ], splitMethod: { type: 'equal', participantIds: ['maya-p', 'taylor-s'] },
   }
 }
 

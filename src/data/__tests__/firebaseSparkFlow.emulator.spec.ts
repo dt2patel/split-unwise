@@ -126,6 +126,49 @@ describe('Firebase Spark two-account flow', () => {
     await signOut(auth)
   })
 
+  emulatorIt('totals balances and journals from every expense once a group passes 100', async () => {
+    const auth = getAuth(app)
+    const suffix = crypto.randomUUID()
+    const password = 'SplitUnwise-Test-42!'
+    const owner = await createUserWithEmailAndPassword(auth, `ledger-owner-${suffix}@example.com`, password)
+    await updateProfile(owner.user, { displayName: 'Ledger Owner' })
+    await bootstrapFirebaseProfile(configuration, owner.user)
+    await synchronizeFirebaseProfile(configuration, owner.user)
+    const created = await createSparkGroup(configuration, { operationId: `ledger-${suffix}`, name: 'Long Ledger', currency: 'USD' })
+    const invitation = await createSparkInvitation(configuration, { groupId: created.groupId, canonicalOrigin: 'https://split-unwise-aditya.web.app' })
+    await signOut(auth)
+    const friend = await createUserWithEmailAndPassword(auth, `ledger-friend-${suffix}@example.com`, password)
+    await updateProfile(friend.user, { displayName: 'Ledger Friend' })
+    await bootstrapFirebaseProfile(configuration, friend.user)
+    await synchronizeFirebaseProfile(configuration, friend.user)
+    await acceptSparkInvitation(configuration, invitation.invitationId, new URL(invitation.link).hash.slice('#token='.length))
+    await signOut(auth)
+    await signInWithEmailAndPassword(auth, `ledger-owner-${suffix}@example.com`, password)
+
+    const repository = createFirebaseRepository(configuration, owner.user.uid)
+    for (let index = 0; index < 101; index += 1) {
+      const saved = await repository.expenses.add({
+        kind: 'expense.add', operationId: `ledger-expense-${index}-${suffix}`, groupId: created.groupId, description: `Coffee ${index}`, date: '2026-09-01',
+        total: { currency: 'USD', minorAmount: 200 }, payments: [{ participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 200 } }],
+        allocations: [
+          { participantId: owner.user.uid, money: { currency: 'USD', minorAmount: 100 } },
+          { participantId: friend.user.uid, money: { currency: 'USD', minorAmount: 100 } },
+        ],
+        category: 'Food', splitMethod: { type: 'equal', participantIds: [owner.user.uid, friend.user.uid] }, attachmentRefs: [],
+      })
+      if (saved.status !== 'saved') throw new Error(`Expected ledger expense ${index} to save`)
+    }
+
+    const owed = [{ fromParticipantId: friend.user.uid, toParticipantId: owner.user.uid, money: { currency: 'USD', minorAmount: 101 * 100 } }]
+    const snapshot = await repository.groups.getBalanceSnapshot(created.groupId)
+    expect(snapshot).toMatchObject({ pairwise: owed, simplified: owed })
+    const journal = await repository.expenses.listForGroup(created.groupId)
+    expect(new Set(journal.map(({ id }) => id)).size).toBe(101)
+    await expect(repository.groups.peekJournal!(created.groupId)).resolves.toMatchObject({ expenses: journal })
+    await expect(repository.groups.peekBalanceContext!(created.groupId)).resolves.toMatchObject({ snapshot })
+    await signOut(auth)
+  }, 120_000)
+
   emulatorIt('joins an email-targeted invitation after the invitee verifies while holding an older ID token', async () => {
     const auth = getAuth(app)
     const suffix = crypto.randomUUID()

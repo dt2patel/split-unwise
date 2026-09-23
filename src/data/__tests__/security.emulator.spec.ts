@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs'
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
-import { collection, collectionGroup, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch, type Firestore } from 'firebase/firestore'
+import { collection, collectionGroup, deleteDoc, doc, documentId, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc, startAfter, Timestamp, updateDoc, where, writeBatch, type Firestore, type QueryDocumentSnapshot, type QueryOrderByConstraint } from 'firebase/firestore'
 import { deleteObject, getBytes, ref, uploadBytes } from 'firebase/storage'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
@@ -384,6 +384,40 @@ describe('Firestore rules in the emulator', () => {
     await assertFails(getDoc(doc(anonymous, 'groups/group-a')))
     await assertFails(getDocs(collection(active, 'groups/group-a/expenses')))
     await assertSucceeds(getDocs(query(collection(active, 'groups/group-a/expenses'), limit(100))))
+  })
+
+  emulatorIt('lets an active member page a whole ledger past 100 documents with snapshot cursors', async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      const batch = writeBatch(context.firestore())
+      for (let index = 0; index < 150; index += 1) {
+        const id = `paged-${String(index).padStart(3, '0')}`
+        batch.set(doc(context.firestore(), `groups/group-a/expenses/${id}`), { description: `Expense ${index}` })
+        batch.set(doc(context.firestore(), `groups/group-a/settlements/${id}`), { occurredOn: `2026-0${1 + (index % 9)}-01` })
+      }
+      await batch.commit()
+    })
+    const active = environment.authenticatedContext('active').firestore()
+    const outsider = environment.authenticatedContext('outsider').firestore()
+    // The same query shapes the repository sends: a rules-sized page, then start after its last document.
+    const readAll = async (source: unknown, path: string, ordering: readonly QueryOrderByConstraint[]) => {
+      const db = source as Firestore
+      const ids: string[] = []
+      let cursor: QueryDocumentSnapshot | undefined
+      for (;;) {
+        const page = await assertSucceeds(getDocs(query(collection(db, path), ...ordering, ...(cursor ? [startAfter(cursor)] : []), limit(100))))
+        ids.push(...page.docs.map(({ id }) => id))
+        if (page.docs.length < 100) return ids
+        cursor = page.docs[page.docs.length - 1]
+      }
+    }
+    const expenses = await readAll(active, 'groups/group-a/expenses', [orderBy(documentId(), 'asc')])
+    expect(expenses).toHaveLength(151)
+    expect(new Set(expenses).size).toBe(151)
+    const settlements = await readAll(active, 'groups/group-a/settlements', [orderBy('occurredOn', 'asc'), orderBy(documentId(), 'asc')])
+    expect(new Set(settlements).size).toBe(150)
+    const firstPage = await getDocs(query(collection(active, 'groups/group-a/expenses'), orderBy(documentId(), 'asc'), limit(100)))
+    await assertFails(getDocs(query(collection(outsider, 'groups/group-a/expenses'), orderBy(documentId(), 'asc'), startAfter(firstPage.docs[99]), limit(100))))
+    await assertFails(getDocs(query(collection(active, 'groups/group-a/expenses'), orderBy(documentId(), 'asc'), startAfter(firstPage.docs[99]), limit(101))))
   })
 
   emulatorIt('denies operation ledgers, direct ledger writes, immutable activity writes, unknown paths, and collection-group discovery', async () => {
