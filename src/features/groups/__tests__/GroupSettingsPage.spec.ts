@@ -167,7 +167,7 @@ describe('group default settings page', () => {
     const shares = wrapper.findAll<HTMLInputElement>('.ratio-input')
     expect(shares).toHaveLength(5)
     expect(shares.every((input) => input.attributes('inputmode') === 'decimal')).toBe(true)
-    expect(wrapper.get('[aria-label="Maya P. shares"]').element.value).toBe('1')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="Maya P. shares"]').element.value).toBe('1')
     await wrapper.get('[aria-label="Maya P. shares"]').setValue('3')
     await wrapper.findAll('.actions button')[0]!.trigger('click')
     await vi.waitFor(() => expect(wrapper.get('[role="status"]').text()).toContain('saved'))
@@ -176,7 +176,7 @@ describe('group default settings page', () => {
     await wrapper.get('button[value="percentage"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[aria-label="Maya P. shares"]').exists()).toBe(false)
-    expect(wrapper.get('[aria-label="Maya P. percentage"]').element.value).toBe('20')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="Maya P. percentage"]').element.value).toBe('20')
     expect(wrapper.findAll('.ratio-control small').map((suffix) => suffix.text())).toEqual(['%', '%', '%', '%', '%'])
 
     await wrapper.get('[aria-label="Include Maya P."]').setValue(false)
