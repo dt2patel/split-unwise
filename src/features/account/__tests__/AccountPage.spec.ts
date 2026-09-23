@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { IonicVue } from '@ionic/vue'
 import { createPinia } from 'pinia'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -65,6 +66,100 @@ describe('Account page', () => {
     expect(wrapper.text()).toContain('Import transactions')
     expect(wrapper.text()).toContain('Everything on this device is settled')
     expect(wrapper.get('[data-testid="open-account-delete"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('lays settings out as inset Ionic lists with built-in chevrons only on rows that navigate', async () => {
+    useSession('firebase')
+    useAuth(['password'])
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-list-inset]')).toHaveLength(4)
+    const hasChevron = (element: { attributes(name: string): string | undefined }) => element.attributes('data-detail') !== undefined && element.attributes('data-detail') !== 'false'
+    for (const path of ['/tabs/account/appearance', '/tabs/account/language', '/tabs/account/currencies', '/tabs/account/transactions/import', '/tabs/account/export']) {
+      expect(hasChevron(wrapper.get(`a[href="${path}"]`))).toBe(true)
+    }
+    const clear = wrapper.findAll('button').find((button) => button.text().includes('Clear local data'))!
+    const signOut = wrapper.findAll('button').find((button) => button.text().includes('Sign out'))!
+    expect(hasChevron(clear)).toBe(false)
+    expect(hasChevron(signOut)).toBe(false)
+    expect(hasChevron(wrapper.get('[data-testid="open-account-delete"]'))).toBe(true)
+    expect(wrapper.get('#account-name').attributes('aria-label')).toBe('Name')
+    expect(wrapper.get('[data-testid="paypal-handle"]').attributes()).toMatchObject({ 'aria-label': 'PayPal', inputmode: 'text', maxlength: '65', autocomplete: 'off' })
+  })
+
+  it('saves both notification switches through the same explicit Save action', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const [email, push] = wrapper.findAll<HTMLInputElement>('input[role="switch"]')
+    expect(email!.element.checked).toBe(true)
+    expect(push!.element.checked).toBe(true)
+    expect(email!.element.closest('label')!.textContent).toContain('Email notifications')
+    expect(push!.element.closest('label')!.textContent).toContain('Push notifications')
+
+    await email!.setValue(false)
+    expect(await repository.notifications.getPreferences()).toEqual({ emailEnabled: true, pushEnabled: true })
+    await wrapper.get('[data-action="save-notifications"]').trigger('click')
+
+    await vi.waitFor(async () => expect(await repository.notifications.getPreferences()).toEqual({ emailEnabled: false, pushEnabled: true }))
+    expect(wrapper.get('[role="status"]').text()).toBe('Notification preferences saved.')
+  })
+
+  it('returns focus to the Clear local data row when its confirmation is cancelled', async () => {
+    useSession('firebase')
+    useAuth(['password'])
+    const wrapper = mountPage({ attachTo: document.body })
+    await flushPromises()
+
+    const clear = wrapper.findAll('button').find((button) => button.text().includes('Clear local data'))!
+    await clear.trigger('click')
+    const alert = wrapper.findAllComponents({ name: 'IonAlert' }).find((candidate) => candidate.props('isOpen'))!
+    expect(alert.props('header')).toBe('Clear local data?')
+    const cancel = (alert.props('buttons') as Array<{ role?: string; handler: () => unknown }>).find(({ role }) => role === 'cancel')!
+    await cancel.handler()
+    await flushPromises()
+
+    expect(document.activeElement).toBe(clear.element)
+    wrapper.unmount()
+  })
+
+  it('wires the real Ionic inputs, switches, and save buttons to the account state', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = mount(AccountPage, { attachTo: document.body, global: { plugins: [createPinia(), [IonicVue, { mode: 'ios' }]], stubs: {
+      IonPage: { template: '<main class="ion-page"><slot /></main>' },
+      IonHeader: { template: '<header><slot /></header>' },
+      IonContent: { template: '<section><slot /></section>' },
+      IonAlert: true,
+      IonModal: true,
+    } } })
+    await settleIonic()
+
+    expect(wrapper.get('[data-testid="paypal-handle"]').element.tagName).toBe('ION-INPUT')
+    const name = wrapper.get<HTMLInputElement>('#account-name input')
+    expect(name.element.value).toBe('Maya P.')
+    expect(name.attributes('autocomplete')).toBe('name')
+    expect(document.getElementById(name.attributes('aria-labelledby')!)?.textContent).toBe('Name')
+    const paypal = wrapper.get<HTMLInputElement>('[data-testid="paypal-handle"] input')
+    expect(paypal.attributes()).toMatchObject({ autocomplete: 'off', inputmode: 'text', maxlength: '65' })
+    const toggles = wrapper.findAll('ion-toggle')
+    expect(toggles.map((toggle) => toggle.attributes('role'))).toEqual(['switch', 'switch'])
+    expect(toggles.map((toggle) => toggle.attributes('aria-checked'))).toEqual(['true', 'true'])
+
+    paypal.element.value = '@maya.payments'
+    await paypal.trigger('input')
+    ;(toggles[1]!.element as HTMLElement).click()
+    await settleIonic()
+    expect(toggles[1]!.attributes('aria-checked')).toBe('false')
+
+    await wrapper.get('[data-action="save-profile"]').trigger('click')
+    await vi.waitFor(async () => expect((await repository.app.getCurrentUser()).paymentHandles).toEqual({ paypal: 'maya.payments' }))
+    await wrapper.get('[data-action="save-notifications"]').trigger('click')
+    await vi.waitFor(async () => expect(await repository.notifications.getPreferences()).toEqual({ emailEnabled: true, pushEnabled: false }))
+    wrapper.unmount()
   })
 
   it('persists opt-in PayPal and Venmo handles from account settings', async () => {
@@ -239,6 +334,13 @@ describe('Account page', () => {
   })
 })
 
+// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+async function settleIonic(): Promise<void> {
+  await flushPromises()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await flushPromises()
+}
+
 function useSession(mode: 'demo' | 'firebase', unresolved: UnresolvedWorkSummary = settled) {
   const queue = {
     snapshot: vi.fn(() => []),
@@ -283,8 +385,8 @@ function setTestAuth(providerIds: readonly string[], deleteAccount: AuthService[
   setAuthService(service as unknown as AuthService)
 }
 
-function mountPage() {
-  return mount(AccountPage, { global: { plugins: [createPinia()], stubs: {
+function mountPage(options: { readonly attachTo?: HTMLElement } = {}) {
+  return mount(AccountPage, { ...options, global: { plugins: [createPinia()], stubs: {
     IonPage: { name: 'IonPage', template: '<main class="ion-page"><slot /></main>' },
     IonHeader: { template: '<header><slot /></header>' },
     IonToolbar: { template: '<div><slot /></div>' },
@@ -293,9 +395,16 @@ function mountPage() {
     IonButton: { props: ['disabled'], template: '<button :disabled="disabled"><slot /></button>' },
     IonContent: { template: '<section><slot /></section>' },
     IonIcon: { template: '<span />' },
-    IonAlert: { template: '<div />' },
+    IonList: { props: ['inset', 'lines'], template: '<section :data-list-inset="inset"><slot /></section>' },
+    IonItem: {
+      props: ['routerLink', 'button', 'detail', 'disabled', 'lines'],
+      template: '<a v-if="routerLink" :href="routerLink" :data-detail="detail"><slot /></a><button v-else-if="button !== undefined" type="button" :disabled="disabled" :data-detail="detail"><slot /></button><div v-else><slot /></div>',
+    },
+    IonLabel: { template: '<span><slot /></span>' },
+    IonToggle: { props: ['modelValue'], emits: ['update:modelValue'], template: '<label><input type="checkbox" role="switch" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)"><slot /></label>' },
+    IonAlert: { name: 'IonAlert', props: ['isOpen', 'header', 'message', 'buttons'], template: '<div />' },
     IonModal: { name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement'], emits: ['didDismiss'], template: '<aside v-if="isOpen"><slot /></aside>' },
-    IonInput: { props: ['modelValue', 'type'], emits: ['update:modelValue'], template: '<input :type="type" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)">' },
+    IonInput: { props: ['modelValue', 'type', 'label'], emits: ['update:modelValue'], template: '<input :type="type" :aria-label="label" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)">' },
     IonCheckbox: { props: ['modelValue'], emits: ['update:modelValue'], template: '<label><input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)"><slot /></label>' },
     IonSpinner: { template: '<span />' },
     RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
