@@ -4,4 +4,5 @@ packages:
   - functions
 
 patchedDependencies:
+  '@ionic/core@9.0.4': patches/@ionic__core@9.0.4.patch
   '@ionic/vue@9.0.4': patches/@ionic__vue@9.0.4.patch
