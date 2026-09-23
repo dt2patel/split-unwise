@@ -50,6 +50,8 @@ describe('appearance controller', () => {
     expect(css).toContain(`:root.su-contrast-more.su-theme-dark { --su-chrome: ${CHROME_COLORS.contrastDark}; }`)
     expect(css).toMatch(/--ion-toolbar-background: var\(--su-chrome\)/)
     expect(css).toMatch(/--ion-tab-bar-background: var\(--su-chrome\)/)
+    expect(css).toContain('html { background: var(--su-chrome); }')
+    expect(css).toMatch(/body \{[^}]*background: var\(--su-chrome\);/)
     const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'public/manifest.webmanifest'), 'utf8')) as { theme_color: string }
     expect(manifest.theme_color).toBe(CHROME_COLORS.light)
     expect(readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')).toContain(`<meta name="theme-color" content="${CHROME_COLORS.light}" />`)
