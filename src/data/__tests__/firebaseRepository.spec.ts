@@ -364,6 +364,26 @@ describe('Task 7 Firebase repository query boundaries', () => {
     expect(settlements.map(({ settlementId }) => settlementId)).toEqual(Array.from({ length: 200 }, (_, index) => `settlement-${String(199 - index).padStart(3, '0')}`))
   })
 
+  it('shows the latest 100 group activity items, oldest first, once a group passes 100', async () => {
+    const repository = createFirebaseRepository(configuration)
+    const createdAt = (index: number) => new Date(Date.UTC(2026, 0, 1) + index * 60_000).toISOString()
+    firebase.groupActivityDocuments['groups/lake-house-weekend/activity'] = Array.from({ length: 150 }, (_, index) => document(
+      `activity-${String(index).padStart(3, '0')}`, activityData('expense.created', createdAt(index), `expense-${index}`),
+    ))
+
+    const activity = await repository.activity.listForGroup('lake-house-weekend')
+
+    expect(activity.map(({ id }) => id)).toEqual(Array.from({ length: 100 }, (_, index) => `activity-${String(index + 50).padStart(3, '0')}`))
+    expect(firebase.queries).toContainEqual({
+      base: { path: 'groups/lake-house-weekend/activity' },
+      constraints: [
+        { type: 'orderBy', field: 'createdAt', direction: 'desc' },
+        { type: 'orderBy', field: '__name__', direction: 'desc' },
+        { type: 'limit', value: 100 },
+      ],
+    })
+  })
+
   it('refuses to total a group too large to read rather than showing a partial balance', async () => {
     const repository = createFirebaseRepository(configuration)
     firebase.expenseDocuments = Array.from({ length: 10_000 }, (_, index) => document(`expense-${String(index).padStart(5, '0')}`, sharedExpenseData()))
