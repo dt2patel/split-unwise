@@ -1,7 +1,10 @@
+import { IonicVue } from '@ionic/vue'
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { nextTick } from 'vue'
+import { describe, expect, it, vi } from 'vitest'
 import type { SplitInput } from '../expenseStore'
 import SplitEditor from '../components/SplitEditor.vue'
+import { ionicSheetStubs } from './ionicSheetStubs'
 
 const participants = [
   { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true },
@@ -23,9 +26,14 @@ const cases: readonly [string, SplitInput, readonly number[]][] = [
   ] }, [76, 25]],
 ]
 
+type MountOptions = NonNullable<Parameters<typeof mount>[1]>
+function mountEditor(options: MountOptions) {
+  return mount(SplitEditor, { ...options, global: { stubs: ionicSheetStubs } } as never)
+}
+
 describe('SplitEditor', () => {
   it.each(cases)('validates and applies the %s method through exact domain allocation', async (_name, modelValue, amounts) => {
-    const wrapper = mount(SplitEditor, { props: { modelValue, participants, currency: 'USD', totalMinorAmount: 101 } })
+    const wrapper = mountEditor({ props: { modelValue, participants, currency: 'USD', totalMinorAmount: 101 } })
 
     await wrapper.get('[data-action="apply-split"]').trigger('click')
 
@@ -36,8 +44,9 @@ describe('SplitEditor', () => {
 
   it('keeps edits staged until Apply and emits Cancel without mutating the input', async () => {
     const original: SplitInput = { type: 'exact', values: { 'maya-p': '0.51', 'alex-r': '0.50' } }
-    const wrapper = mount(SplitEditor, { props: { modelValue: original, participants, currency: 'USD', totalMinorAmount: 101 } })
+    const wrapper = mountEditor({ props: { modelValue: original, participants, currency: 'USD', totalMinorAmount: 101 } })
     await wrapper.get('[data-participant-id="maya-p"]').setValue('0.01')
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
     await wrapper.get('[data-action="cancel-split"]').trigger('click')
 
     expect(wrapper.emitted('apply')).toBeUndefined()
@@ -46,7 +55,7 @@ describe('SplitEditor', () => {
   })
 
   it('announces a bad split inline and does not apply it', async () => {
-    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+    const wrapper = mountEditor({ attachTo: document.body, props: {
       modelValue: { type: 'percentage', values: { 'maya-p': '90', 'alex-r': '5' } }, participants, currency: 'USD', totalMinorAmount: 101,
     } })
     await wrapper.get('[data-action="apply-split"]').trigger('click')
@@ -61,7 +70,7 @@ describe('SplitEditor', () => {
   })
 
   it('focuses and describes the actual malformed split value', async () => {
-    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+    const wrapper = mountEditor({ attachTo: document.body, props: {
       modelValue: { type: 'exact', values: { 'maya-p': '1.00', 'alex-r': 'not-a-number' } },
       participants,
       currency: 'USD',
@@ -78,13 +87,13 @@ describe('SplitEditor', () => {
   })
 
   it('connects an itemized split error to the selected method control', async () => {
-    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+    const wrapper = mountEditor({ attachTo: document.body, props: {
       modelValue: { type: 'itemized', items: [] }, participants, currency: 'USD', totalMinorAmount: 101,
     } })
 
     await wrapper.get('[data-action="apply-split"]').trigger('click')
 
-    const itemized = wrapper.get<HTMLButtonElement>('[data-method="itemized"]')
+    const itemized = wrapper.get<HTMLInputElement>('[data-method="itemized"]')
     expect(itemized.attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'split-error' })
     expect(document.activeElement).toBe(itemized.element)
     wrapper.unmount()
@@ -94,7 +103,7 @@ describe('SplitEditor', () => {
     [[...participants, jordan], ['33.34', '33.33', '33.33']],
     [[...participants, jordan, taylor], ['25', '25', '25', '25']],
   ] as const)('defaults percentage inputs to an exact deterministic 100 percent for %s participants', async (people, expected) => {
-    const wrapper = mount(SplitEditor, { props: {
+    const wrapper = mountEditor({ props: {
       modelValue: { type: 'equal' }, participants: people, currency: 'USD', totalMinorAmount: 100,
     } })
 
@@ -105,32 +114,27 @@ describe('SplitEditor', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
   })
 
-  it('uses keyboard-operable radio semantics with roving focus for split methods', async () => {
-    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+  it('offers all seven methods in one Ionic radio group without a horizontal scroller', async () => {
+    const wrapper = mountEditor({ attachTo: document.body, props: {
       modelValue: { type: 'equal' }, participants, currency: 'USD', totalMinorAmount: 100,
     } })
-    const equal = wrapper.get<HTMLButtonElement>('[data-method="equal"]')
-    const exact = wrapper.get<HTMLButtonElement>('[data-method="exact"]')
+    const group = wrapper.getComponent({ name: 'IonRadioGroup' })
 
-    expect(wrapper.get('[aria-label="Split method"]').attributes('role')).toBe('radiogroup')
-    expect(equal.attributes()).toMatchObject({ role: 'radio', 'aria-checked': 'true', tabindex: '0' })
-    expect(exact.attributes('tabindex')).toBe('-1')
+    expect(group.attributes('aria-label')).toBe('Split method')
+    expect(group.props('value')).toBe('equal')
+    expect(wrapper.findAllComponents({ name: 'IonRadio' }).map((radio) => radio.props('value'))).toEqual(['equal', 'exact', 'percentage', 'shares', 'adjustment', 'itemized', 'reimbursement'])
+    expect(wrapper.findComponent({ name: 'IonSegment' }).exists()).toBe(false)
 
-    equal.element.focus()
-    await equal.trigger('keydown', { key: 'ArrowRight' })
-    expect(exact.attributes('aria-checked')).toBe('true')
-    expect(exact.attributes('tabindex')).toBe('0')
-    expect(document.activeElement).toBe(exact.element)
-
-    await exact.trigger('keydown', { key: 'End' })
-    const reimbursement = wrapper.get<HTMLButtonElement>('[data-method="reimbursement"]')
-    expect(reimbursement.attributes('aria-checked')).toBe('true')
-    expect(document.activeElement).toBe(reimbursement.element)
+    // Ionic's radio group moves focus and selection together on arrow keys and reports the value through ionChange.
+    group.vm.$emit('ionChange', { detail: { value: 'exact' } })
+    await nextTick()
+    expect(group.props('value')).toBe('exact')
+    expect(wrapper.findAll('[data-participant-id]')).toHaveLength(2)
     wrapper.unmount()
   })
 
-  it('emits dirty for each staged split-method button change', async () => {
-    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+  it('emits dirty for each staged split-method change', async () => {
+    const wrapper = mountEditor({ attachTo: document.body, props: {
       modelValue: { type: 'equal' }, participants, currency: 'USD', totalMinorAmount: 100,
     } })
 
@@ -140,20 +144,50 @@ describe('SplitEditor', () => {
     await wrapper.get('[data-method="exact"]').trigger('click')
     expect(wrapper.emitted('dirty')).toHaveLength(1)
 
-    await wrapper.get('[data-method="exact"]').trigger('keydown', { key: 'ArrowRight' })
+    wrapper.getComponent({ name: 'IonRadioGroup' }).vm.$emit('ionChange', { detail: { value: 'percentage' } })
+    await nextTick()
     expect(wrapper.emitted('dirty')).toHaveLength(2)
     wrapper.unmount()
   })
 
-  it('exposes a bounded scroll surface and sticky sheet header', () => {
-    const wrapper = mount(SplitEditor, { props: {
+  it('labels each value with its person and method, and rebuilds the fields when the method changes', async () => {
+    const wrapper = mountEditor({ props: {
+      modelValue: { type: 'exact', values: { 'maya-p': '1.00', 'alex-r': '0.00' } }, participants, currency: 'USD', totalMinorAmount: 100,
+    } })
+    const exact = wrapper.get('[data-participant-id="maya-p"]')
+    expect(exact.attributes()).toMatchObject({ 'aria-label': 'Maya P. exact', inputmode: 'decimal' })
+    expect(wrapper.getComponent({ name: 'IonInput' }).props()).toMatchObject({ label: 'Maya P.', labelPlacement: 'start' })
+
+    await wrapper.get('[data-method="shares"]').trigger('click')
+
+    const shares = wrapper.get('[data-participant-id="maya-p"]')
+    expect(shares.attributes('aria-label')).toBe('Maya P. shares')
+    expect(shares.element).not.toBe(exact.element)
+  })
+
+  it('pins its Ionic toolbar above a keyboard-aware scroll surface', () => {
+    const wrapper = mountEditor({ props: {
       modelValue: { type: 'equal' }, participants, currency: 'USD', totalMinorAmount: 100,
     } })
 
-    const scrollSurface = wrapper.get<HTMLElement>('[data-sheet-scroll]')
+    const scrollSurface = wrapper.get('[data-ionic-content]').get<HTMLElement>('[data-sheet-scroll]')
     expect(scrollSurface.classes()).toContain('expense-sheet')
     expect(scrollSurface.element.style.getPropertyValue('--su-keyboard-inset')).toBe('0px')
     expect(scrollSurface.element.style.getPropertyValue('--su-visual-viewport-height')).toBe('')
-    expect(wrapper.get('header').classes()).toContain('expense-sheet__header')
+    expect(wrapper.get('[data-ionic-header]').get('[data-ionic-title]').text()).toBe('Split expense')
+    expect(scrollSurface.find('[data-ionic-header]').exists()).toBe(false)
+  })
+
+  it('names each native Ionic value field after its person and current method', async () => {
+    const wrapper = mount(SplitEditor, { attachTo: document.body, props: {
+      modelValue: { type: 'exact', values: { 'maya-p': '1.00', 'alex-r': '0.00' } }, participants, currency: 'USD', totalMinorAmount: 100,
+    }, global: { plugins: [[IonicVue, { mode: 'ios' }]] } } as never)
+    const nativeField = () => wrapper.get('[data-participant-id="maya-p"]').element.querySelector('input')
+
+    await vi.waitFor(() => expect(nativeField()?.getAttribute('aria-label')).toBe('Maya P. exact'))
+    wrapper.findComponent({ name: 'IonRadioGroup' }).vm.$emit('ionChange', { detail: { value: 'percentage' } })
+    await vi.waitFor(() => expect(nativeField()?.getAttribute('aria-label')).toBe('Maya P. percentage'))
+    expect(nativeField()?.getAttribute('inputmode')).toBe('decimal')
+    wrapper.unmount()
   })
 })

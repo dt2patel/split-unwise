@@ -1,13 +1,16 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { IonicVue } from '@ionic/vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
-import { afterEach, describe, expect, it } from 'vitest'
+import { nextTick } from 'vue'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import ContextSheet from '../components/ContextSheet.vue'
 import ParticipantSheet from '../components/ParticipantSheet.vue'
 import PayerSheet from '../components/PayerSheet.vue'
 import ReceiptReview from '../components/ReceiptReview.vue'
 import RecurrenceSheet from '../components/RecurrenceSheet.vue'
 import SplitEditor from '../components/SplitEditor.vue'
+import { ionicSheetStubs } from './ionicSheetStubs'
 
 const members = [
   { id: 'maya-p', displayName: 'Maya P.', initials: 'MP', isCurrentUser: true },
@@ -22,9 +25,13 @@ const groups = [{
   syncState: 'fresh' as const,
 }]
 
+type MountOptions = NonNullable<Parameters<typeof mount>[1]>
 const mountedWrappers: VueWrapper[] = []
-function mountAttached<T>(component: T, options: Parameters<typeof mount>[1]): VueWrapper {
-  const wrapper = mount(component as Parameters<typeof mount>[0], { ...options, attachTo: document.body })
+function mountSheet<T>(component: T, options: MountOptions): VueWrapper {
+  return mount(component as Parameters<typeof mount>[0], { ...options, global: { ...options.global, stubs: { ...ionicSheetStubs, ...options.global?.stubs } } })
+}
+function mountAttached<T>(component: T, options: MountOptions): VueWrapper {
+  const wrapper = mountSheet(component, { ...options, attachTo: document.body })
   mountedWrappers.push(wrapper)
   return wrapper
 }
@@ -37,7 +44,7 @@ afterEach(() => {
 
 describe('staged expense sheets', () => {
   it('applies multiple payer amounts only when they equal the total', async () => {
-    const wrapper = mount(PayerSheet, { props: {
+    const wrapper = mountSheet(PayerSheet, { props: {
       modelValue: [{ participantId: 'maya-p', amountText: '6.00' }, { participantId: 'alex-r', amountText: '3.00' }], members, currency: 'USD', totalMinorAmount: 1000,
     } })
     await wrapper.get('[data-action="apply-payers"]').trigger('click')
@@ -52,7 +59,7 @@ describe('staged expense sheets', () => {
   })
 
   it('stages exact reimbursement amounts each participant should receive', async () => {
-    const wrapper = mount(SplitEditor, { props: {
+    const wrapper = mountSheet(SplitEditor, { props: {
       modelValue: { type: 'equal' }, participants: members, currency: 'USD', totalMinorAmount: 1000,
     } })
 
@@ -71,29 +78,82 @@ describe('staged expense sheets', () => {
   })
 
   it('labels refund recipients distinctly from expense payers', () => {
-    const wrapper = mount(PayerSheet, { props: {
+    const wrapper = mountSheet(PayerSheet, { props: {
       modelValue: [{ participantId: 'maya-p', amountText: '10.00' }], members, currency: 'USD', totalMinorAmount: 1000, reimbursement: true,
     } })
 
-    expect(wrapper.get('h2').text()).toBe('Refund received by')
+    expect(wrapper.get('#payer-title').text()).toBe('Refund received by')
     expect(wrapper.get('.expense-sheet > p').text()).toContain('what each received')
-    expect(wrapper.get('[data-payer-id="maya-p"]').attributes('aria-label')).toBe('Maya P. received amount')
+    const amount = wrapper.get('[data-payer-id="maya-p"]')
+    expect(amount.attributes('aria-label')).toBe('Maya P. received amount')
+    expect(amount.attributes('inputmode')).toBe('decimal')
+  })
+
+  it('uses Ionic checkboxes for payers, with an amount field only for selected payers', async () => {
+    const wrapper = mountSheet(PayerSheet, { props: {
+      modelValue: [{ participantId: 'maya-p', amountText: '10.00' }], members, currency: 'USD', totalMinorAmount: 1000,
+    } })
+    const checkboxes = wrapper.findAllComponents({ name: 'IonCheckbox' })
+    expect(checkboxes.map((checkbox) => [checkbox.props('checked'), checkbox.props('justify'), checkbox.props('labelPlacement')])).toEqual([
+      [true, 'start', 'end'],
+      [false, 'start', 'end'],
+    ])
+    expect(wrapper.get('[data-payer-select-id="alex-r"]').attributes('aria-label')).toBe('Select Alex R. as payer')
+    expect(wrapper.find('[data-payer-id="alex-r"]').exists()).toBe(false)
+
+    await wrapper.get('[data-payer-select-id="alex-r"]').setValue(true)
+
+    expect(wrapper.get('[data-payer-id="alex-r"]').element).toHaveProperty('value', '')
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
+    await wrapper.get('[data-payer-id="alex-r"]').setValue('2.50')
+    expect(wrapper.emitted('dirty')).toHaveLength(2)
+    expect(wrapper.emitted('apply')).toBeUndefined()
   })
 
   it('keeps participant toggles staged when Cancel is chosen', async () => {
     const selected = ['maya-p']
-    const wrapper = mount(ParticipantSheet, { props: { modelValue: selected, members } })
+    const wrapper = mountSheet(ParticipantSheet, { props: { modelValue: selected, members } })
     await wrapper.get('[data-participant-id="alex-r"]').setValue(true)
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
     await wrapper.get('[data-action="cancel-participants"]').trigger('click')
     expect(wrapper.emitted('apply')).toBeUndefined()
     expect(wrapper.emitted('cancel')).toHaveLength(1)
     expect(selected).toEqual(['maya-p'])
   })
 
+  it('applies the participants chosen with Ionic checkboxes', async () => {
+    const wrapper = mountSheet(ParticipantSheet, { props: { modelValue: ['maya-p'], members } })
+    expect(wrapper.findAllComponents({ name: 'IonCheckbox' }).map((checkbox) => checkbox.props('checked'))).toEqual([true, false])
+
+    await wrapper.get('[data-participant-id="alex-r"]').setValue(true)
+    await wrapper.get('[data-participant-id="maya-p"]').setValue(false)
+    await wrapper.get('[data-action="apply-participants"]').trigger('click')
+
+    expect(wrapper.emitted('apply')?.[0]?.[0]).toEqual(['alex-r'])
+  })
+
+  it('picks a group or friend from an Ionic radio list', async () => {
+    const second = { ...groups[0], id: 'friend-alex', name: 'Alex R.' }
+    const wrapper = mountSheet(ContextSheet, { props: { groups: [...groups, second], modelValue: 'lake-house-weekend' } })
+    const radioGroup = wrapper.getComponent({ name: 'IonRadioGroup' })
+    expect(radioGroup.attributes('aria-label')).toBe('Expense context')
+    expect(radioGroup.props('value')).toBe('lake-house-weekend')
+    expect(wrapper.get('[data-context-id="friend-alex"]').element.closest('[data-ionic-list]')?.getAttribute('data-inset')).toBe('true')
+
+    radioGroup.vm.$emit('ionChange', { detail: { value: 'friend-alex' } })
+    await nextTick()
+    expect(radioGroup.props('value')).toBe('friend-alex')
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
+
+    await wrapper.get('[data-action="apply-context"]').trigger('click')
+    expect(wrapper.emitted('apply')?.[0]?.[0]).toBe('friend-alex')
+  })
+
   it('applies recurrence with an IANA time zone and calendar anchor', async () => {
-    const wrapper = mount(RecurrenceSheet, { props: { modelValue: undefined, date: '2026-08-30' } })
+    const wrapper = mountSheet(RecurrenceSheet, { props: { modelValue: undefined, date: '2026-08-30' } })
     await wrapper.get('[data-frequency="monthly"]').trigger('click')
     await wrapper.get('[data-testid="recurrence-time-zone"]').setValue('America/Chicago')
+    expect(wrapper.emitted('dirty')).toHaveLength(2)
     await wrapper.get('[data-action="apply-recurrence"]').trigger('click')
     expect(wrapper.emitted('apply')?.[0]?.[0]).toEqual({
       recurrence: { frequency: 'monthly', anchor: { month: 8, day: 30 }, timeZone: 'America/Chicago' },
@@ -101,7 +161,7 @@ describe('staged expense sheets', () => {
   })
 
   it('keeps unavailable OCR copy visible and confirms editable manual items, tax, and tip', async () => {
-    const wrapper = mount(ReceiptReview, { props: {
+    const wrapper = mountSheet(ReceiptReview, { props: {
       modelValue: [{ description: 'Dinner', amountText: '8.00', participantIds: ['maya-p', 'alex-r'] }],
       members, currency: 'USD', totalMinorAmount: 1000, providerMessage: 'Receipt recognition is not configured. You can enter items manually.',
     } })
@@ -118,7 +178,7 @@ describe('staged expense sheets', () => {
   })
 
   it('announces an active on-device scan and holds confirmation until suggestions arrive', () => {
-    const wrapper = mount(ReceiptReview, { props: {
+    const wrapper = mountSheet(ReceiptReview, { props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 0, scanState: 'recognizing',
     } })
 
@@ -129,18 +189,20 @@ describe('staged expense sheets', () => {
   })
 
   it('emits dirty when Add item stages a receipt row', async () => {
-    const wrapper = mount(ReceiptReview, { props: {
+    const wrapper = mountSheet(ReceiptReview, { props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
     } })
 
-    await wrapper.get('.add-line').trigger('click')
+    const addItem = wrapper.get('.add-line')
+    expect(addItem.attributes()).toMatchObject({ 'data-size': 'small', 'data-fill': 'clear' })
+    await addItem.trigger('click')
 
     expect(wrapper.emitted('dirty')).toHaveLength(1)
     expect(wrapper.findAll('.receipt-item')).toHaveLength(1)
     expect(wrapper.emitted('confirm')).toBeUndefined()
   })
 
-  it('emits dirty for each staged recurrence button change', async () => {
+  it('emits dirty for each staged recurrence choice change', async () => {
     const wrapper = mountAttached(RecurrenceSheet, { props: {
       modelValue: undefined,
       date: '2026-08-30',
@@ -156,7 +218,9 @@ describe('staged expense sheets', () => {
     await wrapper.get('[data-occurrence-scope="future"]').trigger('click')
     expect(wrapper.emitted('dirty')).toHaveLength(2)
 
-    await wrapper.get('[data-frequency="weekly"]').trigger('keydown', { key: 'ArrowRight' })
+    // Arrow keys inside Ionic's radio group move the selection and report it through ionChange.
+    wrapper.getComponent({ name: 'IonRadioGroup' }).vm.$emit('ionChange', { detail: { value: 'fortnightly' } })
+    await nextTick()
     expect(wrapper.emitted('dirty')).toHaveLength(3)
   })
 
@@ -164,7 +228,7 @@ describe('staged expense sheets', () => {
     [{ status: 'local-only', reason: 'Upload has not completed.' }, 'Saved only on this device.', 'Upload has not completed.'],
     [{ status: 'upload-unavailable', reason: 'Receipt uploads are offline.' }, 'Upload unavailable; saved only on this device.', 'Receipt uploads are offline.'],
   ] as const)('shows an explicit receipt durability warning for %s', (durability, summary, reason) => {
-    const wrapper = mount(ReceiptReview, { props: {
+    const wrapper = mountSheet(ReceiptReview, { props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000, durability,
     } })
 
@@ -174,7 +238,7 @@ describe('staged expense sheets', () => {
   })
 
   it('does not warn that an uploaded receipt is device-only', () => {
-    const wrapper = mount(ReceiptReview, { props: {
+    const wrapper = mountSheet(ReceiptReview, { props: {
       modelValue: [], members, currency: 'USD', totalMinorAmount: 1000,
       durability: { status: 'uploaded', attachmentRef: 'receipts/expense-1.jpg' },
     } })
@@ -187,6 +251,7 @@ describe('staged expense sheets', () => {
     await context.get('[data-action="apply-context"]').trigger('click')
     const contextRadio = context.get<HTMLInputElement>('[data-context-id="lake-house-weekend"]')
     expect(contextRadio.attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'context-error' })
+    expect(context.getComponent({ name: 'IonRadioGroup' }).attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'context-error' })
     expect(document.activeElement).toBe(contextRadio.element)
   })
 
@@ -206,6 +271,10 @@ describe('staged expense sheets', () => {
     const payerAmount = payer.get<HTMLInputElement>('[data-payer-id="maya-p"]')
     expect(payerAmount.attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'payer-error' })
     expect(document.activeElement).toBe(payerAmount.element)
+
+    await payerAmount.setValue('10.00')
+    expect(payerAmount.attributes('aria-invalid')).toBeUndefined()
+    expect(payerAmount.attributes('aria-describedby')).toBeUndefined()
   })
 
   it('marks and focuses the first receipt field missing a required value', async () => {
@@ -227,6 +296,23 @@ describe('staged expense sheets', () => {
     const timeZone = recurrence.get<HTMLInputElement>('[data-testid="recurrence-time-zone"]')
     expect(timeZone.attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'recurrence-error' })
     expect(document.activeElement).toBe(timeZone.element)
+  })
+
+  it('labels the recurrence time zone as an Ionic stacked field', () => {
+    const recurrence = mountSheet(RecurrenceSheet, { props: { modelValue: undefined, date: '2026-08-30' } })
+    const timeZone = recurrence.getComponent({ name: 'IonInput' })
+    expect(timeZone.props()).toMatchObject({ label: 'Time zone', labelPlacement: 'stacked' })
+    expect(timeZone.attributes('autocomplete')).toBe('off')
+  })
+
+  it('focuses Done when the expense date is not valid for a schedule', async () => {
+    const recurrence = mountAttached(RecurrenceSheet, { props: { modelValue: undefined, date: '' } })
+    await recurrence.get('[data-frequency="weekly"]').trigger('click')
+    await recurrence.get('[data-action="apply-recurrence"]').trigger('click')
+
+    expect(recurrence.get('[role="alert"]').text()).toBe('Choose a valid expense date first.')
+    expect(document.activeElement).toBe(recurrence.get('[data-action="apply-recurrence"]').element)
+    expect(recurrence.emitted('apply')).toBeUndefined()
   })
 
   it('focuses the malformed payer amount instead of an earlier valid payer', async () => {
@@ -291,7 +377,8 @@ describe('staged expense sheets', () => {
     await wrapper.get('[data-action="apply-recurrence"]').trigger('click')
     const occurrence = wrapper.get<HTMLButtonElement>('[data-occurrence-scope="occurrence"]')
     expect(wrapper.get('[role="alert"]').text()).toContain('this occurrence or this and future')
-    expect(occurrence.attributes()).toMatchObject({ role: 'radio', 'aria-invalid': 'true', 'aria-describedby': 'recurrence-error' })
+    expect(occurrence.attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'recurrence-error' })
+    expect(wrapper.getComponent({ name: 'IonSegment' }).attributes()).toMatchObject({ 'aria-invalid': 'true', 'aria-describedby': 'recurrence-error' })
     expect(document.activeElement).toBe(occurrence.element)
 
     await wrapper.get(`[data-occurrence-scope="${scope}"]`).trigger('click')
@@ -302,49 +389,65 @@ describe('staged expense sheets', () => {
     })
   })
 
-  it('uses roving keyboard focus for recurrence frequency and occurrence scope radio groups', async () => {
+  it('uses an Ionic radio list for frequency and a select-on-focus segment for the edit scope', async () => {
     const wrapper = mountAttached(RecurrenceSheet, { props: {
       modelValue: undefined,
       date: '2026-08-30',
       occurrenceEditScope: 'occurrence',
       isRecurringInstance: true,
     } })
-    const none = wrapper.get<HTMLButtonElement>('[data-frequency="none"]')
-    const weekly = wrapper.get<HTMLButtonElement>('[data-frequency="weekly"]')
-    expect(none.attributes('tabindex')).toBe('0')
-    expect(weekly.attributes('tabindex')).toBe('-1')
-    none.element.focus()
+    const frequency = wrapper.getComponent({ name: 'IonRadioGroup' })
+    expect(frequency.attributes('aria-label')).toBe('Repeat frequency')
+    expect(frequency.props('value')).toBe('none')
+    expect(wrapper.findAll<HTMLInputElement>('[data-frequency]').map(({ element }) => element.value)).toEqual(['none', 'weekly', 'fortnightly', 'monthly', 'yearly'])
+    expect(wrapper.get('[data-frequency="none"]').element.closest('label')?.textContent).toBe('Does not repeat')
 
-    await none.trigger('keydown', { key: 'ArrowRight' })
+    frequency.vm.$emit('ionChange', { detail: { value: 'weekly' } })
+    await nextTick()
+    expect(frequency.props('value')).toBe('weekly')
 
-    expect(weekly.attributes('aria-checked')).toBe('true')
-    expect(document.activeElement).toBe(weekly.element)
+    const scope = wrapper.getComponent({ name: 'IonSegment' })
+    expect(scope.attributes('aria-label')).toBe('Recurring expense edit scope')
+    // Arrow keys select as they move, like the radio group this segment replaced.
+    expect(scope.props()).toMatchObject({ value: 'occurrence', selectOnFocus: true })
+    expect(wrapper.findAll('[data-occurrence-scope]').map((button) => button.text())).toEqual(['This occurrence', 'This and future expenses'])
 
-    const occurrence = wrapper.get<HTMLButtonElement>('[data-occurrence-scope="occurrence"]')
-    const future = wrapper.get<HTMLButtonElement>('[data-occurrence-scope="future"]')
-    expect(occurrence.attributes('tabindex')).toBe('0')
-    expect(future.attributes('tabindex')).toBe('-1')
-    occurrence.element.focus()
+    scope.vm.$emit('ionChange', { detail: { value: 'future' } })
+    await nextTick()
+    expect(scope.props('value')).toBe('future')
+    expect(wrapper.emitted('dirty')).toHaveLength(2)
+  })
 
-    await occurrence.trigger('keydown', { key: 'ArrowRight' })
-
-    expect(future.attributes('aria-checked')).toBe('true')
-    expect(document.activeElement).toBe(future.element)
+  it('reopens a future-edited occurrence with neither scope segment selected', () => {
+    const wrapper = mountSheet(RecurrenceSheet, { props: { modelValue: undefined, date: '2026-08-30', isRecurringInstance: true } })
+    expect(wrapper.getComponent({ name: 'IonSegment' }).props('value')).toBeUndefined()
   })
 
   it.each([
-    ['context', ContextSheet, { groups, modelValue: '' }],
-    ['participants', ParticipantSheet, { modelValue: ['maya-p'], members }],
-    ['payers', PayerSheet, { modelValue: [{ participantId: 'maya-p', amountText: '10.00' }], members, currency: 'USD', totalMinorAmount: 1000 }],
-    ['receipt', ReceiptReview, { modelValue: [], members, currency: 'USD', totalMinorAmount: 1000 }],
-    ['recurrence', RecurrenceSheet, { modelValue: undefined, date: '2026-08-30' }],
-  ] as const)('%s sheet exposes the shared bounded scroll surface and sticky header', (_name, component, props) => {
-    const wrapper = mount(component, { props } as never)
-    const scrollSurface = wrapper.get<HTMLElement>('[data-sheet-scroll]')
-    expect(scrollSurface.classes()).toContain('expense-sheet')
+    ['context', ContextSheet, { groups, modelValue: '' }, 'Done'],
+    ['participants', ParticipantSheet, { modelValue: ['maya-p'], members }, 'Done'],
+    ['payers', PayerSheet, { modelValue: [{ participantId: 'maya-p', amountText: '10.00' }], members, currency: 'USD', totalMinorAmount: 1000 }, 'Done'],
+    ['split', SplitEditor, { modelValue: { type: 'equal' }, participants: members, currency: 'USD', totalMinorAmount: 1000 }, 'Done'],
+    ['recurrence', RecurrenceSheet, { modelValue: undefined, date: '2026-08-30' }, 'Done'],
+    ['receipt', ReceiptReview, { modelValue: [], members, currency: 'USD', totalMinorAmount: 1000 }, 'Confirm'],
+  ] as const)('%s sheet pins an Ionic toolbar above its keyboard-aware scroll surface', (_name, component, props, primaryLabel) => {
+    const wrapper = mountSheet(component, { props } as never)
+    const header = wrapper.get('[data-ionic-header]')
+    const content = wrapper.get('[data-ionic-content]')
+    const scrollSurface = content.get<HTMLElement>('[data-sheet-scroll]')
+    expect(scrollSurface.classes()).toEqual(expect.arrayContaining(['expense-sheet', 'expense-sheet--ionic-content']))
     expect(scrollSurface.element.style.getPropertyValue('--su-keyboard-inset')).toBe('0px')
     expect(scrollSurface.element.style.getPropertyValue('--su-visual-viewport-height')).toBe('')
-    expect(wrapper.get('header').classes()).toContain('expense-sheet__header')
+    expect(header.find('[data-sheet-scroll]').exists()).toBe(false)
+    expect(content.find('[data-ionic-header]').exists()).toBe(false)
+
+    const title = header.get('[data-ionic-title]')
+    expect(title.attributes()).toMatchObject({ role: 'heading', 'aria-level': '2' })
+    expect(scrollSurface.attributes('aria-labelledby')).toBe(title.attributes('id'))
+    const [cancel, primary] = header.findAll('button')
+    expect(cancel?.text()).toBe('Cancel')
+    expect(primary?.text()).toBe(primaryLabel)
+    expect(primary?.attributes('data-strong')).toBe('true')
   })
 
   it('keeps long summaries readable at a 200 percent Dynamic Type approximation', () => {
@@ -396,7 +499,7 @@ describe('staged expense sheets', () => {
     expect(getComputedStyle(input.element).minWidth).toBe('0px')
   })
 
-  it('defines bounded keyboard-aware scrolling and a sticky header through the parsed stylesheet contract', () => {
+  it('defines keyboard-aware padding for the sheet body inside its own Ionic scroll content', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/features/expenses/components/expense-sheet.css'), 'utf8')
     const style = document.createElement('style')
     style.dataset.testSheetStyles = 'true'
@@ -404,34 +507,111 @@ describe('staged expense sheets', () => {
     document.head.append(style)
     const rules = Array.from(style.sheet?.cssRules ?? []).filter((rule): rule is CSSStyleRule => 'selectorText' in rule)
     const sheetRule = rules.find(({ selectorText }) => selectorText === '.expense-sheet')
-    const headerRule = rules.find(({ selectorText }) => selectorText === '.expense-sheet header, .expense-sheet__header')
+    const ionicContentRule = rules.find(({ selectorText }) => selectorText === '.expense-sheet.expense-sheet--ionic-content')
 
-    expect(sheetRule?.style.overflowY).toBe('auto')
-    expect(sheetRule?.style.minHeight).toBe('min(50dvh, 420px)')
-    expect(sheetRule?.style.maxHeight).toBe('min(86dvh, 760px)')
     expect(sheetRule?.style.getPropertyValue('--su-visual-viewport-height')).toBe('')
     expect(sheetRule?.style.getPropertyValue('--su-keyboard-inset')).toBe('0px')
     expect(sheetRule?.style.padding).toContain('env(safe-area-inset-bottom, 0px)')
     expect(sheetRule?.style.padding).toContain('var(--su-keyboard-inset)')
     expect(sheetRule?.style.padding).not.toContain('keyboard-inset-height')
-    expect(headerRule?.style.position).toBe('sticky')
-    expect(headerRule?.style.top).toBe('0px')
+    // ion-content scrolls the sheet, so the body must not become a second, nested scroller.
+    expect(ionicContentRule?.style.overflowY).toBe('visible')
+    expect(ionicContentRule?.style.maxHeight).toBe('none')
+    expect(ionicContentRule?.style.minHeight).toBe('100%')
   })
 
-  it('binds interactive and selected sheet states to the Ionic primary contrast pair', () => {
-    const css = readFileSync(resolve(process.cwd(), 'src/features/expenses/components/expense-sheet.css'), 'utf8')
+  it('themes the scope segment with Ionic tokens and keeps sheet styles free of fixed colors', () => {
+    const componentCss = ['ContextSheet', 'ParticipantSheet', 'PayerSheet', 'SplitEditor', 'RecurrenceSheet', 'ReceiptReview'].map((name) => {
+      const source = readFileSync(resolve(process.cwd(), `src/features/expenses/components/${name}.vue`), 'utf8')
+      return source.match(/<style scoped>([\s\S]*?)<\/style>\s*$/)?.[1] ?? ''
+    })
+    for (const css of componentCss) expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i)
+
     const style = document.createElement('style')
     style.dataset.testSheetStyles = 'true'
-    style.textContent = css
+    style.textContent = componentCss[4] ?? ''
     document.head.append(style)
-    const rules = Array.from(style.sheet?.cssRules ?? []).filter((rule): rule is CSSStyleRule => 'selectorText' in rule)
-    const action = rules.find(({ selectorText }) => selectorText === '.expense-sheet button')
-    const nativeChoice = rules.find(({ selectorText }) => selectorText === '.sheet-list input[type="checkbox"], .sheet-list input[type="radio"]')
-    const selected = rules.find(({ selectorText }) => selectorText.includes('.frequency-grid button[aria-checked="true"]'))
+    const segmentButton = Array.from(style.sheet?.cssRules ?? [])
+      .filter((rule): rule is CSSStyleRule => 'selectorText' in rule)
+      .find(({ selectorText }) => selectorText === '.occurrence-scope ion-segment-button')
+    expect(segmentButton?.style.getPropertyValue('--color-checked').trim()).toBe('var(--ion-color-primary)')
+    expect(segmentButton?.style.getPropertyValue('--indicator-color').trim()).toBe('var(--su-surface)')
+  })
+})
 
-    expect(action?.style.color).toBe('var(--ion-color-primary)')
-    expect(nativeChoice?.style.getPropertyValue('accent-color')).toBe('var(--ion-color-primary)')
-    expect(selected?.style.background).toBe('var(--ion-color-primary)')
-    expect(selected?.style.color).toBe('var(--ion-color-primary-contrast)')
+describe('staged expense sheets with real Ionic controls', () => {
+  const ionic = { plugins: [[IonicVue, { mode: 'ios' }]] } as unknown as MountOptions['global']
+
+  function mountIonic<T>(component: T, props: Record<string, unknown>): VueWrapper {
+    const wrapper = mount(component as Parameters<typeof mount>[0], { attachTo: document.body, props, global: ionic })
+    mountedWrappers.push(wrapper)
+    return wrapper
+  }
+  async function hydrated(element: Element): Promise<void> {
+    await vi.waitFor(() => expect(element.classList.contains('hydrated')).toBe(true))
+  }
+
+  it('focuses and marks the native field inside an ion-input when a payer total is invalid', async () => {
+    const wrapper = mountIonic(PayerSheet, { modelValue: [{ participantId: 'maya-p', amountText: '6.00' }], members, currency: 'USD', totalMinorAmount: 1000 })
+    const host = wrapper.get('[data-payer-id="maya-p"]').element
+    await hydrated(host)
+    const native = host.querySelector('input')
+    if (!native) throw new Error('Expected ion-input to render its native input')
+    expect(native.getAttribute('aria-label')).toBe('Maya P. paid amount')
+    expect(native.getAttribute('inputmode')).toBe('decimal')
+
+    await wrapper.get('[data-action="apply-payers"]').trigger('click')
+
+    await vi.waitFor(() => {
+      expect(document.activeElement).toBe(native)
+      expect(native.getAttribute('aria-invalid')).toBe('true')
+      expect(native.getAttribute('aria-describedby')).toBe('payer-error')
+    })
+
+    native.value = '10.00'
+    native.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(native.hasAttribute('aria-invalid')).toBe(false))
+    expect(native.hasAttribute('aria-describedby')).toBe(false)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('selects a payer from the Ionic checkbox host and focuses it when nobody is selected', async () => {
+    const wrapper = mountIonic(PayerSheet, { modelValue: [], members, currency: 'USD', totalMinorAmount: 1000 })
+    const checkbox = wrapper.get('[data-payer-select-id="maya-p"]').element as HTMLElement
+    await hydrated(checkbox)
+
+    await wrapper.get('[data-action="apply-payers"]').trigger('click')
+    await vi.waitFor(() => expect(document.activeElement).toBe(checkbox))
+    expect(checkbox.getAttribute('aria-invalid')).toBe('true')
+    expect(checkbox.getAttribute('aria-describedby')).toBe('payer-error')
+
+    checkbox.click()
+    await vi.waitFor(() => expect(wrapper.find('[data-payer-id="maya-p"]').exists()).toBe(true))
+    expect(wrapper.emitted('dirty')).toHaveLength(1)
+  })
+
+  it('binds keyboard avoidance to the scroll element of the sheet\'s own ion-content', async () => {
+    const contentElement = customElements.get('ion-content') as (CustomElementConstructor & { prototype: { getScrollElement(): Promise<HTMLElement> } }) | undefined
+    if (!contentElement) throw new Error('Expected Ionic to define ion-content')
+    const getScrollElement = vi.spyOn(contentElement.prototype, 'getScrollElement')
+    const wrapper = mountIonic(ReceiptReview, { modelValue: [], members, currency: 'USD', totalMinorAmount: 1000 })
+    const content = wrapper.get('ion-content').element
+
+    expect(wrapper.get('[data-sheet-scroll]').element.closest('ion-content')).toBe(content)
+    expect(wrapper.get('ion-header').element.contains(content)).toBe(false)
+    await vi.waitFor(() => expect(getScrollElement).toHaveBeenCalled())
+    expect(getScrollElement.mock.contexts[0]).toBe(content)
+    getScrollElement.mockRestore()
+  })
+
+  it('focuses the scope segment button through its Ionic focus API when no scope is chosen', async () => {
+    const wrapper = mountIonic(RecurrenceSheet, { modelValue: undefined, date: '2026-08-30', isRecurringInstance: true })
+    const occurrence = wrapper.get('[data-occurrence-scope="occurrence"]').element
+    await hydrated(occurrence)
+
+    await wrapper.get('[data-action="apply-recurrence"]').trigger('click')
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(occurrence))
+    expect(wrapper.get('[role="alert"]').text()).toContain('this occurrence or this and future')
   })
 })

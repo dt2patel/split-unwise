@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { IonSpinner } from '@ionic/vue'
+import { IonButton, IonButtons, IonContent, IonHeader, IonSpinner, IonTitle, IonToolbar } from '@ionic/vue'
 import type { Member } from '../../../data/repositories'
 import type { ReceiptDurability } from '../../../data/receipts'
 import { toMinorUnits, type CurrencyCode } from '../../../domain/money'
@@ -111,28 +111,37 @@ function confirm(): void {
 </script>
 
 <template>
-  <section ref="sheet" class="expense-sheet receipt-review" data-sheet-scroll aria-labelledby="receipt-title">
-    <header class="expense-sheet__header"><button type="button" @click="emit('cancel')">Cancel</button><h2 id="receipt-title">Receipt review</h2><button type="button" data-action="confirm-receipt" :disabled="scanning" @click="confirm">Confirm</button></header>
-    <img v-if="imageUrl" :src="imageUrl" alt="Attached receipt preview" class="receipt-review__image">
-    <div v-if="scanning" data-testid="receipt-scan-progress" class="scan-progress" role="status" aria-live="polite">
-      <ion-spinner name="crescent" aria-hidden="true" />
-      <span><strong>{{ scanTitle }}</strong><small>The image stays on this device while line items are detected.</small></span>
-    </div>
-    <p v-if="durabilityMessage" data-testid="receipt-durability-warning" role="status" aria-live="polite" class="durability-warning">{{ durabilityMessage }}</p>
-    <p v-if="providerMessage" role="status" class="provider-message">{{ providerMessage }}</p>
-    <article v-for="(item, index) in items" :key="index" class="receipt-item">
-      <label><span>Item</span><input :value="item.description" :data-item-description="index" :aria-invalid="errorTarget === `description-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `description-${index}` ? 'receipt-error' : undefined" @input="update(index, 'description', ($event.target as HTMLInputElement).value)"></label>
-      <label><span>Amount</span><input inputmode="decimal" :value="item.amountText" :data-item-amount="index" :aria-invalid="errorTarget === `amount-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `amount-${index}` ? 'receipt-error' : undefined" @input="update(index, 'amountText', ($event.target as HTMLInputElement).value)"></label>
-      <fieldset :aria-invalid="errorTarget === `assignment-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `assignment-${index}` ? 'receipt-error' : undefined"><legend>Assign to</legend><label v-for="member in members" :key="member.id"><input type="checkbox" :checked="item.participantIds.includes(member.id)" :data-item-assignment="index" :aria-invalid="errorTarget === `assignment-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `assignment-${index}` ? 'receipt-error' : undefined" @change="toggle(index, member.id, ($event.target as HTMLInputElement).checked)">{{ member.displayName }}</label></fieldset>
-    </article>
-    <button type="button" class="add-line" :disabled="scanning" @click="addItem">Add item</button>
-    <div class="receipt-extras">
-      <label><span>Tax</span><input v-model="taxText" data-testid="receipt-tax" inputmode="decimal" :disabled="scanning" :aria-invalid="errorTarget === 'tax' ? 'true' : undefined" :aria-describedby="errorTarget === 'tax' ? 'receipt-error' : undefined" @input="clearError"></label>
-      <label><span>Tip</span><input v-model="tipText" data-testid="receipt-tip" inputmode="decimal" :disabled="scanning" :aria-invalid="errorTarget === 'tip' ? 'true' : undefined" :aria-describedby="errorTarget === 'tip' ? 'receipt-error' : undefined" @input="clearError"></label>
-    </div>
-    <p class="sheet-note">Items remain suggestions until you explicitly confirm them.</p>
-    <p v-if="error" id="receipt-error" role="alert" class="sheet-error">{{ error }}</p>
-  </section>
+  <ion-header>
+    <ion-toolbar>
+      <ion-buttons slot="start"><ion-button @click="emit('cancel')">Cancel</ion-button></ion-buttons>
+      <ion-title id="receipt-title" role="heading" aria-level="2">Receipt review</ion-title>
+      <!-- Confirm, not Done: items stay suggestions until they are explicitly confirmed. -->
+      <ion-buttons slot="end"><ion-button :strong="true" data-action="confirm-receipt" :disabled="scanning" @click="confirm">Confirm</ion-button></ion-buttons>
+    </ion-toolbar>
+  </ion-header>
+  <ion-content>
+    <section ref="sheet" class="expense-sheet expense-sheet--ionic-content receipt-review" data-sheet-scroll aria-labelledby="receipt-title">
+      <img v-if="imageUrl" :src="imageUrl" alt="Attached receipt preview" class="receipt-review__image">
+      <div v-if="scanning" data-testid="receipt-scan-progress" class="scan-progress" role="status" aria-live="polite">
+        <ion-spinner name="crescent" aria-hidden="true" />
+        <span><strong>{{ scanTitle }}</strong><small>The image stays on this device while line items are detected.</small></span>
+      </div>
+      <p v-if="durabilityMessage" data-testid="receipt-durability-warning" role="status" aria-live="polite" class="durability-warning">{{ durabilityMessage }}</p>
+      <p v-if="providerMessage" role="status" class="provider-message">{{ providerMessage }}</p>
+      <article v-for="(item, index) in items" :key="index" class="receipt-item">
+        <label><span>Item</span><input :value="item.description" :data-item-description="index" :aria-invalid="errorTarget === `description-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `description-${index}` ? 'receipt-error' : undefined" @input="update(index, 'description', ($event.target as HTMLInputElement).value)"></label>
+        <label><span>Amount</span><input inputmode="decimal" :value="item.amountText" :data-item-amount="index" :aria-invalid="errorTarget === `amount-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `amount-${index}` ? 'receipt-error' : undefined" @input="update(index, 'amountText', ($event.target as HTMLInputElement).value)"></label>
+        <fieldset :aria-invalid="errorTarget === `assignment-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `assignment-${index}` ? 'receipt-error' : undefined"><legend>Assign to</legend><label v-for="member in members" :key="member.id"><input type="checkbox" :checked="item.participantIds.includes(member.id)" :data-item-assignment="index" :aria-invalid="errorTarget === `assignment-${index}` ? 'true' : undefined" :aria-describedby="errorTarget === `assignment-${index}` ? 'receipt-error' : undefined" @change="toggle(index, member.id, ($event.target as HTMLInputElement).checked)">{{ member.displayName }}</label></fieldset>
+      </article>
+      <ion-button class="add-line" size="small" fill="clear" :disabled="scanning" @click="addItem">Add item</ion-button>
+      <div class="receipt-extras">
+        <label><span>Tax</span><input v-model="taxText" data-testid="receipt-tax" inputmode="decimal" :disabled="scanning" :aria-invalid="errorTarget === 'tax' ? 'true' : undefined" :aria-describedby="errorTarget === 'tax' ? 'receipt-error' : undefined" @input="clearError"></label>
+        <label><span>Tip</span><input v-model="tipText" data-testid="receipt-tip" inputmode="decimal" :disabled="scanning" :aria-invalid="errorTarget === 'tip' ? 'true' : undefined" :aria-describedby="errorTarget === 'tip' ? 'receipt-error' : undefined" @input="clearError"></label>
+      </div>
+      <p class="sheet-note">Items remain suggestions until you explicitly confirm them.</p>
+      <p v-if="error" id="receipt-error" role="alert" class="sheet-error">{{ error }}</p>
+    </section>
+  </ion-content>
 </template>
 
 <style scoped src="./expense-sheet.css"></style>
@@ -151,6 +160,5 @@ function confirm(): void {
 .receipt-item fieldset { display: flex; flex-wrap: wrap; gap: 8px 14px; border: 0; padding: 0; }
 .receipt-item legend { width: 100%; color: var(--ion-color-medium); font-size: 0.78rem; }
 .receipt-extras { display: grid; gap: 8px; margin-top: 12px; }
-.add-line { min-height: 44px; color: var(--ion-color-primary); }
-.add-line:disabled { opacity: .45; }
+.add-line { min-height: 44px; margin-inline: 0; }
 </style>
