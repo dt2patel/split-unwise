@@ -54,7 +54,35 @@ describe('premium search page', () => {
     expect(input.attributes('id')).toBe('search-query')
     expect(input.attributes('aria-labelledby')).toBe('search-query-label')
     expect(wrapper.get('#search-query-label').text()).toBe('Description or notes')
-    expect(wrapper.getComponent({ name: 'IonSearchbar' }).props()).toMatchObject({ type: 'search', autocomplete: 'off', placeholder: 'Coffee, cabin, train…', debounce: 0 })
+    expect(wrapper.getComponent({ name: 'IonSearchbar' }).props()).toMatchObject({ type: 'search', autocomplete: 'off', placeholder: 'Coffee, cabin, train…' })
+    // No debounce: like the old field, the query updates on every keystroke so an immediate submit sees it.
+    expect(wrapper.getComponent({ name: 'IonSearchbar' }).props('debounce')).toBeUndefined()
+  })
+
+  it('wires the real Ionic search field to its label, the query, and keyboard submission', async () => {
+    const router = createAppRouter(); await router.push('/tabs/home/search'); await router.isReady()
+    const { IonSearchbar: _searchbar, ...ionicStubs } = stubs
+    const wrapper = mount(SearchPage, { global: { plugins: [createPinia(), router], stubs: ionicStubs }, attachTo: document.body })
+    try {
+      await vi.waitFor(() => expect(document.getElementById('search-query')).not.toBeNull())
+      const input = document.getElementById('search-query') as HTMLInputElement
+
+      expect(input.closest('ion-searchbar')).not.toBeNull()
+      // Ionic hard-codes this name; aria-labelledby takes precedence over it.
+      expect(input.getAttribute('aria-label')).toBe('search text')
+      expect(input.getAttribute('aria-labelledby')).toBe('search-query-label')
+      expect(document.querySelector('label[for="search-query"]')?.textContent).toBe('Description or notes')
+
+      input.value = 'GROCERIES'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+      wrapper.get('form').element.requestSubmit()
+      await flushPromises()
+
+      expect(wrapper.get('[data-testid="result-count"]').text()).toBe('1 result')
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('keeps the native filter pickers inside a collapsible Ionic accordion', async () => {
