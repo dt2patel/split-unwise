@@ -13,6 +13,7 @@ import RecurrenceSheet from './components/RecurrenceSheet.vue'
 import SplitEditor from './components/SplitEditor.vue'
 import { useExpenseStore, type ExpenseOrigin, type PaymentInput, type ReceiptItemInput, type SplitInput } from './expenseStore'
 import { parseStrictScalarId } from '../../data/identifiers'
+import { confirmAction } from '../../app/confirmDialog'
 import { restoreInteractiveFocus } from '../../app/focus'
 
 const route = useRoute()
@@ -86,8 +87,16 @@ async function initialize(): Promise<void> {
   await store.initialize({ origin, groupId, expenseId, importDraftId })
 }
 
+// The Ionic alert does not block the page the way window.confirm did, so a quick second tap reuses the open alert.
+let pendingDiscard: Promise<boolean> | undefined
+function confirmDiscard(message: string): Promise<boolean> {
+  pendingDiscard ??= confirmAction({ message, confirmText: 'Discard', cancelText: 'Keep editing', destructive: true })
+    .finally(() => { pendingDiscard = undefined })
+  return pendingDiscard
+}
+
 async function cancel(): Promise<void> {
-  if (store.isDirty && !window.confirm('Discard your unsaved expense changes?')) return
+  if (store.isDirty && !await confirmDiscard('Discard your unsaved expense changes?')) return
   await router.replace(store.returnPath)
 }
 
@@ -118,7 +127,7 @@ async function closeSheet(): Promise<void> {
 }
 function markSheetDirty(): void { sheetDirty.value = true }
 async function canDismissSheet(_data?: unknown, role?: string): Promise<boolean> {
-  if (sheetDirty.value && (role === 'backdrop' || role === 'gesture')) return window.confirm('Discard staged sheet changes?')
+  if (sheetDirty.value && (role === 'backdrop' || role === 'gesture')) return confirmDiscard('Discard staged sheet changes?')
   return true
 }
 async function applyContext(groupId: string): Promise<void> { if (await store.selectContext(groupId)) await closeSheet() }

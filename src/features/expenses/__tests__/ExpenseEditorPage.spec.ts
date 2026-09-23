@@ -9,7 +9,13 @@ import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import { createMemoryReceiptStore, type ReceiptProvider, type ReceiptRecognitionResult } from '../../../data/receipts'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
+import { confirmAction } from '../../../app/confirmDialog'
 import { useExpenseStore } from '../expenseStore'
+
+vi.mock('../../../app/confirmDialog', () => ({ confirmAction: vi.fn() }))
+const confirmMock = vi.mocked(confirmAction)
+const discardExpense = { message: 'Discard your unsaved expense changes?', confirmText: 'Discard', cancelText: 'Keep editing', destructive: true }
+const discardSheet = { message: 'Discard staged sheet changes?', confirmText: 'Discard', cancelText: 'Keep editing', destructive: true }
 
 const ionicStubs = {
   IonPage: { template: '<main class="ion-page"><slot /></main>' },
@@ -33,6 +39,7 @@ const ionicStubs = {
 }
 
 beforeEach(() => {
+  confirmMock.mockReset()
   setAppSessionForTesting(createAppSession({
     repository: createDemoRepository(), commandStorage: createMemoryCommandStorage(),
     receipts: createMemoryReceiptStore({ id: () => 'editor-receipt', now: () => '2026-08-30T12:00:00.000Z' }),
@@ -98,16 +105,56 @@ describe('ExpenseEditorPage', () => {
     expect(store.editor.split).toEqual({ type: 'reimbursement', values: { 'maya-p': '0', 'alex-r': '10.00' } })
   })
 
-  it('uses deterministic direct-load Cancel and protects a dirty dismissal', async () => {
+  it('uses deterministic direct-load Cancel and protects a dirty dismissal with an Ionic alert', async () => {
     const { wrapper, router } = await mountRoute('/tabs/home/expenses/new')
     await wrapper.get('#expense-description').setValue('Coffee')
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    confirmMock.mockResolvedValueOnce(false)
     await wrapper.get('[data-action="cancel-expense"]').trigger('click')
-    expect(confirm).toHaveBeenCalled()
+    await flushPromises()
+    expect(confirmMock).toHaveBeenCalledWith(discardExpense)
     expect(router.currentRoute.value.path).toBe('/tabs/home/expenses/new')
 
-    confirm.mockReturnValue(true)
+    confirmMock.mockResolvedValueOnce(true)
     await wrapper.get('[data-action="cancel-expense"]').trigger('click')
+    await flushPromises()
+    expect(confirmMock).toHaveBeenCalledTimes(2)
+    expect(router.currentRoute.value.path).toBe('/tabs/home')
+  })
+
+  it('keeps editing a dirty expense when Keep editing is chosen', async () => {
+    const { wrapper, router, store } = await mountRoute('/tabs/home/expenses/new')
+    await wrapper.get('#expense-description').setValue('Coffee')
+    confirmMock.mockResolvedValueOnce(false)
+
+    await wrapper.get('[data-action="cancel-expense"]').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/tabs/home/expenses/new')
+    expect(store.editor.description).toBe('Coffee')
+    expect(wrapper.get('#expense-description').element).toHaveProperty('value', 'Coffee')
+  })
+
+  it('leaves a clean expense without asking', async () => {
+    const { wrapper, router } = await mountRoute('/tabs/home/expenses/new')
+
+    await wrapper.get('[data-action="cancel-expense"]').trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.path).toBe('/tabs/home')
+  })
+
+  it('shows one discard alert for a quick second Cancel tap', async () => {
+    const { wrapper, router } = await mountRoute('/tabs/home/expenses/new')
+    await wrapper.get('#expense-description').setValue('Coffee')
+    let discard!: (value: boolean) => void
+    confirmMock.mockReturnValueOnce(new Promise<boolean>((done) => { discard = done }))
+
+    await wrapper.get('[data-action="cancel-expense"]').trigger('click')
+    await wrapper.get('[data-action="cancel-expense"]').trigger('click')
+    expect(confirmMock).toHaveBeenCalledOnce()
+
+    discard(true)
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/tabs/home')
   })
@@ -120,6 +167,7 @@ describe('ExpenseEditorPage', () => {
     await wrapper.get('[data-action="cancel-expense"]').trigger('click')
     await flushPromises()
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe(detail))
+    expect(confirmMock).not.toHaveBeenCalled()
   })
 
   it.each(['home', 'groups', 'activity', 'account'] as const)('fails closed for repeated group context on the %s edit route', async (origin) => {
@@ -180,12 +228,12 @@ describe('ExpenseEditorPage', () => {
     expect(modal.props('canDismiss')).toBe(true)
 
     await wrapper.get('[data-payer-id="maya-p"]').setValue('56.00')
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const canDismiss = modal.props('canDismiss') as (data?: unknown, role?: string) => Promise<boolean>
 
     expect(canDismiss).toBeTypeOf('function')
+    confirmMock.mockResolvedValueOnce(false)
     await expect(canDismiss(undefined, 'backdrop')).resolves.toBe(false)
-    confirm.mockReturnValue(true)
+    confirmMock.mockResolvedValueOnce(true)
     await expect(canDismiss(undefined, 'gesture')).resolves.toBe(true)
   })
 
@@ -222,16 +270,49 @@ describe('ExpenseEditorPage', () => {
     expect(wrapper.get('#participant-sheet-trigger').text()).toContain('5 participants')
   })
 
-  it('confirms staged sheet dismissal from a backdrop or swipe gesture', async () => {
+  it('keeps a staged sheet open when Keep editing is chosen after a backdrop tap or swipe', async () => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    await wrapper.get('#payer-sheet-trigger').trigger('click')
+    await wrapper.get('[data-payer-id="maya-p"]').setValue('56.00')
+    const canDismiss = wrapper.getComponent({ name: 'IonModal' }).props('canDismiss') as (data?: unknown, role?: string) => Promise<boolean>
+    confirmMock.mockResolvedValue(false)
+
+    await expect(canDismiss(undefined, 'backdrop')).resolves.toBe(false)
+    await expect(canDismiss(undefined, 'gesture')).resolves.toBe(false)
+
+    expect(confirmMock).toHaveBeenCalledTimes(2)
+    expect(confirmMock).toHaveBeenLastCalledWith(discardSheet)
+    expect(store.activeSheet).toBe('payers')
+    expect(wrapper.get('[data-payer-id="maya-p"]').element).toHaveProperty('value', '56.00')
+  })
+
+  it('lets a staged sheet swipe away when Discard is chosen, without applying its changes', async () => {
+    const { wrapper, store } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
+    const payments = JSON.parse(JSON.stringify(store.editor.payments)) as unknown
+    await wrapper.get('#payer-sheet-trigger').trigger('click')
+    await wrapper.get('[data-payer-id="maya-p"]').setValue('56.00')
+    const modal = wrapper.getComponent({ name: 'IonModal' })
+    const canDismiss = modal.props('canDismiss') as (data?: unknown, role?: string) => Promise<boolean>
+    confirmMock.mockResolvedValueOnce(true)
+
+    await expect(canDismiss(undefined, 'gesture')).resolves.toBe(true)
+    expect(confirmMock).toHaveBeenCalledWith(discardSheet)
+    modal.vm.$emit('didDismiss')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="active-sheet"]').exists()).toBe(false)
+    expect(store.editor.payments).toEqual(payments)
+  })
+
+  it('closes a staged sheet from its own Cancel or Done without asking', async () => {
     const { wrapper } = await mountRoute('/tabs/groups/expenses/new?groupId=lake-house-weekend')
     await wrapper.get('#payer-sheet-trigger').trigger('click')
     await wrapper.get('[data-payer-id="maya-p"]').setValue('56.00')
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const canDismiss = wrapper.getComponent({ name: 'IonModal' }).props('canDismiss') as (data?: unknown, role?: string) => Promise<boolean>
 
-    await expect(canDismiss(undefined, 'backdrop')).resolves.toBe(false)
-    confirm.mockReturnValue(true)
-    await expect(canDismiss(undefined, 'gesture')).resolves.toBe(true)
+    // Ionic calls canDismiss without a backdrop or gesture role when is-open turns false.
+    await expect(canDismiss(undefined, undefined)).resolves.toBe(true)
+    expect(confirmMock).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -243,11 +324,11 @@ describe('ExpenseEditorPage', () => {
     if (triggerSelector === '#receipt-sheet-trigger') store.editor.attachmentRefs.push('receipts/draft.jpg')
     await wrapper.get(triggerSelector).trigger('click')
     await wrapper.get(mutationSelector).trigger('click')
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    confirmMock.mockResolvedValueOnce(false)
     const canDismiss = wrapper.getComponent({ name: 'IonModal' }).props('canDismiss') as (data?: unknown, role?: string) => Promise<boolean>
 
     await expect(canDismiss(undefined, 'backdrop')).resolves.toBe(false)
-    expect(confirm).toHaveBeenCalledWith('Discard staged sheet changes?')
+    expect(confirmMock).toHaveBeenCalledWith(discardSheet)
   })
 
   it('passes the explicit local receipt durability state into receipt review copy', async () => {
