@@ -23,6 +23,8 @@ const stubs = {
   IonTitle: { template: '<div><slot /></div>' },
   IonButtons: { template: '<div><slot /></div>' },
   IonContent: { template: '<section><slot /></section>' },
+  IonRefresher: { name: 'IonRefresher', emits: ['ionRefresh'], template: '<div><slot /></div>' },
+  IonRefresherContent: true,
   IonButton: {
     props: ['ariaLabel', 'disabled', 'fill', 'strong'], emits: ['click'],
     template: '<button type="button" :aria-label="ariaLabel" :disabled="disabled" @click="$emit(\'click\', $event)"><slot /></button>',
@@ -49,6 +51,24 @@ beforeEach(() => {
   setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
 })
 afterEach(() => vi.restoreAllMocks())
+
+describe('pull to refresh', () => {
+  it('reloads the group list from the server and ends the refresher', async () => {
+    const source = createDemoRepository()
+    const list = vi.fn(source.groups.list)
+    setAppSessionForTesting(createAppSession({ repository: { ...source, groups: { ...source.groups, list } }, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), createAppRouter()], stubs } })
+    await flushPromises()
+    const before = list.mock.calls.length
+    const complete = vi.fn(async () => undefined)
+
+    wrapper.getComponent({ name: 'IonRefresher' }).vm.$emit('ionRefresh', { target: { complete } })
+    await flushPromises()
+
+    expect(list.mock.calls.length).toBe(before + 1)
+    expect(complete).toHaveBeenCalledOnce()
+  })
+})
 
 describe('mobile group creation', () => {
   it('reactively localizes the application fallback when group loading fails', async () => {

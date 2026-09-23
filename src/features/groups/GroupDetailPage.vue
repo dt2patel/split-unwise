@@ -12,12 +12,15 @@ import {
   IonIcon,
   IonLabel,
   IonPage,
+  IonRefresher,
+  IonRefresherContent,
   IonSegment,
   IonSegmentButton,
   IonSkeletonText,
   IonTitle,
   IonToolbar,
   onIonViewWillEnter,
+  type RefresherCustomEvent,
 } from '@ionic/vue'
 import { listOutline, settingsOutline, timeOutline } from 'ionicons/icons'
 import AppFab from '../../components/AppFab.vue'
@@ -77,6 +80,10 @@ onIonViewWillEnter(() => {
   }
   void refreshOnViewEntry()
 })
+
+async function refreshFromPull(event: RefresherCustomEvent): Promise<void> {
+  try { await refreshOnViewEntry() } finally { await event.target.complete() }
+}
 
 async function refreshOnViewEntry(): Promise<void> {
   if (isStrictId(groupId.value)) await loadGroupForEntry(groupId.value)
@@ -168,6 +175,7 @@ async function deleteRemoteExpense(operationId: string | undefined): Promise<voi
     </ion-header>
 
     <ion-content class="group-detail__scroller" data-testid="group-detail-scroll" :fullscreen="true" :scroll-events="true" @ion-scroll="onScroll">
+      <ion-refresher slot="fixed" data-testid="group-refresher" @ion-refresh="refreshFromPull"><ion-refresher-content /></ion-refresher>
       <p v-if="isLoading && !activeGroup" class="group-detail__status" role="status">Loading expenses…</p>
       <main v-else-if="activeGroup" class="group-detail__main">
         <group-hero :group="activeGroup" :balances="currentUserNets" :balances-pending="isLoading && !hasJournal" :provisional="isProvisional" :collapsed="isCollapsed" />

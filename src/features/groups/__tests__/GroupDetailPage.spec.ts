@@ -67,6 +67,8 @@ const ionicStubs = {
     template: '<a :href="routerLink"><slot /></a>',
   },
   IonSkeletonText: { template: '<span class="skeleton-text"><slot /></span>' },
+  IonRefresher: { name: 'IonRefresher', emits: ['ionRefresh'], template: '<div><slot /></div>' },
+  IonRefresherContent: true,
 }
 
 beforeEach(() => {
@@ -92,6 +94,26 @@ async function mountRoute(path: string): Promise<VueWrapper> {
   await flushPromises()
   return wrapper
 }
+
+describe('group pull to refresh', () => {
+  it('reloads the open group without a loading flash and ends the refresher', async () => {
+    const source = createDemoRepository()
+    const getById = vi.fn(source.groups.getById)
+    setAppSessionForTesting(createAppSession({ repository: { ...source, groups: { ...source.groups, getById } }, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountRoute('/tabs/groups/lake-house-weekend')
+    const before = getById.mock.calls.length
+    const complete = vi.fn(async () => undefined)
+
+    wrapper.getComponent({ name: 'IonRefresher' }).vm.$emit('ionRefresh', { target: { complete } })
+    expect(wrapper.find('[data-testid="journal-loading"]').exists()).toBe(false)
+    await flushPromises()
+
+    expect(getById.mock.calls.length).toBeGreaterThan(before)
+    expect(getById).toHaveBeenLastCalledWith('lake-house-weekend')
+    expect(complete).toHaveBeenCalledOnce()
+    expect(wrapper.find('[data-testid="journal-loading"]').exists()).toBe(false)
+  })
+})
 
 describe('Lake House group journal', () => {
   it('reactively localizes the actual missing-group application error', async () => {

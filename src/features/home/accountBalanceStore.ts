@@ -57,7 +57,9 @@ export const useAccountBalanceStore = defineStore('account-balances', () => {
     if (loadedSignature === signature) loadedSignature = undefined
 
     const request = ++requestNumber
-    const holdCached = isProvisional.value && visibleSignature === signature
+    // Totals already on screen for these same groups (cached or confirmed) stay until the complete result replaces them,
+    // so a refresh never makes them dip while groups load one by one.
+    const holdCached = visibleSignature === signature && (isProvisional.value || coverage.value.status === 'complete' || coverage.value.status === 'partial')
     if (visibleSignature !== signature) {
       projection.value = emptyProjection()
       coverage.value = emptyCoverage()
