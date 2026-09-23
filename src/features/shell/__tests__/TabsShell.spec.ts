@@ -73,6 +73,8 @@ describe('TabsShell', () => {
     expect(wrapper.get('ion-tabs > ion-fab').attributes('slot')).toBeUndefined()
     expect(wrapper.getComponent(IonFabButton).props('routerLink')).toBe('/tabs/account/expenses/new')
     expect(wrapper.find('ion-tabs > ion-tab-bar').exists()).toBe(true)
+    // AppStatus anchors its bottom toasts to this id.
+    expect(wrapper.get('ion-tabs > ion-tab-bar').attributes('id')).toBe('app-tab-bar')
   })
 
   it('hides global navigation in group detail and restores it at the Groups root', async () => {

@@ -20,7 +20,8 @@ const expenseRoute = computed(() => {
     <ion-router-outlet />
     <app-fab v-if="!hideGlobalChrome" :to="expenseRoute" />
 
-    <ion-tab-bar v-if="!hideGlobalChrome" slot="bottom" :aria-label="t('nav.primary')">
+    <!-- AppStatus anchors its toasts to this id so they sit above the tab bar. -->
+    <ion-tab-bar v-if="!hideGlobalChrome" id="app-tab-bar" slot="bottom" :aria-label="t('nav.primary')">
       <ion-tab-button tab="home" href="/tabs/home">
         <ion-icon :icon="homeOutline" aria-hidden="true" />
         <ion-label>{{ t('nav.home') }}</ion-label>
