@@ -161,6 +161,37 @@ describe('app status', () => {
   })
 })
 
+describe('app status with the real Ionic toast', () => {
+  it('disables Update now on the native toast button while checking, and Later dismisses through the cancel role', async () => {
+    const router = createAppRouter()
+    await router.push('/tabs/groups/lake-house-weekend')
+    await router.isReady()
+    const wrapper = mount(AppStatus, { global: { plugins: [router] }, attachTo: document.body })
+    try {
+      pwa.prompt.waiting = true
+      const toast = () => Array.from(document.querySelectorAll<HTMLElement & { header?: string; presented?: boolean }>('ion-toast')).find((element) => element.header === 'Update ready')
+      const nativeButton = (text: string) => Array.from(toast()?.shadowRoot?.querySelectorAll('button') ?? []).find((button) => button.textContent === text)
+      await vi.waitFor(() => expect(toast()?.presented).toBe(true), { timeout: 3000 })
+      expect(nativeButton('Later')?.getAttribute('part')).toBe('button cancel')
+      expect(nativeButton('Update now')?.disabled).toBe(false)
+
+      pwa.applying = true
+      await vi.waitFor(() => expect(nativeButton('Checking…')?.disabled).toBe(true))
+      expect(nativeButton('Checking…')?.getAttribute('aria-disabled')).toBe('true')
+      nativeButton('Checking…')?.click()
+      await flushPromises()
+      expect(pwaMocks.activate).not.toHaveBeenCalled()
+
+      pwa.applying = false
+      await vi.waitFor(() => expect(nativeButton('Update now')?.disabled).toBe(false))
+      nativeButton('Later')?.click()
+      await vi.waitFor(() => expect(pwaMocks.dismissUpdate).toHaveBeenCalledOnce())
+    } finally {
+      wrapper.unmount()
+    }
+  })
+})
+
 async function mountStatus(path: string): Promise<{ readonly wrapper: VueWrapper; readonly router: Router }> {
   const router = createAppRouter()
   await router.push(path)
