@@ -1,6 +1,6 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { localeController } from '../../../app/i18n'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -38,6 +38,8 @@ const stubs = {
   },
 }
 
+enableAutoUnmount(afterEach)
+
 describe('invitation preparation page', () => {
   beforeEach(() => {
     localeController.setPreference('en')
@@ -64,6 +66,35 @@ describe('invitation preparation page', () => {
     expect(wrapper.text()).toContain('Preparar invitación')
   })
 
+  it('uses an Ionic email field whose native input keeps its keyboard hints and localized label', async () => {
+    const wrapper = await mountInvitationSheet()
+
+    expect(wrapper.get('#invite-email').element.tagName).toBe('ION-INPUT')
+    const input = wrapper.get<HTMLInputElement>('#invite-email input')
+    expect(input.attributes()).toMatchObject({ type: 'email', inputmode: 'email', autocomplete: 'email', placeholder: 'friend@example.com' })
+    const label = () => document.getElementById(input.attributes('aria-labelledby')!)?.textContent?.replace(/\s+/g, ' ').trim()
+    expect(label()).toBe('Target email Optional')
+
+    localeController.setPreference('es')
+    await settleIonic()
+    expect(label()).toBe('Correo electrónico de destino Opcional')
+  })
+
+  it('selects the whole prepared link when its read-only field receives focus', async () => {
+    const link = `https://split-unwise-aditya.web.app/invite/invite-maya#token=${'b'.repeat(43)}`
+    firebaseMocks.createSparkInvitation.mockResolvedValueOnce({
+      invitationId: 'invite-maya', groupId: LAKE_HOUSE_GROUP_ID, link, expiresAt: '2026-09-09T12:00:00.000Z', capability: 'firebase-client',
+    })
+    const wrapper = await mountInvitationSheet()
+    await wrapper.get('.invite-card button').trigger('click')
+    await flushPromises()
+
+    const textarea = wrapper.get<HTMLTextAreaElement>('.prepared-card textarea')
+    expect(textarea.element.readOnly).toBe(true)
+    textarea.element.focus()
+    expect([textarea.element.selectionStart, textarea.element.selectionEnd]).toEqual([0, link.length])
+  })
+
   it('keeps invalid-group presentation semantic across locale changes', async () => {
     localeController.setPreference('es')
     const wrapper = await mountInvitationSheet('invalid group id')
@@ -84,7 +115,7 @@ describe('invitation preparation page', () => {
     firebaseMocks.createSparkInvitation.mockRejectedValueOnce(new Error('Firebase internal diagnostic'))
     const wrapper = await mountInvitationSheet()
 
-    await wrapper.get('#invite-email').setValue('Maya+Friend@Example.com')
+    await wrapper.get('#invite-email input').setValue('Maya+Friend@Example.com')
     await wrapper.get('.invite-card button').trigger('click')
     await flushPromises()
 
@@ -111,12 +142,12 @@ describe('invitation preparation page', () => {
     firebaseMocks.sharePreparedInvitation.mockResolvedValueOnce({ status: 'shared' })
     const wrapper = await mountInvitationSheet()
 
-    await wrapper.get('#invite-email').setValue(targetEmail)
+    await wrapper.get('#invite-email input').setValue(targetEmail)
     await wrapper.get('.invite-card button').trigger('click')
     await flushPromises()
 
     const localizedExpiry = new Intl.DateTimeFormat('es', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(expiresAt))
-    expect(wrapper.get<HTMLInputElement>('#invite-email').element.value).toBe(targetEmail)
+    expect(wrapper.get<HTMLInputElement>('#invite-email input').element.value).toBe(targetEmail)
     expect(wrapper.get<HTMLTextAreaElement>('textarea').element.value).toBe(link)
     expect(wrapper.get('[role="status"]').text()).toBe('Invitación privada de siete días lista.')
     expect(wrapper.get('.prepared-card').text()).toContain(`Caduca ${localizedExpiry}`)
@@ -143,7 +174,15 @@ async function mountInvitationSheet(groupId = LAKE_HOUSE_GROUP_ID) {
   })
   await router.push(`/tabs/groups/${encodeURIComponent(groupId)}/invite`)
   await router.isReady()
-  const wrapper = mount(InviteSheet, { global: { plugins: [router], stubs } })
-  await flushPromises()
+  // Attached so Ionic's custom elements connect and render their inner native controls.
+  const wrapper = mount(InviteSheet, { attachTo: document.body, global: { plugins: [router], stubs } })
+  await settleIonic()
   return wrapper
+}
+
+// Stencil renders Ionic's custom elements asynchronously after Vue mounts them.
+async function settleIonic(): Promise<void> {
+  await flushPromises()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await flushPromises()
 }
