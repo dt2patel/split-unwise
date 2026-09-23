@@ -133,12 +133,33 @@ describe('mobile group creation', () => {
     expect(modal.props('presentingElement')).toBe(wrapper.get('.ion-page').element)
     expect(modal.props('initialBreakpoint')).toBeUndefined()
     expect(modal.props('breakpoints')).toBeUndefined()
-    expect(modal.props('canDismiss')).toBeTypeOf('function')
+    // An empty sheet uses a boolean so Ionic's swipe-to-close follows the finger natively.
+    expect(modal.props('canDismiss')).toBe(true)
     expect(wrapper.get('[role="dialog"] h1').text()).toBe('Create a group')
     expect(wrapper.findAll('[data-cover-choice]')).toHaveLength(4)
     expect(wrapper.get('[data-cover-choice="trip"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.find('main .create-group').exists()).toBe(false)
 
+    wrapper.unmount()
+  })
+
+  it('asks before a swipe discards a draft, and only then', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), createAppRouter()], stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="Create group"]').trigger('click')
+    const modal = wrapper.getComponent({ name: 'IonModal' })
+    expect(modal.props('canDismiss')).toBe(true)
+
+    await wrapper.get('[aria-label="Group name"]').setValue('Ski trip')
+    const guard = modal.props('canDismiss') as () => Promise<boolean>
+    expect(guard).toBeTypeOf('function')
+    await expect(guard()).resolves.toBe(false)
+    expect(confirm).toHaveBeenCalledOnce()
+
+    await wrapper.get('[aria-label="Group name"]').setValue('')
+    expect(modal.props('canDismiss')).toBe(true)
+    confirm.mockRestore()
     wrapper.unmount()
   })
 
@@ -159,7 +180,7 @@ describe('mobile group creation', () => {
 
     expect(firebaseMocks.createSparkGroup).toHaveBeenCalledOnce()
     expect(onDidDismiss).toHaveBeenCalledOnce()
-    expect(await (modal.props('canDismiss') as () => Promise<boolean>)()).toBe(true)
+    expect(modal.props('canDismiss')).toBe(true)
     expect(push).not.toHaveBeenCalledWith('/tabs/groups/grp-hosted-cover')
 
     finishDismissal?.()
