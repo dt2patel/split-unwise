@@ -87,6 +87,27 @@ describe('NotificationCenter', () => {
     expect(attempts).toBe(2)
   })
 
+  it('clears a mark-read the server rejects for good instead of leaving it stuck in the queue', async () => {
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({
+      originPrincipalKey: principalKey, storage: createMemoryCommandStorage(),
+      handlers: {
+        // What Firestore answers for a notification from a group that was deleted.
+        'notification.read': async () => { throw new CommandFailedError('permission-denied', 'Missing or insufficient permissions.') },
+      },
+    })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const wrapper = await mountCenter()
+
+    await wrapper.get('[data-action="mark-read-notification-c"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="notification-error"]').text()).toContain('This notification can’t be marked read anymore.')
+    expect(queue.snapshot().filter(({ status }) => status === 'failed')).toEqual([])
+    // Nothing is left to retry or discard, so nothing can hold an app update either.
+    expect(wrapper.find('[data-action="discard-notification"]').exists()).toBe(false)
+  })
+
   it('uses the authoritative unread count even when only one page is loaded', async () => {
     const source = createDemoRepository()
     const page = await source.notifications.list({ limit: 1 })
