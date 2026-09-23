@@ -28,7 +28,8 @@ export default defineConfig({
         navigateFallback: '/index.html',
         navigateFallbackDenylist: serviceWorkerExcludedPaths.map((prefix) => new RegExp(`^${prefix.replaceAll('/', '\\/')}`)),
         globPatterns: ['**/*.{html,js,css,png,jpg,jpeg,webp,webmanifest,json}'],
-        globIgnores: ['**/app-icon-1024.png', '**/*.map', 'ocr/**'],
+        // iOS fetches only its own launch image (public/launch) itself; precaching all 62 would cost every install ~2.5 MB.
+        globIgnores: ['**/app-icon-1024.png', '**/*.map', 'ocr/**', 'launch/**'],
         maximumFileSizeToCacheInBytes: 2 * 1024 * 1024,
         runtimeCaching: [],
       },

@@ -44,7 +44,9 @@
       { "source": "/registerSW.js", "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }] },
       { "source": "/startup.js", "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }] },
       { "source": "/build-info.json", "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }] },
-      { "source": "/icons/**", "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }] }
+      { "source": "/icons/**", "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }] },
+      { "source": "/launch/**", "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }] },
+      { "source": "/launch.js", "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }] }
     ],
     "rewrites": [{ "source": "**", "destination": "/index.html" }]
   },

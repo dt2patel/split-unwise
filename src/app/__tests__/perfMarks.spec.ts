@@ -33,6 +33,20 @@ describe('launch timing marks', () => {
     info.mockRestore(); now.mockRestore()
   })
 
+  it('lets the launch screen wait for the first content without waiting forever', async () => {
+    const { markLaunch, waitForLaunchMark } = await import('../perfMarks')
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+
+    const content = waitForLaunchMark(['home-cached', 'group-cached'], 5_000)
+    markLaunch('app-mounted')
+    markLaunch('group-cached')
+    await expect(content).resolves.toBe(true)
+    // Already reached: resolves at once.
+    await expect(waitForLaunchMark(['group-cached'], 5_000)).resolves.toBe(true)
+    // Never reached: gives up after the timeout.
+    await expect(waitForLaunchMark(['home-content'], 20)).resolves.toBe(false)
+  })
+
   it('keeps only the ten most recent launches', async () => {
     localStorage.setItem('split-unwise:launch-timing:v1', JSON.stringify(Array.from({ length: 10 }, (_, index) => ({ startedAt: `2026-09-0${index}`, path: '/', standalone: false, marks: {} }))))
     vi.spyOn(console, 'info').mockImplementation(() => undefined)
