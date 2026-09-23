@@ -432,7 +432,7 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
 .comment-thread__closed { margin: 0; color: var(--ion-color-medium); }
 .comment-thread__locked { margin: 0; color: var(--ion-color-medium); font-size: 0.82rem; line-height: 1.4; }
 .comment-thread__composer { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 12px 0 max(4px, env(safe-area-inset-bottom)); background: var(--su-surface); }
-.comment-thread__body { --background: var(--su-surface); --color: var(--su-text); --padding-top: 11px; --padding-end: 11px; --padding-bottom: 11px; --padding-start: 11px; min-height: 88px; border: 1px solid var(--su-divider); border-radius: 12px; background: var(--su-surface); font-size: 16px; }
+.comment-thread__body { --background: transparent; --color: var(--su-text); --padding-top: 11px; --padding-end: 11px; --padding-bottom: 11px; --padding-start: 11px; min-height: 88px; border: 1px solid var(--su-divider); border-radius: 12px; background: var(--su-surface); font-size: 16px; }
 .comment-thread__body:focus-within { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 14%, transparent); }
 .comment-thread__attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .comment-thread__attachment { display: flex; min-height: 44px; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--su-divider); border-radius: 11px; }
