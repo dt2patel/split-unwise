@@ -49,7 +49,7 @@ const offlineReadyButtons: ToastButton[] = [{ text: 'OK', role: 'cancel', handle
     </section>
     <section v-if="showWarning" class="app-status__notice app-status__notice--warning" role="status"><span>{{ pwa.message }}</span></section>
   </aside>
-  <!-- Rendered as ion-app children (App.vue), outside the fixed banner, so Ionic positions them against the app. -->
+  <!-- Beside the banner, not inside it: Ionic presents the toasts from ion-app, and each announces itself (role="status"). -->
   <ion-toast
     class="app-status app-status__toast"
     :is-open="showUpdate && !repositioning"
