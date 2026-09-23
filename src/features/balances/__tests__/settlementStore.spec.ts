@@ -1,4 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia'
+import { flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
@@ -154,6 +155,83 @@ describe('settlement store authority and races', () => {
     expect(store.error).toContain('Deleted accounts')
   })
 })
+
+describe('settlement store paint without blinking', () => {
+  it('refreshes the group already on screen in place instead of blanking it', async () => {
+    const requests: Record<string, Promise<LoadBundle>> = { a: Promise.resolve(bundle('a', 'Group A')) }
+    setAppSessionForTesting(createAppSession({ repository: repositoryFor(requests), principal, commandStorage: createMemoryCommandStorage() }))
+    const store = useSettlementStore()
+    await store.loadGroup('a')
+
+    const refresh = deferred<LoadBundle>()
+    requests.a = refresh.promise
+    const refreshing = store.loadGroup('a')
+    await flushPromises()
+    expect(store.isLoading).toBe(true)
+    expect(store.group?.name).toBe('Group A')
+    expect(store.balanceSnapshot?.groupId).toBe('a')
+    expect(store.isProvisional).toBe(false)
+
+    refresh.resolve(bundle('a', 'Group A renamed'))
+    await refreshing
+    expect(store.group?.name).toBe('Group A renamed')
+  })
+
+  it('paints the device copy while the server loads and records payments only once it confirms', async () => {
+    const server = deferred<LoadBundle>()
+    const cached = bundle('a', 'Group A (cached)')
+    const repository = withDeviceCopy(repositoryFor({ a: server.promise }), cached)
+    setAppSessionForTesting(createAppSession({ repository, principal, commandStorage: createMemoryCommandStorage() }))
+    const store = useSettlementStore()
+
+    const loading = store.loadGroup('a')
+    await flushPromises()
+    expect(store.group?.name).toBe('Group A (cached)')
+    expect(store.balanceSnapshot?.groupId).toBe('a')
+    expect(store.isProvisional).toBe(true)
+    expect(store.canRecord).toBe(false)
+
+    server.resolve(bundle('a', 'Group A'))
+    await loading
+    expect(store.group?.name).toBe('Group A')
+    expect(store.isProvisional).toBe(false)
+    expect(store.canRecord).toBe(true)
+  })
+
+  it('ignores a device copy that arrives after the server answered or failed', async () => {
+    const lateCopy = deferred<{ members: readonly Member[]; snapshot: GroupBalanceSnapshot } | undefined>()
+    const cached = bundle('a', 'Group A (cached)')
+    const unavailable = Promise.reject(new Error('This group is not available.'))
+    unavailable.catch(() => undefined)
+    const base = repositoryFor({ a: Promise.resolve(bundle('a', 'Group A')), b: unavailable })
+    const repository: AppRepository = { ...base, groups: { ...base.groups, peekBalanceContext: () => lateCopy.promise, peekList: async () => [cached.group, { ...cached.group, id: 'b' }] } }
+    setAppSessionForTesting(createAppSession({ repository, principal, commandStorage: createMemoryCommandStorage() }))
+    const store = useSettlementStore()
+
+    await store.loadGroup('a')
+    lateCopy.resolve({ members: cached.members, snapshot: cached.snapshot })
+    await flushPromises()
+    expect(store.group?.name).toBe('Group A')
+    expect(store.isProvisional).toBe(false)
+
+    await store.loadGroup('b')
+    await flushPromises()
+    expect(store.error).toBeDefined()
+    expect(store.balanceSnapshot).toBeUndefined()
+    expect(store.isProvisional).toBe(false)
+  })
+})
+
+function withDeviceCopy(repository: AppRepository, cached: LoadBundle): AppRepository {
+  return {
+    ...repository,
+    groups: {
+      ...repository.groups,
+      peekBalanceContext: async (id) => id === cached.group.id ? { members: cached.members, snapshot: cached.snapshot } : undefined,
+      peekList: async () => [cached.group],
+    },
+  }
+}
 
 interface LoadBundle {
   readonly group: Group

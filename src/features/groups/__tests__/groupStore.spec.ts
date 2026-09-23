@@ -276,6 +276,47 @@ describe('cache-first group overview', () => {
   })
 })
 
+describe('silent group refresh', () => {
+  it('keeps an empty group on screen instead of flashing a loading state while it refreshes', async () => {
+    const first = deferred<GroupSnapshot>()
+    const requests: Record<string, Promise<GroupSnapshot>> = { a: first.promise }
+    repositoryHarness.current = repositoryFor(requests)
+    const store = useGroupStore()
+
+    const loading = store.loadGroup('a')
+    await flushPromises()
+    // Before the journal has been shown once, the page may show its first-load state.
+    expect(store.hasJournal).toBe(false)
+    first.resolve(snapshot('a', 'Empty group'))
+    await loading
+    expect(store.hasJournal).toBe(true)
+
+    const refresh = deferred<GroupSnapshot>()
+    requests.a = refresh.promise
+    const refreshing = store.loadGroup('a')
+    await flushPromises()
+    expect(store.isLoading).toBe(true)
+    expect(store.journalExpenses).toEqual([])
+    // Already shown: the refresh stays silent even though the group has no expenses.
+    expect(store.hasJournal).toBe(true)
+    refresh.resolve(snapshot('a', 'Empty group'))
+    await refreshing
+    expect(store.hasJournal).toBe(true)
+  })
+
+  it('treats a different group as a first load again', async () => {
+    const requests: Record<string, Promise<GroupSnapshot>> = { a: Promise.resolve(snapshot('a', 'Group A')), b: deferred<GroupSnapshot>().promise }
+    repositoryHarness.current = repositoryFor(requests)
+    const store = useGroupStore()
+    await store.loadGroup('a')
+    expect(store.hasJournal).toBe(true)
+
+    void store.loadGroup('b')
+    await flushPromises()
+    expect(store.hasJournal).toBe(false)
+  })
+})
+
 describe('per-currency group balances', () => {
   it('reverses both the group balance and row position for a reimbursement', async () => {
     const refund = { ...expense('refund', 'refund', 'USD', 10000, maya.id, 0, 10000), reimbursement: true as const }

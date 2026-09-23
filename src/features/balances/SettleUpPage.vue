@@ -92,7 +92,7 @@ const selectedBasis = computed<SettlementBasis | undefined>(() => {
     debtMinor: debt.money.minorAmount,
   } : undefined
 })
-const canSubmit = computed(() => Boolean(selectedBasis.value && outsidePaymentConfirmed.value && !isSubmitting.value))
+const canSubmit = computed(() => Boolean(selectedBasis.value && outsidePaymentConfirmed.value && !isSubmitting.value && store.canRecord))
 const providerConfiguration = computed(() => props.providerConfiguration ?? paymentProviderConfigurationFromMembers(store.members))
 const providerHandoffs = computed<readonly PaymentHandoff[]>(() => {
   const basis = selectedBasis.value

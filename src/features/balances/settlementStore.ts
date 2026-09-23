@@ -1,6 +1,7 @@
 import { computed, onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { getAppSession } from '../../data/session'
+import { useGroupStore } from '../groups/groupStore'
 import type { CommandHandle, CommandOperation } from '../../data/commandQueue'
 import type {
   Group,
@@ -35,6 +36,8 @@ export const useSettlementStore = defineStore('settlements', () => {
   const balanceSnapshot = ref<GroupBalanceSnapshot>()
   const settlements = ref<readonly SettlementRecord[]>([])
   const isLoading = ref(false)
+  /** True while the balances on screen are this device's copy and the server load has not confirmed them yet. */
+  const isProvisional = ref(false)
   const error = ref<string>()
   const notice = ref('')
   const queueRevision = ref(0)
@@ -43,7 +46,8 @@ export const useSettlementStore = defineStore('settlements', () => {
   onScopeDispose(unsubscribe)
 
   const memberNames = computed(() => new Map(members.value.map((member) => [member.id, member.displayName])))
-  const canRecord = computed(() => Boolean(group.value && currentUser.value && balanceSnapshot.value
+  // Payments are only recorded against server-confirmed balances, never the device copy.
+  const canRecord = computed(() => Boolean(!isProvisional.value && group.value && currentUser.value && balanceSnapshot.value
     && balanceSnapshot.value.groupId === group.value.id
     && members.value.some((member) => member.id === currentUser.value?.id && member.accountStatus !== 'deleted')))
   const pendingSettlements = computed<readonly PendingSettlementProjection[]>(() => {
@@ -58,8 +62,11 @@ export const useSettlementStore = defineStore('settlements', () => {
 
   async function loadGroup(groupId: string): Promise<void> {
     const generation = ++loadGeneration
-    clearState()
+    // Returning to the group already on screen refreshes it in place; only a different group starts from blank.
+    const showingThisGroup = group.value?.id === groupId && balanceSnapshot.value?.groupId === groupId && error.value === undefined
+    if (!showingThisGroup) clearState()
     isLoading.value = true
+    if (!showingThisGroup) void showDeviceCopy(groupId, generation)
     try {
       await (session as typeof session & { readonly ready?: Promise<void> }).ready
       if (generation !== loadGeneration) return
@@ -80,6 +87,7 @@ export const useSettlementStore = defineStore('settlements', () => {
       currentUser.value = user
       balanceSnapshot.value = snapshot
       settlements.value = loadedSettlements
+      isProvisional.value = false
       queueRevision.value += 1
     } catch (reason) {
       if (generation !== loadGeneration) return
@@ -88,6 +96,31 @@ export const useSettlementStore = defineStore('settlements', () => {
     } finally {
       if (generation === loadGeneration) isLoading.value = false
     }
+  }
+
+  /** Paints the group this device already has (the group page's copy and the cached balance) while the server load runs. */
+  async function showDeviceCopy(groupId: string, generation: number): Promise<void> {
+    const peekBalanceContext = repository.groups.peekBalanceContext
+    if (!peekBalanceContext) return
+    try {
+      await (session as typeof session & { readonly ready?: Promise<void> }).ready
+      const groupPage = useGroupStore()
+      const known = groupPage.activeGroup?.id === groupId ? groupPage.activeGroup : undefined
+      const [cached, user, listed] = await Promise.all([
+        peekBalanceContext(groupId),
+        repository.app.getCurrentUser(),
+        known ? Promise.resolve(undefined) : repository.groups.peekList?.(),
+      ])
+      const cachedGroup = known ?? listed?.find(({ id }) => id === groupId)
+      // Only while this load is still the current one and the server has neither answered nor failed.
+      if (generation !== loadGeneration || !isLoading.value || balanceSnapshot.value || error.value !== undefined) return
+      if (!cached || !cachedGroup || cached.snapshot.groupId !== groupId || !cached.members.some(({ id }) => id === user.id)) return
+      group.value = cachedGroup
+      members.value = cached.members
+      currentUser.value = user
+      balanceSnapshot.value = cached.snapshot
+      isProvisional.value = true
+    } catch { /* the device copy is optional; the server load is authoritative */ }
   }
 
   async function recordPayment(command: SettlementRecordCommand): Promise<boolean> {
@@ -197,6 +230,7 @@ export const useSettlementStore = defineStore('settlements', () => {
   }
 
   function clearState(): void {
+    isProvisional.value = false
     group.value = undefined
     members.value = []
     currentUser.value = undefined
@@ -216,6 +250,7 @@ export const useSettlementStore = defineStore('settlements', () => {
     pendingSettlements,
     canRecord,
     isLoading,
+    isProvisional,
     error,
     notice,
     loadGroup,

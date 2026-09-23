@@ -38,6 +38,9 @@ export const useGroupStore = defineStore('groups', () => {
   const isLoading = ref(false)
   /** True while the journal on screen came from the device cache and the server read has not confirmed it yet. */
   const isProvisional = ref(false)
+  /** The group whose journal has been on screen (cached or confirmed); refreshes after that stay silent instead of flashing a loading state. */
+  const loadedJournalGroupId = ref<string>()
+  const hasJournal = computed(() => activeGroup.value !== undefined && loadedJournalGroupId.value === activeGroup.value.id)
   const isActivityLoading = ref(false)
   const error = ref<GroupStoreError>()
   const queueRevision = ref(0)
@@ -138,6 +141,7 @@ export const useGroupStore = defineStore('groups', () => {
       const counterpart = group.kind === 'friendship' ? loadedMembers.find((member) => member.id !== user.id) : undefined
       if (counterpart) activeGroup.value = { ...group, name: counterpart.displayName }
       expenses.value = loadedExpenses
+      loadedJournalGroupId.value = groupId
       isProvisional.value = false
       markLaunch('group-content')
       for (const operation of queue.snapshot()) rememberTombstone(operation, tombstoneWatermarks)
@@ -268,6 +272,7 @@ export const useGroupStore = defineStore('groups', () => {
     currentUserNets,
     isLoading,
     isProvisional,
+    hasJournal,
     isActivityLoading,
     error,
     loadOverview,
@@ -376,11 +381,13 @@ export const useGroupStore = defineStore('groups', () => {
     currentUser.value = cached.user
     members.value = cached.members
     expenses.value = cached.expenses
+    loadedJournalGroupId.value = cached.group.id
     isProvisional.value = true
     markLaunch('group-cached')
   }
   function clearActiveGroup(): void {
     isProvisional.value = false
+    loadedJournalGroupId.value = undefined
     activeGroup.value = undefined
     members.value = []
     expenses.value = []

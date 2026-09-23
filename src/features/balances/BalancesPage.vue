@@ -24,7 +24,7 @@ type BalancePlan = 'pairwise' | 'simplified'
 
 const route = useRoute()
 const store = useSettlementStore()
-const { balanceSnapshot, currentUser, error, group, isLoading, memberNames } = storeToRefs(store)
+const { balanceSnapshot, currentUser, error, group, isLoading, isProvisional, memberNames } = storeToRefs(store)
 const selectedPlan = ref<BalancePlan>('simplified')
 const { className: motionClass } = useMotion()
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
@@ -105,6 +105,7 @@ function settleDestination(debt: Debt): string {
           <p v-if="balanceSnapshot" data-testid="balance-revision">Balance revision {{ balanceSnapshot.balanceRevision }}</p>
         </div>
 
+        <p v-if="isProvisional" role="status" class="balances-page__status" data-testid="balances-updating">Updating…</p>
         <p v-if="isLoading && !balanceSnapshot" role="status" class="balances-page__status">Loading balances…</p>
         <p v-else-if="error" role="alert" class="balances-page__status balances-page__status--error">{{ error }}</p>
 
