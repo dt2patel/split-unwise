@@ -32,8 +32,8 @@ const stubs = {
   IonAvatar: { template: '<span><slot /></span>' }, IonLabel: { template: '<span><slot /></span>' }, IonNote: { template: '<small><slot /></small>' },
   IonSkeletonText: { template: '<span />' },
   IonInput: {
-    name: 'IonInput', inheritAttrs: false, props: ['modelValue', 'label', 'labelPlacement'], emits: ['update:modelValue'],
-    template: '<label><span>{{ label }}</span><input v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)"></label>',
+    name: 'IonInput', inheritAttrs: false, props: ['modelValue', 'labelPlacement'], emits: ['update:modelValue'],
+    template: '<label><slot /><input v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)"></label>',
   },
 }
 
@@ -164,7 +164,7 @@ describe('Friends page', () => {
     expect(wrapper.get('form').text()).toContain('Nombre del amigo')
     expect(wrapper.get('input[type="email"]').attributes('inputmode')).toBe('email')
     const fields = wrapper.findAllComponents({ name: 'IonInput' })
-    expect(fields.map((field) => [field.props('label'), field.props('labelPlacement')])).toEqual([['Nombre del amigo', 'stacked'], ['Correo electrónico', 'stacked']])
+    expect(fields.map((field) => [field.get('[slot="label"]').text(), field.props('labelPlacement')])).toEqual([['Nombre del amigo', 'stacked'], ['Correo electrónico', 'stacked']])
     expect(wrapper.get('input[autocomplete="name"]').attributes()).toMatchObject({ maxlength: '120', autocapitalize: 'words', placeholder: 'Jordan Lee' })
     expect(wrapper.get('input[type="email"]').attributes()).toMatchObject({ autocomplete: 'email', placeholder: 'jordan@example.com' })
     const currency = wrapper.get<HTMLSelectElement>('select')
