@@ -22,51 +22,69 @@ describe('route navigation animation', () => {
     expect(builder(document.createElement('div'), { enteringEl: document.createElement('div'), leavingEl: document.createElement('div'), direction: 'back' }).getDuration()).toBe(1)
   })
 
-  it('skips only the back transition that Safari already animated', () => {
+  it('skips the one transition the browser already animated, back or forward', () => {
     const els = () => ({ enteringEl: document.createElement('div'), leavingEl: document.createElement('div') })
-    let browserBackAt: number | undefined = 1000
+    let pending: number | undefined
     let time = 1200
     const builder = createRouteAnimation({
       matchMedia: () => ({ matches: false } as MediaQueryList),
       browserOwnsBack: () => true,
-      lastBrowserBackAt: () => browserBackAt,
+      takeBrowserHistoryNavigation: () => { const at = pending; pending = undefined; return at },
       now: () => time,
     })
+    const duration = (direction: 'back' | 'forward') => builder(document.createElement('div'), { ...els(), direction }).getDuration()
 
-    expect(builder(document.createElement('div'), { ...els(), direction: 'back' }).getDuration()).toBe(1)
-    expect(builder(document.createElement('div'), { ...els(), direction: 'forward' }).getDuration()).toBe(540)
+    pending = 1000
+    expect(duration('back')).toBe(1)
+    // The marker was used up by that transition, so the next one animates.
+    expect(duration('back')).toBe(540)
+    pending = 1000
+    expect(duration('forward')).toBe(1)
+    pending = 1000
     time = 2500
-    expect(builder(document.createElement('div'), { ...els(), direction: 'back' }).getDuration()).toBe(540)
-    browserBackAt = undefined
-    time = 1200
-    expect(builder(document.createElement('div'), { ...els(), direction: 'back' }).getDuration()).toBe(540)
+    expect(duration('back')).toBe(540)
+    expect(duration('forward')).toBe(540)
   })
 
-  it('keeps Ionic back transitions where the browser has no gesture of its own', () => {
+  it('keeps Ionic transitions where the browser has no gesture of its own', () => {
     const builder = createRouteAnimation({
       matchMedia: () => ({ matches: false } as MediaQueryList),
       browserOwnsBack: () => false,
-      lastBrowserBackAt: () => 1000,
+      takeBrowserHistoryNavigation: () => 1000,
       now: () => 1100,
     })
     expect(builder(document.createElement('div'), { enteringEl: document.createElement('div'), leavingEl: document.createElement('div'), direction: 'back' }).getDuration()).toBe(540)
+    expect(builder(document.createElement('div'), { enteringEl: document.createElement('div'), leavingEl: document.createElement('div'), direction: 'forward' }).getDuration()).toBe(540)
   })
 
-  it('treats a popstate right after an in-page tap as the app Back button, not the browser gesture', async () => {
+  it('tells browser history gestures apart from taps', async () => {
     vi.resetModules()
     const now = vi.spyOn(performance, 'now')
-    const { browserOwnsBackGesture: _unused, createRouteAnimation: create } = await import('../navigation')
+    const { createRouteAnimation: create } = await import('../navigation')
     const builder = create()
-    const back = () => builder(document.createElement('div'), { enteringEl: document.createElement('div'), leavingEl: document.createElement('div'), direction: 'back' }).getDuration()
+    const duration = (direction: 'back' | 'forward') => builder(document.createElement('div'), { enteringEl: document.createElement('div'), leavingEl: document.createElement('div'), direction }).getDuration()
 
+    // iOS edge swipe back: popstate with no tap first.
     now.mockReturnValue(5000); window.dispatchEvent(new PopStateEvent('popstate'))
     now.mockReturnValue(5100)
-    expect(back()).toBe(1)
+    expect(duration('back')).toBe(1)
 
+    // iOS edge swipe forward.
+    now.mockReturnValue(6000); window.dispatchEvent(new PopStateEvent('popstate'))
+    now.mockReturnValue(6100)
+    expect(duration('forward')).toBe(1)
+
+    // A tap right after a swipe (617ms apart on device) starts its own navigation, which must animate.
+    now.mockReturnValue(7000); window.dispatchEvent(new PopStateEvent('popstate'))
+    now.mockReturnValue(7617); window.dispatchEvent(new MouseEvent('click'))
+    now.mockReturnValue(7650)
+    expect(duration('forward')).toBe(540)
+
+    // The app's Back button pops history right after a tap: Ionic animates it.
     now.mockReturnValue(9000); window.dispatchEvent(new MouseEvent('click'))
     now.mockReturnValue(9200); window.dispatchEvent(new PopStateEvent('popstate'))
     now.mockReturnValue(9300)
-    expect(back()).toBe(540)
+    expect(duration('back')).toBe(540)
     now.mockRestore()
   })
 
