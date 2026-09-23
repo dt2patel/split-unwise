@@ -33,8 +33,6 @@ describe('premium search page', () => {
     expect(wrapper.findAll('h1')).toHaveLength(1)
     expect(wrapper.get('label[for="search-query"]').text()).toBe('Description or notes')
     await wrapper.get('#search-query').setValue('GROCERIES')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
 
     expect(wrapper.get('[data-testid="result-count"]').text()).toContain('1 result')
     expect(wrapper.get('[data-expense-id="groceries"]').text()).toContain('Groceries')
@@ -55,7 +53,7 @@ describe('premium search page', () => {
     expect(input.attributes('aria-labelledby')).toBe('search-query-label')
     expect(wrapper.get('#search-query-label').text()).toBe('Description or notes')
     expect(wrapper.getComponent({ name: 'IonSearchbar' }).props()).toMatchObject({ type: 'search', autocomplete: 'off', placeholder: 'Coffee, cabin, train…' })
-    // No debounce: like the old field, the query updates on every keystroke so an immediate submit sees it.
+    // No debounce: results are searched locally, so they can follow every keystroke.
     expect(wrapper.getComponent({ name: 'IonSearchbar' }).props('debounce')).toBeUndefined()
   })
 
@@ -76,10 +74,11 @@ describe('premium search page', () => {
       input.value = 'GROCERIES'
       input.dispatchEvent(new Event('input', { bubbles: true }))
       await flushPromises()
+      // Results follow the typing; the keyboard's Search key only puts the keyboard away.
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="result-count"]').text()).toBe('1 result'))
+      input.focus()
       wrapper.get('form').element.requestSubmit()
-      await flushPromises()
-
-      expect(wrapper.get('[data-testid="result-count"]').text()).toBe('1 result')
+      expect(document.activeElement).not.toBe(input)
     } finally {
       wrapper.unmount()
     }
@@ -99,8 +98,6 @@ describe('premium search page', () => {
   it('opens a result through the app router without a document navigation', async () => {
     const { wrapper, router } = await mountSearch('/tabs/groups/lake-house-weekend/search')
     await wrapper.get('#search-query').setValue('groceries')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
     const push = vi.spyOn(router, 'push').mockResolvedValue(undefined)
     const tap = new MouseEvent('click', { bubbles: true, cancelable: true })
     const row = resultRow(wrapper, 'groceries')
@@ -116,9 +113,44 @@ describe('premium search page', () => {
     const { wrapper } = await mountSearch('/tabs/groups/lake-house-weekend/search')
     expect(wrapper.get('[data-testid="back"]').attributes('href')).toBe('/tabs/groups/lake-house-weekend')
     await wrapper.get('#search-query').setValue('does not exist')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
     expect(wrapper.get('[data-testid="empty-results"]').text()).toContain('No expenses match')
+  })
+
+  it('updates results live as the query and filters change, reading the expenses only once', async () => {
+    const repository = createDemoRepository()
+    const listForGroup = vi.spyOn(repository.expenses, 'listForGroup')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const { wrapper } = await mountSearch('/tabs/home/search')
+    const everything = Number.parseInt(wrapper.get('[data-testid="result-count"]').text(), 10)
+    expect(everything).toBeGreaterThan(1)
+    expect(wrapper.find('button[type="submit"]').exists()).toBe(false)
+
+    await wrapper.get('#search-query').setValue('gro')
+    expect(wrapper.get('[data-testid="result-count"]').text()).toBe('1 result')
+    await wrapper.get('#search-query').setValue('')
+    expect(wrapper.get('[data-testid="result-count"]').text()).toBe(`${everything} results`)
+    await wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.text() === 'Transport'))!.setValue(['Transport'])
+    expect(Number.parseInt(wrapper.get('[data-testid="result-count"]').text(), 10)).toBeLessThan(everything)
+
+    // An amount without a currency explains itself and keeps the pickers usable.
+    await wrapper.findAll('input[inputmode="decimal"]')[0]!.setValue('5')
+    expect(wrapper.get('[role="alert"]').text()).toContain('Choose a currency')
+    expect(wrapper.findAll('label').find((label) => label.text().includes('Categories'))?.text()).toContain('Transport')
+
+    expect(listForGroup).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps its query and filters while a result is open on top of it', async () => {
+    const { wrapper, router } = await mountSearch('/tabs/home/search')
+    await wrapper.get('#search-query').setValue('groceries')
+    await wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.text() === 'Food'))!.setValue(['Food'])
+
+    await router.push('/tabs/home/expenses/groceries?groupId=lake-house-weekend')
+    await flushPromises()
+
+    expect((wrapper.get('#search-query').element as HTMLInputElement).value).toBe('groceries')
+    expect(wrapper.get('[data-testid="result-count"]').text()).toBe('1 result')
+    expect(wrapper.get('h1').text()).toBe('Search')
   })
 
   it('fails closed instead of widening an invalid group route into account search', async () => {

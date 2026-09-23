@@ -51,8 +51,15 @@ export async function loadGroupPremiumSnapshot(groupId: string): Promise<GroupPr
   }
 }
 
-export async function runPremiumSearch(filters: ExpenseSearchFilters, groupId?: string): Promise<ExpenseSearchResult> {
-  const source = await loadSearchSource(groupId)
+/** Everything a search runs over, loaded once so each keystroke or filter change can search it locally. */
+export interface ExpenseSearchSource {
+  readonly groups: readonly Group[]
+  readonly membersByGroup: ReadonlyMap<string, readonly Member[]>
+  readonly expenses: readonly ExpenseRow[]
+  readonly coverage: ReportCoverage
+}
+
+export function searchLoadedExpenses(source: ExpenseSearchSource, filters: ExpenseSearchFilters): ExpenseSearchResult {
   return searchExpenses({ groups: source.groups, membersByGroup: source.membersByGroup, expenses: source.expenses, filters, coverageStatus: source.coverage.status, coverageReason: source.coverage.reason })
 }
 
@@ -94,7 +101,7 @@ export async function loadPremiumExportSnapshot(groupId?: string): Promise<Premi
   }
 }
 
-async function loadSearchSource(groupId?: string): Promise<{ groups: readonly Group[]; membersByGroup: ReadonlyMap<string, readonly Member[]>; expenses: readonly ExpenseRow[]; coverage: ReportCoverage }> {
+export async function loadExpenseSearchSource(groupId?: string): Promise<ExpenseSearchSource> {
   const session = getAppSession()
   await session.ready
   const [currentUser, listedGroups] = await Promise.all([
