@@ -166,6 +166,10 @@ describe('Firebase Spark two-account flow', () => {
     expect(new Set(journal.map(({ id }) => id)).size).toBe(101)
     await expect(repository.groups.peekJournal!(created.groupId)).resolves.toMatchObject({ expenses: journal })
     await expect(repository.groups.peekBalanceContext!(created.groupId)).resolves.toMatchObject({ snapshot })
+    // Past 100 entries the group feed keeps the latest ones and lets the oldest go.
+    const activity = await repository.activity.listForGroup(created.groupId)
+    expect(activity).toHaveLength(100)
+    expect(activity.at(-1)).toMatchObject({ kind: 'expense.created', operationId: `ledger-expense-100-${suffix}` })
     await signOut(auth)
   }, 120_000)
 

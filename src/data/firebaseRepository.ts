@@ -1386,8 +1386,9 @@ export function createFirebaseRepository(configuration: FirebaseConfiguration, e
     activity: {
       async listForGroup(groupId) {
         const { db, firestore } = await context()
-        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'asc'), firestore.orderBy(firestore.documentId(), 'asc'), firestore.limit(100)))
-        return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data()))
+        // The latest 100 (rules cap a list at 100), handed back oldest-first like the rest of the ledger.
+        const snapshot = await firestore.getDocs(firestore.query(firestore.collection(db, 'groups', groupId, 'activity'), firestore.orderBy('createdAt', 'desc'), firestore.orderBy(firestore.documentId(), 'desc'), firestore.limit(100)))
+        return snapshot.docs.map((document) => decodeActivity(groupId, document.id, document.data())).reverse()
       },
       listForAccount: listAccountActivity,
     },
