@@ -1,4 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { IonButton } from '@ionic/vue'
 import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
@@ -232,6 +233,58 @@ describe('expense detail financial and destructive states', () => {
     expect(wrapper.findAll('[data-testid="revision-snapshot"]').at(-1)?.text()).toContain('Paid by')
     expect(wrapper.findAll('[data-testid="revision-snapshot"]').at(-1)?.text()).toContain('Allocated to')
     expect(wrapper.findAll('[data-testid="revision-snapshot"]').at(-1)?.text()).toContain('Recurrence')
+  })
+
+  it('keeps each revision snapshot in a collapsed Ionic accordion with a labelled header', async () => {
+    const wrapper = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    const snapshot = wrapper.get('[data-testid="revision-snapshot"]')
+    const group = snapshot.element.closest('ion-accordion-group') as (HTMLElement & { value?: unknown }) | null
+
+    expect(snapshot.element.tagName).toBe('ION-ACCORDION')
+    expect(group).not.toBeNull()
+    expect(group?.value).toBeUndefined()
+    expect(snapshot.get('ion-item[slot="header"]').text()).toBe('View revision snapshot')
+    expect(snapshot.get('[slot="content"]').text()).toContain('Description')
+    expect(wrapper.find('details').exists()).toBe(false)
+  })
+
+  it('uses Ionic buttons for delete recovery with destructive choices in danger', async () => {
+    const repository = createDemoRepository()
+    const queue = new CommandQueue({ originPrincipalKey: principalKey, storage: createMemoryCommandStorage(), handlers: {
+      'expense.delete': async () => { throw new CommandConflictError('Expense changed remotely', { groupId: 'lake-house-weekend', expenseId: 'groceries' }) },
+    } })
+    setAppSessionForTesting({ ...createAppSession({ repository, commandStorage: createMemoryCommandStorage() }), queue })
+    const wrapper = await mountRoute('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+
+    expect(wrapper.get('[data-action="delete-expense"]').attributes('color')).toBe('danger')
+    await wrapper.get('[data-action="delete-expense"]').trigger('click')
+    await wrapper.getComponent({ name: 'IonAlert' }).props('buttons').find((button: { role?: string }) => button.role === 'destructive').handler()
+    await flushPromises()
+
+    const reload = wrapper.get('[data-action="reload-expense-delete-conflict"]')
+    const deleteLatest = wrapper.get('[data-action="delete-latest-expense"]')
+    expect([reload.attributes('size'), reload.attributes('fill'), reload.attributes('color')]).toEqual(['small', 'solid', undefined])
+    expect([deleteLatest.attributes('size'), deleteLatest.attributes('fill'), deleteLatest.attributes('color')]).toEqual(['small', 'outline', 'danger'])
+  })
+
+  it('restores focus to the native button inside the Ionic delete trigger when the alert is cancelled', async () => {
+    const router = createAppRouter()
+    await router.push('/tabs/groups/expenses/groceries?groupId=lake-house-weekend')
+    await router.isReady()
+    const { IonButton: _stubbedButton, ...stubsWithRealButtons } = ionicStubs
+    const wrapper = mount(ExpenseDetailPage, { attachTo: document.body, global: { plugins: [createPinia(), router], stubs: stubsWithRealButtons } })
+    await flushPromises()
+    const trigger = wrapper.get('[data-action="delete-expense"]')
+    await vi.waitFor(() => expect(trigger.element.shadowRoot?.querySelector('button')).toBeTruthy())
+
+    expect(wrapper.findAllComponents(IonButton).find((button) => button.attributes('data-action') === 'delete-expense')?.props('color')).toBe('danger')
+    await trigger.trigger('click')
+    wrapper.getComponent({ name: 'IonAlert' }).vm.$emit('didDismiss', { detail: { role: 'cancel' } })
+    await flushPromises()
+
+    expect(document.activeElement).toBe(trigger.element)
+    expect(trigger.element.shadowRoot?.activeElement).toBe(trigger.element.shadowRoot?.querySelector('button'))
+    wrapper.unmount()
   })
 
   it.each([
