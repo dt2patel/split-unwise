@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { IonFab, IonFabButton } from '@ionic/vue'
+import { IonButton, IonFab, IonFabButton } from '@ionic/vue'
 import AppFab from '../AppFab.vue'
 import ExpenseRow from '../ExpenseRow.vue'
 import MemberAvatar from '../MemberAvatar.vue'
@@ -177,6 +177,23 @@ describe('ExpenseRow', () => {
 
     await wrapper.get('[data-action="delete-remote"]').trigger('click')
     expect(wrapper.emitted('deleteRemote')).toHaveLength(1)
+  })
+
+  it('renders journal recovery actions as small clear Ionic buttons with destructive ones in danger', () => {
+    const variants = (wrapper: ReturnType<typeof mount>) => wrapper.findAllComponents(IonButton)
+      .map((button) => [button.attributes('data-action'), button.props('size'), button.props('fill'), button.props('color') === 'danger'])
+    const failed = mount(ExpenseRow, { props: { expense: { ...expense, syncState: 'failed' }, balance: { currency: 'USD', minorAmount: 0 }, balanceDirection: 'settled', journal: true, retryable: true } })
+    const editConflict = mount(ExpenseRow, {
+      props: { expense: { ...expense, syncState: 'conflicted' }, conflictRemote: { ...expense, revision: 2 }, balance: { currency: 'USD', minorAmount: 0 }, balanceDirection: 'settled', journal: true },
+    })
+    const deleteConflict = mount(ExpenseRow, {
+      props: { expense: { ...expense, syncState: 'conflicted' }, conflictRemote: { ...expense, revision: 2 }, conflictIntent: 'delete', balance: { currency: 'USD', minorAmount: 0 }, balanceDirection: 'settled', journal: true } as never,
+    })
+
+    expect(variants(failed)).toEqual([['retry-expense', 'small', 'clear', false], ['discard-expense', 'small', 'clear', true]])
+    expect(variants(editConflict)).toEqual([['reload-remote', 'small', 'clear', false], ['retain-save-local', 'small', 'clear', false]])
+    expect(variants(deleteConflict)).toEqual([['reload-remote', 'small', 'clear', false], ['delete-remote', 'small', 'clear', true]])
+    expect(failed.get('article').element).toBe(failed.element)
   })
 
   it('links only the non-action row body and leaves failed/conflict controls outside the link', async () => {
