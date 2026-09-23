@@ -162,6 +162,31 @@ describe('Account page', () => {
     wrapper.unmount()
   })
 
+  it('returns focus into the real Ionic row button after a cancelled confirmation', async () => {
+    useSession('firebase')
+    useAuth(['password'])
+    const wrapper = mount(AccountPage, { attachTo: document.body, global: { plugins: [createPinia(), [IonicVue, { mode: 'ios' }]], stubs: {
+      IonPage: { template: '<main class="ion-page"><slot /></main>' },
+      IonHeader: { template: '<header><slot /></header>' },
+      IonContent: { template: '<section><slot /></section>' },
+      IonAlert: { name: 'IonAlert', props: ['isOpen', 'header', 'message', 'buttons'], template: '<div />' },
+      IonModal: true,
+    } } })
+    await settleIonic()
+
+    const clear = wrapper.findAll('ion-item').find((item) => item.text().includes('Clear local data'))!
+    const nativeButton = clear.element.shadowRoot?.querySelector('button')
+    expect(nativeButton).toBeTruthy()
+    await clear.trigger('click')
+    const alert = wrapper.findAllComponents({ name: 'IonAlert' }).find((candidate) => candidate.props('isOpen'))!
+    await (alert.props('buttons') as Array<{ role?: string; handler: () => unknown }>).find(({ role }) => role === 'cancel')!.handler()
+    await flushPromises()
+
+    expect(document.activeElement).toBe(clear.element)
+    expect(clear.element.shadowRoot?.activeElement).toBe(nativeButton)
+    wrapper.unmount()
+  })
+
   it('persists opt-in PayPal and Venmo handles from account settings', async () => {
     const repository = createDemoRepository()
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
