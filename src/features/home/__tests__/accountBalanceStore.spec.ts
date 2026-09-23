@@ -114,6 +114,36 @@ describe('account balance store', () => {
   })
 })
 
+describe('refreshing account balances', () => {
+  it('keeps confirmed totals steady until a forced refresh has every group', async () => {
+    const base = createDemoRepository()
+    const first = group('first', 'First trip')
+    const second = group('second', 'Second trip')
+    let secondServer = Promise.resolve(snapshot('second', 2500))
+    const getBalanceSnapshot = vi.fn(async (groupId: string) => groupId === first.id ? snapshot(groupId, 1500) : secondServer)
+    setAppSessionForTesting(createAppSession({
+      repository: { ...base, groups: { ...base.groups, listMembers: async () => [maya, alex], getBalanceSnapshot } },
+      commandStorage: createMemoryCommandStorage(),
+    }))
+    const store = useAccountBalanceStore()
+    await store.load([first, second], maya.id)
+    expect(store.projection.currencies[0]?.netMinor).toBe(4000)
+
+    const pending = deferred<GroupBalanceSnapshot>()
+    secondServer = pending.promise
+    const refreshing = store.load([first, second], maya.id, { force: true })
+    await vi.waitFor(() => expect(getBalanceSnapshot).toHaveBeenCalledTimes(4))
+    await Promise.resolve()
+    // The first group already reloaded, but the total stays whole instead of dipping to it alone.
+    expect(store.projection.currencies[0]?.netMinor).toBe(4000)
+
+    pending.resolve(snapshot('second', 3500))
+    await refreshing
+    expect(store.projection.currencies[0]?.netMinor).toBe(5000)
+    expect(store.coverage.status).toBe('complete')
+  })
+})
+
 describe('cache-first account balances', () => {
   it('shows cached balances immediately and swaps in the complete server result without dipping', async () => {
     const base = createDemoRepository()

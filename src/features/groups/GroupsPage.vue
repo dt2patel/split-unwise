@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, shallowRef, type ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
-import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonInput, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonSearchbar, IonTitle, IonToolbar } from '@ionic/vue'
+import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonInput, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonRefresher, IonRefresherContent, IonSearchbar, IonTitle, IonToolbar, type RefresherCustomEvent } from '@ionic/vue'
 import { add, checkmarkCircle, chevronDown, chevronForward } from 'ionicons/icons'
 import { useI18n } from '../../app/i18n'
 import { useGroupStore } from './groupStore'
@@ -70,6 +70,9 @@ onMounted(async () => {
 function setPresentingElement(value: Element | ComponentPublicInstance | null): void {
   const element = value && '$el' in value ? value.$el : value
   presentingElement.value = element instanceof HTMLElement ? element : undefined
+}
+async function refreshFromPull(event: RefresherCustomEvent): Promise<void> {
+  try { await store.loadOverview() } finally { await event.target.complete() }
 }
 function openCreate(event: Event): void {
   createTrigger.value = event.currentTarget as HTMLElement
@@ -163,6 +166,7 @@ function coverDescription(id: GroupCoverId): string {
       </ion-toolbar>
     </ion-header>
     <ion-content :fullscreen="true">
+      <ion-refresher slot="fixed" data-testid="groups-refresher" @ion-refresh="refreshFromPull"><ion-refresher-content /></ion-refresher>
       <main class="groups-page">
         <h1>{{ t('groups.title') }}</h1>
         <p>{{ t('groups.intro') }}</p>

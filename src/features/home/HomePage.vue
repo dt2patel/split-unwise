@@ -15,10 +15,13 @@ import {
   IonList,
   IonNote,
   IonPage,
+  IonRefresher,
+  IonRefresherContent,
   IonSkeletonText,
   IonTitle,
   IonToolbar,
   onIonViewWillEnter,
+  type RefresherCustomEvent,
 } from '@ionic/vue'
 import { chevronForward, peopleOutline, searchOutline } from 'ionicons/icons'
 import { useI18n } from '../../app/i18n'
@@ -54,6 +57,13 @@ onMounted(() => { void loadPage() })
 onIonViewWillEnter(() => {
   if (currentUser.value && groups.value.length > 0) void balanceStore.load(groups.value, currentUser.value.id, { force: true })
 })
+
+async function refreshFromPull(event: RefresherCustomEvent): Promise<void> {
+  try {
+    await groupStore.loadOverview()
+    if (currentUser.value) await balanceStore.load(groups.value, currentUser.value.id, { force: true })
+  } finally { await event.target.complete() }
+}
 
 async function loadPage(): Promise<void> {
   await groupStore.loadOverview({ onCached: (cachedGroups, user) => { void balanceStore.peek(cachedGroups, user.id) } })
@@ -111,6 +121,7 @@ function absolute(position: SignedCurrencyPosition): SignedCurrencyPosition { re
       </ion-toolbar>
     </ion-header>
     <ion-content :fullscreen="true">
+      <ion-refresher slot="fixed" data-testid="home-refresher" @ion-refresh="refreshFromPull"><ion-refresher-content /></ion-refresher>
       <main class="browse-page">
         <p class="browse-page__eyebrow">{{ currentUser ? t('home.welcomeBack', { name: currentUser.displayName }) : t('home.sharedExpenses') }}</p>
         <h1>{{ t('home.title') }}</h1>

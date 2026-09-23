@@ -12,6 +12,8 @@ import HomePage from '../HomePage.vue'
 const friendship: Group = { id: 'friend-jordan', kind: 'friendship', name: 'Jordan Lee', currency: 'USD', memberIds: ['maya-p', 'jordan-p'], syncState: 'fresh' }
 const jordan: Member = { id: 'jordan-p', displayName: 'Jordan Lee', initials: 'JL', isCurrentUser: false }
 const stubs = {
+  IonRefresher: { name: 'IonRefresher', emits: ['ionRefresh'], template: '<div><slot /></div>' },
+  IonRefresherContent: true,
   IonPage: { template: '<div><slot /></div>' }, IonHeader: { template: '<header><slot /></header>' },
   IonToolbar: { template: '<div><slot /></div>' }, IonTitle: { template: '<div><slot /></div>' },
   IonButtons: { template: '<div><slot /></div>' }, IonContent: { template: '<main><slot /></main>' },
@@ -41,6 +43,29 @@ beforeEach(() => {
     },
     commandStorage: createMemoryCommandStorage(),
   }))
+})
+
+describe('home pull to refresh', () => {
+  it('reloads groups and balances and ends the refresher', async () => {
+    const source = createDemoRepository()
+    const list = vi.fn(source.groups.list)
+    const getBalanceSnapshot = vi.fn(source.groups.getBalanceSnapshot)
+    setAppSessionForTesting(createAppSession({ repository: { ...source, groups: { ...source.groups, list, getBalanceSnapshot } }, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter()
+    await router.push('/tabs/home')
+    await router.isReady()
+    const wrapper = mount(HomePage, { global: { plugins: [createPinia(), router], stubs } })
+    await flushPromises()
+    const [lists, snapshots] = [list.mock.calls.length, getBalanceSnapshot.mock.calls.length]
+    const complete = vi.fn(async () => undefined)
+
+    wrapper.getComponent({ name: 'IonRefresher' }).vm.$emit('ionRefresh', { target: { complete } })
+    await flushPromises()
+
+    expect(list.mock.calls.length).toBe(lists + 1)
+    expect(getBalanceSnapshot.mock.calls.length).toBeGreaterThan(snapshots)
+    expect(complete).toHaveBeenCalledOnce()
+  })
 })
 
 describe('Home account balances', () => {
