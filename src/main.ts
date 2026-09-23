@@ -16,6 +16,7 @@ import { registerPwa } from './app/pwa'
 import { forgetFirebaseProfileReady } from './data/profileReady'
 import { installWebMcp } from './app/webmcp'
 import { markLaunch } from './app/perfMarks'
+import { dismissLaunchScreen } from './app/launchScreen'
 import './app/theme.css'
 
 // On the web iOS owns edge-swipe back (Safari and home-screen apps); Ionic's swipe-back only belongs in the native shell.
@@ -36,6 +37,7 @@ async function mountIndependentSurface(): Promise<void> {
   await router.isReady()
   app.mount('#app')
   markLaunch('app-mounted')
+  void dismissLaunchScreen()
   independentApp = app
 }
 
@@ -63,6 +65,7 @@ const mountHost = createAppSessionMountHost({
     if (session.isActive) {
       app.mount('#app')
       markLaunch('app-mounted')
+      void dismissLaunchScreen()
       didMount = true
       disposeWebMcp = await installWebMcp({ router, session })
     }

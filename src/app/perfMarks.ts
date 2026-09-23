@@ -14,6 +14,7 @@ const CONTENT_MARKS: readonly LaunchMark[] = ['home-content', 'group-content']
 
 let current: { startedAt: string; path: string; standalone: boolean; marks: Partial<Record<LaunchMark, number>> } | undefined
 let reported = false
+const markListeners = new Set<(mark: LaunchMark) => void>()
 
 /** Records the first time this launch reaches a milestone; later calls for the same mark are ignored. */
 export function markLaunch(mark: LaunchMark): void {
@@ -22,6 +23,7 @@ export function markLaunch(mark: LaunchMark): void {
   if (record.marks[mark] !== undefined) return
   record.marks[mark] = Math.round(performance.now())
   try { performance.mark(`split-unwise:${mark}`) } catch { /* marks are optional */ }
+  for (const listener of [...markListeners]) listener(mark)
   if (!reported && CONTENT_MARKS.includes(mark)) {
     reported = true
     persist(record)
@@ -29,6 +31,24 @@ export function markLaunch(mark: LaunchMark): void {
   } else if (reported) {
     persist(record)
   }
+}
+
+/** Resolves true once this launch reaches any of `marks` (immediately if it already has), or false after `timeoutMs`. */
+export function waitForLaunchMark(marks: readonly LaunchMark[], timeoutMs: number): Promise<boolean> {
+  if (current && marks.some((mark) => current!.marks[mark] !== undefined)) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const listener = (mark: LaunchMark) => {
+      if (!marks.includes(mark)) return
+      finish(true)
+    }
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    function finish(reached: boolean): void {
+      clearTimeout(timer)
+      markListeners.delete(listener)
+      resolve(reached)
+    }
+    markListeners.add(listener)
+  })
 }
 
 export function readLaunchHistory(): readonly LaunchRecord[] {

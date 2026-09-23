@@ -47,7 +47,7 @@ describe('PWA and Hosting release contracts', () => {
     expect(firebase.hosting.rewrites).toContainEqual({ source: '**', destination: '/index.html' })
     const bySource = new Map(firebase.hosting.headers.map((entry) => [entry.source, new Map(entry.headers.map((header) => [header.key, header.value]))]))
     expect(bySource.get('/assets/**')?.get('Cache-Control')).toContain('immutable')
-    for (const source of ['/index.html', '/manifest.webmanifest', '/sw.js', '/workbox-*.js', '/registerSW.js', '/startup.js', '/build-info.json', '/icons/**']) {
+    for (const source of ['/index.html', '/manifest.webmanifest', '/sw.js', '/workbox-*.js', '/registerSW.js', '/startup.js', '/launch.js', '/build-info.json', '/icons/**', '/launch/**']) {
       expect(bySource.get(source)?.get('Cache-Control')).toContain('no-cache')
     }
     const global = bySource.get('**')

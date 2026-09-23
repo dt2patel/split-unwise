@@ -26,7 +26,21 @@ for (const icon of manifest.icons ?? []) {
   requireCondition(icon.sizes === `${width}x${height}`, `manifest icon dimensions do not match ${icon.src}`)
 }
 
+// Home-screen launch images: every one index.html links must ship at the exact pixel size its media query claims.
+const shell = await readFile(resolve(dist, 'index.html'), 'utf8')
+const startupImages = [...shell.matchAll(/<link rel="apple-touch-startup-image" media="([^"]+)" href="([^"]+)"/g)]
+requireCondition(startupImages.length > 0 && names.includes('launch.js'), 'the home-screen launch screen is missing')
+for (const [, media, href] of startupImages) {
+  const width = Number(/device-width: (\d+)px/.exec(media)?.[1])
+  const height = Number(/device-height: (\d+)px/.exec(media)?.[1])
+  const ratio = Number(/device-pixel-ratio: (\d+)/.exec(media)?.[1])
+  const landscape = media.includes('orientation: landscape')
+  const [actualWidth, actualHeight] = jpegSize(await readFile(resolve(dist, href.replace(/^\//, ''))))
+  requireCondition(actualWidth === (landscape ? height : width) * ratio && actualHeight === (landscape ? width : height) * ratio, `launch image ${href} does not match ${media}`)
+}
+
 const serviceWorker = await readFile(resolve(dist, 'sw.js'), 'utf8')
+requireCondition(!serviceWorker.includes('launch/'), 'service worker must not precache every device\'s launch image')
 requireCondition(serviceWorker.includes('index.html'), 'service worker is missing the offline app shell')
 requireCondition(!serviceWorker.includes('app-icon-1024.png'), 'service worker precaches the source icon')
 requireCondition(!serviceWorker.includes('ocr/'), 'service worker must load large OCR assets on demand')
@@ -66,6 +80,17 @@ async function walk(directory) {
 function pngSize(bytes) {
   requireCondition(bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a', 'manifest icon is not a PNG')
   return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)]
+}
+
+function jpegSize(bytes) {
+  requireCondition(bytes[0] === 0xff && bytes[1] === 0xd8, 'launch image is not a JPEG')
+  for (let offset = 2; offset + 9 < bytes.length;) {
+    if (bytes[offset] !== 0xff) { offset += 1; continue }
+    const marker = bytes[offset + 1]
+    if (marker >= 0xc0 && marker <= 0xc3) return [bytes.readUInt16BE(offset + 7), bytes.readUInt16BE(offset + 5)]
+    offset += 2 + bytes.readUInt16BE(offset + 2)
+  }
+  throw new Error('launch image has no JPEG frame header')
 }
 
 function requireCondition(condition, message) {

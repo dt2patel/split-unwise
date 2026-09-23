@@ -6,6 +6,9 @@
     window.setTimeout(() => {
       const root = document.getElementById('app')
       if (!root || root.childElementCount > 0 || root.textContent.trim()) return
+      // The launch screen (launch.js) must never hide a startup error.
+      document.getElementById('su-launch')?.remove()
+      document.documentElement.classList.remove('su-launching')
 
       const surface = document.createElement('main')
       surface.setAttribute('role', 'alert')
