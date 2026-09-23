@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, type ComponentPublicInstance } from 'vue'
-import { IonAlert, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonIcon, IonInput, IonModal, IonPage, IonSpinner, IonTitle, IonToolbar } from '@ionic/vue'
-import { archiveOutline, cardOutline, chevronForward, cloudOfflineOutline, colorPaletteOutline, documentAttachOutline, languageOutline, logOutOutline, notificationsOutline, personCircleOutline, speedometerOutline, trashOutline } from 'ionicons/icons'
+import { IonAlert, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonIcon, IonInput, IonItem, IonLabel, IonList, IonModal, IonPage, IonSpinner, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
+import { archiveOutline, cardOutline, cloudOfflineOutline, colorPaletteOutline, documentAttachOutline, languageOutline, logOutOutline, notificationsOutline, personCircleOutline, speedometerOutline, trashOutline } from 'ionicons/icons'
+import { restoreInteractiveFocus } from '../../app/focus'
 import { useI18n } from '../../app/i18n'
 import { describeLaunch, readLaunchHistory } from '../../app/perfMarks'
 import { getAppSession, type UnresolvedWorkSummary } from '../../data/session'
@@ -203,7 +204,8 @@ async function deleteAccount(): Promise<void> {
     deletingAccount.value = false
   }
 }
-async function restoreFocus(): Promise<void> { await nextTick(); trigger.value?.focus() }
+// The triggers are Ionic items whose focusable button lives in their shadow root.
+async function restoreFocus(): Promise<void> { await nextTick(); restoreInteractiveFocus(trigger.value) }
 function message(reason: unknown): DisplayMessage { return displayMessageFor(reason, 'account.error.actionFailed') }
 function translateMessage(message: DisplayMessage | undefined): string | undefined { return displayMessageText(message, t) }
 function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
@@ -231,38 +233,86 @@ function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
         <p v-if="statusCopy" class="account-status" role="status" aria-live="polite">{{ statusCopy }}</p>
 
         <p class="section-label">{{ t('account.profile') }}</p>
-        <section class="settings-group" :aria-busy="!profileReady">
-          <label class="input-row" for="account-name"><span>{{ t('auth.name') }}</span><input id="account-name" v-model="displayName" autocomplete="name" :disabled="!profileReady"></label>
-          <label class="input-row" for="paypal-handle"><span>PayPal</span><input id="paypal-handle" v-model="paypalHandle" data-testid="paypal-handle" autocomplete="off" inputmode="text" maxlength="65" :placeholder="t('account.optionalHandle')" :disabled="!profileReady"></label>
-          <label class="input-row" for="venmo-handle"><span>Venmo</span><input id="venmo-handle" v-model="venmoHandle" data-testid="venmo-handle" autocomplete="off" inputmode="text" maxlength="65" :placeholder="t('account.optionalHandle')" :disabled="!profileReady"></label>
-          <p class="profile-help">{{ t('account.paymentHelp') }}</p>
-          <button class="text-action" data-action="save-profile" type="button" :disabled="!profileReady" @click="saveProfile">{{ profileReady ? t('account.saveProfile') : t('account.loadingProfile') }}</button>
-        </section>
+        <ion-list inset lines="full" class="settings-group" :aria-busy="!profileReady">
+          <ion-item class="settings-item input-item">
+            <ion-input id="account-name" v-model="displayName" :label="t('auth.name')" label-placement="fixed" autocomplete="name" autocapitalize="words" :disabled="!profileReady" />
+          </ion-item>
+          <ion-item class="settings-item input-item">
+            <ion-input id="paypal-handle" v-model="paypalHandle" data-testid="paypal-handle" label="PayPal" label-placement="fixed" autocomplete="off" inputmode="text" :maxlength="65" :placeholder="t('account.optionalHandle')" :disabled="!profileReady" />
+          </ion-item>
+          <ion-item class="settings-item input-item">
+            <ion-input id="venmo-handle" v-model="venmoHandle" data-testid="venmo-handle" label="Venmo" label-placement="fixed" autocomplete="off" inputmode="text" :maxlength="65" :placeholder="t('account.optionalHandle')" :disabled="!profileReady" />
+          </ion-item>
+          <ion-item class="settings-item help-item"><ion-label class="profile-help">{{ t('account.paymentHelp') }}</ion-label></ion-item>
+          <ion-item class="settings-item action-item">
+            <ion-button class="settings-action" expand="full" fill="clear" data-action="save-profile" :disabled="!profileReady" @click="saveProfile">{{ profileReady ? t('account.saveProfile') : t('account.loadingProfile') }}</ion-button>
+          </ion-item>
+        </ion-list>
 
         <p class="section-label">{{ t('account.preferences') }}</p>
-        <section class="settings-group">
-          <label class="toggle-row"><span class="row-icon"><ion-icon :icon="notificationsOutline" /></span><span><strong>{{ t('account.emailNotifications') }}</strong><small>{{ t('account.emailDetail') }}</small></span><input v-model="notificationPreferences.emailEnabled" type="checkbox" :aria-label="t('account.emailNotifications')"></label>
-          <label class="toggle-row"><span class="row-icon"><ion-icon :icon="notificationsOutline" /></span><span><strong>{{ t('account.pushNotifications') }}</strong><small>{{ t('account.pushDetail') }}</small></span><input v-model="notificationPreferences.pushEnabled" type="checkbox" :aria-label="t('account.pushNotifications')"></label>
-          <button class="text-action" type="button" @click="saveNotifications">{{ t('account.saveNotifications') }}</button>
-          <router-link class="nav-row" to="/tabs/account/appearance"><span class="row-icon"><ion-icon :icon="colorPaletteOutline" /></span><span><strong>{{ t('account.appearance') }}</strong><small>{{ t('account.appearanceDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
-          <router-link class="nav-row" to="/tabs/account/language"><span class="row-icon"><ion-icon :icon="languageOutline" /></span><span><strong>{{ t('language.title') }}</strong><small>{{ t('language.accountDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
-          <router-link class="nav-row" to="/tabs/account/currencies"><span class="row-icon"><ion-icon :icon="cardOutline" /></span><span><strong>{{ t('account.currencies') }}</strong><small>{{ t('account.currenciesDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
-        </section>
+        <ion-list inset lines="full" class="settings-group">
+          <ion-item class="settings-item">
+            <ion-toggle v-model="notificationPreferences.emailEnabled" class="settings-toggle" justify="space-between">
+              <span class="toggle-copy"><span class="row-icon" aria-hidden="true"><ion-icon :icon="notificationsOutline" /></span><span class="row-copy"><strong>{{ t('account.emailNotifications') }}</strong><small>{{ t('account.emailDetail') }}</small></span></span>
+            </ion-toggle>
+          </ion-item>
+          <ion-item class="settings-item">
+            <ion-toggle v-model="notificationPreferences.pushEnabled" class="settings-toggle" justify="space-between">
+              <span class="toggle-copy"><span class="row-icon" aria-hidden="true"><ion-icon :icon="notificationsOutline" /></span><span class="row-copy"><strong>{{ t('account.pushNotifications') }}</strong><small>{{ t('account.pushDetail') }}</small></span></span>
+            </ion-toggle>
+          </ion-item>
+          <ion-item class="settings-item action-item">
+            <ion-button class="settings-action" expand="full" fill="clear" data-action="save-notifications" @click="saveNotifications">{{ t('account.saveNotifications') }}</ion-button>
+          </ion-item>
+          <ion-item class="settings-item" router-link="/tabs/account/appearance" detail>
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="colorPaletteOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.appearance') }}</strong><small>{{ t('account.appearanceDetail') }}</small></ion-label>
+          </ion-item>
+          <ion-item class="settings-item" router-link="/tabs/account/language" detail>
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="languageOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('language.title') }}</strong><small>{{ t('language.accountDetail') }}</small></ion-label>
+          </ion-item>
+          <ion-item class="settings-item" router-link="/tabs/account/currencies" detail>
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="cardOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.currencies') }}</strong><small>{{ t('account.currenciesDetail') }}</small></ion-label>
+          </ion-item>
+        </ion-list>
 
         <p class="section-label">{{ t('account.data') }}</p>
-        <section class="settings-group">
-          <router-link class="nav-row" to="/tabs/account/transactions/import"><span class="row-icon"><ion-icon :icon="documentAttachOutline" /></span><span><strong>{{ t('account.importTransactions') }}</strong><small>{{ t('account.importDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
-          <router-link class="nav-row" to="/tabs/account/export"><span class="row-icon"><ion-icon :icon="archiveOutline" /></span><span><strong>{{ t('account.exportData') }}</strong><small>{{ t('account.exportDetail') }}</small></span><ion-icon :icon="chevronForward" /></router-link>
-          <div class="info-row"><span class="row-icon"><ion-icon :icon="cloudOfflineOutline" /></span><span><strong>{{ t('account.offlineChanges') }}</strong><small>{{ unresolved.total ? t('account.offlineSummary', unresolved) : t('account.deviceSettled') }}</small></span></div>
-          <div class="info-row launch-timing" data-testid="launch-timing"><span class="row-icon"><ion-icon :icon="speedometerOutline" /></span><span><strong>{{ t('account.launchTiming') }}</strong><small v-if="launches.length === 0">{{ t('account.launchTimingEmpty') }}</small><small v-for="launch in launches" :key="launch.startedAt">{{ launch.path }}{{ launch.standalone ? ' (app)' : '' }}: {{ describeLaunch(launch) }}</small></span></div>
-          <button class="danger-row" type="button" @click="beginClear"><span class="row-icon"><ion-icon :icon="trashOutline" /></span><span><strong>{{ t('account.clearLocal') }}</strong><small>{{ t('account.clearLocalDetail') }}</small></span></button>
-        </section>
+        <ion-list inset lines="full" class="settings-group">
+          <ion-item class="settings-item" router-link="/tabs/account/transactions/import" detail>
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="documentAttachOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.importTransactions') }}</strong><small>{{ t('account.importDetail') }}</small></ion-label>
+          </ion-item>
+          <ion-item class="settings-item" router-link="/tabs/account/export" detail>
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="archiveOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.exportData') }}</strong><small>{{ t('account.exportDetail') }}</small></ion-label>
+          </ion-item>
+          <ion-item class="settings-item">
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="cloudOfflineOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.offlineChanges') }}</strong><small>{{ unresolved.total ? t('account.offlineSummary', unresolved) : t('account.deviceSettled') }}</small></ion-label>
+          </ion-item>
+          <ion-item class="settings-item launch-timing" data-testid="launch-timing">
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="speedometerOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.launchTiming') }}</strong><small v-if="launches.length === 0">{{ t('account.launchTimingEmpty') }}</small><small v-for="launch in launches" :key="launch.startedAt">{{ launch.path }}{{ launch.standalone ? ' (app)' : '' }}: {{ describeLaunch(launch) }}</small></ion-label>
+          </ion-item>
+          <ion-item class="settings-item danger-item" button :detail="false" @click="beginClear">
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="trashOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.clearLocal') }}</strong><small>{{ t('account.clearLocalDetail') }}</small></ion-label>
+          </ion-item>
+        </ion-list>
 
         <p class="section-label">{{ t('nav.account') }}</p>
-        <section class="settings-group">
-          <button class="danger-row" type="button" :disabled="session.repository.mode === 'demo'" @click="beginSignOut"><span class="row-icon"><ion-icon :icon="logOutOutline" /></span><span><strong>{{ t('account.signOut') }}</strong><small>{{ session.repository.mode === 'demo' ? t('account.demoUnavailable') : t('account.reviewDrafts') }}</small></span></button>
-          <button data-testid="open-account-delete" class="danger-row" type="button" :disabled="!deletionAvailable" @click="beginAccountDeletion"><span class="row-icon"><ion-icon :icon="personCircleOutline" /></span><span><strong>{{ t('account.delete') }}</strong><small>{{ session.repository.mode === 'demo' ? t('account.demoUnavailable') : deletionProvider === 'unsupported' ? t('account.unsupportedProvider') : t('account.deleteDetail') }}</small></span><ion-icon :icon="chevronForward" /></button>
-        </section>
+        <ion-list inset lines="full" class="settings-group">
+          <ion-item class="settings-item danger-item" button :detail="false" :disabled="session.repository.mode === 'demo'" @click="beginSignOut">
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="logOutOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.signOut') }}</strong><small>{{ session.repository.mode === 'demo' ? t('account.demoUnavailable') : t('account.reviewDrafts') }}</small></ion-label>
+          </ion-item>
+          <ion-item data-testid="open-account-delete" class="settings-item danger-item" button detail :disabled="!deletionAvailable" @click="beginAccountDeletion">
+            <span slot="start" class="row-icon" aria-hidden="true"><ion-icon :icon="personCircleOutline" /></span>
+            <ion-label class="row-copy"><strong>{{ t('account.delete') }}</strong><small>{{ session.repository.mode === 'demo' ? t('account.demoUnavailable') : deletionProvider === 'unsupported' ? t('account.unsupportedProvider') : t('account.deleteDetail') }}</small></ion-label>
+          </ion-item>
+        </ion-list>
       </main>
     </ion-content>
 
@@ -319,6 +369,6 @@ function progressCopy(stage: AccountDeletionProgressStage | undefined): string {
 </template>
 
 <style scoped>
-.account-page{padding:16px 16px calc(116px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--su-lilac) 28%,var(--su-surface))}.profile-card{display:grid;grid-template-columns:64px 1fr;align-items:center;gap:14px;margin:2px 0 25px;padding:8px 4px}.profile-avatar{display:grid;width:62px;height:62px;place-items:center;border-radius:50%;background:linear-gradient(145deg,var(--ion-color-primary),var(--su-indigo));color:#fff;font-size:1.2rem;font-weight:750;box-shadow:0 8px 24px rgb(69 42 183 / 22%)}.profile-card>span:last-child{display:grid;gap:4px;min-width:0}.profile-card strong{font-size:1.22rem}.profile-card small{display:flex;flex-wrap:wrap;gap:6px;color:var(--ion-color-medium);font-size:.78rem;overflow-wrap:anywhere}.profile-card em{padding:2px 6px;border-radius:8px;background:var(--su-lilac);color:var(--ion-color-primary);font-size:.72rem;font-style:normal;font-weight:700}.section-label{margin:22px 12px 8px;color:var(--ion-color-medium);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}.settings-group{overflow:hidden;border-radius:14px;background:var(--su-surface);box-shadow:0 0 0 1px color-mix(in srgb,var(--su-divider) 18%,transparent)}.nav-row,.toggle-row,.info-row,.danger-row,.input-row{box-sizing:border-box;display:grid;width:100%;min-height:58px;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:9px;padding:7px 13px;border:0;border-bottom:1px solid color-mix(in srgb,var(--su-divider) 24%,transparent);background:transparent;color:inherit;font:inherit;text-align:start;text-decoration:none}.settings-group>:last-child{border-bottom:0}.nav-row>span:nth-child(2),.toggle-row>span:nth-child(2),.info-row>span:nth-child(2),.danger-row>span:nth-child(2){display:grid;gap:2px;min-width:0}.nav-row small,.toggle-row small,.info-row small,.danger-row small{color:var(--ion-color-medium);font-size:.74rem;line-height:1.3;overflow-wrap:anywhere}.row-icon{display:grid;width:28px;height:28px;place-items:center;border-radius:8px;background:var(--su-lilac);color:var(--ion-color-primary)}.toggle-row input{width:42px;height:24px;accent-color:var(--ion-color-primary)}.input-row{grid-template-columns:90px 1fr}.input-row input{min-width:0;min-height:44px;border:0;background:transparent;color:inherit;font:inherit;font-size:16px;text-align:end}.input-row input:disabled{opacity:.55}.profile-help{margin:0;padding:11px 13px;border-bottom:1px solid color-mix(in srgb,var(--su-divider) 24%,transparent);color:var(--ion-color-medium);font-size:.74rem;line-height:1.4}.text-action{width:100%;min-height:48px;border:0;border-bottom:1px solid color-mix(in srgb,var(--su-divider) 24%,transparent);background:transparent;color:var(--ion-color-primary);font:inherit;font-weight:650}.text-action:disabled{color:var(--ion-color-medium);opacity:.72}.danger-row{color:var(--ion-color-danger)}.danger-row small{color:var(--ion-color-medium)}.danger-row:disabled{opacity:.55}.account-error,.account-status{padding:11px 13px;border-radius:12px;font-size:.82rem}.account-error{background:color-mix(in srgb,var(--ion-color-danger) 10%,var(--su-surface));color:var(--ion-color-danger)}.account-status{background:var(--su-lilac);color:var(--ion-color-primary)}
+.account-page{padding:16px 16px calc(116px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--su-lilac) 28%,var(--su-surface))}.profile-card{display:grid;grid-template-columns:64px 1fr;align-items:center;gap:14px;margin:2px 0 25px;padding:8px 4px}.profile-avatar{display:grid;width:62px;height:62px;place-items:center;border-radius:50%;background:linear-gradient(145deg,var(--ion-color-primary),var(--su-indigo));color:#fff;font-size:1.2rem;font-weight:750;box-shadow:0 8px 24px rgb(69 42 183 / 22%)}.profile-card>span:last-child{display:grid;gap:4px;min-width:0}.profile-card strong{font-size:1.22rem}.profile-card small{display:flex;flex-wrap:wrap;gap:6px;color:var(--ion-color-medium);font-size:.78rem;overflow-wrap:anywhere}.profile-card em{padding:2px 6px;border-radius:8px;background:var(--su-lilac);color:var(--ion-color-primary);font-size:.72rem;font-style:normal;font-weight:700}.section-label{margin:22px 12px 8px;color:var(--ion-color-medium);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}.settings-group{overflow:hidden;margin:0;padding:0;border-radius:14px;background:var(--su-surface);box-shadow:0 0 0 1px color-mix(in srgb,var(--su-divider) 18%,transparent)}.settings-item{--background:transparent;--border-color:color-mix(in srgb,var(--su-divider) 24%,transparent);--min-height:58px;--padding-start:13px;--inner-padding-end:13px;color:var(--su-text)}.settings-item.item-disabled{opacity:.55}.row-icon{display:grid;flex:0 0 auto;width:28px;height:28px;place-items:center;margin:0 15px 0 0;border-radius:8px;background:var(--su-lilac);color:var(--ion-color-primary)}.row-copy{display:grid;gap:2px;min-width:0;white-space:normal}.row-copy small{color:var(--ion-color-medium);font-size:.74rem;line-height:1.3;overflow-wrap:anywhere}.settings-toggle::part(label){min-width:0;overflow:visible;text-overflow:clip;white-space:normal}.toggle-copy{display:flex;align-items:center;min-width:0;padding-block:7px}.input-item ion-input{font-size:16px}.input-item :deep(input){text-align:end}.input-item ion-input.input-disabled{opacity:.55}.help-item{--min-height:0}.profile-help{margin:11px 0;color:var(--ion-color-medium);font-size:.74rem;line-height:1.4;white-space:normal}.action-item{--min-height:48px;--padding-start:0;--inner-padding-end:0}.settings-action{flex:1;width:100%;min-height:48px;margin:0;--border-radius:0;font-weight:650;text-transform:none}.danger-item{color:var(--ion-color-danger)}.account-error,.account-status{padding:11px 13px;border-radius:12px;font-size:.82rem}.account-error{background:color-mix(in srgb,var(--ion-color-danger) 10%,var(--su-surface));color:var(--ion-color-danger)}.account-status{background:var(--su-lilac);color:var(--ion-color-primary)}
 .account-deletion-card{box-sizing:border-box;display:grid;width:min(100%,560px);min-width:0;margin:0 auto;padding:28px 20px calc(36px + env(safe-area-inset-bottom));gap:16px;overflow-wrap:anywhere}.account-deletion-card>*{min-width:0}.account-deletion-card h2{margin:2px 0 -8px;font-size:1.7rem;letter-spacing:-.035em}.account-deletion-card>p{margin:0;color:var(--ion-color-medium);font-size:.92rem;line-height:1.45}.deletion-mark{display:grid;width:54px;height:54px;place-items:center;border-radius:18px;background:color-mix(in srgb,var(--ion-color-danger) 12%,var(--su-surface));color:var(--ion-color-danger);font-size:1.55rem}.deletion-summary{padding:14px 15px;border:1px solid color-mix(in srgb,var(--su-divider) 72%,transparent);border-radius:14px;background:var(--su-surface)}.deletion-summary strong{font-size:.92rem}.deletion-summary p{margin:5px 0 0;color:var(--ion-color-medium);font-size:.8rem;line-height:1.45}.account-deletion-card ion-input{--border-radius:12px;--padding-start:14px;--padding-end:14px}.account-deletion-card ion-checkbox{box-sizing:border-box;width:100%;min-width:0;font-size:.86rem;line-height:1.35}.account-deletion-card ion-checkbox::part(label){min-width:0;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}.google-reauth{padding:12px 14px;border-radius:12px;background:var(--su-lilac);color:var(--ion-color-primary)!important;font-weight:650}.deletion-error,.deletion-progress{padding:11px 13px;border-radius:12px;font-size:.82rem!important}.deletion-error{background:color-mix(in srgb,var(--ion-color-danger) 10%,var(--su-surface));color:var(--ion-color-danger)!important}.deletion-progress{display:flex;align-items:center;gap:9px;background:var(--su-lilac);color:var(--ion-color-primary)!important}.deletion-progress ion-spinner{width:18px;height:18px}
 </style>

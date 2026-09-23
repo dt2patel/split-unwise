@@ -8,7 +8,8 @@ const haptics = useHaptics()
 </script>
 
 <template>
-  <ion-fab vertical="bottom" horizontal="end" class="app-fab">
+  <!-- AppStatus anchors its toasts to this id so they float above the button instead of covering it. -->
+  <ion-fab id="app-fab" vertical="bottom" horizontal="end" class="app-fab">
     <ion-fab-button :router-link="to" :aria-label="label" @click="void haptics.light()">
       <ion-icon :icon="add" aria-hidden="true" />
     </ion-fab-button>

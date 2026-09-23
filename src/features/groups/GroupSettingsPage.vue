@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { IonBackButton, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonIcon, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
+import { IonBackButton, IonButton, IonButtons, IonCheckbox, IonContent, IonHeader, IonIcon, IonInput, IonItem, IonLabel, IonList, IonModal, IonNote, IonPage, IonSegment, IonSegmentButton, IonTitle, IonToggle, IonToolbar } from '@ionic/vue'
 import { trashOutline } from 'ionicons/icons'
 import { createClientOperationId } from '../../data/clientOperationId'
 import { getAppSession } from '../../data'
@@ -232,11 +232,18 @@ function isConflict(reason: unknown, failure: string): boolean {
                 <ion-item v-for="member in eligibleMembers" :key="member.id" data-testid="group-member-row" class="settings-row member-row" :disabled="!canManage || saving">
                   <ion-checkbox slot="start" :checked="selectedIds.includes(member.id)" :disabled="!canManage || saving" :aria-label="`Include ${member.displayName}`" @ion-change="toggle(member.id, $event.detail.checked)" />
                   <ion-label>{{ member.displayName }}</ion-label>
-                  <label v-if="kind !== 'equal'" slot="end" class="ratio-control">
-                    <span class="su-visually-hidden">{{ member.displayName }} {{ kind === 'percentage' ? 'percentage' : 'shares' }}</span>
-                    <input v-model="ratios[member.id]" class="ratio-input" inputmode="decimal" :aria-label="`${member.displayName} ${kind === 'percentage' ? 'percentage' : 'shares'}`" :disabled="!canManage || saving || !selectedIds.includes(member.id)">
+                  <div v-if="kind !== 'equal'" slot="end" class="ratio-control">
+                    <!-- Ionic copies aria-label onto its native input once, so the field is re-created when the method renames it. -->
+                    <ion-input
+                      :key="`${member.id}-${kind}`"
+                      v-model="ratios[member.id]"
+                      class="ratio-input"
+                      inputmode="decimal"
+                      :aria-label="`${member.displayName} ${kind === 'percentage' ? 'percentage' : 'shares'}`"
+                      :disabled="!canManage || saving || !selectedIds.includes(member.id)"
+                    />
                     <small v-if="kind === 'percentage'">%</small>
-                  </label>
+                  </div>
                 </ion-item>
               </ion-list>
             </fieldset>
@@ -353,7 +360,8 @@ function isConflict(reason: unknown, failure: string): boolean {
 .manage-member-copy p { margin: 2px 0 0; color: var(--ion-color-medium); font-size: .72rem; }
 .manage-member-row ion-button { min-width: 66px; min-height: 44px; margin: 0; text-transform: none; }
 .ratio-control { display: flex; min-height: 44px; align-items: center; gap: 5px; margin-inline-start: 10px; }
-.ratio-input { box-sizing: border-box; width: 72px; min-height: 38px; border: 1px solid var(--su-divider); border-radius: 9px; padding: 0 8px; background: var(--su-surface); color: inherit; font: inherit; text-align: right; }
+.ratio-input { box-sizing: border-box; width: 72px; min-height: 38px; border: 1px solid var(--su-divider); border-radius: 9px; background: var(--su-surface); color: inherit; font-size: 16px; text-align: right; --padding-start: 8px; --padding-end: 8px; }
+.ratio-input:focus-within { border-color: var(--ion-color-primary); }
 .ratio-control small { width: 12px; color: var(--ion-color-medium); }
 .permission-note { display: block; margin: 0 18px 4px; color: var(--ion-color-medium); font-size: .8rem; line-height: 1.4; }
 .actions { display: grid; gap: 2px; margin: 10px 18px 0; }

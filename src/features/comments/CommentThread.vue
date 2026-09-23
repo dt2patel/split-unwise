@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { IonButton, IonTextarea } from '@ionic/vue'
 import { getAppSession } from '../../data'
 import type { ExpenseComment, Member } from '../../data/repositories'
 import type { ReceiptAsset } from '../../data/receipts'
@@ -20,6 +21,7 @@ const attachmentAssets = ref(new Map<string, ReceiptAsset | null>())
 const queueRevision = ref(0)
 const composer = ref<HTMLElement>()
 const errorSummary = ref<HTMLElement>()
+const attachmentInput = ref<HTMLInputElement>()
 let unsubscribe: (() => void) | undefined
 
 useSheetKeyboardAvoidance(composer, {
@@ -228,6 +230,11 @@ async function resolveCommentDeleteConflict(commentId: string): Promise<void> {
   }
 }
 
+function chooseAttachment(): void {
+  if (isDraftLocked.value) return
+  attachmentInput.value?.click()
+}
+
 async function attach(event: Event): Promise<void> {
   if (isDraftLocked.value) return
   const input = event.target as HTMLInputElement
@@ -347,48 +354,63 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
           <li v-for="attachment in comment.attachmentRefs" :key="attachment">
             <strong>{{ attachmentLabel(attachment) }}</strong>
             <span>{{ attachmentDurability(attachment) }}</span>
-            <button v-if="attachmentAssets.get(attachment)" type="button" data-action="open-comment-attachment" @click="openAttachment(attachment)">Open preview</button>
+            <ion-button v-if="attachmentAssets.get(attachment)" size="small" fill="clear" data-action="open-comment-attachment" @click="openAttachment(attachment)">Open preview</ion-button>
           </li>
         </ul>
-        <button
+        <ion-button
           v-if="!comment.commentId.startsWith('pending:') && !comment.deletedAt && comment.author.id === currentUser?.id && !deleteOperation(comment.commentId)"
-          type="button"
+          size="small"
+          fill="clear"
+          color="danger"
           data-action="delete-comment"
           :aria-label="`Delete comment by ${comment.author.displayName}`"
           @click="deleteComment(comment)"
-        >Delete</button>
+        >Delete</ion-button>
         <span v-if="deleteOperation(comment.commentId)?.status === 'pending'" role="status">Deleting…</span>
         <div v-else-if="deleteOperation(comment.commentId)?.status === 'failed'" class="comment-thread__recovery">
-          <button v-if="deleteRetryable(comment.commentId)" type="button" data-action="retry-comment-delete" @click="retryCommentDelete(comment.commentId)">Retry delete</button>
-          <button type="button" data-action="discard-comment-delete" @click="discardCommentDelete(comment.commentId)">Discard</button>
+          <ion-button v-if="deleteRetryable(comment.commentId)" size="small" fill="clear" data-action="retry-comment-delete" @click="retryCommentDelete(comment.commentId)">Retry delete</ion-button>
+          <ion-button size="small" fill="clear" color="danger" data-action="discard-comment-delete" @click="discardCommentDelete(comment.commentId)">Discard</ion-button>
         </div>
         <div v-else-if="deleteOperation(comment.commentId)?.status === 'conflicted'" class="comment-thread__recovery">
           <span>Delete conflict: the current comment is still available.</span>
-          <button type="button" data-action="resolve-comment-delete-conflict" @click="resolveCommentDeleteConflict(comment.commentId)">Reload comment</button>
+          <ion-button size="small" fill="clear" data-action="resolve-comment-delete-conflict" @click="resolveCommentDeleteConflict(comment.commentId)">Reload comment</ion-button>
         </div>
       </li>
     </ol>
 
-    <p ref="errorSummary" class="comment-thread__error" data-testid="comment-error" role="alert" tabindex="-1">{{ error }}</p>
+    <p id="comment-error" ref="errorSummary" class="comment-thread__error" data-testid="comment-error" role="alert" tabindex="-1">{{ error }}</p>
     <p v-if="status" role="status">{{ status }}</p>
     <p v-if="closed" class="comment-thread__closed">Comments are closed because this expense was deleted.</p>
     <form v-else class="comment-thread__composer" aria-label="Add a comment" @submit.prevent="submit">
-      <label for="comment-body">Add a comment</label>
-      <textarea id="comment-body" v-model="body" rows="3" :readonly="isDraftLocked" :aria-invalid="Boolean(error)" aria-describedby="comment-error" />
+      <span id="comment-body-label">Add a comment</span>
+      <ion-textarea
+        id="comment-body"
+        v-model="body"
+        class="comment-thread__body"
+        :class="{ 'ion-invalid': Boolean(error), 'ion-touched': Boolean(error) }"
+        :rows="3"
+        auto-grow
+        autocapitalize="sentences"
+        :spellcheck="true"
+        :readonly="isDraftLocked"
+        aria-labelledby="comment-body-label"
+        aria-describedby="comment-error"
+      />
       <p v-if="isDraftLocked" class="comment-thread__locked">This saved draft is locked to the original comment. Retry sends exactly this text and these attachments. Discard it before making changes.</p>
       <div class="comment-thread__attachments">
-        <label class="comment-thread__attach" :aria-disabled="isDraftLocked">Attach file<input type="file" accept="image/*" :disabled="isDraftLocked" @change="attach"></label>
+        <ion-button class="comment-thread__attach" size="small" fill="outline" data-action="attach-comment-file" :disabled="isDraftLocked" @click="chooseAttachment">Attach file</ion-button>
+        <input ref="attachmentInput" hidden tabindex="-1" aria-hidden="true" type="file" accept="image/*" :disabled="isDraftLocked" @change="attach">
         <span v-for="attachment in attachmentRefs" :key="attachment" class="comment-thread__attachment">
           <span><strong>{{ attachmentLabel(attachment) }}</strong><small>{{ attachmentDurability(attachment) }}</small></span>
-          <button v-if="attachmentAssets.get(attachment)" type="button" data-action="open-comment-attachment" @click="openAttachment(attachment)">Open preview</button>
-          <button type="button" data-action="remove-comment-attachment" :disabled="isDraftLocked" @click="removeAttachment(attachment)">Remove</button>
+          <ion-button v-if="attachmentAssets.get(attachment)" size="small" fill="clear" data-action="open-comment-attachment" @click="openAttachment(attachment)">Open preview</ion-button>
+          <ion-button size="small" fill="clear" color="danger" data-action="remove-comment-attachment" :disabled="isDraftLocked" @click="removeAttachment(attachment)">Remove</ion-button>
         </span>
       </div>
       <div class="comment-thread__actions">
-        <button type="submit" :disabled="Boolean(operationId)">{{ operationId ? 'Saving…' : 'Post comment' }}</button>
-        <button v-if="isFailedRetryable(operationId)" type="button" data-action="retry-comment" @click="retry">Retry</button>
-        <button v-if="operationId && session.queue.get(operationId)?.status === 'failed'" type="button" data-action="discard-comment" @click="discard">Discard</button>
-        <button v-if="activeAddOperation?.status === 'conflicted'" type="button" data-action="discard-comment-conflict" @click="discardCommentConflict">Discard conflicted draft</button>
+        <ion-button type="submit" data-action="post-comment" :disabled="Boolean(operationId)">{{ operationId ? 'Saving…' : 'Post comment' }}</ion-button>
+        <ion-button v-if="isFailedRetryable(operationId)" data-action="retry-comment" @click="retry">Retry</ion-button>
+        <ion-button v-if="operationId && session.queue.get(operationId)?.status === 'failed'" fill="outline" color="danger" data-action="discard-comment" @click="discard">Discard</ion-button>
+        <ion-button v-if="activeAddOperation?.status === 'conflicted'" fill="outline" color="danger" data-action="discard-comment-conflict" @click="discardCommentConflict">Discard conflicted draft</ion-button>
       </div>
     </form>
   </section>
@@ -402,25 +424,23 @@ interface CommentDisplay extends Omit<ExpenseComment, 'createdAt'> { readonly cr
 .comment-thread__list > li > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; }
 .comment-thread__list p { margin: 0; white-space: pre-wrap; }
 .comment-thread__list time { color: var(--ion-color-medium); font-size: 0.78rem; }
-.comment-thread__list button,
-.comment-thread__actions button,
-.comment-thread__attach { min-width: 44px; min-height: 44px; }
-.comment-thread__list button { justify-self: end; border: 0; background: transparent; color: var(--ion-color-primary); }
+.comment-thread ion-button { min-width: 44px; min-height: 44px; margin: 0; text-transform: none; }
+.comment-thread__list ion-button { justify-self: end; }
 .comment-thread__deleted { color: var(--ion-color-medium); font-style: italic; }
 .comment-thread__error:empty { min-height: 0; margin: 0; }
 .comment-thread__error { margin: 0; color: var(--su-owing); font-weight: 650; }
 .comment-thread__closed { margin: 0; color: var(--ion-color-medium); }
 .comment-thread__locked { margin: 0; color: var(--ion-color-medium); font-size: 0.82rem; line-height: 1.4; }
 .comment-thread__composer { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 12px 0 max(4px, env(safe-area-inset-bottom)); background: var(--su-surface); }
-.comment-thread__composer textarea { min-height: 88px; padding: 11px; border: 1px solid var(--su-divider); border-radius: 12px; background: var(--su-surface); color: var(--su-text); font: inherit; resize: vertical; }
+.comment-thread__body { --background: transparent; --color: var(--su-text); --padding-top: 11px; --padding-end: 11px; --padding-bottom: 11px; --padding-start: 11px; min-height: 88px; border: 1px solid var(--su-divider); border-radius: 12px; background: var(--su-surface); font-size: 16px; }
+.comment-thread__body:focus-within { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 14%, transparent); }
 .comment-thread__attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .comment-thread__attachment { display: flex; min-height: 44px; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--su-divider); border-radius: 11px; }
 .comment-thread__attachment > span { display: grid; }
 .comment-thread__attachment small { color: var(--ion-color-medium); }
-.comment-thread__attach { display: inline-grid; place-items: center; padding: 0 12px; border: 1px solid var(--su-divider); border-radius: 11px; color: var(--ion-color-primary); }
-.comment-thread__attach input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.comment-thread__attach { --border-color: var(--su-divider); --border-width: 1px; --border-radius: 11px; --color: var(--ion-color-primary); --padding-start: 12px; --padding-end: 12px; }
 .comment-thread__actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .comment-thread__recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.comment-thread__actions button { padding: 0 14px; border: 0; border-radius: 12px; background: var(--ion-color-primary); color: var(--ion-color-primary-contrast); font: inherit; font-weight: 650; }
+.comment-thread__actions ion-button { --border-radius: 12px; --padding-start: 14px; --padding-end: 14px; font-weight: 650; }
 @media (prefers-reduced-motion: reduce) { .comment-thread * { transition-duration: 0ms; } }
 </style>

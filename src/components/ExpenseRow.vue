@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { IonIcon } from '@ionic/vue'
+import { IonButton, IonIcon } from '@ionic/vue'
 import { boatOutline, cartOutline, carOutline, homeOutline, pricetagOutline, restaurantOutline } from 'ionicons/icons'
 import { computed, watch } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -124,13 +124,13 @@ watch(
       <money-amount class="expense-row__amount expense-row__amount--balance expense-row__amount--aligned" :money="balance" :direction="balanceDirection" :label="balanceLabel" />
     </component>
     <span v-if="journal && expense.syncState === 'conflicted' && conflictRemote" class="expense-row__sync-actions expense-row__sync-actions--conflict">
-      <button type="button" data-action="reload-remote" @click="emit('reloadRemote')">Reload remote</button>
-      <button v-if="conflictIntent === 'delete'" type="button" data-action="delete-remote" @click="emit('deleteRemote')">Delete latest version</button>
-      <button v-else type="button" data-action="retain-save-local" @click="emit('retainLocal')">Retain and save local</button>
+      <ion-button size="small" fill="clear" data-action="reload-remote" @click="emit('reloadRemote')">Reload remote</ion-button>
+      <ion-button v-if="conflictIntent === 'delete'" size="small" fill="clear" color="danger" data-action="delete-remote" @click="emit('deleteRemote')">Delete latest version</ion-button>
+      <ion-button v-else size="small" fill="clear" data-action="retain-save-local" @click="emit('retainLocal')">Retain and save local</ion-button>
     </span>
     <span v-else-if="journal && expense.syncState === 'failed'" class="expense-row__sync-actions">
-      <button v-if="retryable" type="button" data-action="retry-expense" @click="emit('retry')">Retry</button>
-      <button type="button" data-action="discard-expense" @click="emit('discard')">Discard</button>
+      <ion-button v-if="retryable" size="small" fill="clear" data-action="retry-expense" @click="emit('retry')">Retry</ion-button>
+      <ion-button size="small" fill="clear" color="danger" data-action="discard-expense" @click="emit('discard')">Discard</ion-button>
     </span>
   </article>
 </template>
@@ -155,7 +155,7 @@ watch(
 .expense-row--journal .expense-row__summary > span { font-size: 0.72rem; line-height: 1.28; }
 .expense-row--journal .expense-row__summary :deep(.sync-status) { justify-self: start; font-size: 0.72rem; }
 .expense-row__sync-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 0 7px 82px; }
-.expense-row__sync-actions button { min-width: 44px; min-height: 44px; margin: -5px 0; padding: 0 5px; border: 0; background: transparent; color: var(--ion-color-primary); font: inherit; font-weight: 650; }
+.expense-row__sync-actions ion-button { --color: var(--ion-color-primary); --padding-start: 5px; --padding-end: 5px; min-width: 44px; min-height: 44px; margin: -5px 0; font-weight: 650; text-transform: none; }
 .expense-row__conflict-versions { display: grid; gap: 6px; }
 .expense-row__conflict-versions section { display: grid; gap: 2px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--su-divider) 72%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--su-surface) 92%, var(--su-lilac)); }
 .expense-row__conflict-versions section > span { color: var(--ion-color-medium); font-size: 0.72rem; font-weight: 650; }

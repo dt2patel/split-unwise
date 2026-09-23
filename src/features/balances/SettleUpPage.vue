@@ -1,17 +1,25 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch, type ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import {
   IonBackButton,
   IonButton,
   IonButtons,
+  IonCheckbox,
   IonContent,
   IonHeader,
+  IonInput,
+  IonItem,
   IonLabel,
+  IonList,
+  IonNote,
   IonPage,
+  IonRadio,
+  IonRadioGroup,
   IonSegment,
   IonSegmentButton,
+  IonTextarea,
   IonTitle,
   IonToolbar,
 } from '@ionic/vue'
@@ -61,7 +69,7 @@ const note = ref('')
 const outsidePaymentConfirmed = ref(false)
 const validationError = ref('')
 const isSubmitting = ref(false)
-const amountInput = ref<HTMLInputElement>()
+const amountInput = ref<ComponentPublicInstance>()
 const operationAnnouncement = useSettlementOperationAnnouncement(pendingSettlements)
 
 const groupId = computed(() => typeof route.params.groupId === 'string' && isStrictId(route.params.groupId) ? route.params.groupId : '')
@@ -170,6 +178,11 @@ function selectDebt(debt: Debt): void {
   validationError.value = ''
 }
 
+function onBasisChange(event: CustomEvent<{ value?: unknown }>): void {
+  const debt = candidateDebts.value.find((candidate) => basisKey(selectedPlan.value, candidate) === event.detail.value)
+  if (debt) selectDebt(debt)
+}
+
 function memberName(memberId: string): string {
   return memberNames.value.get(memberId) ?? 'Unknown member'
 }
@@ -238,7 +251,11 @@ async function recordPayment(): Promise<void> {
 async function showAmountError(message: string): Promise<void> {
   validationError.value = message
   await nextTick()
-  amountInput.value?.focus()
+  // getInputElement waits for ion-input to render its native input before focusing it.
+  const field: unknown = amountInput.value?.$el
+  if (!(field instanceof HTMLElement) || !('getInputElement' in field) || typeof field.getInputElement !== 'function') return
+  const input: unknown = await field.getInputElement()
+  if (input instanceof HTMLElement) input.focus()
 }
 
 async function retry(operationId: string): Promise<void> {
@@ -335,18 +352,21 @@ function operationStatus(status: string): string {
 
             <fieldset v-if="candidateDebts.length" class="basis-list">
               <legend class="su-visually-hidden">Payment direction</legend>
-              <label v-for="debt in candidateDebts" :key="basisKey(selectedPlan, debt)" class="basis-option" :class="{ 'basis-option--selected': selectedBasisKey === basisKey(selectedPlan, debt) }">
-                <input
-                  v-model="selectedBasisKey"
-                  type="radio"
-                  name="settlement-basis"
-                  :value="basisKey(selectedPlan, debt)"
-                  @change="selectDebt(debt)"
-                >
-                <span class="basis-option__people" aria-hidden="true">{{ memberName(debt.fromParticipantId).charAt(0) }} → {{ memberName(debt.toParticipantId).charAt(0) }}</span>
-                <span><strong>{{ direction(debt) }}</strong><small>{{ formatMoney(debt.money) }} remaining</small></span>
-                <span aria-hidden="true">✓</span>
-              </label>
+              <ion-list inset lines="full" class="basis-options">
+                <ion-radio-group :value="selectedBasisKey" name="settlement-basis" @ion-change="onBasisChange">
+                  <ion-item
+                    v-for="debt in candidateDebts"
+                    :key="basisKey(selectedPlan, debt)"
+                    class="basis-option"
+                    :class="{ 'basis-option--selected': selectedBasisKey === basisKey(selectedPlan, debt) }"
+                    :data-basis-key="basisKey(selectedPlan, debt)"
+                  >
+                    <span slot="start" class="basis-option__people" aria-hidden="true">{{ memberName(debt.fromParticipantId).charAt(0) }} → {{ memberName(debt.toParticipantId).charAt(0) }}</span>
+                    <ion-label class="basis-option__copy"><strong>{{ direction(debt) }}</strong><ion-note>{{ formatMoney(debt.money) }} remaining</ion-note></ion-label>
+                    <ion-radio slot="end" :value="basisKey(selectedPlan, debt)" :aria-label="`${direction(debt)}, ${formatMoney(debt.money)} remaining`" />
+                  </ion-item>
+                </ion-radio-group>
+              </ion-list>
             </fieldset>
             <p v-else class="settle-card__empty">You do not have a balance to settle in this view.</p>
           </section>
@@ -357,20 +377,42 @@ function operationStatus(status: string): string {
             </div>
             <p data-testid="selected-direction" class="settle-form__direction">{{ direction(selectedDebt!) }}</p>
 
-            <label class="field field--amount">
-              <span>Amount ({{ selectedBasis.currency }})</span>
-              <div>
-                <span aria-hidden="true">{{ selectedBasis.currency }}</span>
-                <input ref="amountInput" v-model="amount" data-testid="amount-input" inputmode="decimal" autocomplete="off" aria-describedby="amount-help" required>
-              </div>
+            <div class="field field--amount">
+              <span id="settlement-amount-label">Amount ({{ selectedBasis.currency }})</span>
+              <ion-input
+                ref="amountInput"
+                v-model="amount"
+                class="field__control"
+                data-testid="amount-input"
+                inputmode="decimal"
+                autocomplete="off"
+                aria-labelledby="settlement-amount-label"
+                aria-describedby="amount-help"
+                required
+              >
+                <span slot="start" class="field__prefix" aria-hidden="true">{{ selectedBasis.currency }}</span>
+              </ion-input>
               <small id="amount-help">Up to {{ formatMoney({ currency: selectedBasis.currency, minorAmount: selectedBasis.debtMinor }) }}</small>
-            </label>
+            </div>
 
             <div class="settle-form__row">
               <label class="field"><span>Method</span><select v-model="method"><option value="cash">Cash</option><option value="bank-transfer">Bank transfer</option><option value="payment-app">Payment app</option><option value="other">Other</option></select></label>
               <label class="field"><span>Date paid</span><input v-model="occurredOn" type="date" required></label>
             </div>
-            <label class="field"><span>Note <small>optional</small></span><textarea v-model="note" maxlength="500" rows="3" placeholder="What was this payment for?" /></label>
+            <div class="field">
+              <span id="settlement-note-label">Note <small>optional</small></span>
+              <ion-textarea
+                v-model="note"
+                class="field__control"
+                data-testid="settlement-note"
+                :maxlength="500"
+                :rows="3"
+                autocapitalize="sentences"
+                :spellcheck="true"
+                placeholder="What was this payment for?"
+                aria-labelledby="settlement-note-label"
+              />
+            </div>
           </section>
 
           <section v-if="selectedBasis" class="settle-card provider-card" aria-labelledby="payment-apps-heading">
@@ -384,10 +426,17 @@ function operationStatus(status: string): string {
             </ul>
           </section>
 
-          <label v-if="selectedBasis" class="confirmation-card">
-            <input v-model="outsidePaymentConfirmed" data-testid="outside-payment-confirmation" type="checkbox">
+          <ion-checkbox
+            v-if="selectedBasis"
+            v-model="outsidePaymentConfirmed"
+            class="confirmation-card"
+            data-testid="outside-payment-confirmation"
+            label-placement="end"
+            justify="start"
+            alignment="start"
+          >
             <span><strong>I confirm this payment already happened outside Split Unwise.</strong><small>This creates an audited ledger record; it does not move money.</small></span>
-          </label>
+          </ion-checkbox>
 
           <p v-if="validationError" role="alert" class="settle-page__error">{{ validationError }}</p>
           <p v-else-if="storeError" role="alert" class="settle-page__error">{{ storeError }}</p>
@@ -401,12 +450,12 @@ function operationStatus(status: string): string {
           <article v-for="operation in pendingSettlements" :key="operation.operationId" :data-operation-id="operation.operationId" :data-status="operation.status">
             <div><strong>{{ operationStatus(operation.status) }}</strong><small>{{ operation.error ?? 'Saving this ledger update.' }}</small></div>
             <div v-if="operation.status === 'failed'" class="operations__actions">
-              <button type="button" data-action="retry-operation" :disabled="!operation.retryable" @click="retry(operation.operationId)">Retry</button>
-              <button type="button" data-action="discard-operation" @click="discard(operation.operationId)">Discard</button>
+              <ion-button class="operations__tinted" size="small" fill="solid" data-action="retry-operation" :disabled="!operation.retryable" @click="retry(operation.operationId)">Retry</ion-button>
+              <ion-button size="small" fill="outline" color="danger" data-action="discard-operation" @click="discard(operation.operationId)">Discard</ion-button>
             </div>
             <div v-else-if="operation.status === 'conflicted'" class="operations__actions">
-              <button type="button" data-action="reload-operation" @click="reloadOperation">Reload</button>
-              <button type="button" data-action="dismiss-operation" @click="dismiss(operation.operationId)">Dismiss</button>
+              <ion-button class="operations__tinted" size="small" fill="solid" data-action="reload-operation" @click="reloadOperation">Reload</ion-button>
+              <ion-button class="operations__tinted" size="small" fill="solid" data-action="dismiss-operation" @click="dismiss(operation.operationId)">Dismiss</ion-button>
             </div>
           </article>
         </section>
@@ -431,33 +480,33 @@ function operationStatus(status: string): string {
 .settle-form__segment { min-height: 44px; margin-top: 14px; border-radius: 12px; background: color-mix(in srgb, var(--su-lilac) 48%, var(--su-surface)); }
 .settle-form__segment ion-segment-button { min-height: 44px; --border-radius: 10px; --color-checked: var(--ion-color-primary); --indicator-color: var(--su-surface); text-transform: none; }
 .currency-picker { margin-top: 12px; }
-.basis-list { display: grid; gap: 8px; margin: 13px 0 0; padding: 0; border: 0; }
-.basis-option { display: grid; min-height: 58px; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--su-divider) 42%, transparent); border-radius: 13px; cursor: pointer; transition: border-color var(--su-motion-fast), background-color var(--su-motion-fast); }
-.basis-option--selected { border-color: color-mix(in srgb, var(--ion-color-primary) 55%, transparent); background: color-mix(in srgb, var(--su-lilac) 42%, var(--su-surface)); }
-.basis-option:focus-within { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 18%, transparent); }
-.basis-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.basis-option__people { display: grid; min-width: 52px; min-height: 36px; place-items: center; border-radius: 11px; background: var(--su-lilac); color: var(--ion-color-primary); font-size: .7rem; font-weight: 750; }
-.basis-option strong, .basis-option small { display: block; overflow-wrap: anywhere; }
-.basis-option strong { font-size: .85rem; }
-.basis-option small { margin-top: 2px; color: var(--ion-color-medium); font-size: .72rem; }
-.basis-option > span:last-child { color: var(--ion-color-primary); opacity: 0; }
-.basis-option--selected > span:last-child { opacity: 1; }
+.basis-list { min-width: 0; margin: 13px 0 0; padding: 0; border: 0; }
+.basis-list > .basis-options { overflow: hidden; margin: 0; padding: 0; border: 1px solid color-mix(in srgb, var(--su-divider) 42%, transparent); border-radius: 13px; background: var(--su-surface); }
+.basis-option { --background: var(--su-surface); --border-color: color-mix(in srgb, var(--su-divider) 42%, transparent); --min-height: 58px; --padding-start: 10px; --inner-padding-end: 12px; color: var(--su-text); }
+.basis-option--selected { --background: color-mix(in srgb, var(--su-lilac) 42%, var(--su-surface)); }
+.basis-option:focus-within { outline: 2px solid color-mix(in srgb, var(--ion-color-primary) 55%, transparent); outline-offset: -2px; }
+.basis-option__people { display: grid; min-width: 52px; min-height: 36px; margin-inline-end: 10px; place-items: center; border-radius: 11px; background: var(--su-lilac); color: var(--ion-color-primary); font-size: .7rem; font-weight: 750; }
+.basis-option__copy { margin-block: 8px; white-space: normal; }
+.basis-option__copy strong, .basis-option__copy ion-note { display: block; overflow-wrap: anywhere; }
+.basis-option__copy strong { font-size: .85rem; }
+.basis-option__copy ion-note { margin-top: 2px; color: var(--ion-color-medium); font-size: .72rem; }
 .settle-form__direction { margin: 15px 0 8px; font-size: .9rem; font-weight: 680; }
 .settle-form__row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .field { display: grid; gap: 6px; margin-top: 11px; color: var(--ion-color-medium); font-size: .75rem; font-weight: 650; }
-.field input, .field select, .field textarea { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--su-divider) 70%, transparent); border-radius: 12px; outline: none; background: var(--su-surface); color: var(--ion-text-color); font: inherit; font-size: 16px; font-weight: 500; }
-.field textarea { min-height: 74px; resize: vertical; }
-.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 14%, transparent); }
-.field--amount > div { position: relative; }
-.field--amount > div > span { position: absolute; top: 50%; left: 12px; transform: translateY(-50%); color: var(--ion-color-primary); font-size: .73rem; font-weight: 750; }
-.field--amount input { padding-left: 48px; font-variant-numeric: tabular-nums; }
+.field input, .field select, .field__control { width: 100%; min-height: 44px; border: 1px solid color-mix(in srgb, var(--su-divider) 70%, transparent); border-radius: 12px; outline: none; background: var(--su-surface); color: var(--ion-text-color); font: inherit; font-size: 16px; font-weight: 500; }
+.field input, .field select { padding: 10px 12px; }
+.field__control { --color: var(--ion-text-color); --padding-top: 10px; --padding-bottom: 10px; --padding-start: 12px; --padding-end: 12px; }
+ion-textarea.field__control { min-height: 74px; }
+.field input:focus, .field select:focus, .field__control:focus-within { border-color: var(--ion-color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ion-color-primary) 14%, transparent); }
+.field__prefix { color: var(--ion-color-primary); font-size: .73rem; font-weight: 750; }
+.field--amount .field__control :deep(input) { font-variant-numeric: tabular-nums; }
 .field > small, .field span small { color: var(--ion-color-medium); font-size: .72rem; font-weight: 450; }
 .provider-card > p { margin: 10px 0; color: var(--ion-color-medium); font-size: .78rem; line-height: 1.4; }
 .provider-card ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .provider-card li { min-height: 44px; padding: 10px 12px; border-radius: 11px; background: color-mix(in srgb, var(--su-lilac) 32%, var(--su-surface)); font-size: .75rem; line-height: 1.35; }
 .provider-card a { display: flex; min-width: 44px; min-height: 44px; align-items: center; color: var(--ion-color-primary); font-weight: 700; text-decoration: none; }
-.confirmation-card { display: grid; min-height: 64px; grid-template-columns: auto 1fr; align-items: start; gap: 11px; padding: 13px; border: 1px solid color-mix(in srgb, var(--ion-color-primary) 30%, var(--su-divider)); border-radius: 15px; background: color-mix(in srgb, var(--su-lilac) 28%, var(--su-surface)); font-size: .78rem; line-height: 1.35; }
-.confirmation-card input { width: 22px; height: 22px; margin: 0; accent-color: var(--ion-color-primary); }
+.confirmation-card { box-sizing: border-box; display: block; width: 100%; min-height: 64px; padding: 13px; border: 1px solid color-mix(in srgb, var(--ion-color-primary) 30%, var(--su-divider)); border-radius: 15px; background: color-mix(in srgb, var(--su-lilac) 28%, var(--su-surface)); color: var(--su-text); font-size: .78rem; line-height: 1.35; }
+.confirmation-card::part(label) { min-width: 0; margin-inline-start: 11px; overflow: visible; text-overflow: clip; white-space: normal; }
 .confirmation-card strong, .confirmation-card small { display: block; }
 .confirmation-card small { margin-top: 3px; color: var(--ion-color-medium); }
 .settle-form > ion-button { min-height: 48px; margin: 2px 0; --border-radius: 14px; font-weight: 720; text-transform: none; }
@@ -472,7 +521,8 @@ function operationStatus(status: string): string {
 .operations strong { font-size: .8rem; }
 .operations small { margin-top: 2px; color: var(--ion-color-medium); font-size: .7rem; }
 .operations__actions { display: flex; gap: 6px; }
-.operations button { min-width: 54px; min-height: 44px; border: 0; border-radius: 10px; background: var(--su-lilac); color: var(--ion-color-primary); font-weight: 700; }
-@media (max-width: 400px) { .settle-form__row { grid-template-columns: 1fr; gap: 0; } .operations article { align-items: stretch; flex-direction: column; } .operations__actions button { flex: 1; } }
-@media (prefers-reduced-motion: reduce) { .settle-page * { transition-duration: 0ms !important; animation-duration: 0ms !important; scroll-behavior: auto !important; } .field--amount > div > span { transform: translateY(-50%); } }
+.operations ion-button { --border-radius: 10px; --box-shadow: none; min-width: 54px; min-height: 44px; margin: 0; font-weight: 700; text-transform: none; }
+.operations__tinted { --background: var(--su-lilac); --background-activated: color-mix(in srgb, var(--ion-color-primary) 22%, var(--su-lilac)); --background-focused: color-mix(in srgb, var(--ion-color-primary) 22%, var(--su-lilac)); --background-hover: color-mix(in srgb, var(--ion-color-primary) 12%, var(--su-lilac)); --color: var(--ion-color-primary); }
+@media (max-width: 400px) { .settle-form__row { grid-template-columns: 1fr; gap: 0; } .operations article { align-items: stretch; flex-direction: column; } .operations__actions ion-button { flex: 1; } }
+@media (prefers-reduced-motion: reduce) { .settle-page * { transition-duration: 0ms !important; animation-duration: 0ms !important; scroll-behavior: auto !important; } }
 </style>

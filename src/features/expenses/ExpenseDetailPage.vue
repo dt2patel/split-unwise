@@ -2,12 +2,16 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
+  IonAccordion,
+  IonAccordionGroup,
   IonAlert,
   IonBackButton,
   IonButton,
   IonButtons,
   IonContent,
   IonHeader,
+  IonItem,
+  IonLabel,
   IonPage,
   IonTitle,
   IonToolbar,
@@ -129,7 +133,10 @@ function onDeleteDismiss(event: CustomEvent<{ role?: string }>): void {
 
 async function restoreDeleteFocus(): Promise<void> {
   await nextTick()
-  deleteTrigger.value?.focus()
+  const trigger = deleteTrigger.value
+  // ion-button keeps its focusable native button in its shadow root.
+  const target = trigger?.shadowRoot?.querySelector<HTMLElement>('button') ?? trigger
+  target?.focus()
 }
 
 async function deleteExpense(): Promise<boolean> {
@@ -402,7 +409,7 @@ function message(reason: unknown, fallback: string): string { return reason inst
                 <ul v-else aria-labelledby="attachments-title">
                   <li v-for="attachment in expense.attachmentRefs" :key="attachment" class="expense-detail__attachment">
                     <span><strong>{{ attachmentLabel(attachment) }}</strong><small>{{ attachmentDurability(attachment) }}</small></span>
-                    <button v-if="attachmentAssets.get(attachment)" type="button" data-action="open-expense-attachment" @click="openAttachment(attachment)">Open preview</button>
+                    <ion-button v-if="attachmentAssets.get(attachment)" size="small" fill="solid" data-action="open-expense-attachment" @click="openAttachment(attachment)">Open preview</ion-button>
                   </li>
                 </ul>
               </section>
@@ -416,21 +423,23 @@ function message(reason: unknown, fallback: string): string { return reason inst
                   <span>Revision {{ revision.revision }}</span>
                   <time :datetime="revision.createdAt">{{ formatTimestamp(revision.createdAt) }}</time>
                   <p data-testid="revision-diff">{{ revisionDiff(revision, index) }}</p>
-                  <details data-testid="revision-snapshot">
-                    <summary>View revision snapshot</summary>
-                    <dl>
-                      <div><dt>Description</dt><dd>{{ revision.expense.description }}</dd></div>
-                      <div><dt>Total</dt><dd>{{ formatMoney(revision.expense) }}</dd></div>
-                      <div><dt>Date</dt><dd>{{ formatDate(revision.expense.date) }}</dd></div>
-                      <div><dt>Category</dt><dd>{{ revision.expense.category }}</dd></div>
-                      <div><dt>Notes</dt><dd>{{ revision.expense.notes || 'No notes' }}</dd></div>
-                      <div><dt>{{ revision.expense.reimbursement ? 'Refund received by' : 'Paid by' }}</dt><dd>{{ revision.expense.payments.map((payment) => allocationLabel(revision.expense, payment.participantId, payment.money.minorAmount)).join(', ') }}</dd></div>
-                      <div><dt>{{ revision.expense.reimbursement ? 'Reimbursement owed to' : 'Allocated to' }}</dt><dd>{{ revision.expense.allocations.map((allocation) => allocationLabel(revision.expense, allocation.participantId, allocation.money.minorAmount)).join(', ') }}</dd></div>
-                      <div><dt>Split</dt><dd>{{ splitLabel(revision.expense) }}</dd></div>
-                      <div><dt>Recurrence</dt><dd>{{ recurrenceLabel(revision.expense) }}</dd></div>
-                      <div><dt>Attachments</dt><dd>{{ revision.expense.attachmentRefs.length ? revision.expense.attachmentRefs.map(attachmentLabel).join(', ') : 'No attachments' }}</dd></div>
-                    </dl>
-                  </details>
+                  <ion-accordion-group class="expense-detail__snapshot">
+                    <ion-accordion :value="revision.id" data-testid="revision-snapshot">
+                      <ion-item slot="header" lines="none" class="expense-detail__snapshot-header"><ion-label>View revision snapshot</ion-label></ion-item>
+                      <dl slot="content" class="expense-detail__snapshot-body">
+                        <div><dt>Description</dt><dd>{{ revision.expense.description }}</dd></div>
+                        <div><dt>Total</dt><dd>{{ formatMoney(revision.expense) }}</dd></div>
+                        <div><dt>Date</dt><dd>{{ formatDate(revision.expense.date) }}</dd></div>
+                        <div><dt>Category</dt><dd>{{ revision.expense.category }}</dd></div>
+                        <div><dt>Notes</dt><dd>{{ revision.expense.notes || 'No notes' }}</dd></div>
+                        <div><dt>{{ revision.expense.reimbursement ? 'Refund received by' : 'Paid by' }}</dt><dd>{{ revision.expense.payments.map((payment) => allocationLabel(revision.expense, payment.participantId, payment.money.minorAmount)).join(', ') }}</dd></div>
+                        <div><dt>{{ revision.expense.reimbursement ? 'Reimbursement owed to' : 'Allocated to' }}</dt><dd>{{ revision.expense.allocations.map((allocation) => allocationLabel(revision.expense, allocation.participantId, allocation.money.minorAmount)).join(', ') }}</dd></div>
+                        <div><dt>Split</dt><dd>{{ splitLabel(revision.expense) }}</dd></div>
+                        <div><dt>Recurrence</dt><dd>{{ recurrenceLabel(revision.expense) }}</dd></div>
+                        <div><dt>Attachments</dt><dd>{{ revision.expense.attachmentRefs.length ? revision.expense.attachmentRefs.map(attachmentLabel).join(', ') : 'No attachments' }}</dd></div>
+                      </dl>
+                    </ion-accordion>
+                  </ion-accordion-group>
                 </li>
               </ol>
             </aside>
@@ -438,18 +447,18 @@ function message(reason: unknown, fallback: string): string { return reason inst
 
           <section v-if="canMutate && deleteState === 'idle'" class="expense-detail__danger" aria-labelledby="delete-title">
             <h2 id="delete-title">Delete expense</h2>
-            <button ref="deleteTrigger" type="button" data-action="delete-expense" @click="requestDelete">Delete expense</button>
+            <ion-button color="danger" data-action="delete-expense" @click="requestDelete">Delete expense</ion-button>
           </section>
           <p v-if="deleteState !== 'idle'" data-testid="delete-state" role="status">
             {{ deleteState === 'pending' ? 'Saving deletion…' : deleteState === 'failed' ? 'Deletion failed.' : deleteState === 'conflicted' ? 'Deletion conflict: the remote revision and your delete intent are retained.' : 'Deleted.' }}
           </p>
           <div v-if="deleteState === 'failed'" class="expense-detail__delete-actions">
-            <button v-if="isDeleteRetryable()" type="button" data-action="retry-expense-delete" @click="retryDelete">Retry</button>
-            <button type="button" data-action="discard-expense-delete" @click="discardDelete">Discard</button>
+            <ion-button v-if="isDeleteRetryable()" size="small" fill="solid" data-action="retry-expense-delete" @click="retryDelete">Retry</ion-button>
+            <ion-button size="small" fill="outline" color="danger" data-action="discard-expense-delete" @click="discardDelete">Discard</ion-button>
           </div>
           <div v-if="deleteState === 'conflicted'" class="expense-detail__delete-actions">
-            <button type="button" data-action="reload-expense-delete-conflict" @click="reloadDeleteConflict">Reload current expense</button>
-            <button type="button" data-action="delete-latest-expense" @click="deleteLatestExpense">Delete latest version</button>
+            <ion-button size="small" fill="solid" data-action="reload-expense-delete-conflict" @click="reloadDeleteConflict">Reload current expense</ion-button>
+            <ion-button size="small" fill="outline" color="danger" data-action="delete-latest-expense" @click="deleteLatestExpense">Delete latest version</ion-button>
           </div>
 
           <comment-thread :group-id="expense.groupId" :expense-id="expense.id" :closed="Boolean(expense.deletedAt)" />
@@ -487,17 +496,17 @@ function message(reason: unknown, fallback: string): string { return reason inst
 .expense-detail ol { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
 .expense-detail__audit li { display: grid; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid color-mix(in srgb, var(--su-divider) 35%, transparent); }
 .expense-detail__audit p { margin: 3px 0; }
-.expense-detail__audit details { margin-top: 3px; }
-.expense-detail__audit summary { min-height: 44px; cursor: pointer; color: var(--ion-color-primary); }
+.expense-detail__snapshot { margin-top: 3px; }
+.expense-detail__snapshot-header { --background: transparent; --color: var(--ion-color-primary); --min-height: 44px; --padding-start: 0; --inner-padding-end: 0; }
+.expense-detail__snapshot-body { padding-bottom: 8px; }
 .expense-detail__audit span,
 .expense-detail__audit time { color: var(--ion-color-medium); font-size: 0.82rem; }
 .expense-detail__attachment { align-items: center; }
 .expense-detail__attachment > span { display: grid; gap: 2px; }
 .expense-detail__attachment small { color: var(--ion-color-medium); }
 .expense-detail__danger { margin-top: 18px; }
-.expense-detail button,
 .expense-detail__error a { display: inline-grid; min-width: 44px; min-height: 44px; place-items: center; padding: 0 14px; border: 0; border-radius: 12px; background: var(--ion-color-primary); color: var(--ion-color-primary-contrast); font: inherit; font-weight: 650; text-decoration: none; }
-.expense-detail__danger button { background: var(--su-owing); color: var(--su-surface); }
+.expense-detail__main ion-button { --border-radius: 12px; --padding-start: 14px; --padding-end: 14px; --box-shadow: none; min-width: 44px; min-height: 44px; margin: 0; font-weight: 650; text-transform: none; }
 .expense-detail__delete-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .expense-detail :deep(.comment-thread) { margin-top: 18px; }
 @media (min-width: 760px) { .expense-detail__columns { grid-template-columns: minmax(0, 1.5fr) minmax(260px, 0.8fr); align-items: start; } .expense-detail__audit { position: sticky; top: 18px; } }
