@@ -41,9 +41,11 @@
   --ion-text-color-rgb: var(--su-text-rgb);
 }
 
+html { background: var(--su-chrome); }
 body {
   margin: 0;
-  background: var(--su-surface);
+  /* Safari fills the status-bar strip and the band behind its floating toolbar with the page background, not theme-color. */
+  background: var(--su-chrome);
   color: var(--su-text);
   font-family: inherit;
   -webkit-text-size-adjust: 100%;
