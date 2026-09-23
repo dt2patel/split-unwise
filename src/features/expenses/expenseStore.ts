@@ -8,6 +8,8 @@ import { currencyPickerOrder, loadCurrencyPreferences, SUPPORTED_CURRENCIES } fr
 import { computeAllocations } from '../../domain/splits'
 import type { ItemizedSplitItem, Recurrence, SplitMethod } from '../../domain/model'
 import { consumeTransactionImportDraft } from '../transactions/transactionImportDrafts'
+import { claimAgentDraft, reportAgentDraftFailed, reportAgentDraftLeft, reportAgentDraftQueued, reportAgentDraftSaved } from '../../app/agentDrafts'
+import { appPrincipalKey } from '../../data/principal'
 
 export type ExpenseOrigin = 'account' | 'activity' | 'groups' | 'home'
 export type ExpenseSheet = 'context' | 'participants' | 'payers' | 'receipt' | 'recurrence' | 'split'
@@ -163,6 +165,8 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   let contextSelectionTarget: string | undefined
   let receiptAttachmentRequest = 0
   let receiptRecognitionRequest = 0
+  /** A draft an agent prepared through WebMCP; it waits for this editor's Save or for the user to leave. */
+  let agentDraftId: string | undefined
 
   const isDirty = computed(() => JSON.stringify(editor) !== initialFingerprint)
   const eligibleMembers = computed(() => members.value.filter(isEligibleMember))
@@ -178,7 +182,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   const canSubmit = computed(() => hasInitialized.value && !isLoading.value && !loadError.value && saveState.value !== 'pending')
   const receiptDurability = computed<ReceiptDurability | undefined>(() => receiptPreview.value?.durability)
 
-  async function initialize(options: { readonly origin: ExpenseOrigin; readonly groupId?: string; readonly expenseId?: string; readonly importDraftId?: string; readonly today?: string }): Promise<void> {
+  async function initialize(options: { readonly origin: ExpenseOrigin; readonly groupId?: string; readonly expenseId?: string; readonly importDraftId?: string; readonly agentDraftId?: string; readonly today?: string }): Promise<void> {
     const request = ++initializationRequest
     invalidateEditorSubrequests()
     reset()
@@ -241,6 +245,21 @@ export const useExpenseStore = defineStore('expense-editor', () => {
         nextEditor.amountText = fromMinorUnits(imported.money.minorAmount, imported.money.currency)
         nextEditor.category = 'Other'
       }
+      const agentDraft = !options.expenseId && !imported && options.agentDraftId ? claimAgentDraft(appPrincipalKey(principal), options.agentDraftId, 'expense', nextEditor.groupId) : undefined
+      if (agentDraft) {
+        if (agentDraft.description) nextEditor.description = agentDraft.description
+        if (agentDraft.currency) nextEditor.currency = agentDraft.currency
+        if (agentDraft.amountText) nextEditor.amountText = agentDraft.amountText
+        if (agentDraft.date) nextEditor.date = agentDraft.date
+        if (agentDraft.category) nextEditor.category = agentDraft.category
+        if (agentDraft.notes) nextEditor.notes = agentDraft.notes
+        if (agentDraft.participantIds) {
+          nextEditor.participants = [...agentDraft.participantIds]
+          nextEditor.split = { type: 'equal' }
+        }
+        if (agentDraft.paidBy) nextEditor.payments = [{ participantId: agentDraft.paidBy, amountText: '' }]
+      }
+      const fromAgent = agentDraft !== undefined
       const localReceipt = nextEditor.attachmentRefs.find((reference): reference is LocalReceiptReference => reference.startsWith('local-receipt:'))
       const loadedReceiptPreview = localReceipt ? await session.receipts.get(localReceipt) : undefined
       if (request !== initializationRequest) return
@@ -253,8 +272,11 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       sourceGroupId.value = loadedExpense?.groupId
       recurringTemplateId.value = loadedExpense?.recurringTemplateId
       receiptPreview.value = loadedReceiptPreview
-      notice.value = imported ? 'Review the imported transaction, choose who shares it, then save when every detail is correct.' : ''
-      initialFingerprint = imported ? pristineFingerprint : JSON.stringify(editor)
+      if (fromAgent) agentDraftId = options.agentDraftId
+      notice.value = imported
+        ? 'Review the imported transaction, choose who shares it, then save when every detail is correct.'
+        : fromAgent ? 'An AI agent filled this in. Check every detail, then save it yourself.' : ''
+      initialFingerprint = imported || fromAgent ? pristineFingerprint : JSON.stringify(editor)
       hasInitialized.value = true
     } catch (reason) {
       if (request !== initializationRequest) return
@@ -374,6 +396,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
       }
       if (editorContext !== initializationRequest || lastOperationId.value !== operationId) return false
       handle = session.queue.submit(command)
+      if (agentDraftId && command.kind === 'expense.add') reportAgentSave(agentDraftId, operationId, handle.result())
     } catch (reason) {
       if (editorContext === initializationRequest && lastOperationId.value === operationId) {
         saveState.value = 'failed'
@@ -512,7 +535,22 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   function closeSheet(): void { activeSheet.value = undefined }
-  function leaveEditor(): void { initializationRequest += 1; invalidateEditorSubrequests(); activeSheet.value = undefined }
+  function leaveEditor(): void { initializationRequest += 1; invalidateEditorSubrequests(); activeSheet.value = undefined; releaseAgentDraft() }
+
+  /** The editor closes as soon as Save is accepted, so the agent hears the server's answer independently of this editor. */
+  function reportAgentSave(draftId: string, operationId: string, result: Promise<{ readonly status: string; readonly expense?: ExpenseRow }>): void {
+    agentDraftId = undefined
+    reportAgentDraftQueued(draftId, operationId)
+    void result.then(
+      (value) => { if (value.status === 'saved' && value.expense) reportAgentDraftSaved(draftId, value.expense.id) },
+      () => reportAgentDraftFailed(draftId, operationId),
+    )
+  }
+
+  function releaseAgentDraft(): void {
+    reportAgentDraftLeft(agentDraftId)
+    agentDraftId = undefined
+  }
 
   function invalidateEditorSubrequests(): void {
     contextSelectionRequest += 1
@@ -543,6 +581,7 @@ export const useExpenseStore = defineStore('expense-editor', () => {
   }
 
   function reset(): void {
+    releaseAgentDraft()
     Object.assign(editor, emptyEditor())
     members.value = []
     availableGroups.value = []

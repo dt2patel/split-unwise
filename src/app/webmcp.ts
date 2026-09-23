@@ -508,6 +508,7 @@ function untilDecided(outcome: Promise<AgentDraftOutcome>, draftId: string, sign
 function describeOutcome(outcome: AgentDraftOutcome, idKey: 'expenseId' | 'settlementId', noun: string): unknown {
   if (outcome.status === 'saved') return { status: 'saved', [idKey]: outcome.id, message: `The user reviewed and saved the ${noun}.` }
   if (outcome.status === 'queued') return { status: 'queued', operationId: outcome.operationId, message: `The user saved the ${noun} on this device; it syncs when the connection is back.` }
+  if (outcome.status === 'failed') return { status: 'failed', operationId: outcome.operationId, message: `The user tried to save the ${noun}, but it was rejected. It is kept on this device for the user to retry or discard.` }
   const reasons = {
     left: `The user left the form without saving. No ${noun} was saved.`,
     replaced: `A newer request replaced this one before it was saved. No ${noun} was saved from this request.`,

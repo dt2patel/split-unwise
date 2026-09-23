@@ -34,6 +34,7 @@ export type AgentDraftCancelReason = 'left' | 'replaced' | 'expired' | 'aborted'
 export type AgentDraftOutcome =
   | { readonly status: 'saved'; readonly id: string }
   | { readonly status: 'queued'; readonly operationId: string }
+  | { readonly status: 'failed'; readonly operationId: string }
   | { readonly status: 'cancelled'; readonly reason: AgentDraftCancelReason }
 
 export interface AgentDraftOffer {
@@ -62,7 +63,7 @@ interface PendingDraft {
 let active: PendingDraft | undefined
 
 export function offerAgentDraft(owner: string, draft: AgentDraft, options: { readonly openWindowMs?: number } = {}): AgentDraftOffer {
-  if (active) settle(active, { status: 'cancelled', reason: 'replaced' })
+  if (active) settle(active, active.queuedOperationId ? { status: 'queued', operationId: active.queuedOperationId } : { status: 'cancelled', reason: 'replaced' })
   let resolve!: (outcome: AgentDraftOutcome) => void
   const outcome = new Promise<AgentDraftOutcome>((done) => { resolve = done })
   const pending: PendingDraft = { id: createDraftId(), owner, draft, claimed: false, settled: false, timers: [], resolve }
@@ -71,10 +72,10 @@ export function offerAgentDraft(owner: string, draft: AgentDraft, options: { rea
   return { id: pending.id, outcome }
 }
 
-/** The editor takes a draft exactly once, and only for the account and kind it was offered for. */
-export function claimAgentDraft<K extends AgentDraft['kind']>(owner: string, id: unknown, kind: K): Extract<AgentDraft, { readonly kind: K }> | undefined {
+/** The editor takes a draft exactly once, and only for the account, kind and group it was offered for. */
+export function claimAgentDraft<K extends AgentDraft['kind']>(owner: string, id: unknown, kind: K, groupId: string | undefined): Extract<AgentDraft, { readonly kind: K }> | undefined {
   const pending = find(id)
-  if (!pending || pending.claimed || pending.owner !== owner || pending.draft.kind !== kind) return undefined
+  if (!pending || pending.claimed || pending.owner !== owner || pending.draft.kind !== kind || pending.draft.groupId !== groupId) return undefined
   pending.claimed = true
   return pending.draft as Extract<AgentDraft, { readonly kind: K }>
 }
@@ -93,11 +94,17 @@ export function reportAgentDraftQueued(id: string | undefined, operationId: stri
   pending.timers.push(setTimeout(() => settle(pending, { status: 'queued', operationId }), CONFIRMATION_WAIT_MS))
 }
 
-/** The user left the editor. A save that is already queued still counts as saved on this device. */
+/** The server rejected the user's save for good (e.g. a conflict); the queue keeps it for the user to retry or discard. */
+export function reportAgentDraftFailed(id: string | undefined, operationId: string): void {
+  const pending = find(id)
+  if (pending?.claimed) settle(pending, { status: 'failed', operationId })
+}
+
+/** The user left the editor. After a save the editor closes on its own, so a queued save keeps waiting for the server. */
 export function reportAgentDraftLeft(id: string | undefined): void {
   const pending = find(id)
-  if (!pending?.claimed) return
-  settle(pending, pending.queuedOperationId ? { status: 'queued', operationId: pending.queuedOperationId } : { status: 'cancelled', reason: 'left' })
+  if (!pending?.claimed || pending.queuedOperationId) return
+  settle(pending, { status: 'cancelled', reason: 'left' })
 }
 
 /** The agent stopped waiting. Whatever is on screen stays for the user; only the agent's wait ends. */

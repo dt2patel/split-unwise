@@ -146,7 +146,7 @@ describe('WebMCP integration', () => {
 
       const pending = call(registered, 'add_expense', { groupId: group.id, description: 'Dinner at Nopa', amount: '84.5', participantIds: ['maya', 'alex'], category: 'Food' })
       const draftId = await openedDraft(router, { name: 'groups-expense-create', query: { groupId: group.id } })
-      expect(claimAgentDraft(owner, draftId, 'expense')).toEqual({
+      expect(claimAgentDraft(owner, draftId, 'expense', group.id)).toEqual({
         kind: 'expense', groupId: group.id, description: 'Dinner at Nopa', amountText: '84.50', currency: 'USD',
         date: undefined, category: 'Food', notes: undefined, paidBy: undefined, participantIds: ['maya', 'alex'],
       })
@@ -167,7 +167,7 @@ describe('WebMCP integration', () => {
 
       const pending = call(registered, 'add_expense', { groupId: group.id })
       const draftId = await openedDraft(router, { name: 'groups-expense-create' })
-      claimAgentDraft(owner, draftId, 'expense')
+      claimAgentDraft(owner, draftId, 'expense', group.id)
       reportAgentDraftLeft(draftId)
       await expect(pending).resolves.toEqual(expect.objectContaining({ status: 'cancelled', reason: 'left' }))
     })
@@ -211,7 +211,7 @@ describe('WebMCP integration', () => {
         params: { groupId: group.id },
         query: { plan: 'simplified', senderId: 'alex', recipientId: 'maya', currency: 'USD', debtMinor: '1200' },
       })
-      expect(claimAgentDraft(owner, draftId, 'settlement')).toEqual({ kind: 'settlement', groupId: group.id, amountText: '10.00', method: 'payment-app', occurredOn: undefined, note: undefined })
+      expect(claimAgentDraft(owner, draftId, 'settlement', group.id)).toEqual({ kind: 'settlement', groupId: group.id, amountText: '10.00', method: 'payment-app', occurredOn: undefined, note: undefined })
       reportAgentDraftSaved(draftId, 'settlement-3')
       await expect(pending).resolves.toEqual({ status: 'saved', settlementId: 'settlement-3', message: 'The user reviewed and saved the payment.' })
     })
@@ -228,7 +228,7 @@ describe('WebMCP integration', () => {
 
       const pending = call(registered, 'record_settlement', { groupId: group.id, withParticipantId: 'alex' })
       const draftId = await openedDraft(router, { name: 'group-settle-up' })
-      expect(claimAgentDraft(owner, draftId, 'settlement')).toEqual(expect.objectContaining({ amountText: '12.00' }))
+      expect(claimAgentDraft(owner, draftId, 'settlement', group.id)).toEqual(expect.objectContaining({ amountText: '12.00' }))
       reportAgentDraftLeft(draftId)
       await expect(pending).resolves.toEqual(expect.objectContaining({ status: 'cancelled', reason: 'left', message: 'The user left the form without saving. No payment was saved.' }))
     })
