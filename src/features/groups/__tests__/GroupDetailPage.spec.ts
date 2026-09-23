@@ -67,6 +67,7 @@ const ionicStubs = {
     template: '<a :href="routerLink"><slot /></a>',
   },
   IonSkeletonText: { template: '<span class="skeleton-text"><slot /></span>' },
+  IonPopover: { name: 'IonPopover', props: ['isOpen', 'event', 'side', 'alignment'], emits: ['didDismiss'], template: '<div v-if="isOpen" data-testid="more-popover"><slot /></div>' },
   IonRefresher: { name: 'IonRefresher', emits: ['ionRefresh'], template: '<div><slot /></div>' },
   IonRefresherContent: true,
 }
