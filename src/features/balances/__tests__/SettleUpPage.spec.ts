@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import type { Component } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,6 +9,7 @@ import { createMemoryCommandStorage } from '../../../data/commandQueue'
 import { createDemoRepository } from '../../../data/demoRepository'
 import { createAppSession, setAppSessionForTesting } from '../../../data/session'
 import type { AppRepository, SettlementRecord } from '../../../data/repositories'
+import { fromMinorUnits } from '../../../domain/money'
 import BalancesPage from '../BalancesPage.vue'
 import SettleUpPage from '../SettleUpPage.vue'
 import SettlementDetailPage from '../SettlementDetailPage.vue'
@@ -24,7 +25,10 @@ const ionicStubs = {
   IonTitle: { template: '<div><slot /></div>' },
   IonButtons: { template: '<div><slot /></div>' },
   IonBackButton: { props: ['defaultHref', 'text'], template: '<a data-testid="back" :href="defaultHref">{{ text }}</a>' },
-  IonButton: { props: ['routerLink', 'disabled', 'ariaLabel'], template: '<a v-if="routerLink" :href="routerLink" :aria-label="ariaLabel"><slot /></a><button v-else type="button" :disabled="disabled" :aria-label="ariaLabel" @click="$emit(\'click\', $event)"><slot /></button>' },
+  IonButton: {
+    props: ['routerLink', 'disabled', 'ariaLabel', 'fill', 'size', 'color'], emits: ['click'],
+    template: '<a v-if="routerLink" :href="routerLink" :aria-label="ariaLabel"><slot /></a><button v-else type="button" :disabled="disabled" :aria-label="ariaLabel" :data-fill="fill" :data-size="size" :data-color="color" @click="$emit(\'click\', $event)"><slot /></button>',
+  },
   IonContent: { template: '<section><slot /></section>' },
   IonIcon: { template: '<span aria-hidden="true" />' },
   IonSegment: { name: 'IonSegment', props: ['value'], emits: ['ionChange'], template: '<div role="tablist"><slot /></div>' },
@@ -100,7 +104,7 @@ describe('settle up page', () => {
     const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
 
     expect(wrapper.get('h1').text()).toBe('Settle up')
-    expect(wrapper.findAll('[name="settlement-basis"]')).toHaveLength(1)
+    expect(basisOptions(wrapper)).toHaveLength(1)
     expect(wrapper.get('[data-testid="selected-direction"]').text()).toBe('Taylor S. pays Maya P.')
     expect(wrapper.get('[data-action="record-payment"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-testid="outside-payment-copy"]').text()).toContain('already happened outside Split Unwise')
@@ -120,23 +124,93 @@ describe('settle up page', () => {
     const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
 
     expect(wrapper.get('[data-testid="currency-selector"]').findAll('option').map((option) => option.text())).toEqual(['USD', 'EUR'])
-    expect(wrapper.findAll('[name="settlement-basis"]')).toHaveLength(1)
+    expect(basisOptions(wrapper)).toHaveLength(1)
     expect((wrapper.get('[data-testid="amount-input"]').element as HTMLInputElement).value).toBe('36.25')
 
     await wrapper.get('[data-testid="currency-selector"]').setValue('EUR')
-    expect(wrapper.findAll('[name="settlement-basis"]')).toHaveLength(1)
+    expect(basisOptions(wrapper)).toHaveLength(1)
     expect((wrapper.get('[data-testid="amount-input"]').element as HTMLInputElement).value).toBe('4.00')
     expect(wrapper.text()).not.toContain('Converted total')
   })
 
   it('changes the settlement basis from Ionic ionChange keyboard selection', async () => {
     const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
-    expect(wrapper.findAll('[name="settlement-basis"]')).toHaveLength(1)
+    expect(basisOptions(wrapper)).toHaveLength(1)
 
     wrapper.getComponent({ name: 'IonSegment' }).vm.$emit('ionChange', { detail: { value: 'pairwise' } })
     await flushPromises()
 
-    expect(wrapper.findAll('[name="settlement-basis"]')).toHaveLength(3)
+    expect(basisOptions(wrapper)).toHaveLength(3)
+  })
+
+  it('offers each debt as an Ionic radio row and resets the amount to the full debt when another is chosen', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const snapshot = await repository.groups.getBalanceSnapshot(groupId)
+    const debts = snapshot.pairwise.filter((debt) => debt.fromParticipantId === 'maya-p' || debt.toParticipantId === 'maya-p')
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up?plan=pairwise`, SettleUpPage)
+    const rows = wrapper.findAll('ion-item.basis-option')
+    expect(rows).toHaveLength(debts.length)
+    const radioGroup = wrapper.get('ion-radio-group').element as HTMLElement & { value?: unknown }
+    expect(radioGroup.value).toBe(rows[0]!.attributes('data-basis-key'))
+    const target = rows[1]!
+    const targetRadio = target.get('ion-radio')
+    expect(targetRadio.attributes('aria-label')).toBe(`${target.get('strong').text()}, ${target.get('ion-note').text()}`)
+
+    await setAmount(wrapper, '1.00')
+    await vi.waitFor(() => expect(targetRadio.attributes('role')).toBe('radio'))
+    await targetRadio.trigger('click')
+    await flushPromises()
+
+    expect(radioGroup.value).toBe(target.attributes('data-basis-key'))
+    expect(wrapper.get('[data-testid="selected-direction"]').text()).toBe(target.get('strong').text())
+    expect((wrapper.get('[data-testid="amount-input"]').element as HTMLInputElement).value).toBe(fromMinorUnits(debts[1]!.money.minorAmount, debts[1]!.money.currency))
+    expect(target.classes()).toContain('basis-option--selected')
+  })
+
+  it('keeps the amount a labelled decimal Ionic input described by its limit', async () => {
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
+    const input = await nativeField(wrapper, '[data-testid="amount-input"]', 'input')
+
+    expect(input.attributes('inputmode')).toBe('decimal')
+    expect(input.attributes('autocomplete')).toBe('off')
+    expect(input.attributes('required')).toBeDefined()
+    expect(document.getElementById(input.attributes('aria-labelledby')!)?.textContent).toBe('Amount (USD)')
+    expect(document.getElementById(input.attributes('aria-describedby')!)?.textContent).toBe('Up to $36.25')
+    expect(settleSource).toMatch(/\.field__control\s*\{[^}]*font-size:\s*16px/)
+  })
+
+  it('enables Record payment only while the Ionic outside-payment checkbox is checked', async () => {
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
+    const checkbox = wrapper.get('[data-testid="outside-payment-confirmation"]')
+
+    expect(checkbox.element.tagName).toBe('ION-CHECKBOX')
+    expect(checkbox.text()).toContain('I confirm this payment already happened outside Split Unwise.')
+    expect(wrapper.get('[data-action="record-payment"]').attributes('disabled')).toBeDefined()
+
+    await confirmOutsidePayment(wrapper)
+    expect(wrapper.get('[data-action="record-payment"]').attributes('disabled')).toBeUndefined()
+
+    await checkbox.trigger('click')
+    await vi.waitFor(() => expect(checkbox.attributes('aria-checked')).toBe('false'))
+    expect(wrapper.get('[data-action="record-payment"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('records the note typed into the Ionic textarea with the payment', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage)
+    const note = await nativeField(wrapper, '[data-testid="settlement-note"]', 'textarea')
+
+    expect(note.attributes('maxlength')).toBe('500')
+    expect(document.getElementById(note.attributes('aria-labelledby')!)?.textContent).toBe('Note optional')
+    await note.setValue('  Dock fees  ')
+    await setAmount(wrapper, '5.00')
+    await confirmOutsidePayment(wrapper)
+    await wrapper.get('[data-action="record-payment"]').trigger('click')
+
+    await vi.waitFor(async () => expect(await repository.settlements.listForGroup(groupId)).toHaveLength(1))
+    expect((await repository.settlements.listForGroup(groupId))[0]).toMatchObject({ note: 'Dock fees', money: { currency: 'USD', minorAmount: 500 } })
   })
 
   it('records a partial payment once, then navigates to its durable detail route', async () => {
@@ -157,8 +231,8 @@ describe('settle up page', () => {
     setAppSessionForTesting(createAppSession({ repository: wrapped, commandStorage: createMemoryCommandStorage() }))
     const router = createAppRouter()
     const wrapper = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage, router)
-    await wrapper.get('[data-testid="amount-input"]').setValue('10.00')
-    await wrapper.get('[data-testid="outside-payment-confirmation"]').setValue(true)
+    await setAmount(wrapper, '10.00')
+    await confirmOutsidePayment(wrapper)
 
     await Promise.all([
       wrapper.get('[data-action="record-payment"]').trigger('click'),
@@ -183,15 +257,15 @@ describe('settle up page', () => {
     setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
     const router = createAppRouter()
     const firstPage = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage, router)
-    await firstPage.get('[data-testid="amount-input"]').setValue('5.00')
-    await firstPage.get('[data-testid="outside-payment-confirmation"]').setValue(true)
+    await setAmount(firstPage, '5.00')
+    await confirmOutsidePayment(firstPage)
     await firstPage.get('[data-action="record-payment"]').trigger('click')
     await vi.waitFor(async () => expect(await repository.settlements.listForGroup(groupId)).toHaveLength(1))
     firstPage.unmount()
 
     const secondPage = await mountRoute(`/tabs/groups/${groupId}/settle-up`, SettleUpPage, router)
-    await secondPage.get('[data-testid="amount-input"]').setValue('4.00')
-    await secondPage.get('[data-testid="outside-payment-confirmation"]').setValue(true)
+    await setAmount(secondPage, '4.00')
+    await confirmOutsidePayment(secondPage)
     await secondPage.get('[data-action="record-payment"]').trigger('click')
 
     await vi.waitFor(async () => expect(await repository.settlements.listForGroup(groupId)).toHaveLength(2))
@@ -291,7 +365,7 @@ describe('settle up page', () => {
     expect(wrapper.find('a[href^="https://www.paypal.com/paypalme/"]').exists()).toBe(true)
 
     for (const invalidAmount of ['not-a-number', '0', '36.26']) {
-      await wrapper.get('[data-testid="amount-input"]').setValue(invalidAmount)
+      await setAmount(wrapper, invalidAmount)
       expect(wrapper.find('a[href^="https://www.paypal.com/paypalme/"]').exists()).toBe(false)
       expect(wrapper.text()).toContain('Enter a valid amount up to $36.25 to open a payment-provider link')
     }
@@ -317,15 +391,19 @@ describe('settle up page', () => {
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Failed')
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Retry')
     expect(wrapper.get('[data-operation-id="failed-payment"]').text()).toContain('Discard')
+    const retry = wrapper.get('[data-operation-id="failed-payment"] [data-action="retry-operation"]')
+    const discard = wrapper.get('[data-operation-id="failed-payment"] [data-action="discard-operation"]')
+    expect([retry.attributes('data-size'), retry.attributes('data-fill'), retry.attributes('data-color')]).toEqual(['small', 'solid', undefined])
+    expect([discard.attributes('data-size'), discard.attributes('data-fill'), discard.attributes('data-color')]).toEqual(['small', 'outline', 'danger'])
     expect(wrapper.get('[data-testid="settlement-operation-announcement"]').attributes('role')).toBe('status')
     expect(wrapper.get('[data-testid="settlement-operation-announcement"]').attributes('aria-live')).toBe('polite')
     expect(wrapper.get('[data-testid="settlement-operation-announcement"]').text()).toBe('')
 
-    await wrapper.get('[data-testid="amount-input"]').setValue('')
-    await wrapper.get('[data-testid="outside-payment-confirmation"]').setValue(true)
+    await setAmount(wrapper, '')
+    await confirmOutsidePayment(wrapper)
     await wrapper.get('[data-action="record-payment"]').trigger('click')
     await flushPromises()
-    expect(document.activeElement).toBe(wrapper.get('[data-testid="amount-input"]').element)
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="amount-input"] input').element)
     expect(wrapper.get('[role="alert"]').text()).toContain('valid amount')
   })
 
@@ -392,13 +470,44 @@ describe('settlement detail page', () => {
     expect(wrapper.text()).toContain('$5.00')
     expect(wrapper.text()).toContain('Voiding this ledger record does not cancel or refund money sent outside Split Unwise')
     await wrapper.get('[data-action="show-void-form"]').trigger('click')
-    await wrapper.get('[data-testid="void-reason"]').setValue('Entered twice')
+    await setVoidReason(wrapper, 'Entered twice')
     await wrapper.get('[data-action="void-settlement"]').trigger('click')
     await flushPromises()
 
     await vi.waitFor(() => expect(wrapper.get('[data-testid="voided-state"]').text()).toContain('Voided'))
     expect(wrapper.text()).toContain('Entered twice')
     expect(wrapper.text()).toContain('$5.00')
+  })
+
+  it('focuses the Ionic void-reason textarea on open and on a missing reason, and cancels back to the void action', async () => {
+    const repository = createDemoRepository()
+    const before = await repository.groups.getBalanceSnapshot(groupId)
+    const recorded = await repository.settlements.record({
+      kind: 'settlement.record', operationId: 'void-focus-payment', groupId, expectedBalanceRevision: before.balanceRevision,
+      basis: { kind: 'simplified', senderId: 'taylor-s', recipientId: 'maya-p', currency: 'USD', debtMinor: 3625 },
+      money: { currency: 'USD', minorAmount: 500 }, method: 'cash', occurredOn: '2026-08-31', outsidePaymentConfirmed: true,
+    })
+    if (recorded.status !== 'saved') throw new Error('Expected settlement')
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const wrapper = await mountRoute(`/tabs/groups/${groupId}/settlements/${recorded.settlement.settlementId}`, SettlementDetailPage)
+
+    await wrapper.get('[data-action="show-void-form"]').trigger('click')
+    const reason = await nativeField(wrapper, '[data-testid="void-reason"]', 'textarea')
+    await vi.waitFor(() => expect(document.activeElement).toBe(reason.element))
+    expect(document.getElementById(reason.attributes('aria-labelledby')!)?.textContent).toBe('Reason')
+    expect(reason.attributes('maxlength')).toBe('500')
+    expect(reason.attributes('required')).toBeDefined()
+
+    reason.element.blur()
+    await wrapper.get('[data-action="void-settlement"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('Enter a reason')
+    expect(document.activeElement).toBe(reason.element)
+    await expect(repository.settlements.getById(groupId, recorded.settlement.settlementId)).resolves.not.toHaveProperty('void')
+
+    await wrapper.get('[data-action="cancel-void"]').trigger('click')
+    expect(wrapper.find('[data-testid="void-reason"]').exists()).toBe(false)
+    expect(wrapper.find('[data-action="show-void-form"]').exists()).toBe(true)
   })
 
   it('voids a second payment after the detail page is remounted without reusing an operation ID', async () => {
@@ -421,14 +530,14 @@ describe('settlement detail page', () => {
 
     const firstPage = await mountRoute(`/tabs/groups/${groupId}/settlements/${first.settlement.settlementId}`, SettlementDetailPage, router)
     await firstPage.get('[data-action="show-void-form"]').trigger('click')
-    await firstPage.get('[data-testid="void-reason"]').setValue('First duplicate')
+    await setVoidReason(firstPage, 'First duplicate')
     await firstPage.get('[data-action="void-settlement"]').trigger('click')
     await vi.waitFor(async () => expect(await repository.settlements.getById(groupId, first.settlement.settlementId)).toHaveProperty('void'))
     firstPage.unmount()
 
     const secondPage = await mountRoute(`/tabs/groups/${groupId}/settlements/${second.settlement.settlementId}`, SettlementDetailPage, router)
     await secondPage.get('[data-action="show-void-form"]').trigger('click')
-    await secondPage.get('[data-testid="void-reason"]').setValue('Second duplicate')
+    await setVoidReason(secondPage, 'Second duplicate')
     await secondPage.get('[data-action="void-settlement"]').trigger('click')
 
     await vi.waitFor(async () => expect(await repository.settlements.getById(groupId, second.settlement.settlementId)).toHaveProperty('void'))
@@ -611,7 +720,8 @@ describe('settlement mobile and accessibility contract', () => {
     expect(balancesSource).toContain('overflow-wrap: anywhere')
     expect(settleSource).toContain('overflow-wrap: anywhere')
     expect(detailSource).toContain('overflow-wrap: anywhere')
-    expect(settleSource).toMatch(/\.basis-option:focus-within\s*\{[^}]*box-shadow:/)
+    // An inset outline paints above ion-item's own background, where an inset box-shadow would be hidden.
+    expect(settleSource).toMatch(/\.basis-option:focus-within\s*\{[^}]*outline:\s*2px solid/)
   })
 })
 
@@ -621,6 +731,31 @@ async function mountRoute(path: string, component: Component, suppliedRouter = c
   const wrapper = mount(component, { attachTo: document.body, props, global: { plugins: [createPinia(), suppliedRouter], stubs: ionicStubs } })
   await flushPromises()
   return wrapper
+}
+
+/** Resolves the native control an ion-input or ion-textarea renders once it has hydrated. */
+async function nativeField(wrapper: VueWrapper, host: string, tag: 'input' | 'textarea') {
+  await vi.waitFor(() => expect(wrapper.find(`${host} ${tag}`).exists()).toBe(true))
+  return wrapper.get<HTMLElement>(`${host} ${tag}`)
+}
+
+async function setAmount(wrapper: VueWrapper, value: string): Promise<void> {
+  await (await nativeField(wrapper, '[data-testid="amount-input"]', 'input')).setValue(value)
+}
+
+async function setVoidReason(wrapper: VueWrapper, value: string): Promise<void> {
+  await (await nativeField(wrapper, '[data-testid="void-reason"]', 'textarea')).setValue(value)
+}
+
+async function confirmOutsidePayment(wrapper: VueWrapper): Promise<void> {
+  const checkbox = wrapper.get('[data-testid="outside-payment-confirmation"]')
+  await vi.waitFor(() => expect(checkbox.attributes('aria-checked')).toBe('false'))
+  await checkbox.trigger('click')
+  await vi.waitFor(() => expect(checkbox.attributes('aria-checked')).toBe('true'))
+}
+
+function basisOptions(wrapper: VueWrapper): DOMWrapper<Element>[] {
+  return wrapper.findAll('ion-radio-group ion-radio')
 }
 
 function settlement(overrides: Partial<SettlementRecord> = {}): SettlementRecord {
