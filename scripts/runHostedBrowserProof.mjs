@@ -111,7 +111,8 @@ async function verifyAuthenticatedMobileJourney() {
     await verifyLanguagePreference(page)
     await verifyCreateGroupCardModal(page)
 
-    const groupLink = page.getByRole('link', { name: /Live Account Proof/ }).first()
+    // Group rows are ion-items: the link lives in the item's shadow root, and the cover image is slotted beside it.
+    const groupLink = page.locator('ion-item.group-row', { hasText: 'Live Account Proof' }).first()
     await groupLink.waitFor({ state: 'visible' })
     const groupCover = groupLink.locator('img')
     await groupCover.waitFor({ state: 'visible' })
