@@ -1,16 +1,33 @@
 diff --git a/dist/index.js b/dist/index.js
-index 6cf2b0d88921541056308d07029d26f6b9d60d16..9577fcc7ccf5aa19ba9c2ed482b9b7b787db63fa 100644
+index 6cf2b0d88921541056308d07029d26f6b9d60d16..19bf273c558364d4061aea45e282ce63b4b808de 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -1503,6 +1503,7 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+@@ -1442,7 +1442,14 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+         const viewStacks = inject("viewStacks");
+         // TODO(FW-2969): type
+         const components = shallowRef([]);
+-        let skipTransition = false;
++        /**
++         * split-unwise: a completed swipe already animated one specific
++         * page pair. Only that pair's route transition may be skipped; a
++         * bare boolean leaked to the next navigation whenever the browser
++         * (iOS's own back gesture) changed the route first, which left the
++         * next entering page invisible.
++         */
++        let skipTransitionFor;
+         // The base url for this router outlet
+         let parentOutletPath;
+         /**
+@@ -1503,6 +1510,8 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
           * https://github.com/vuejs/core/issues/9965#issuecomment-1875067499
           */
          { deep: true });
 +        let swipeTransitionStarted = false;
++        let swipePair;
          const canStart = () => {
              const stack = viewStacks.getViewStack(id);
              if (!stack || stack.length <= 1)
-@@ -1514,36 +1515,40 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+@@ -1514,44 +1523,59 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
               */
              const routeInfo = ionRouter.getLeavingRouteInfo();
              const enteringViewItem = viewStacks.findViewItemByRouteInfo({ pathname: routeInfo.pushedByRoute || "" }, id);
@@ -60,26 +77,41 @@ index 6cf2b0d88921541056308d07029d26f6b9d60d16..9577fcc7ccf5aa19ba9c2ed482b9b7b7
              }
 +            leavingViewItem.routerAnimation = animationBuilder;
 +            swipeTransitionStarted = true;
++            swipePair = { enteringEl, leavingEl };
 +            await transition(enteringEl, leavingEl, "back", ionRouter.canGoBack(2), true, animationBuilder);
              return Promise.resolve();
          };
          const onEnd = (shouldContinue) => {
              if (shouldContinue) {
 -                skipTransition = true;
-+                skipTransition = swipeTransitionStarted;
                  /**
-                  * Use the same logic as clicking
-                  * ion-back-button to determine where
-@@ -1551,7 +1556,7 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+-                 * Use the same logic as clicking
+-                 * ion-back-button to determine where
+-                 * to go back to.
++                 * split-unwise: if the route already left the swiped page
++                 * (the browser navigated back underneath the gesture), that
++                 * route change ran its own transition; navigating back again
++                 * or arming a skip would affect an unrelated navigation.
                   */
-                 ionRouter.handleNavigateBack();
+-                ionRouter.handleNavigateBack();
++                const currentViewItem = viewStacks.findViewItemByRouteInfo(ionRouter.getCurrentRouteInfo(), id);
++                const routeStillOnSwipedPage = swipePair !== undefined && currentViewItem?.ionPageElement === swipePair.leavingEl;
++                if (routeStillOnSwipedPage) {
++                    skipTransitionFor = swipeTransitionStarted ? swipePair : undefined;
++                    /**
++                     * Use the same logic as clicking
++                     * ion-back-button to determine where
++                     * to go back to.
++                     */
++                    ionRouter.handleNavigateBack();
++                }
              }
 -            else {
 +            else if (swipeTransitionStarted) {
                  /**
                   * In the event that the swipe
                   * gesture was aborted, we should
-@@ -1559,9 +1564,12 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+@@ -1559,9 +1583,13 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
                   */
                  const routeInfo = ionRouter.getCurrentRouteInfo();
                  const enteringViewItem = viewStacks.findViewItemByRouteInfo({ pathname: routeInfo.pushedByRoute || "" }, id);
@@ -91,20 +123,28 @@ index 6cf2b0d88921541056308d07029d26f6b9d60d16..9577fcc7ccf5aa19ba9c2ed482b9b7b7
 +                }
              }
 +            swipeTransitionStarted = false;
++            swipePair = undefined;
          };
          watch(ionRouterOutlet, () => {
              ionRouterOutlet.value.swipeHandler = {
-@@ -1575,6 +1583,9 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
-                 skipTransition = false;
-                 return Promise.resolve(false);
-             }
-+            if (enteringEl === undefined || leavingEl === undefined) {
-+                return Promise.resolve(false);
+@@ -1571,8 +1599,14 @@ const IonRouterOutlet = /*@__PURE__*/ defineComponent({
+             };
+         });
+         const transition = async (enteringEl, leavingEl, direction, showGoBack, progressAnimation, animationBuilder) => {
+-            if (skipTransition) {
+-                skipTransition = false;
++            if (skipTransitionFor !== undefined) {
++                const skip = skipTransitionFor.enteringEl === enteringEl && skipTransitionFor.leavingEl === leavingEl;
++                skipTransitionFor = undefined;
++                if (skip) {
++                    return Promise.resolve(false);
++                }
 +            }
-             if (enteringEl === leavingEl) {
++            if (enteringEl === undefined || leavingEl === undefined) {
                  return Promise.resolve(false);
              }
-@@ -1733,12 +1744,14 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
+             if (enteringEl === leavingEl) {
+@@ -1733,12 +1767,14 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
                  enteringViewItem = viewStacks.createViewItem(id, matchedRouteRef.value.components.default, matchedRouteRef.value, currentRoute);
                  viewStacks.add(enteringViewItem);
              }

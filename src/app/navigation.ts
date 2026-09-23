@@ -28,12 +28,12 @@ export function createRouteAnimation(capabilities?: RouteMotionCapabilities): An
   }
 }
 
-/** A browser tab (not the home-screen app or the native shell) draws its own back gesture; Ionic's would fight it. */
+/**
+ * On the web the browser owns edge-swipe back: Safari tabs and, as recorded on iOS 27, home-screen web apps too
+ * (the system gesture pops history before Ionic's own swipe finishes). Only the native shell has no system gesture.
+ */
 export function browserOwnsBackGesture(native = false): boolean {
-  if (native || typeof window === 'undefined') return false
-  const standalone = (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches)
-    || (navigator as Navigator & { standalone?: boolean }).standalone === true
-  return !standalone
+  return !native && typeof window !== 'undefined'
 }
 
 // Ionic's own Back button also pops history, but it always follows a tap; Safari's edge swipe and toolbar back never deliver one.
