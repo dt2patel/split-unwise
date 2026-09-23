@@ -1,6 +1,7 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { confirmAction } from '../../../app/confirmDialog'
 import { localeController } from '../../../app/i18n'
 import { createAppRouter } from '../../../app/router'
 import { createMemoryCommandStorage } from '../../../data/commandQueue'
@@ -15,6 +16,7 @@ const firebaseMocks = vi.hoisted(() => ({
 }))
 vi.mock('../../../data/firebaseSparkMutations', () => ({ createSparkGroup: firebaseMocks.createSparkGroup }))
 vi.mock('../../../data/firebase', () => ({ getActiveRuntimeConfiguration: firebaseMocks.getActiveRuntimeConfiguration }))
+vi.mock('../../../app/confirmDialog', () => ({ confirmAction: vi.fn() }))
 
 const stubs = {
   IonPage: { template: '<div class="ion-page"><slot /></div>' },
@@ -46,6 +48,7 @@ const stubs = {
 
 beforeEach(() => {
   localeController.setPreference('en')
+  vi.mocked(confirmAction).mockReset().mockResolvedValue(false)
   firebaseMocks.createSparkGroup.mockReset().mockResolvedValue({ groupId: 'grp-hosted-cover' })
   const repository = { ...createDemoRepository(), mode: 'firebase' as const }
   setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
@@ -163,8 +166,7 @@ describe('mobile group creation', () => {
     wrapper.unmount()
   })
 
-  it('asks before a swipe discards a draft, and only then', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('asks with an Ionic alert before a swipe discards a draft, and only then', async () => {
     const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), createAppRouter()], stubs } })
     await flushPromises()
     await wrapper.get('[aria-label="Create group"]').trigger('click')
@@ -174,12 +176,56 @@ describe('mobile group creation', () => {
     await wrapper.get('[aria-label="Group name"]').setValue('Ski trip')
     const guard = modal.props('canDismiss') as () => Promise<boolean>
     expect(guard).toBeTypeOf('function')
+    // Keep editing: the sheet springs back.
     await expect(guard()).resolves.toBe(false)
-    expect(confirm).toHaveBeenCalledOnce()
+    expect(confirmAction).toHaveBeenCalledOnce()
+    expect(confirmAction).toHaveBeenCalledWith({ message: 'Discard this group draft?', confirmText: 'Discard', cancelText: 'Keep editing', destructive: true })
+    // Discard: the sheet may close.
+    vi.mocked(confirmAction).mockResolvedValueOnce(true)
+    await expect(guard()).resolves.toBe(true)
 
     await wrapper.get('[aria-label="Group name"]').setValue('')
     expect(modal.props('canDismiss')).toBe(true)
-    confirm.mockRestore()
+    expect(confirmAction).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('keeps the draft open when Cancel is answered with Keep editing', async () => {
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), createAppRouter()], stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="Create group"]').trigger('click')
+    await wrapper.get('[aria-label="Group name"]').setValue('Ski trip')
+
+    await cancelButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(confirmAction).toHaveBeenCalledOnce()
+    expect(wrapper.getComponent({ name: 'IonModal' }).props('isOpen')).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[aria-label="Group name"]').element.value).toBe('Ski trip')
+    wrapper.unmount()
+  })
+
+  it('closes a draft after Cancel is confirmed with Discard, asking only once', async () => {
+    vi.mocked(confirmAction).mockResolvedValue(true)
+    const wrapper = mount(GroupsPage, { global: { plugins: [createPinia(), createAppRouter()], stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="Create group"]').trigger('click')
+    await wrapper.get('[aria-label="Group name"]').setValue('Ski trip')
+
+    await cancelButton(wrapper).trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.getComponent({ name: 'IonModal' })
+    expect(modal.props('isOpen')).toBe(false)
+    // Ionic re-checks canDismiss when isOpen turns false; the confirmed draft must not prompt again.
+    expect(modal.props('canDismiss')).toBe(true)
+    expect(confirmAction).toHaveBeenCalledOnce()
+
+    modal.vm.$emit('didDismiss')
+    await flushPromises()
+    await wrapper.get('[aria-label="Create group"]').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="Group name"]').element.value).toBe('')
+    expect(wrapper.getComponent({ name: 'IonModal' }).props('canDismiss')).toBe(true)
     wrapper.unmount()
   })
 
@@ -209,3 +255,9 @@ describe('mobile group creation', () => {
     wrapper.unmount()
   })
 })
+
+function cancelButton(wrapper: VueWrapper) {
+  const button = wrapper.findAll('[role="dialog"] header button').find((candidate) => candidate.text() === 'Cancel')
+  if (!button) throw new Error('Missing the create sheet Cancel button')
+  return button
+}
