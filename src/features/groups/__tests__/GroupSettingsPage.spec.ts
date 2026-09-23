@@ -1,4 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAppRouter } from '../../../app/router'
@@ -25,6 +27,10 @@ const stubs = {
     props: ['modelValue', 'disabled'], emits: ['ionChange'],
     template: '<input type="checkbox" :checked="modelValue" :disabled="disabled" @change="$emit(\'ionChange\', { detail: { checked: $event.target.checked } })" />',
   },
+  IonInput: {
+    name: 'IonInput', props: ['modelValue', 'disabled'], emits: ['update:modelValue'],
+    template: '<input :value="modelValue" :disabled="disabled" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+  },
   IonModal: {
     name: 'IonModal', props: ['isOpen', 'canDismiss', 'presentingElement'], emits: ['didDismiss'],
     template: '<aside v-if="isOpen" data-testid="member-removal-modal"><slot /></aside>',
@@ -32,6 +38,15 @@ const stubs = {
 }
 
 beforeEach(() => vi.restoreAllMocks())
+
+// Stencil flushes Ionic's renders on animation frames after Vue mounts or updates the elements.
+async function settleIonic(): Promise<void> {
+  for (let frame = 0; frame < 3; frame += 1) {
+    await flushPromises()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
+  await flushPromises()
+}
 
 describe('group default settings page', () => {
   it('uses native grouped controls and slot-aligned member rows for the mobile settings form', async () => {
@@ -139,6 +154,63 @@ describe('group default settings page', () => {
     await flushPromises()
 
     expect(wrapper.findAll<HTMLInputElement>('.ratio-input').map((input) => Number(input.element.value))).toEqual([20, 20, 20, 20, 20])
+  })
+
+  it('binds per-member Ionic ratio fields that keep the decimal keypad and a method-specific name', async () => {
+    const repository = createDemoRepository()
+    setAppSessionForTesting(createAppSession({ repository, commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter(); await router.push('/tabs/groups/lake-house-weekend/settings'); await router.isReady()
+    const wrapper = mount(GroupSettingsPage, { global: { plugins: [createPinia(), router], stubs } }); await flushPromises()
+
+    expect(wrapper.findAllComponents({ name: 'IonInput' })).toHaveLength(0)
+    await wrapper.get('button[value="shares"]').trigger('click')
+    await flushPromises()
+
+    const shares = wrapper.findAll<HTMLInputElement>('.ratio-input')
+    expect(shares).toHaveLength(5)
+    expect(shares.every((input) => input.attributes('inputmode') === 'decimal')).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[aria-label="Maya P. shares"]').element.value).toBe('1')
+    await wrapper.get('[aria-label="Maya P. shares"]').setValue('3')
+    await wrapper.findAll('.actions button')[0]!.trigger('click')
+    await vi.waitFor(() => expect(wrapper.get('[role="status"]').text()).toContain('saved'))
+    await expect(repository.groups.getSettings('lake-house-weekend')).resolves.toMatchObject({ defaultSplit: { type: 'shares', shares: { 'maya-p': 3 } } })
+
+    await wrapper.get('button[value="percentage"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[aria-label="Maya P. shares"]').exists()).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('[aria-label="Maya P. percentage"]').element.value).toBe('20')
+    expect(wrapper.findAll('.ratio-control small').map((suffix) => suffix.text())).toEqual(['%', '%', '%', '%', '%'])
+
+    await wrapper.get('[aria-label="Include Maya P."]').setValue(false)
+    await flushPromises()
+    expect(wrapper.get('[aria-label="Maya P. percentage"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('renames the real Ionic ratio input when the split method changes', async () => {
+    setAppSessionForTesting(createAppSession({ repository: createDemoRepository(), commandStorage: createMemoryCommandStorage() }))
+    const router = createAppRouter(); await router.push('/tabs/groups/lake-house-weekend/settings'); await router.isReady()
+    const { IonInput: _stubbedInput, ...chrome } = stubs
+    const wrapper = mount(GroupSettingsPage, { attachTo: document.body, global: { plugins: [createPinia(), router], stubs: chrome } })
+    await settleIonic()
+
+    await wrapper.get('button[value="shares"]').trigger('click')
+    await settleIonic()
+    const mayaShares = wrapper.get<HTMLInputElement>('[data-testid="group-member-row"] ion-input input')
+    expect(mayaShares.attributes()).toMatchObject({ inputmode: 'decimal', 'aria-label': 'Maya P. shares' })
+    expect(mayaShares.element.value).toBe('1')
+
+    await wrapper.get('button[value="percentage"]').trigger('click')
+    await settleIonic()
+    const mayaPercentage = wrapper.get<HTMLInputElement>('[data-testid="group-member-row"] ion-input input')
+    expect(mayaPercentage.attributes('aria-label')).toBe('Maya P. percentage')
+    expect(mayaPercentage.element.value).toBe('20')
+    wrapper.unmount()
+  }, 20_000)
+
+  it('renders ratio text at 16px so iOS does not zoom the field on focus', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/features/groups/GroupSettingsPage.vue'), 'utf8')
+    expect(source).toMatch(/<ion-input[^>]*class="ratio-input"[^>]*inputmode="decimal"/s)
+    expect(source).toMatch(/\.ratio-input \{[^}]*font-size: 16px;/)
   })
 
   it('reloads the authoritative revision after a concurrent settings conflict', async () => {
